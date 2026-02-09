@@ -13,10 +13,12 @@ import {
   Modal,
   Dimensions,
 } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import Animated, {
   useSharedValue,
@@ -256,9 +258,10 @@ const drawerStyles = StyleSheet.create({
 
 function TechDashboard() {
   const { cases, activeCaseCount, rushCaseCount, setRole } = useApp();
-  const { logout } = useAuth();
+  const { logout, profilePicUri, setProfilePicUri } = useAuth();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [picModalVisible, setPicModalVisible] = useState(false);
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
     .slice(0, 5);
@@ -276,6 +279,48 @@ function TechDashboard() {
   function handleSignOut() {
     setDrawerOpen(false);
     setTimeout(() => logout(), 300);
+  }
+
+  async function handleTakeProfilePhoto() {
+    setPicModalVisible(false);
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Camera Permission", "Camera access is needed to take a profile photo.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setProfilePicUri(result.assets[0].uri);
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    }
+  }
+
+  async function handlePickProfilePhoto() {
+    setPicModalVisible(false);
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Gallery Permission", "Photo library access is needed to select a profile photo.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setProfilePicUri(result.assets[0].uri);
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    }
   }
 
   return (
@@ -300,22 +345,110 @@ function TechDashboard() {
       </View>
 
       <View style={styles.avatarSection}>
-        <LinearGradient
-          colors={[Colors.light.tint, "#3B82F6"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.avatarRing}
+        <Pressable
+          onPress={() => {
+            setPicModalVisible(true);
+            if (Platform.OS !== "web") {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }
+          }}
+          testID="profile-pic-btn"
         >
-          <View style={styles.avatarInner}>
-            <Ionicons name="person" size={32} color={Colors.light.tint} />
+          <LinearGradient
+            colors={[Colors.light.tint, "#3B82F6"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.avatarRing}
+          >
+            {profilePicUri ? (
+              <Image
+                source={{ uri: profilePicUri }}
+                style={styles.avatarImage}
+                contentFit="cover"
+              />
+            ) : (
+              <View style={styles.avatarInner}>
+                <Ionicons name="person" size={32} color={Colors.light.tint} />
+              </View>
+            )}
+          </LinearGradient>
+          <View style={styles.avatarEditBadge}>
+            <Ionicons name="camera" size={12} color="#FFF" />
           </View>
-        </LinearGradient>
+        </Pressable>
         <Text style={styles.avatarName}>Lab Technician</Text>
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
           <Text style={styles.liveText}>ON SHIFT</Text>
         </View>
       </View>
+
+      <Modal
+        transparent
+        visible={picModalVisible}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setPicModalVisible(false)}
+      >
+        <Pressable
+          style={styles.picModalOverlay}
+          onPress={() => setPicModalVisible(false)}
+        >
+          <View style={styles.picModalContent}>
+            <View style={styles.picModalHandle} />
+            <Text style={styles.picModalTitle}>Profile Photo</Text>
+
+            <Pressable
+              onPress={handleTakeProfilePhoto}
+              style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
+              testID="take-photo-btn"
+            >
+              <View style={[styles.picModalOptionIcon, { backgroundColor: "#EFF6FF" }]}>
+                <Ionicons name="camera" size={22} color={Colors.light.tint} />
+              </View>
+              <Text style={styles.picModalOptionText}>Take Photo</Text>
+              <Feather name="chevron-right" size={18} color="#94A3B8" />
+            </Pressable>
+
+            <Pressable
+              onPress={handlePickProfilePhoto}
+              style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
+              testID="photo-library-btn"
+            >
+              <View style={[styles.picModalOptionIcon, { backgroundColor: "#F0FDF4" }]}>
+                <Ionicons name="images" size={22} color="#22C55E" />
+              </View>
+              <Text style={styles.picModalOptionText}>Photo Library</Text>
+              <Feather name="chevron-right" size={18} color="#94A3B8" />
+            </Pressable>
+
+            {profilePicUri && (
+              <Pressable
+                onPress={() => {
+                  setProfilePicUri(null);
+                  setPicModalVisible(false);
+                }}
+                style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#FEF2F2" }]}
+                testID="remove-photo-btn"
+              >
+                <View style={[styles.picModalOptionIcon, { backgroundColor: "#FEF2F2" }]}>
+                  <Ionicons name="trash" size={22} color="#EF4444" />
+                </View>
+                <Text style={[styles.picModalOptionText, { color: "#EF4444" }]}>Remove Photo</Text>
+                <Feather name="chevron-right" size={18} color="#94A3B8" />
+              </Pressable>
+            )}
+
+            <Pressable
+              onPress={() => setPicModalVisible(false)}
+              style={styles.picModalCancel}
+              testID="cancel-photo-btn"
+            >
+              <Text style={styles.picModalCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
 
       <View style={styles.headerRow}>
         <View>
@@ -1276,6 +1409,85 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.light.tintLight,
     justifyContent: "center",
     alignItems: "center",
+  },
+  avatarImage: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+  },
+  avatarEditBadge: {
+    position: "absolute" as const,
+    bottom: 0,
+    right: 0,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: Colors.light.tint,
+    justifyContent: "center" as const,
+    alignItems: "center" as const,
+    borderWidth: 2,
+    borderColor: "#FFF",
+  },
+  picModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end" as const,
+  },
+  picModalContent: {
+    backgroundColor: "#FFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingBottom: 40,
+    paddingTop: 12,
+  },
+  picModalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+    alignSelf: "center" as const,
+    marginBottom: 16,
+  },
+  picModalTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    marginBottom: 16,
+    textAlign: "center" as const,
+  },
+  picModalOption: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    borderRadius: 12,
+    gap: 14,
+  },
+  picModalOptionIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    justifyContent: "center" as const,
+    alignItems: "center" as const,
+  },
+  picModalOptionText: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  picModalCancel: {
+    marginTop: 12,
+    paddingVertical: 14,
+    alignItems: "center" as const,
+    backgroundColor: "#F1F5F9",
+    borderRadius: 14,
+  },
+  picModalCancelText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#64748B",
   },
   avatarName: {
     fontSize: 17,

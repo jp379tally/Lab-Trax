@@ -17,6 +17,8 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isAuthLoading: boolean;
   currentUser: string | null;
+  profilePicUri: string | null;
+  setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   registeredUsers: StoredUser[];
@@ -26,6 +28,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const AUTH_KEY = "@drivesync_auth";
 const USERS_STORE_KEY = "@drivesync_auth_users";
+const PROFILE_PIC_KEY = "@drivesync_profile_pic";
 
 const DEFAULT_USERS: StoredUser[] = [
   { username: "admin", password: "123" },
@@ -37,6 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<StoredUser[]>([]);
+  const [profilePicUri, setProfilePicUriState] = useState<string | null>(null);
 
   useEffect(() => {
     loadAuth();
@@ -44,9 +48,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function loadAuth() {
     try {
-      const [savedAuth, savedUsers] = await Promise.all([
+      const [savedAuth, savedUsers, savedPic] = await Promise.all([
         AsyncStorage.getItem(AUTH_KEY),
         AsyncStorage.getItem(USERS_STORE_KEY),
+        AsyncStorage.getItem(PROFILE_PIC_KEY),
       ]);
 
       const mergedUsers = [...DEFAULT_USERS];
@@ -64,6 +69,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setRegisteredUsers(mergedUsers);
       await AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(mergedUsers));
 
+      if (savedPic) {
+        setProfilePicUriState(savedPic);
+      }
+
       if (savedAuth) {
         const auth = JSON.parse(savedAuth);
         if (auth.loggedIn && auth.username) {
@@ -75,6 +84,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setRegisteredUsers(DEFAULT_USERS);
     } finally {
       setIsAuthLoading(false);
+    }
+  }
+
+  async function setProfilePicUri(uri: string | null) {
+    setProfilePicUriState(uri);
+    if (uri) {
+      await AsyncStorage.setItem(PROFILE_PIC_KEY, uri);
+    } else {
+      await AsyncStorage.removeItem(PROFILE_PIC_KEY);
     }
   }
 
@@ -122,11 +140,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated,
       isAuthLoading,
       currentUser,
+      profilePicUri,
+      setProfilePicUri,
       login,
       logout,
       registeredUsers,
     }),
-    [isAuthenticated, isAuthLoading, currentUser, registeredUsers],
+    [isAuthenticated, isAuthLoading, currentUser, registeredUsers, profilePicUri],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

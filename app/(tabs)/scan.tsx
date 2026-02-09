@@ -20,6 +20,7 @@ import { useFocusEffect } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId } from "@/lib/data";
+import { getApiUrl } from "@/lib/query-client";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "form";
 
@@ -181,19 +182,8 @@ export default function ScanScreen() {
     }
   }
 
-  function handleDetected() {
-    setDoctorName("Dr. Williams");
-    setPatientInitials("S.M.");
-    setToothIndices("#14, #15");
-    setShade("A2");
-    setIsRush(false);
-    const scanEntry: ActivityEntry = {
-      id: generateId(),
-      type: "scan",
-      timestamp: Date.now(),
-      description: "Prescription scanned via AI Intake",
-    };
-    const entries: ActivityEntry[] = [scanEntry];
+  async function handleDetected() {
+    const entries: ActivityEntry[] = [];
     if (capturedUri) {
       const photoEntry: ActivityEntry = {
         id: generateId(),
@@ -205,6 +195,62 @@ export default function ScanScreen() {
       entries.push(photoEntry);
       setCasePhotos([capturedUri]);
     }
+
+    let aiSuccess = false;
+    if (capturedUri) {
+      try {
+        let base64Data: string;
+        if (Platform.OS === "web") {
+          const response = await fetch(capturedUri);
+          const blob = await response.blob();
+          const reader = new FileReader();
+          base64Data = await new Promise<string>((resolve) => {
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.readAsDataURL(blob);
+          });
+        } else {
+          const FileSystem = require("expo-file-system");
+          const fileBase64 = await FileSystem.readAsStringAsync(capturedUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          base64Data = `data:image/jpeg;base64,${fileBase64}`;
+        }
+
+        const apiUrl = getApiUrl();
+        const aiResponse = await fetch(new URL("/api/analyze-prescription", apiUrl).toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64: base64Data }),
+        });
+
+        if (aiResponse.ok) {
+          const result = await aiResponse.json();
+          if (result.success && result.data) {
+            const d = result.data;
+            if (d.doctorName) setDoctorName(d.doctorName);
+            if (d.patientInitials) setPatientInitials(d.patientInitials);
+            if (d.toothIndices) setToothIndices(d.toothIndices);
+            if (d.shade) setShade(d.shade);
+            if (d.material) setMaterial(d.material);
+            if (d.isRush !== undefined) setIsRush(d.isRush);
+            if (d.notes) setNotes(d.notes);
+            aiSuccess = true;
+          }
+        }
+      } catch (err) {
+        console.log("AI analysis failed, using manual entry:", err);
+      }
+    }
+
+    const scanEntry: ActivityEntry = {
+      id: generateId(),
+      type: "scan",
+      timestamp: Date.now(),
+      description: aiSuccess
+        ? "Prescription analyzed via AI - fields auto-populated"
+        : "Prescription scanned - manual review needed",
+    };
+    entries.push(scanEntry);
     setActivityEntries(entries);
     setPhase("form");
   }
