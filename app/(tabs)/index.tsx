@@ -1445,7 +1445,58 @@ function AdminDashboard() {
       >
         {renderBackHeader("Generate Statements")}
         <View style={adm.listArea}>
-          <Text style={adm.formDesc}>Select a client to generate a billing statement.</Text>
+          {(() => {
+            const allOpenInvoices = invoices.filter((inv) => inv.status === "open" || inv.status === "overdue");
+            const totalOpenAmount = allOpenInvoices.reduce((s, inv) => s + inv.amount, 0);
+            const clientsWithOpen = [...new Set(allOpenInvoices.map((inv) => inv.clientName))];
+            return (
+              <Pressable
+                style={({ pressed }) => ({
+                  backgroundColor: Colors.light.tint,
+                  borderRadius: 14,
+                  paddingVertical: 16,
+                  paddingHorizontal: 20,
+                  marginBottom: 20,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 10,
+                  opacity: pressed ? 0.85 : 1,
+                  shadowColor: Colors.light.tint,
+                  shadowOpacity: 0.3,
+                  shadowRadius: 8,
+                  shadowOffset: { width: 0, height: 4 },
+                  elevation: 4,
+                })}
+                onPress={() => {
+                  if (allOpenInvoices.length === 0) {
+                    Alert.alert("No Open Invoices", "There are no open invoices to generate statements for.");
+                    return;
+                  }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  const summary = clientsWithOpen.map((name) => {
+                    const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === name);
+                    const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
+                    return `${name}: ${clientInvs.length} invoice${clientInvs.length > 1 ? "s" : ""} · $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
+                  }).join("\n");
+                  Alert.alert(
+                    "Statements Generated",
+                    `Generated statements for all open invoices.\n\n${allOpenInvoices.length} invoices across ${clientsWithOpen.length} client${clientsWithOpen.length > 1 ? "s" : ""}\nTotal: $${totalOpenAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\n${summary}`,
+                  );
+                }}
+                testID="generate-all-statements-btn"
+              >
+                <Ionicons name="documents" size={22} color="#fff" />
+                <View>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Generate Statements for All Open Invoices</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", marginTop: 2 }}>
+                    {allOpenInvoices.length} open invoice{allOpenInvoices.length !== 1 ? "s" : ""} · ${totalOpenAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                  </Text>
+                </View>
+              </Pressable>
+            );
+          })()}
+          <Text style={adm.formDesc}>Or select a client to generate an individual statement.</Text>
           {clients.map((c) => {
             const clientCases = cases.filter((cs) => cs.doctorName === c.leadDoctor);
             const clientTotal = clientCases.reduce((s, cs) => s + cs.price, 0);
