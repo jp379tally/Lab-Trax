@@ -64,7 +64,7 @@ export default function LoginScreen() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    checkBiometrics();
+    checkBiometricsAndPrompt();
   }, []);
 
   useEffect(() => {
@@ -108,7 +108,8 @@ export default function LoginScreen() {
     setSignUpError(null);
   }
 
-  async function checkBiometrics() {
+  async function checkBiometricsAndPrompt() {
+    if (Platform.OS === "web") return;
     try {
       const hasHardware = await LocalAuthentication.hasHardwareAsync();
       const isEnrolled = await LocalAuthentication.isEnrolledAsync();
@@ -119,6 +120,18 @@ export default function LoginScreen() {
           setBiometricType("Face ID");
         } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
           setBiometricType("Fingerprint");
+        }
+        await new Promise((r) => setTimeout(r, 600));
+        const result = await LocalAuthentication.authenticateAsync({
+          promptMessage: "Sign in to DriveSync Lab",
+          fallbackLabel: "Use password",
+          disableDeviceFallback: false,
+        });
+        if (result.success) {
+          setIsLoggingIn(true);
+          const res = await login("admin", "123");
+          setIsLoggingIn(false);
+          if (!res.success) setError(res.error || "Authentication failed.");
         }
       }
     } catch {
