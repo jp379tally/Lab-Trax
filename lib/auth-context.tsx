@@ -49,12 +49,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         AsyncStorage.getItem(USERS_STORE_KEY),
       ]);
 
+      const mergedUsers = [...DEFAULT_USERS];
       if (savedUsers) {
-        setRegisteredUsers(JSON.parse(savedUsers));
-      } else {
-        setRegisteredUsers(DEFAULT_USERS);
-        await AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(DEFAULT_USERS));
+        const parsed: StoredUser[] = JSON.parse(savedUsers);
+        for (const pu of parsed) {
+          const isDefault = DEFAULT_USERS.some(
+            (d) => d.username.toLowerCase() === pu.username.toLowerCase(),
+          );
+          if (!isDefault) {
+            mergedUsers.push(pu);
+          }
+        }
       }
+      setRegisteredUsers(mergedUsers);
+      await AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(mergedUsers));
 
       if (savedAuth) {
         const auth = JSON.parse(savedAuth);

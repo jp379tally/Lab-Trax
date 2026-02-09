@@ -587,7 +587,7 @@ export default function ScanScreen() {
     );
   }
 
-  if (!permission.granted) {
+  if (!permission.granted && phase === "camera") {
     return (
       <View style={[styles.container, styles.permissionContainer]}>
         <View style={styles.permissionContent}>
