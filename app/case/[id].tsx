@@ -1,0 +1,490 @@
+import React, { useState } from "react";
+import {
+  StyleSheet,
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  Platform,
+  Alert,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { router, useLocalSearchParams } from "expo-router";
+import * as Haptics from "expo-haptics";
+import { useApp } from "@/lib/app-context";
+import Colors from "@/constants/colors";
+import { getStationInfo, STATIONS, CaseStatus } from "@/lib/data";
+
+export default function CaseDetailScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const { cases, updateCaseStatus, role, adminUnlocked } = useApp();
+  const insets = useSafeAreaInsets();
+  const [showRouting, setShowRouting] = useState(false);
+
+  const caseItem = cases.find((c) => c.id === id);
+  const showPrice = role === "admin" && adminUnlocked;
+
+  if (!caseItem) {
+    return (
+      <View style={styles.emptyContainer}>
+        <Text style={styles.emptyText}>Case not found</Text>
+        <Pressable onPress={() => router.back()} style={styles.backLink}>
+          <Text style={styles.backLinkText}>Go Back</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  const stationInfo = getStationInfo(caseItem.status);
+  const currentStationIdx = STATIONS.findIndex(
+    (s) => s.id === caseItem.status,
+  );
+
+  function handleRoute(newStatus: CaseStatus) {
+    updateCaseStatus(caseItem!.id, newStatus);
+    setShowRouting(false);
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    Alert.alert(
+      "Routed",
+      `Case ${caseItem!.caseNumber} moved to ${getStationInfo(newStatus).label}`,
+    );
+  }
+
+  function formatTimestamp(ts: number) {
+    const d = new Date(ts);
+    return d.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  return (
+    <View style={styles.container}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12,
+          },
+        ]}
+      >
+        <Pressable onPress={() => router.back()} style={styles.headerBtn}>
+          <Ionicons name="arrow-back" size={22} color={Colors.light.text} />
+        </Pressable>
+        <Text style={styles.headerTitle}>{caseItem.caseNumber}</Text>
+        <View style={{ width: 44 }} />
+      </View>
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 34 + 40 : insets.bottom + 40 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.statusCard}>
+          <View
+            style={[
+              styles.statusIndicator,
+              { backgroundColor: stationInfo.color },
+            ]}
+          />
+          <View style={styles.statusInfo}>
+            <Text style={styles.statusLabel}>CURRENT STATION</Text>
+            <Text style={styles.statusValue}>{stationInfo.label}</Text>
+          </View>
+          {caseItem.isRush && (
+            <View style={styles.rushBadge}>
+              <Ionicons name="flash" size={14} color="#EF4444" />
+              <Text style={styles.rushText}>RUSH</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.infoGrid}>
+          <View style={styles.infoItem}>
+            <Text style={styles.infoLabel}>Doctor</Text>
+            <Text style={styles.infoValue}>{caseItem.doctorName}</Text>
+          </View>
+          <View style={styles.infoItem}>
+            <Text style={styles.infoLabel}>Patient</Text>
+            <Text style={styles.infoValue}>{caseItem.patientInitials}</Text>
+          </View>
+          <View style={styles.infoItem}>
+            <Text style={styles.infoLabel}>Teeth</Text>
+            <Text style={styles.infoValue}>{caseItem.toothIndices}</Text>
+          </View>
+          <View style={styles.infoItem}>
+            <Text style={styles.infoLabel}>Shade</Text>
+            <Text style={styles.infoValue}>{caseItem.shade}</Text>
+          </View>
+          <View style={styles.infoItem}>
+            <Text style={styles.infoLabel}>Material</Text>
+            <Text style={styles.infoValue}>{caseItem.material}</Text>
+          </View>
+          <View style={styles.infoItem}>
+            <Text style={styles.infoLabel}>Due</Text>
+            <Text style={styles.infoValue}>{caseItem.dueDate}</Text>
+          </View>
+          {showPrice && (
+            <View style={styles.infoItem}>
+              <Text style={styles.infoLabel}>Price</Text>
+              <Text style={[styles.infoValue, { color: Colors.light.tint }]}>
+                ${caseItem.price.toFixed(2)}
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {caseItem.notes ? (
+          <View style={styles.notesCard}>
+            <Text style={styles.notesLabel}>Notes</Text>
+            <Text style={styles.notesText}>{caseItem.notes}</Text>
+          </View>
+        ) : null}
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Route History</Text>
+        </View>
+        <View style={styles.timeline}>
+          {caseItem.routeHistory.map((entry, idx) => {
+            const info = getStationInfo(entry.station);
+            const isLast = idx === caseItem.routeHistory.length - 1;
+            return (
+              <View key={idx} style={styles.timelineItem}>
+                <View style={styles.timelineLine}>
+                  <View
+                    style={[
+                      styles.timelineDot,
+                      {
+                        backgroundColor: isLast
+                          ? info.color
+                          : Colors.light.textTertiary,
+                      },
+                    ]}
+                  />
+                  {!isLast && <View style={styles.timelineConnector} />}
+                </View>
+                <View style={styles.timelineContent}>
+                  <Text
+                    style={[
+                      styles.timelineStation,
+                      isLast && { color: info.color, fontFamily: "Inter_700Bold" },
+                    ]}
+                  >
+                    {info.label}
+                  </Text>
+                  <Text style={styles.timelineTime}>
+                    {formatTimestamp(entry.timestamp)}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={styles.routeSection}>
+          <Pressable
+            onPress={() => setShowRouting(!showRouting)}
+            style={({ pressed }) => [
+              styles.routeBtn,
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Ionicons name="git-branch" size={20} color="#FFF" />
+            <Text style={styles.routeBtnText}>
+              {showRouting ? "Hide Stations" : "Route to Station"}
+            </Text>
+          </Pressable>
+
+          {showRouting && (
+            <View style={styles.stationGrid}>
+              {STATIONS.map((station) => {
+                const isCurrent = station.id === caseItem.status;
+                return (
+                  <Pressable
+                    key={station.id}
+                    onPress={() => !isCurrent && handleRoute(station.id)}
+                    style={[
+                      styles.stationChip,
+                      isCurrent && {
+                        borderColor: station.color,
+                        backgroundColor: station.color + "15",
+                      },
+                    ]}
+                    disabled={isCurrent}
+                  >
+                    <View
+                      style={[
+                        styles.stationDot,
+                        { backgroundColor: station.color },
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.stationText,
+                        isCurrent && {
+                          color: station.color,
+                          fontFamily: "Inter_700Bold",
+                        },
+                      ]}
+                    >
+                      {station.label}
+                    </Text>
+                    {isCurrent && (
+                      <Ionicons
+                        name="checkmark"
+                        size={14}
+                        color={station.color}
+                      />
+                    )}
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: Colors.light.background,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: Colors.light.background,
+    gap: 16,
+  },
+  emptyText: {
+    fontSize: 16,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  backLink: {
+    padding: 12,
+  },
+  backLinkText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    backgroundColor: Colors.light.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.border,
+  },
+  headerBtn: {
+    width: 44,
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  scroll: {
+    flex: 1,
+    padding: 20,
+  },
+  statusCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.light.surface,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    gap: 14,
+    marginBottom: 16,
+  },
+  statusIndicator: {
+    width: 8,
+    height: 48,
+    borderRadius: 4,
+  },
+  statusInfo: {
+    flex: 1,
+  },
+  statusLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.textTertiary,
+    letterSpacing: 1,
+  },
+  statusValue: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    marginTop: 2,
+  },
+  rushBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: Colors.light.errorLight,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  rushText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.error,
+    letterSpacing: 0.5,
+  },
+  infoGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginBottom: 16,
+  },
+  infoItem: {
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    minWidth: "30%",
+    flexGrow: 1,
+  },
+  infoLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.textTertiary,
+    letterSpacing: 0.5,
+    textTransform: "uppercase" as const,
+    marginBottom: 4,
+  },
+  infoValue: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  notesCard: {
+    backgroundColor: Colors.light.warningLight,
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 24,
+  },
+  notesLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.warning,
+    letterSpacing: 0.5,
+    textTransform: "uppercase" as const,
+    marginBottom: 6,
+  },
+  notesText: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    lineHeight: 20,
+  },
+  sectionHeader: {
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  timeline: {
+    marginBottom: 24,
+  },
+  timelineItem: {
+    flexDirection: "row",
+    gap: 14,
+  },
+  timelineLine: {
+    alignItems: "center",
+    width: 20,
+  },
+  timelineDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  timelineConnector: {
+    width: 2,
+    height: 28,
+    backgroundColor: Colors.light.border,
+    marginVertical: 4,
+  },
+  timelineContent: {
+    flex: 1,
+    paddingBottom: 16,
+  },
+  timelineStation: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  timelineTime: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    marginTop: 2,
+  },
+  routeSection: {
+    gap: 14,
+  },
+  routeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 16,
+    borderRadius: 16,
+  },
+  routeBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  stationGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  stationChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    minWidth: "45%",
+    flexGrow: 1,
+  },
+  stationDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  stationText: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+});
