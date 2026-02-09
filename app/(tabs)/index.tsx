@@ -283,43 +283,53 @@ function TechDashboard() {
 
   async function handleTakeProfilePhoto() {
     setPicModalVisible(false);
+    await new Promise((r) => setTimeout(r, 500));
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
       Alert.alert("Camera Permission", "Camera access is needed to take a profile photo.");
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setProfilePicUri(result.assets[0].uri);
-      if (Platform.OS !== "web") {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        setProfilePicUri(result.assets[0].uri);
+        if (Platform.OS !== "web") {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
       }
+    } catch (e) {
+      Alert.alert("Camera Error", "Unable to open camera. Please try again.");
     }
   }
 
   async function handlePickProfilePhoto() {
     setPicModalVisible(false);
+    await new Promise((r) => setTimeout(r, 500));
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
       Alert.alert("Gallery Permission", "Photo library access is needed to select a profile photo.");
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setProfilePicUri(result.assets[0].uri);
-      if (Platform.OS !== "web") {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        setProfilePicUri(result.assets[0].uri);
+        if (Platform.OS !== "web") {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
       }
+    } catch (e) {
+      Alert.alert("Gallery Error", "Unable to open photo library. Please try again.");
     }
   }
 
