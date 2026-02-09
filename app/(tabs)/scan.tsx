@@ -13,21 +13,25 @@ import {
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
 
-type ScanPhase = "ready" | "scanning" | "detected" | "form";
+type ScanPhase = "camera" | "scanning" | "detected" | "form";
 
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const { addCase, cases } = useApp();
-  const [phase, setPhase] = useState<ScanPhase>("ready");
+  const [phase, setPhase] = useState<ScanPhase>("camera");
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
-  const hasAutoLaunched = useRef(false);
+  const cameraRef = useRef<CameraView>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+
+  const [permission, requestPermission] = useCameraPermissions();
 
   const [doctorName, setDoctorName] = useState("");
   const [patientInitials, setPatientInitials] = useState("");
@@ -40,35 +44,15 @@ export default function ScanScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (phase === "ready" && !hasAutoLaunched.current) {
-        hasAutoLaunched.current = true;
-        launchCameraOnFocus();
+      if (phase !== "form") {
+        setPhase("camera");
+        setCapturedUri(null);
       }
       return () => {
-        hasAutoLaunched.current = false;
+        setCameraReady(false);
       };
-    }, [phase])
+    }, [])
   );
-
-  async function launchCameraOnFocus() {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== "granted") {
-      return;
-    }
-
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      quality: 0.8,
-    });
-
-    if (!result.canceled && result.assets[0]) {
-      setCapturedUri(result.assets[0].uri);
-      setPhase("scanning");
-      if (Platform.OS !== "web") {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      }
-    }
-  }
 
   useEffect(() => {
     if (phase === "scanning") {
@@ -98,25 +82,46 @@ export default function ScanScreen() {
   }, [phase]);
 
   async function handleTakePhoto() {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert(
-        "Camera Permission",
-        "Camera access is needed to scan prescriptions. Please enable it in your device settings.",
-      );
-      return;
+    if (Platform.OS === "web") {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        setCapturedUri(result.assets[0].uri);
+        setPhase("scanning");
+        return;
+      }
     }
 
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      quality: 0.8,
-    });
-
-    if (!result.canceled && result.assets[0]) {
-      setCapturedUri(result.assets[0].uri);
-      setPhase("scanning");
-      if (Platform.OS !== "web") {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (cameraRef.current && cameraReady) {
+      try {
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
+        if (photo?.uri) {
+          setCapturedUri(photo.uri);
+          setPhase("scanning");
+          if (Platform.OS !== "web") {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          }
+        }
+      } catch {
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          quality: 0.8,
+        });
+        if (!result.canceled && result.assets[0]) {
+          setCapturedUri(result.assets[0].uri);
+          setPhase("scanning");
+        }
+      }
+    } else {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        setCapturedUri(result.assets[0].uri);
+        setPhase("scanning");
       }
     }
   }
@@ -152,6 +157,14 @@ export default function ScanScreen() {
     setShade("A2");
     setIsRush(false);
     setPhase("form");
+  }
+
+  function handleManualEntry() {
+    setCapturedUri(null);
+    setPhase("scanning");
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
   }
 
   function handleSubmit() {
@@ -190,7 +203,7 @@ export default function ScanScreen() {
   }
 
   function resetForm() {
-    setPhase("ready");
+    setPhase("camera");
     setCapturedUri(null);
     setDoctorName("");
     setPatientInitials("");
@@ -390,85 +403,99 @@ export default function ScanScreen() {
     );
   }
 
+  if (!permission) {
+    return (
+      <View style={[styles.container, styles.permissionContainer]}>
+        <Text style={styles.permissionText}>Loading camera...</Text>
+      </View>
+    );
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={[styles.container, styles.permissionContainer]}>
+        <View style={styles.permissionContent}>
+          <View style={styles.permissionIconWrap}>
+            <Ionicons name="camera" size={48} color={Colors.light.tint} />
+          </View>
+          <Text style={styles.permissionTitle}>Camera Access Required</Text>
+          <Text style={styles.permissionDesc}>
+            To scan prescriptions, the app needs access to your camera.
+          </Text>
+          <Pressable
+            onPress={requestPermission}
+            style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Ionicons name="camera" size={20} color="#FFF" />
+            <Text style={styles.permissionBtnText}>Enable Camera</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleManualEntry}
+            style={({ pressed }) => [styles.permissionSkipBtn, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={styles.permissionSkipText}>Enter manually instead</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
-      <View
-        style={[
-          styles.scanHeader,
-          { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
-        ]}
-      >
-        <Text style={styles.scanTitle}>AI Intake</Text>
-        <Text style={styles.scanSubtitle}>
-          Capture or select a prescription document
-        </Text>
-      </View>
+      <View style={styles.cameraContainer}>
+        {phase === "camera" && (
+          <CameraView
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            onCameraReady={() => setCameraReady(true)}
+          />
+        )}
 
-      <View style={styles.scanArea}>
-        <View style={styles.viewfinder}>
-          {phase === "scanning" && capturedUri && (
-            <>
-              <Image
-                source={{ uri: capturedUri }}
-                style={StyleSheet.absoluteFill}
-                contentFit="cover"
-              />
-              <View style={styles.scanOverlay} />
-              <RNAnimated.View
-                style={[
-                  styles.scanLine,
-                  { transform: [{ translateY: scanTranslateY }] },
-                ]}
-              />
-            </>
-          )}
+        {phase === "scanning" && capturedUri && (
+          <>
+            <Image
+              source={{ uri: capturedUri }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+            />
+            <View style={styles.scanOverlay} />
+            <RNAnimated.View
+              style={[
+                styles.scanLine,
+                { transform: [{ translateY: scanTranslateY }] },
+              ]}
+            />
+          </>
+        )}
 
-          {phase === "scanning" && !capturedUri && (
-            <>
-              <RNAnimated.View
-                style={[
-                  styles.scanLine,
-                  { transform: [{ translateY: scanTranslateY }] },
-                ]}
-              />
-              <View style={styles.viewfinderContent}>
-                <MaterialCommunityIcons
-                  name="file-document-outline"
-                  size={56}
-                  color={Colors.light.tint}
-                />
-                <View style={styles.detectingBadge}>
-                  <Text style={styles.detectingText}>DETECTING RX...</Text>
-                </View>
-              </View>
-            </>
-          )}
+        {phase === "scanning" && !capturedUri && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)", justifyContent: "center", alignItems: "center" }]}>
+            <RNAnimated.View
+              style={[
+                styles.scanLine,
+                { transform: [{ translateY: scanTranslateY }] },
+              ]}
+            />
+            <MaterialCommunityIcons
+              name="file-document-outline"
+              size={56}
+              color={Colors.light.tint}
+            />
+            <View style={styles.detectingBadge}>
+              <Text style={styles.detectingText}>DETECTING RX...</Text>
+            </View>
+          </View>
+        )}
 
-          {phase === "detected" && capturedUri && (
-            <>
-              <Image
-                source={{ uri: capturedUri }}
-                style={StyleSheet.absoluteFill}
-                contentFit="cover"
-              />
-              <View style={styles.detectedOverlay}>
-                <Ionicons
-                  name="checkmark-circle"
-                  size={56}
-                  color={Colors.light.success}
-                />
-                <Text style={styles.detectedViewText}>
-                  Prescription Detected
-                </Text>
-                <Text style={styles.detectedSubText}>
-                  Dr. Williams - Tooth #14, #15 - Shade A2
-                </Text>
-              </View>
-            </>
-          )}
-
-          {phase === "detected" && !capturedUri && (
-            <View style={styles.viewfinderContent}>
+        {phase === "detected" && capturedUri && (
+          <>
+            <Image
+              source={{ uri: capturedUri }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+            />
+            <View style={styles.detectedOverlay}>
               <Ionicons
                 name="checkmark-circle"
                 size={56}
@@ -481,21 +508,33 @@ export default function ScanScreen() {
                 Dr. Williams - Tooth #14, #15 - Shade A2
               </Text>
             </View>
-          )}
+          </>
+        )}
 
-          {phase === "ready" && (
-            <View style={styles.viewfinderContent}>
-              <MaterialCommunityIcons
-                name="file-document-outline"
-                size={56}
-                color={Colors.light.textTertiary}
-              />
-              <Text style={styles.viewfinderText}>
-                Take a photo of the Rx
-              </Text>
-            </View>
-          )}
+        {phase === "detected" && !capturedUri && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)", justifyContent: "center", alignItems: "center", gap: 12 }]}>
+            <Ionicons
+              name="checkmark-circle"
+              size={56}
+              color={Colors.light.success}
+            />
+            <Text style={styles.detectedViewText}>
+              Prescription Detected
+            </Text>
+            <Text style={styles.detectedSubText}>
+              Dr. Williams - Tooth #14, #15 - Shade A2
+            </Text>
+          </View>
+        )}
 
+        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+          <Text style={styles.scanTitle}>AI Intake</Text>
+          <Text style={styles.scanSubtitle}>
+            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing document..." : "Document recognized"}
+          </Text>
+        </View>
+
+        <View style={styles.viewfinderFrame}>
           <View style={styles.cornerTL} />
           <View style={styles.cornerTR} />
           <View style={styles.cornerBL} />
@@ -512,7 +551,7 @@ export default function ScanScreen() {
           },
         ]}
       >
-        {phase === "ready" && (
+        {phase === "camera" && (
           <View style={styles.readyActions}>
             <Pressable
               onPress={handlePickImage}
@@ -531,20 +570,15 @@ export default function ScanScreen() {
                 styles.captureBtn,
                 pressed && { transform: [{ scale: 0.95 }] },
               ]}
+              testID="capture-photo-btn"
             >
               <View style={styles.captureBtnInner}>
-                <Ionicons name="camera" size={28} color={Colors.light.dark} />
+                <View style={styles.captureBtnDot} />
               </View>
             </Pressable>
 
             <Pressable
-              onPress={() => {
-                setCapturedUri(null);
-                setPhase("scanning");
-                if (Platform.OS !== "web") {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                }
-              }}
+              onPress={handleManualEntry}
               style={({ pressed }) => [
                 styles.secondaryBtn,
                 pressed && { opacity: 0.7 },
@@ -597,50 +631,46 @@ export default function ScanScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.dark,
+    backgroundColor: "#000",
   },
-  scanHeader: {
+  cameraContainer: {
+    flex: 1,
+    position: "relative",
+  },
+  cameraHeaderOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
     paddingHorizontal: 20,
     paddingBottom: 16,
+    zIndex: 10,
   },
   scanTitle: {
     fontSize: 22,
     fontFamily: "Inter_700Bold",
     color: "#FFF",
+    textShadowColor: "rgba(0,0,0,0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   scanSubtitle: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: "rgba(255,255,255,0.5)",
+    color: "rgba(255,255,255,0.7)",
     marginTop: 4,
+    textShadowColor: "rgba(0,0,0,0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
-  scanArea: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 30,
-  },
-  viewfinder: {
-    width: "100%",
+  viewfinderFrame: {
+    position: "absolute",
+    top: "25%",
+    left: 30,
+    right: 30,
     aspectRatio: 3 / 4,
     maxHeight: 360,
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    overflow: "hidden",
-    position: "relative",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  viewfinderContent: {
-    alignItems: "center",
-    gap: 16,
-  },
-  viewfinderText: {
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
-    color: "rgba(255,255,255,0.4)",
+    zIndex: 5,
   },
   scanOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -648,8 +678,8 @@ const styles = StyleSheet.create({
   },
   scanLine: {
     position: "absolute",
-    left: 0,
-    right: 0,
+    left: 30,
+    right: 30,
     height: 3,
     backgroundColor: Colors.light.tint,
     shadowColor: Colors.light.tint,
@@ -663,6 +693,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
+    marginTop: 16,
   },
   detectingText: {
     fontSize: 11,
@@ -690,56 +721,57 @@ const styles = StyleSheet.create({
   },
   cornerTL: {
     position: "absolute",
-    top: 10,
-    left: 10,
+    top: 0,
+    left: 0,
     width: 24,
     height: 24,
     borderTopWidth: 3,
     borderLeftWidth: 3,
-    borderColor: "rgba(255,255,255,0.3)",
+    borderColor: "rgba(255,255,255,0.5)",
     borderTopLeftRadius: 6,
   },
   cornerTR: {
     position: "absolute",
-    top: 10,
-    right: 10,
+    top: 0,
+    right: 0,
     width: 24,
     height: 24,
     borderTopWidth: 3,
     borderRightWidth: 3,
-    borderColor: "rgba(255,255,255,0.3)",
+    borderColor: "rgba(255,255,255,0.5)",
     borderTopRightRadius: 6,
   },
   cornerBL: {
     position: "absolute",
-    bottom: 10,
-    left: 10,
+    bottom: 0,
+    left: 0,
     width: 24,
     height: 24,
     borderBottomWidth: 3,
     borderLeftWidth: 3,
-    borderColor: "rgba(255,255,255,0.3)",
+    borderColor: "rgba(255,255,255,0.5)",
     borderBottomLeftRadius: 6,
   },
   cornerBR: {
     position: "absolute",
-    bottom: 10,
-    right: 10,
+    bottom: 0,
+    right: 0,
     width: 24,
     height: 24,
     borderBottomWidth: 3,
     borderRightWidth: 3,
-    borderColor: "rgba(255,255,255,0.3)",
+    borderColor: "rgba(255,255,255,0.5)",
     borderBottomRightRadius: 6,
   },
   scanControls: {
     alignItems: "center",
     paddingVertical: 24,
+    backgroundColor: "rgba(0,0,0,0.85)",
   },
   readyActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 24,
+    gap: 32,
   },
   secondaryBtn: {
     alignItems: "center",
@@ -748,72 +780,141 @@ const styles = StyleSheet.create({
   secondaryBtnText: {
     fontSize: 11,
     fontFamily: "Inter_500Medium",
-    color: "rgba(255,255,255,0.6)",
+    color: "rgba(255,255,255,0.7)",
   },
   captureBtn: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     borderWidth: 4,
-    borderColor: "rgba(255,255,255,0.3)",
+    borderColor: "#FFF",
     justifyContent: "center",
     alignItems: "center",
+    padding: 4,
   },
   captureBtnInner: {
-    width: 60,
-    height: 60,
+    width: "100%",
+    height: "100%",
     borderRadius: 30,
     backgroundColor: "#FFF",
     justifyContent: "center",
     alignItems: "center",
   },
+  captureBtnDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: Colors.light.error,
+  },
   scanningIndicator: {
-    paddingVertical: 16,
+    alignItems: "center",
+    gap: 12,
   },
   scanningText: {
     fontSize: 14,
-    fontFamily: "Inter_500Medium",
-    color: "rgba(255,255,255,0.5)",
+    fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.6)",
   },
   detectedActions: {
     flexDirection: "row",
-    gap: 16,
     alignItems: "center",
+    gap: 16,
+    paddingHorizontal: 20,
   },
   actionBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 16,
     gap: 8,
+    paddingVertical: 16,
+    borderRadius: 16,
   },
   actionBtnSecondary: {
-    backgroundColor: "rgba(255,255,255,0.1)",
-    paddingHorizontal: 16,
+    width: 56,
+    backgroundColor: "rgba(255,255,255,0.15)",
   },
   actionBtnPrimary: {
+    flex: 1,
     backgroundColor: Colors.light.tint,
   },
   actionBtnText: {
-    fontSize: 15,
+    fontSize: 16,
     fontFamily: "Inter_700Bold",
     color: "#FFF",
+  },
+  permissionContainer: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  permissionContent: {
+    alignItems: "center",
+    paddingHorizontal: 40,
+    gap: 16,
+  },
+  permissionIconWrap: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  permissionTitle: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  permissionDesc: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.5)",
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  permissionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    borderRadius: 16,
+    marginTop: 8,
+    width: "100%",
+  },
+  permissionBtnText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  permissionSkipBtn: {
+    paddingVertical: 12,
+  },
+  permissionSkipText: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.4)",
+    textDecorationLine: "underline" as const,
+  },
+  permissionText: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.5)",
   },
   formHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-    backgroundColor: Colors.light.surface,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.border,
+    borderBottomColor: Colors.light.borderLight,
   },
   backBtn: {
-    width: 44,
-    height: 44,
+    width: 40,
+    height: 40,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -823,8 +924,8 @@ const styles = StyleSheet.create({
     color: Colors.light.text,
   },
   submitBtn: {
-    width: 44,
-    height: 44,
+    width: 40,
+    height: 40,
     borderRadius: 14,
     backgroundColor: Colors.light.tint,
     justifyContent: "center",
@@ -832,14 +933,14 @@ const styles = StyleSheet.create({
   },
   formScroll: {
     flex: 1,
-    backgroundColor: Colors.light.background,
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
   },
   capturedPreview: {
-    borderRadius: 14,
+    height: 160,
+    borderRadius: 16,
     overflow: "hidden",
     marginBottom: 20,
-    height: 160,
   },
   previewImage: {
     width: "100%",
@@ -853,14 +954,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    padding: 12,
     backgroundColor: "rgba(0,0,0,0.6)",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
   },
   previewText: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
+    color: Colors.light.success,
   },
   detectedBanner: {
     flexDirection: "row",
@@ -879,16 +979,12 @@ const styles = StyleSheet.create({
   formGroup: {
     marginBottom: 18,
   },
-  formRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
   formLabel: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
     color: Colors.light.textSecondary,
     textTransform: "uppercase" as const,
-    letterSpacing: 0.5,
+    letterSpacing: 1,
     marginBottom: 8,
   },
   formInput: {
@@ -896,22 +992,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.light.border,
     borderRadius: 14,
-    padding: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     fontSize: 15,
-    fontFamily: "Inter_400Regular",
+    fontFamily: "Inter_500Medium",
     color: Colors.light.text,
   },
   formTextArea: {
-    height: 80,
-    textAlignVertical: "top",
+    minHeight: 80,
+    textAlignVertical: "top" as const,
+  },
+  formRow: {
+    flexDirection: "row",
+    gap: 12,
   },
   materialSelector: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
+    gap: 8,
   },
   materialChip: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
     backgroundColor: Colors.light.surfaceSecondary,
@@ -934,30 +1035,30 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    padding: 16,
+    borderRadius: 14,
     backgroundColor: Colors.light.surface,
     borderWidth: 1,
     borderColor: Colors.light.border,
-    borderRadius: 14,
-    padding: 16,
     marginBottom: 18,
   },
   rushToggleActive: {
-    borderColor: Colors.light.error,
-    backgroundColor: Colors.light.errorLight,
+    borderColor: "rgba(239,68,68,0.3)",
+    backgroundColor: "rgba(239,68,68,0.05)",
   },
   rushToggleText: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 14,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
+    color: Colors.light.textSecondary,
   },
   rushToggleSwitch: {
-    width: 44,
+    width: 46,
     height: 26,
     borderRadius: 13,
     backgroundColor: Colors.light.surfaceSecondary,
+    padding: 3,
     justifyContent: "center",
-    paddingHorizontal: 3,
   },
   rushToggleDot: {
     width: 20,
@@ -966,7 +1067,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.light.textTertiary,
   },
   rushToggleDotActive: {
-    backgroundColor: Colors.light.error,
-    alignSelf: "flex-end",
+    alignSelf: "flex-end" as const,
+    backgroundColor: "#EF4444",
   },
 });
