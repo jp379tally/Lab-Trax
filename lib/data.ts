@@ -112,6 +112,12 @@ export const SAMPLE_CASES: LabCase[] = [
       },
       {
         id: generateId(),
+        type: "note",
+        timestamp: Date.now() - 86400000 * 1.5,
+        description: "Patient prefers slightly warmer shade, adjust to A2+",
+      },
+      {
+        id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 3600000,
         description: "Case moved to Design",
@@ -196,6 +202,12 @@ export const SAMPLE_CASES: LabCase[] = [
       },
       {
         id: generateId(),
+        type: "note",
+        timestamp: Date.now() - 86400000 * 2.5,
+        description: "RUSH - Patient traveling 02/12. Prioritize this case.",
+      },
+      {
+        id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 2,
         description: "Case moved to Invest",
@@ -207,6 +219,12 @@ export const SAMPLE_CASES: LabCase[] = [
         timestamp: Date.now() - 86400000,
         description: "Case moved to Cast",
         station: "CAST",
+      },
+      {
+        id: generateId(),
+        type: "note",
+        timestamp: Date.now() - 43200000,
+        description: "Shade verified against Vita guide - A3 confirmed",
       },
       {
         id: generateId(),

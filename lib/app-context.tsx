@@ -229,9 +229,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const now = Date.now();
     const photoEntry: ActivityEntry = {
       id: generateId(),
-      type: "note",
+      type: "photo",
       timestamp: now,
       description: "Photo added to case",
+      imageUri: photoUri,
     };
     const updated = cases.map((c) => {
       if (c.id === caseId) {
