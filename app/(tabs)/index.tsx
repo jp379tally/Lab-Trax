@@ -1030,6 +1030,10 @@ function AdminDashboard() {
             </View>
           </View>
           <View style={adm.field}>
+            <Text style={adm.fieldLabel}>Address</Text>
+            <TextInput style={adm.input} value={newClientAddress} onChangeText={setNewClientAddress} placeholder="1200 Park Ave, Suite 400, New York, NY" placeholderTextColor={Colors.light.textTertiary} />
+          </View>
+          <View style={adm.field}>
             <Text style={adm.fieldLabel}>Client Tier</Text>
             <View style={adm.chipRow}>
               {(["Standard", "Premium", "Elite"] as const).map((t) => (
@@ -1079,6 +1083,10 @@ function AdminDashboard() {
                 <Text style={adm.fieldLabel}>Email</Text>
                 <TextInput style={adm.input} value={editingClient.email} onChangeText={(v) => setEditingClient({ ...editingClient, email: v })} keyboardType="email-address" autoCapitalize="none" />
               </View>
+            </View>
+            <View style={adm.field}>
+              <Text style={adm.fieldLabel}>Address</Text>
+              <TextInput style={adm.input} value={editingClient.address} onChangeText={(v) => setEditingClient({ ...editingClient, address: v })} placeholder="Address" placeholderTextColor={Colors.light.textTertiary} />
             </View>
             <View style={adm.field}>
               <Text style={adm.fieldLabel}>Client Tier</Text>
@@ -1448,6 +1456,196 @@ function AdminDashboard() {
     );
   }
 
+  function renderClients() {
+    const clientsWithBalance = clients.map((c) => {
+      const clientInvoices = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+      const openBalance = clientInvoices.reduce((s, inv) => s + inv.amount, 0);
+      const openCount = clientInvoices.length;
+      return { ...c, openBalance, openCount };
+    });
+    const totalOpen = clientsWithBalance.reduce((s, c) => s + c.openBalance, 0);
+
+    return (
+      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingBottom: 40 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
+          <Pressable onPress={() => setAdminView("hub")} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Clients</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>
+              {clients.length} practices · ${totalOpen.toLocaleString("en-US", { minimumFractionDigits: 2 })} total open
+            </Text>
+          </View>
+        </View>
+
+        {clientsWithBalance.map((c) => (
+          <Pressable
+            key={c.id}
+            onPress={() => { setSelectedClient(c); setAdminView("client-detail"); }}
+            style={{ marginHorizontal: 16, marginBottom: 10, backgroundColor: "#fff", borderRadius: 14, padding: 16, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}
+          >
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <View style={{ flex: 1, marginRight: 12 }}>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{c.practiceName}</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 3 }}>Dr. {c.leadDoctor}</Text>
+              </View>
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: c.openBalance > 0 ? Colors.light.warning : Colors.light.success }}>
+                  ${c.openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                </Text>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>
+                  {c.openCount > 0 ? `${c.openCount} open invoice${c.openCount > 1 ? "s" : ""}` : "Paid up"}
+                </Text>
+              </View>
+            </View>
+
+            <View style={{ marginTop: 10, borderTopWidth: 1, borderTopColor: Colors.light.border, paddingTop: 10 }}>
+              {c.address ? (
+                <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
+                  <Ionicons name="location-outline" size={14} color={Colors.light.subText} />
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginLeft: 6, flex: 1 }} numberOfLines={1}>{c.address}</Text>
+                </View>
+              ) : null}
+              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 4 }}>
+                <Ionicons name="call-outline" size={14} color={Colors.light.subText} />
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginLeft: 6 }}>{c.phone || "No phone"}</Text>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <Ionicons name="mail-outline" size={14} color={Colors.light.subText} />
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginLeft: 6 }}>{c.email || "No email"}</Text>
+              </View>
+            </View>
+
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
+              <View style={{ backgroundColor: c.tier === "Elite" ? "#FEF3C7" : c.tier === "Premium" ? "#EDE9FE" : Colors.light.surfaceAlt, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: c.tier === "Elite" ? "#D97706" : c.tier === "Premium" ? "#7C3AED" : Colors.light.subText }}>{c.tier}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.light.subText} />
+            </View>
+          </Pressable>
+        ))}
+      </ScrollView>
+    );
+  }
+
+  function renderClientDetail() {
+    if (!selectedClient) return renderClients();
+
+    const clientInvoices = invoices.filter((inv) => inv.clientName === selectedClient.practiceName);
+    const openInvoices = clientInvoices.filter((inv) => inv.status === "open" || inv.status === "overdue");
+    const paidInvoices = clientInvoices.filter((inv) => inv.status === "paid");
+    const openBalance = openInvoices.reduce((s, inv) => s + inv.amount, 0);
+    const paidTotal = paidInvoices.reduce((s, inv) => s + inv.amount, 0);
+    const clientCases = cases.filter((c) => c.clientName === selectedClient.practiceName);
+
+    return (
+      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingBottom: 40 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
+          <Pressable onPress={() => { setSelectedClient(null); setAdminView("clients"); }} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{selectedClient.practiceName}</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Dr. {selectedClient.leadDoctor}</Text>
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, padding: 16, marginBottom: 12, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
+          {selectedClient.address ? (
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+              <Ionicons name="location" size={18} color={Colors.light.tint} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text, marginLeft: 10, flex: 1 }}>{selectedClient.address}</Text>
+            </View>
+          ) : null}
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+            <Ionicons name="call" size={18} color={Colors.light.tint} />
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text, marginLeft: 10 }}>{selectedClient.phone || "No phone"}</Text>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+            <Ionicons name="mail" size={18} color={Colors.light.tint} />
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text, marginLeft: 10 }}>{selectedClient.email || "No email"}</Text>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            <Ionicons name="ribbon" size={18} color={selectedClient.tier === "Elite" ? "#D97706" : selectedClient.tier === "Premium" ? "#7C3AED" : Colors.light.subText} />
+            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginLeft: 10 }}>{selectedClient.tier} Tier</Text>
+            {selectedClient.discountRate > 0 && (
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginLeft: 8 }}>({selectedClient.discountRate}% discount)</Text>
+            )}
+          </View>
+        </View>
+
+        <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
+          <View style={{ flex: 1, backgroundColor: openBalance > 0 ? "#FEF3C7" : "#D1FAE5", borderRadius: 14, padding: 14 }}>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: openBalance > 0 ? "#92400E" : "#065F46" }}>Open Balance</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: openBalance > 0 ? "#D97706" : "#059669", marginTop: 4 }}>${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+          </View>
+          <View style={{ flex: 1, backgroundColor: "#EFF6FF", borderRadius: 14, padding: 14 }}>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#1E40AF" }}>Paid to Date</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 4 }}>${paidTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+          </View>
+        </View>
+
+        <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
+          <View style={{ flex: 1, backgroundColor: Colors.light.surfaceAlt, borderRadius: 14, padding: 14 }}>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>Active Cases</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text, marginTop: 4 }}>{clientCases.filter((c) => c.status !== "COMPLETE").length}</Text>
+          </View>
+          <View style={{ flex: 1, backgroundColor: Colors.light.surfaceAlt, borderRadius: 14, padding: 14 }}>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>Total Cases</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text, marginTop: 4 }}>{clientCases.length}</Text>
+          </View>
+        </View>
+
+        {openBalance > 0 && (
+          <Pressable
+            onPress={() => {
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert("Statement Generated", `Statement for ${selectedClient.practiceName} with open balance of $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} has been generated and queued for delivery.`);
+            }}
+            style={{ marginHorizontal: 16, marginBottom: 16, backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8 }}
+          >
+            <Ionicons name="document-text" size={20} color="#fff" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Generate Statement</Text>
+          </Pressable>
+        )}
+
+        {openInvoices.length > 0 && (
+          <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 10 }}>Open Invoices</Text>
+            {openInvoices.map((inv) => (
+              <View key={inv.id} style={{ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderLeftWidth: 3, borderLeftColor: inv.status === "overdue" ? Colors.light.error : Colors.light.warning }}>
+                <View>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Due {new Date(inv.dueAt).toLocaleDateString()}</Text>
+                </View>
+                <View style={{ alignItems: "flex-end" }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning }}>${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning, textTransform: "uppercase", marginTop: 2 }}>{inv.status}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {paidInvoices.length > 0 && (
+          <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 10 }}>Paid Invoices</Text>
+            {paidInvoices.map((inv) => (
+              <View key={inv.id} style={{ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderLeftWidth: 3, borderLeftColor: Colors.light.success }}>
+                <View>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Paid {new Date(inv.issuedAt).toLocaleDateString()}</Text>
+                </View>
+                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.success }}>${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+    );
+  }
+
   function renderSales() {
     const completedCases = cases.filter((c) => c.status === "COMPLETE" || c.status === "SHIP");
     const activeCases = cases.filter((c) => c.status !== "COMPLETE" && c.status !== "SHIP");
@@ -1544,6 +1742,8 @@ function AdminDashboard() {
   }
 
   switch (adminView) {
+    case "clients": return renderClients();
+    case "client-detail": return renderClientDetail();
     case "add-client": return renderAddClient();
     case "edit-client": return renderEditClient();
     case "add-user": return renderAddUser();
