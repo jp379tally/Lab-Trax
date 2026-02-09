@@ -29,6 +29,18 @@ export const STATIONS: { id: CaseStatus; label: string; color: string }[] = [
   { id: "COMPLETE", label: "Complete", color: "#22C55E" },
 ];
 
+export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created";
+
+export interface ActivityEntry {
+  id: string;
+  type: ActivityEntryType;
+  timestamp: number;
+  description: string;
+  imageUri?: string;
+  station?: CaseStatus;
+  user?: string;
+}
+
 export interface LabCase {
   id: string;
   caseNumber: string;
@@ -45,6 +57,8 @@ export interface LabCase {
   price: number;
   dueDate: string;
   routeHistory: { station: CaseStatus; timestamp: number }[];
+  photos: string[];
+  activityLog: ActivityEntry[];
 }
 
 export interface Notification {
@@ -85,6 +99,23 @@ export const SAMPLE_CASES: LabCase[] = [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 2 },
       { station: "DESIGN", timestamp: Date.now() - 3600000 },
     ],
+    photos: [],
+    activityLog: [
+      {
+        id: generateId(),
+        type: "created",
+        timestamp: Date.now() - 86400000 * 2,
+        description: "Case created and scanned in at Intake",
+        station: "INTAKE",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 3600000,
+        description: "Case moved to Design",
+        station: "DESIGN",
+      },
+    ],
   },
   {
     id: generateId(),
@@ -102,6 +133,16 @@ export const SAMPLE_CASES: LabCase[] = [
     price: 680.0,
     dueDate: "2026-02-16",
     routeHistory: [{ station: "INTAKE", timestamp: Date.now() - 3600000 }],
+    photos: [],
+    activityLog: [
+      {
+        id: generateId(),
+        type: "created",
+        timestamp: Date.now() - 3600000,
+        description: "Case created and scanned in at Intake",
+        station: "INTAKE",
+      },
+    ],
   },
   {
     id: generateId(),
@@ -125,6 +166,51 @@ export const SAMPLE_CASES: LabCase[] = [
       { station: "INVEST", timestamp: Date.now() - 86400000 * 2 },
       { station: "CAST", timestamp: Date.now() - 86400000 },
       { station: "PORCELAIN", timestamp: Date.now() - 7200000 },
+    ],
+    photos: [],
+    activityLog: [
+      {
+        id: generateId(),
+        type: "created",
+        timestamp: Date.now() - 86400000 * 5,
+        description: "Case created and scanned in at Intake",
+        station: "INTAKE",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 4,
+        description: "Case moved to Design",
+        station: "DESIGN",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 3,
+        description: "Case moved to Wax-Up",
+        station: "WAX",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 2,
+        description: "Case moved to Invest",
+        station: "INVEST",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000,
+        description: "Case moved to Cast",
+        station: "CAST",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 7200000,
+        description: "Case moved to Porcelain",
+        station: "PORCELAIN",
+      },
     ],
   },
   {
@@ -150,6 +236,51 @@ export const SAMPLE_CASES: LabCase[] = [
       { station: "FINISH", timestamp: Date.now() - 86400000 * 2 },
       { station: "QC", timestamp: Date.now() - 1800000 },
     ],
+    photos: [],
+    activityLog: [
+      {
+        id: generateId(),
+        type: "created",
+        timestamp: Date.now() - 86400000 * 7,
+        description: "Case created and scanned in at Intake",
+        station: "INTAKE",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 5,
+        description: "Case moved to Wax-Up",
+        station: "WAX",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 4,
+        description: "Case moved to Invest",
+        station: "INVEST",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 3,
+        description: "Case moved to Cast",
+        station: "CAST",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 2,
+        description: "Case moved to Finish",
+        station: "FINISH",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 1800000,
+        description: "Case moved to Quality Check",
+        station: "QC",
+      },
+    ],
   },
   {
     id: generateId(),
@@ -170,6 +301,30 @@ export const SAMPLE_CASES: LabCase[] = [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 3 },
       { station: "DESIGN", timestamp: Date.now() - 86400000 * 2 },
       { station: "WAX", timestamp: Date.now() - 14400000 },
+    ],
+    photos: [],
+    activityLog: [
+      {
+        id: generateId(),
+        type: "created",
+        timestamp: Date.now() - 86400000 * 3,
+        description: "Case created and scanned in at Intake",
+        station: "INTAKE",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 2,
+        description: "Case moved to Design",
+        station: "DESIGN",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 14400000,
+        description: "Case moved to Wax-Up",
+        station: "WAX",
+      },
     ],
   },
   {
@@ -196,6 +351,65 @@ export const SAMPLE_CASES: LabCase[] = [
       { station: "FINISH", timestamp: Date.now() - 86400000 * 3 },
       { station: "QC", timestamp: Date.now() - 86400000 * 2 },
       { station: "SHIP", timestamp: Date.now() - 900000 },
+    ],
+    photos: [],
+    activityLog: [
+      {
+        id: generateId(),
+        type: "created",
+        timestamp: Date.now() - 86400000 * 10,
+        description: "Case created and scanned in at Intake",
+        station: "INTAKE",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 8,
+        description: "Case moved to Design",
+        station: "DESIGN",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 6,
+        description: "Case moved to Wax-Up",
+        station: "WAX",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 5,
+        description: "Case moved to Invest",
+        station: "INVEST",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 4,
+        description: "Case moved to Cast",
+        station: "CAST",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 3,
+        description: "Case moved to Finish",
+        station: "FINISH",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 86400000 * 2,
+        description: "Case moved to Quality Check",
+        station: "QC",
+      },
+      {
+        id: generateId(),
+        type: "station_change",
+        timestamp: Date.now() - 900000,
+        description: "Case moved to Shipping",
+        station: "SHIP",
+      },
     ],
   },
 ];
