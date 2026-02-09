@@ -45,6 +45,7 @@ interface AppContextValue {
   users: LabUser[];
   addUser: (u: Omit<LabUser, "id" | "createdAt">) => void;
   updateUser: (id: string, u: Partial<LabUser>) => void;
+  removeUser: (id: string) => void;
   invoices: Invoice[];
   addInvoice: (inv: Omit<Invoice, "id">) => void;
   updateInvoice: (id: string, inv: Partial<Invoice>) => void;
@@ -256,6 +257,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(USERS_KEY, JSON.stringify(updated));
   }
 
+  function removeUser(id: string) {
+    const updated = users.filter((usr) => usr.id !== id);
+    setUsers(updated);
+    AsyncStorage.setItem(USERS_KEY, JSON.stringify(updated));
+  }
+
   function addInvoice(inv: Omit<Invoice, "id">) {
     const newInv: Invoice = { ...inv, id: generateId() };
     const updated = [newInv, ...invoices];
@@ -306,6 +313,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       users,
       addUser,
       updateUser,
+      removeUser,
       invoices,
       addInvoice,
       updateInvoice,

@@ -676,7 +676,8 @@ type AdminView =
   | "sales";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, invoices, setRole } = useApp();
+  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole } = useApp();
+  const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const [adminView, setAdminView] = useState<AdminView>("hub");
 
@@ -1099,6 +1100,63 @@ function AdminDashboard() {
               <Ionicons name="checkmark" size={20} color="#FFF" />
               <Text style={adm.submitBtnText}>Save Changes</Text>
             </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [adm.removeUserBtn, pressed && { opacity: 0.85 }]}
+              onPress={() => setRemoveConfirmVisible(true)}
+              testID="remove-user-btn"
+            >
+              <Ionicons name="trash-outline" size={20} color="#FFF" />
+              <Text style={adm.removeUserBtnText}>Remove User</Text>
+            </Pressable>
+
+            <Modal
+              transparent
+              visible={removeConfirmVisible}
+              animationType="fade"
+              statusBarTranslucent
+              onRequestClose={() => setRemoveConfirmVisible(false)}
+            >
+              <Pressable
+                style={adm.confirmOverlay}
+                onPress={() => setRemoveConfirmVisible(false)}
+              >
+                <View style={adm.confirmCard}>
+                  <View style={adm.confirmIconWrap}>
+                    <Ionicons name="warning" size={32} color="#EF4444" />
+                  </View>
+                  <Text style={adm.confirmTitle}>Are you sure you want to remove this user?</Text>
+                  <Text style={adm.confirmDesc}>
+                    This action cannot be undone. The user will lose access to the system.
+                  </Text>
+                  <View style={adm.confirmBtns}>
+                    <Pressable
+                      style={({ pressed }) => [adm.confirmYesBtn, pressed && { opacity: 0.85 }]}
+                      onPress={() => {
+                        if (editingUser) {
+                          removeUser(editingUser.id);
+                          setEditingUser(null);
+                          setRemoveConfirmVisible(false);
+                          if (Platform.OS !== "web") {
+                            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                          }
+                        }
+                      }}
+                      testID="confirm-remove-yes"
+                    >
+                      <Text style={adm.confirmYesText}>Yes</Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [adm.confirmNoBtn, pressed && { opacity: 0.85 }]}
+                      onPress={() => setRemoveConfirmVisible(false)}
+                      testID="confirm-remove-no"
+                    >
+                      <Text style={adm.confirmNoText}>No</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </Pressable>
+            </Modal>
           </View>
         </ScrollView>
       );
@@ -2007,6 +2065,91 @@ const adm = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
     color: Colors.light.success,
+  },
+  removeUserBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#EF4444",
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 8,
+  },
+  removeUserBtnText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  confirmOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 32,
+  },
+  confirmCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 24,
+    padding: 28,
+    width: "100%",
+    maxWidth: 340,
+    alignItems: "center",
+  },
+  confirmIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "#FEF2F2",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 18,
+  },
+  confirmTitle: {
+    fontSize: 17,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  confirmDesc: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    textAlign: "center",
+    lineHeight: 20,
+    marginBottom: 24,
+  },
+  confirmBtns: {
+    flexDirection: "row",
+    gap: 12,
+    width: "100%",
+  },
+  confirmYesBtn: {
+    flex: 1,
+    backgroundColor: "#EF4444",
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  confirmYesText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  confirmNoBtn: {
+    flex: 1,
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  confirmNoText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
   },
   invoiceSummary: {
     flexDirection: "row",
