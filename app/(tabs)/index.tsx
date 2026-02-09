@@ -102,7 +102,7 @@ function TechDashboard() {
           >
             <Ionicons name="add" size={24} color={Colors.light.tint} />
           </View>
-          <Text style={styles.quickLabel}>New Intake</Text>
+          <Text style={styles.quickLabel}>New Case</Text>
         </Pressable>
         <Pressable
           style={({ pressed }) => [
@@ -119,28 +119,7 @@ function TechDashboard() {
           >
             <Feather name="search" size={22} color={Colors.light.accent} />
           </View>
-          <Text style={styles.quickLabel}>Search</Text>
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [
-            styles.quickBtn,
-            pressed && styles.quickBtnPressed,
-          ]}
-          onPress={() => router.push("/(tabs)/notifications")}
-        >
-          <View
-            style={[
-              styles.quickIcon,
-              { backgroundColor: Colors.light.warningLight },
-            ]}
-          >
-            <Ionicons
-              name="alert-circle-outline"
-              size={22}
-              color={Colors.light.warning}
-            />
-          </View>
-          <Text style={styles.quickLabel}>Alerts</Text>
+          <Text style={styles.quickLabel}>Search Cases</Text>
         </Pressable>
       </View>
 
