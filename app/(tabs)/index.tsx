@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import {
   StyleSheet,
   View,
@@ -10,24 +10,276 @@ import {
   TextInput,
   Alert,
   FlatList,
+  Modal,
+  Dimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  Easing,
+  runOnJS,
+} from "react-native-reanimated";
 import { useApp } from "@/lib/app-context";
+import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, Client, LabUser, Invoice } from "@/lib/data";
 
+const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
+
+function SideDrawer({
+  visible,
+  onClose,
+  onAdmin,
+  onProfile,
+  onSignOut,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onAdmin: () => void;
+  onProfile: () => void;
+  onSignOut: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  const translateX = useSharedValue(-DRAWER_WIDTH);
+  const overlayOpacity = useSharedValue(0);
+  const [modalVisible, setModalVisible] = useState(false);
+
+  const openDrawer = useCallback(() => {
+    setModalVisible(true);
+    translateX.value = -DRAWER_WIDTH;
+    overlayOpacity.value = 0;
+    requestAnimationFrame(() => {
+      translateX.value = withTiming(0, { duration: 280, easing: Easing.out(Easing.cubic) });
+      overlayOpacity.value = withTiming(1, { duration: 280 });
+    });
+  }, []);
+
+  const closeDrawer = useCallback(() => {
+    translateX.value = withTiming(-DRAWER_WIDTH, { duration: 240, easing: Easing.in(Easing.cubic) });
+    overlayOpacity.value = withTiming(0, { duration: 240 }, () => {
+      runOnJS(setModalVisible)(false);
+      runOnJS(onClose)();
+    });
+  }, [onClose]);
+
+  React.useEffect(() => {
+    if (visible) {
+      openDrawer();
+    } else if (modalVisible) {
+      closeDrawer();
+    }
+  }, [visible]);
+
+  const drawerStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
+
+  const overlayStyle = useAnimatedStyle(() => ({
+    opacity: overlayOpacity.value,
+  }));
+
+  const menuItems = [
+    { key: "admin", icon: "shield-checkmark" as const, label: "Admin", color: Colors.light.tint, bg: Colors.light.tintLight, onPress: onAdmin },
+    { key: "settings", icon: "settings" as const, label: "Settings", color: "#8B5CF6", bg: "#EDE9FE", onPress: () => { closeDrawer(); router.push("/(tabs)/profile"); } },
+    { key: "profile", icon: "person" as const, label: "Profile", color: Colors.light.accent, bg: Colors.light.accentLight, onPress: () => { closeDrawer(); router.push("/(tabs)/profile"); } },
+  ];
+
+  if (!modalVisible) return null;
+
+  return (
+    <Modal transparent visible={modalVisible} animationType="none" statusBarTranslucent>
+      <View style={drawerStyles.wrapper}>
+        <Animated.View style={[drawerStyles.overlay, overlayStyle]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} />
+        </Animated.View>
+
+        <Animated.View style={[drawerStyles.drawer, drawerStyle]}>
+          <LinearGradient
+            colors={["#0F172A", "#1E293B"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={[drawerStyles.drawerInner, { paddingTop: Platform.OS === "web" ? 67 + 24 : insets.top + 24 }]}
+          >
+            <View style={drawerStyles.brandRow}>
+              <LinearGradient
+                colors={[Colors.light.tint, "#3B82F6"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={drawerStyles.brandIcon}
+              >
+                <Ionicons name="flask" size={22} color="#FFF" />
+              </LinearGradient>
+              <View>
+                <Text style={drawerStyles.brandName}>DriveSync Lab</Text>
+                <Text style={drawerStyles.brandSub}>Lab Management</Text>
+              </View>
+            </View>
+
+            <View style={drawerStyles.divider} />
+
+            <View style={drawerStyles.menuList}>
+              {menuItems.map((item) => (
+                <Pressable
+                  key={item.key}
+                  onPress={item.onPress}
+                  style={({ pressed }) => [drawerStyles.menuItem, pressed && { opacity: 0.7, backgroundColor: "rgba(255,255,255,0.05)" }]}
+                  testID={`drawer-${item.key}`}
+                >
+                  <View style={[drawerStyles.menuIcon, { backgroundColor: item.bg }]}>
+                    <Ionicons name={item.icon} size={20} color={item.color} />
+                  </View>
+                  <Text style={drawerStyles.menuLabel}>{item.label}</Text>
+                  <Feather name="chevron-right" size={16} color="rgba(255,255,255,0.25)" />
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={{ flex: 1 }} />
+
+            <View style={drawerStyles.divider} />
+
+            <Pressable
+              onPress={onSignOut}
+              style={({ pressed }) => [drawerStyles.signOutBtn, pressed && { opacity: 0.7 }]}
+              testID="drawer-signout"
+            >
+              <Ionicons name="log-out-outline" size={20} color="#EF4444" />
+              <Text style={drawerStyles.signOutText}>Sign Out</Text>
+            </Pressable>
+
+            <View style={{ height: Platform.OS === "web" ? 34 : insets.bottom + 12 }} />
+          </LinearGradient>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+const drawerStyles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  drawer: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: DRAWER_WIDTH,
+    shadowColor: "#000",
+    shadowOffset: { width: 4, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 20,
+  },
+  drawerInner: {
+    flex: 1,
+    paddingHorizontal: 20,
+  },
+  brandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 24,
+  },
+  brandIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  brandName: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  brandSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.4)",
+    marginTop: 2,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    marginBottom: 16,
+  },
+  menuList: {
+    gap: 4,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    gap: 14,
+  },
+  menuIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  menuLabel: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  signOutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    marginBottom: 8,
+  },
+  signOutText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#EF4444",
+  },
+});
+
 function TechDashboard() {
   const { cases, activeCaseCount, rushCaseCount, setRole } = useApp();
+  const { logout } = useAuth();
   const insets = useSafeAreaInsets();
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
     .slice(0, 5);
 
+  function handleAdminFromDrawer() {
+    setDrawerOpen(false);
+    setTimeout(() => setRole("admin"), 300);
+  }
+
+  function handleProfileFromDrawer() {
+    setDrawerOpen(false);
+    setTimeout(() => router.push("/(tabs)/profile"), 300);
+  }
+
+  function handleSignOut() {
+    setDrawerOpen(false);
+    setTimeout(() => logout(), 300);
+  }
+
   return (
+    <>
     <ScrollView
       style={styles.container}
       contentContainerStyle={{
@@ -36,6 +288,17 @@ function TechDashboard() {
       }}
       showsVerticalScrollIndicator={false}
     >
+      <View style={styles.topBar}>
+        <Pressable
+          onPress={() => setDrawerOpen(true)}
+          style={({ pressed }) => [styles.hamburgerBtn, pressed && { opacity: 0.6 }]}
+          testID="hamburger-menu"
+        >
+          <Ionicons name="menu" size={26} color={Colors.light.text} />
+        </Pressable>
+        <View style={{ width: 40 }} />
+      </View>
+
       <View style={styles.avatarSection}>
         <LinearGradient
           colors={[Colors.light.tint, "#3B82F6"]}
@@ -59,9 +322,6 @@ function TechDashboard() {
           <Text style={styles.greeting}>Lab Floor</Text>
           <Text style={styles.headerTitle}>Production Dashboard</Text>
         </View>
-        <Pressable onPress={() => setRole("admin")} style={styles.adminBtn}>
-          <Ionicons name="shield" size={18} color={Colors.light.tint} />
-        </Pressable>
       </View>
 
       <LinearGradient
@@ -209,6 +469,15 @@ function TechDashboard() {
         })}
       </View>
     </ScrollView>
+
+    <SideDrawer
+      visible={drawerOpen}
+      onClose={() => setDrawerOpen(false)}
+      onAdmin={handleAdminFromDrawer}
+      onProfile={handleProfileFromDrawer}
+      onSignOut={handleSignOut}
+    />
+    </>
   );
 }
 
@@ -973,6 +1242,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: Colors.light.background,
+  },
+  topBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    marginBottom: 8,
+  },
+  hamburgerBtn: {
+    width: 40,
+    height: 40,
+    justifyContent: "center",
+    alignItems: "center",
   },
   avatarSection: {
     alignItems: "center",
