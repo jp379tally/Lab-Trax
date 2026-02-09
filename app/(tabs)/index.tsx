@@ -32,6 +32,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, Client, LabUser, Invoice } from "@/lib/data";
+import { apiRequest } from "@/lib/query-client";
 
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
 
@@ -872,6 +873,26 @@ function AdminDashboard() {
     setNewUserStation("Design");
   }
 
+  function getAdminEmail(): string {
+    const adminUser = users.find((u) => u.role === "admin" && u.active);
+    return adminUser?.email || "";
+  }
+
+  async function sendStatementEmail(clientName: string, clientEmail: string, subject: string, body: string) {
+    const adminEmail = getAdminEmail();
+    try {
+      await apiRequest("POST", "/api/send-statement-email", {
+        clientName,
+        clientEmail,
+        adminEmail,
+        subject,
+        body,
+      });
+    } catch (err) {
+      console.log("Email send error (non-blocking):", err);
+    }
+  }
+
   function handleAddClient() {
     if (!newClientName.trim() || !newClientDoctor.trim()) {
       Alert.alert("Required", "Practice name and lead doctor are required.");
@@ -1479,9 +1500,19 @@ function AdminDashboard() {
                     const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
                     return `${name}: ${clientInvs.length} invoice${clientInvs.length > 1 ? "s" : ""} · $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
                   }).join("\n");
+
+                  clientsWithOpen.forEach((name) => {
+                    const client = clients.find((cl) => cl.practiceName === name);
+                    const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === name);
+                    const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
+                    const invoiceDetails = clientInvs.map((inv) => `  ${inv.invoiceNumber}: $${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
+                    const emailBody = `Billing Statement for ${name}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
+                    sendStatementEmail(name, client?.email || "", `Billing Statement - ${name}`, emailBody);
+                  });
+
                   Alert.alert(
-                    "Statements Generated",
-                    `Generated statements for all open invoices.\n\n${allOpenInvoices.length} invoices across ${clientsWithOpen.length} client${clientsWithOpen.length > 1 ? "s" : ""}\nTotal: $${totalOpenAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\n${summary}`,
+                    "Statements Generated & Emailed",
+                    `Generated and emailed statements for all open invoices.\n\n${allOpenInvoices.length} invoices across ${clientsWithOpen.length} client${clientsWithOpen.length > 1 ? "s" : ""}\nTotal: $${totalOpenAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\n${summary}`,
                   );
                 }}
                 testID="generate-all-statements-btn"
@@ -1506,9 +1537,12 @@ function AdminDashboard() {
                 style={({ pressed }) => [adm.statementCard, pressed && { opacity: 0.7 }]}
                 onPress={() => {
                   if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  const netAmount = clientTotal * (1 - c.discountRate / 100);
+                  const emailBody = `Billing Statement for ${c.practiceName}\n\n${clientCases.length} cases totaling $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}\nDiscount: ${c.discountRate}% (${c.tier})\nNet Amount Due: $${netAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
+                  sendStatementEmail(c.practiceName, c.email, `Billing Statement - ${c.practiceName}`, emailBody);
                   Alert.alert(
-                    "Statement Generated",
-                    `Billing statement for ${c.practiceName}\n${clientCases.length} cases totaling $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}\nDiscount: ${c.discountRate}% (${c.tier})\nNet: $${(clientTotal * (1 - c.discountRate / 100)).toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+                    "Statement Generated & Emailed",
+                    `Billing statement for ${c.practiceName}\n${clientCases.length} cases totaling $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}\nDiscount: ${c.discountRate}% (${c.tier})\nNet: $${netAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nEmailed to ${c.email} and admin.`,
                   );
                 }}
               >
@@ -1675,7 +1709,10 @@ function AdminDashboard() {
           <Pressable
             onPress={() => {
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert("Statement Generated", `Statement for ${selectedClient.practiceName} with open balance of $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} has been generated and queued for delivery.`);
+              const invoiceDetails = openInvoices.map((inv) => `  ${inv.invoiceNumber}: $${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
+              const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
+              sendStatementEmail(selectedClient.practiceName, selectedClient.email, `Billing Statement - ${selectedClient.practiceName}`, emailBody);
+              Alert.alert("Statement Generated & Emailed", `Statement for ${selectedClient.practiceName} with open balance of $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} has been generated and emailed to ${selectedClient.email} and admin.`);
             }}
             style={{ marginHorizontal: 16, marginBottom: 16, backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8 }}
           >

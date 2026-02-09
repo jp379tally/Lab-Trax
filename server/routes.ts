@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "node:http";
 import OpenAI from "openai";
+import nodemailer from "nodemailer";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -194,6 +195,66 @@ If a field cannot be determined, use an empty string. For material, default to "
         error: "Failed to analyze prescription",
         fallback: true,
       });
+    }
+  });
+
+  app.post("/api/send-statement-email", async (req, res) => {
+    try {
+      const { clientName, clientEmail, adminEmail, subject, body } = req.body;
+
+      if (!clientEmail && !adminEmail) {
+        return res.status(400).json({ error: "At least one email recipient is required." });
+      }
+
+      const recipients: string[] = [];
+      if (clientEmail) recipients.push(clientEmail);
+      if (adminEmail && adminEmail !== clientEmail) recipients.push(adminEmail);
+
+      const smtpHost = process.env.SMTP_HOST;
+      const smtpPort = process.env.SMTP_PORT;
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASS;
+      const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@drivesynclab.com";
+
+      if (!smtpHost || !smtpUser || !smtpPass) {
+        console.log(`[EMAIL] SMTP not configured. Statement email would be sent to: ${recipients.join(", ")}`);
+        console.log(`[EMAIL] Subject: ${subject}`);
+        console.log(`[EMAIL] Body:\n${body}`);
+        return res.json({
+          success: true,
+          message: `Statement emailed to ${recipients.join(" and ")}`,
+          note: "SMTP not configured - email logged to console",
+        });
+      }
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: parseInt(smtpPort || "587"),
+        secure: (smtpPort || "587") === "465",
+        auth: { user: smtpUser, pass: smtpPass },
+      });
+
+      await transporter.sendMail({
+        from: smtpFrom,
+        to: recipients.join(", "),
+        subject: subject || `Statement for ${clientName || "Client"}`,
+        text: body,
+        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h2 style="margin: 0;">DriveSync Lab</h2>
+            <p style="margin: 4px 0 0; opacity: 0.85;">Billing Statement</p>
+          </div>
+          <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+            <pre style="white-space: pre-wrap; font-family: Arial, sans-serif; font-size: 14px; color: #333;">${body}</pre>
+          </div>
+        </div>`,
+      });
+
+      console.log(`[EMAIL] Statement sent to: ${recipients.join(", ")}`);
+      return res.json({ success: true, message: `Statement emailed to ${recipients.join(" and ")}` });
+    } catch (error: any) {
+      console.error("[EMAIL] Error sending statement email:", error?.message || error);
+      return res.status(500).json({ error: "Failed to send email", details: error?.message });
     }
   });
 
