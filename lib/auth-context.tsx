@@ -28,7 +28,7 @@ const AUTH_KEY = "@drivesync_auth";
 const USERS_STORE_KEY = "@drivesync_auth_users";
 
 const DEFAULT_USERS: StoredUser[] = [
-  { username: "admin", password: "admin123" },
+  { username: "admin", password: "123" },
   { username: "tech", password: "tech123" },
 ];
 

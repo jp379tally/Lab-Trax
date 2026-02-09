@@ -61,7 +61,7 @@ export default function LoginScreen() {
 
       if (result.success) {
         setIsLoggingIn(true);
-        const res = await login("admin", "admin123");
+        const res = await login("admin", "123");
         setIsLoggingIn(false);
         if (!res.success) {
           setError(res.error || "Authentication failed.");
