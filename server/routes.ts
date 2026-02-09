@@ -7,7 +7,110 @@ const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
+const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
+const registeredUsernames = new Set<string>(["admin", "tech"]);
+
+function generateCode(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
+  app.post("/api/check-username", (req, res) => {
+    const { username } = req.body;
+    if (!username || typeof username !== "string") {
+      return res.status(400).json({ error: "Username required" });
+    }
+    const taken = registeredUsernames.has(username.toLowerCase().trim());
+    res.json({ available: !taken });
+  });
+
+  app.post("/api/send-phone-code", (req, res) => {
+    const { phone } = req.body;
+    if (!phone || typeof phone !== "string") {
+      return res.status(400).json({ error: "Phone number required" });
+    }
+
+    const code = generateCode();
+    const key = `phone:${phone.trim()}`;
+    verificationCodes.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+
+    console.log(`[SMS VERIFICATION] Code for ${phone}: ${code}`);
+
+    res.json({ success: true, message: "Verification code sent via SMS." });
+  });
+
+  app.post("/api/verify-phone-code", (req, res) => {
+    const { phone, code } = req.body;
+    if (!phone || !code) {
+      return res.status(400).json({ error: "Phone and code required" });
+    }
+
+    const key = `phone:${phone.trim()}`;
+    const stored = verificationCodes.get(key);
+
+    if (!stored) {
+      return res.json({ verified: false, error: "No code sent. Please request a new one." });
+    }
+    if (Date.now() > stored.expiresAt) {
+      verificationCodes.delete(key);
+      return res.json({ verified: false, error: "Code expired. Please request a new one." });
+    }
+    if (stored.code !== code.trim()) {
+      return res.json({ verified: false, error: "Incorrect code. Please try again." });
+    }
+
+    verificationCodes.delete(key);
+    res.json({ verified: true });
+  });
+
+  app.post("/api/send-email-code", (req, res) => {
+    const { email } = req.body;
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({ error: "Email required" });
+    }
+
+    const code = generateCode();
+    const key = `email:${email.trim().toLowerCase()}`;
+    verificationCodes.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+
+    console.log(`[EMAIL VERIFICATION] Code for ${email}: ${code}`);
+
+    res.json({ success: true, message: "Verification code sent to your email." });
+  });
+
+  app.post("/api/verify-email-code", (req, res) => {
+    const { email, code } = req.body;
+    if (!email || !code) {
+      return res.status(400).json({ error: "Email and code required" });
+    }
+
+    const key = `email:${email.trim().toLowerCase()}`;
+    const stored = verificationCodes.get(key);
+
+    if (!stored) {
+      return res.json({ verified: false, error: "No code sent. Please request a new one." });
+    }
+    if (Date.now() > stored.expiresAt) {
+      verificationCodes.delete(key);
+      return res.json({ verified: false, error: "Code expired. Please request a new one." });
+    }
+    if (stored.code !== code.trim()) {
+      return res.json({ verified: false, error: "Incorrect code. Please try again." });
+    }
+
+    verificationCodes.delete(key);
+    res.json({ verified: true });
+  });
+
+  app.post("/api/register", (req, res) => {
+    const { username } = req.body;
+    if (!username) {
+      return res.status(400).json({ error: "Username required" });
+    }
+    registeredUsernames.add(username.toLowerCase().trim());
+    res.json({ success: true });
+  });
+
   app.post("/api/analyze-prescription", async (req, res) => {
     try {
       const { imageBase64 } = req.body;
