@@ -544,16 +544,14 @@ function TechDashboard() {
                     >
                       <View style={styles.caseCardTop}>
                         <View style={styles.caseInfo}>
-                          <View style={styles.caseNumberRow}>
-                            <Text style={styles.caseNumber}>{c.caseNumber}</Text>
-                            {c.isRush && (
-                              <View style={styles.rushBadge}>
-                                <Ionicons name="flash" size={10} color="#EF4444" />
-                                <Text style={styles.rushText}>RUSH</Text>
-                              </View>
-                            )}
-                          </View>
+                          <Text style={styles.casePatient}>{c.patientName || c.patientInitials}</Text>
                           <Text style={styles.caseDoctor}>{c.doctorName}</Text>
+                          {c.isRush && (
+                            <View style={styles.rushBadge}>
+                              <Ionicons name="flash" size={10} color="#EF4444" />
+                              <Text style={styles.rushText}>RUSH</Text>
+                            </View>
+                          )}
                         </View>
                         <View style={[styles.statusBadge, { backgroundColor: stationInfo.color + "18" }]}>
                           <Text style={[styles.statusText, { color: stationInfo.color }]}>
@@ -636,16 +634,14 @@ function TechDashboard() {
             >
               <View style={styles.caseCardTop}>
                 <View style={styles.caseInfo}>
-                  <View style={styles.caseNumberRow}>
-                    <Text style={styles.caseNumber}>{c.caseNumber}</Text>
-                    {c.isRush && (
-                      <View style={styles.rushBadge}>
-                        <Ionicons name="flash" size={10} color="#EF4444" />
-                        <Text style={styles.rushText}>RUSH</Text>
-                      </View>
-                    )}
-                  </View>
+                  <Text style={styles.casePatient}>{c.patientName || c.patientInitials}</Text>
                   <Text style={styles.caseDoctor}>{c.doctorName}</Text>
+                  {c.isRush && (
+                    <View style={styles.rushBadge}>
+                      <Ionicons name="flash" size={10} color="#EF4444" />
+                      <Text style={styles.rushText}>RUSH</Text>
+                    </View>
+                  )}
                 </View>
                 <View
                   style={[
@@ -1834,6 +1830,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  casePatient: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
   },
   caseNumber: {
     fontSize: 15,

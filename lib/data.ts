@@ -45,6 +45,7 @@ export interface LabCase {
   id: string;
   caseNumber: string;
   doctorName: string;
+  patientName: string;
   patientInitials: string;
   toothIndices: string;
   shade: string;
@@ -84,6 +85,7 @@ export const SAMPLE_CASES: LabCase[] = [
     id: generateId(),
     caseNumber: "#4521",
     doctorName: "Dr. Aris",
+    patientName: "Michael Klein",
     patientInitials: "M.K.",
     toothIndices: "#8, #9, #10",
     shade: "A2",
@@ -121,6 +123,7 @@ export const SAMPLE_CASES: LabCase[] = [
     id: generateId(),
     caseNumber: "#4522",
     doctorName: "Dr. Bloom",
+    patientName: "Jessica Stone",
     patientInitials: "J.S.",
     toothIndices: "#3",
     shade: "B1",
@@ -148,6 +151,7 @@ export const SAMPLE_CASES: LabCase[] = [
     id: generateId(),
     caseNumber: "#4518",
     doctorName: "Dr. Chen",
+    patientName: "Robert Lang",
     patientInitials: "R.L.",
     toothIndices: "#19, #20",
     shade: "A3",
@@ -217,6 +221,7 @@ export const SAMPLE_CASES: LabCase[] = [
     id: generateId(),
     caseNumber: "#4515",
     doctorName: "Dr. Patel",
+    patientName: "Amanda Wells",
     patientInitials: "A.W.",
     toothIndices: "#14",
     shade: "C2",
@@ -286,6 +291,7 @@ export const SAMPLE_CASES: LabCase[] = [
     id: generateId(),
     caseNumber: "#4510",
     doctorName: "Dr. Martinez",
+    patientName: "Tyler Hughes",
     patientInitials: "T.H.",
     toothIndices: "#6, #7, #8, #9, #10, #11",
     shade: "BL2",
@@ -331,6 +337,7 @@ export const SAMPLE_CASES: LabCase[] = [
     id: generateId(),
     caseNumber: "#4508",
     doctorName: "Dr. Kim",
+    patientName: "Lisa Barton",
     patientInitials: "L.B.",
     toothIndices: "#30",
     shade: "A3.5",
