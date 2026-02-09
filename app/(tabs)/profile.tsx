@@ -10,10 +10,12 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useApp } from "@/lib/app-context";
+import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 
 export default function ProfileScreen() {
   const { role, setRole, adminUnlocked, setAdminUnlocked } = useApp();
+  const { logout, currentUser } = useAuth();
   const insets = useSafeAreaInsets();
 
   return (
@@ -30,9 +32,9 @@ export default function ProfileScreen() {
           <Ionicons name="person" size={32} color={Colors.light.tint} />
         </View>
         <Text style={styles.profileName}>
-          {role === "tech" ? "Lab Technician" : "Lab Administrator"}
+          {currentUser ? currentUser.charAt(0).toUpperCase() + currentUser.slice(1) : role === "tech" ? "Lab Technician" : "Lab Administrator"}
         </Text>
-        <Text style={styles.profileEmail}>DriveSync Lab</Text>
+        <Text style={styles.profileEmail}>{role === "tech" ? "Technician" : "Administrator"} · DriveSync Lab</Text>
       </View>
 
       <View style={styles.section}>
@@ -220,6 +222,17 @@ export default function ProfileScreen() {
           </View>
         </View>
       </View>
+
+      <View style={styles.section}>
+        <Pressable
+          onPress={logout}
+          style={({ pressed }) => [styles.logoutBtn, pressed && { opacity: 0.8, transform: [{ scale: 0.98 }] }]}
+          testID="logout-button"
+        >
+          <Ionicons name="log-out-outline" size={20} color={Colors.light.error} />
+          <Text style={styles.logoutText}>Sign Out</Text>
+        </Pressable>
+      </View>
     </ScrollView>
   );
 }
@@ -329,5 +342,21 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: Colors.light.borderLight,
     marginLeft: 68,
+  },
+  logoutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: Colors.light.errorLight,
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.2)",
+    paddingVertical: 16,
+    borderRadius: 18,
+  },
+  logoutText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.error,
   },
 });
