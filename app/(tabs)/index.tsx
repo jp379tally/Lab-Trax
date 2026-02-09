@@ -17,7 +17,7 @@ import Colors from "@/constants/colors";
 import { getStationInfo } from "@/lib/data";
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole } = useApp();
   const insets = useSafeAreaInsets();
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
@@ -120,6 +120,26 @@ function TechDashboard() {
             <Feather name="search" size={22} color={Colors.light.accent} />
           </View>
           <Text style={styles.quickLabel}>Search Cases</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [
+            styles.quickBtn,
+            pressed && styles.quickBtnPressed,
+          ]}
+          onPress={() => {
+            setRole("admin");
+            router.push("/(tabs)/index");
+          }}
+        >
+          <View
+            style={[
+              styles.quickIcon,
+              { backgroundColor: Colors.light.dark },
+            ]}
+          >
+            <Ionicons name="shield" size={22} color="#FFF" />
+          </View>
+          <Text style={styles.quickLabel}>Admin</Text>
         </Pressable>
       </View>
 
