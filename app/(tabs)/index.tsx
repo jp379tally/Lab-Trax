@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import {
   StyleSheet,
   View,
@@ -19,6 +19,7 @@ import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
+import * as LocalAuthentication from "expo-local-authentication";
 import { router } from "expo-router";
 import Animated, {
   useSharedValue,
@@ -686,6 +687,52 @@ function TechDashboard() {
 function AdminLockScreen() {
   const { setAdminUnlocked } = useApp();
   const insets = useSafeAreaInsets();
+  const [authStatus, setAuthStatus] = useState<string>("");
+  const [biometricType, setBiometricType] = useState<string>("Biometric");
+
+  useEffect(() => {
+    attemptBiometricUnlock();
+  }, []);
+
+  async function attemptBiometricUnlock() {
+    try {
+      if (Platform.OS === "web") {
+        setAuthStatus("tap");
+        return;
+      }
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+
+      if (hasHardware && isEnrolled) {
+        const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+        if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
+          setBiometricType("Face ID");
+        } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
+          setBiometricType("Touch ID");
+        }
+
+        setAuthStatus("scanning");
+        const result = await LocalAuthentication.authenticateAsync({
+          promptMessage: "Authenticate to unlock Admin Vault",
+          disableDeviceFallback: false,
+          cancelLabel: "Cancel",
+        });
+
+        if (result.success) {
+          if (Platform.OS !== "web") {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+          setAdminUnlocked(true);
+        } else {
+          setAuthStatus("failed");
+        }
+      } else {
+        setAuthStatus("tap");
+      }
+    } catch {
+      setAuthStatus("tap");
+    }
+  }
 
   return (
     <View
@@ -702,23 +749,49 @@ function AdminLockScreen() {
         </View>
         <Text style={styles.lockTitle}>Admin Vault</Text>
         <Text style={styles.lockDesc}>
-          Accessing sensitive financial data requires re-authentication.
+          {authStatus === "scanning"
+            ? `Verifying with ${biometricType}...`
+            : "Accessing sensitive financial data requires facial recognition."}
         </Text>
-        <Pressable
-          style={({ pressed }) => [
-            styles.unlockBtn,
-            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
-          ]}
-          onPress={() => setAdminUnlocked(true)}
-        >
-          <Ionicons
-            name="finger-print"
-            size={20}
-            color="#FFF"
-            style={{ marginRight: 8 }}
-          />
-          <Text style={styles.unlockBtnText}>Unlock Vault</Text>
-        </Pressable>
+        {authStatus === "failed" && (
+          <Pressable
+            style={({ pressed }) => [
+              styles.unlockBtn,
+              pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+            ]}
+            onPress={attemptBiometricUnlock}
+          >
+            <Ionicons
+              name="scan"
+              size={20}
+              color="#FFF"
+              style={{ marginRight: 8 }}
+            />
+            <Text style={styles.unlockBtnText}>Try Again</Text>
+          </Pressable>
+        )}
+        {authStatus === "tap" && (
+          <Pressable
+            style={({ pressed }) => [
+              styles.unlockBtn,
+              pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+            ]}
+            onPress={() => setAdminUnlocked(true)}
+          >
+            <Ionicons
+              name="finger-print"
+              size={20}
+              color="#FFF"
+              style={{ marginRight: 8 }}
+            />
+            <Text style={styles.unlockBtnText}>Unlock Vault</Text>
+          </Pressable>
+        )}
+        {authStatus === "scanning" && (
+          <View style={styles.scanningFaceWrap}>
+            <Ionicons name="scan" size={40} color={Colors.light.tint} />
+          </View>
+        )}
       </View>
     </View>
   );
@@ -1928,6 +2001,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: "Inter_700Bold",
     color: "#FFF",
+  },
+  scanningFaceWrap: {
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: Colors.light.tintLight,
   },
 });
 
