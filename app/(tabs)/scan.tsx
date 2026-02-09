@@ -22,7 +22,7 @@ import Colors from "@/constants/colors";
 import { ActivityEntry, generateId } from "@/lib/data";
 import { getApiUrl } from "@/lib/query-client";
 
-type ScanPhase = "camera" | "scanning" | "detected" | "form";
+type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
@@ -104,7 +104,13 @@ export default function ScanScreen() {
       ).start();
 
       const timer = setTimeout(() => {
-        setPhase("detected");
+        if (capturedUri) {
+          setCasePhotos((prev) => {
+            if (prev.includes(capturedUri)) return prev;
+            return [...prev, capturedUri];
+          });
+        }
+        setPhase("review");
         if (Platform.OS !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }
@@ -182,26 +188,32 @@ export default function ScanScreen() {
     }
   }
 
-  async function handleDetected() {
+  function handleAddMoreFromReview() {
+    setCapturedUri(null);
+    setPhase("camera");
+    scanAnim.setValue(0);
+  }
+
+  async function handleFinishedReview() {
     const entries: ActivityEntry[] = [];
-    if (capturedUri) {
+    casePhotos.forEach((uri) => {
       const photoEntry: ActivityEntry = {
         id: generateId(),
         type: "photo",
         timestamp: Date.now(),
         description: "Rx photo captured",
-        imageUri: capturedUri,
+        imageUri: uri,
       };
       entries.push(photoEntry);
-      setCasePhotos([capturedUri]);
-    }
+    });
 
+    const analyzeUri = casePhotos[0] || capturedUri;
     let aiSuccess = false;
-    if (capturedUri) {
+    if (analyzeUri) {
       try {
         let base64Data: string;
         if (Platform.OS === "web") {
-          const response = await fetch(capturedUri);
+          const response = await fetch(analyzeUri);
           const blob = await response.blob();
           const reader = new FileReader();
           base64Data = await new Promise<string>((resolve) => {
@@ -210,7 +222,7 @@ export default function ScanScreen() {
           });
         } else {
           const FileSystem = require("expo-file-system");
-          const fileBase64 = await FileSystem.readAsStringAsync(capturedUri, {
+          const fileBase64 = await FileSystem.readAsStringAsync(analyzeUri, {
             encoding: FileSystem.EncodingType.Base64,
           });
           base64Data = `data:image/jpeg;base64,${fileBase64}`;
@@ -710,49 +722,26 @@ export default function ScanScreen() {
           </View>
         )}
 
-        {phase === "detected" && capturedUri && (
-          <>
-            <Image
-              source={{ uri: capturedUri }}
-              style={StyleSheet.absoluteFill}
-              contentFit="cover"
-            />
-            <View style={styles.detectedOverlay}>
-              <Ionicons
-                name="checkmark-circle"
-                size={56}
-                color={Colors.light.success}
-              />
+        {phase === "review" && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)" }]}>
+            <View style={styles.reviewContent}>
+              <Ionicons name="checkmark-circle" size={48} color={Colors.light.success} />
               <Text style={styles.detectedViewText}>
-                Prescription Detected
+                {casePhotos.length} Photo{casePhotos.length !== 1 ? "s" : ""} Captured
               </Text>
-              <Text style={styles.detectedSubText}>
-                Dr. Williams - Tooth #14, #15 - Shade A2
-              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewPhotoStrip}>
+                {casePhotos.map((uri, idx) => (
+                  <Image key={idx} source={{ uri }} style={styles.reviewThumb} contentFit="cover" />
+                ))}
+              </ScrollView>
             </View>
-          </>
-        )}
-
-        {phase === "detected" && !capturedUri && (
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)", justifyContent: "center", alignItems: "center", gap: 12 }]}>
-            <Ionicons
-              name="checkmark-circle"
-              size={56}
-              color={Colors.light.success}
-            />
-            <Text style={styles.detectedViewText}>
-              Prescription Detected
-            </Text>
-            <Text style={styles.detectedSubText}>
-              Dr. Williams - Tooth #14, #15 - Shade A2
-            </Text>
           </View>
         )}
 
         <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
           <Text style={styles.scanTitle}>AI Intake</Text>
           <Text style={styles.scanSubtitle}>
-            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing document..." : "Document recognized"}
+            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing document..." : phase === "review" ? "Add more or continue" : "Document recognized"}
           </Text>
         </View>
 
@@ -820,28 +809,29 @@ export default function ScanScreen() {
             <Text style={styles.scanningText}>Analyzing document...</Text>
           </View>
         )}
-        {phase === "detected" && (
+        {phase === "review" && (
           <View style={styles.detectedActions}>
             <Pressable
-              onPress={resetForm}
+              onPress={handleAddMoreFromReview}
               style={({ pressed }) => [
-                styles.actionBtn,
-                styles.actionBtnSecondary,
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <Ionicons name="refresh" size={22} color="#FFF" />
+              <Ionicons name="camera" size={22} color="#FFF" />
+              <Text style={styles.actionBtnText}>Add More</Text>
             </Pressable>
             <Pressable
-              onPress={handleDetected}
+              onPress={handleFinishedReview}
               style={({ pressed }) => [
-                styles.actionBtn,
+                styles.reviewActionBtn,
                 styles.actionBtnPrimary,
                 pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] },
               ]}
             >
-              <Ionicons name="checkmark" size={24} color="#FFF" />
-              <Text style={styles.actionBtnText}>Confirm & Edit</Text>
+              <Ionicons name="checkmark-circle" size={22} color="#FFF" />
+              <Text style={styles.actionBtnText}>Finished</Text>
             </Pressable>
           </View>
         )}
@@ -929,6 +919,34 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     gap: 12,
+  },
+  reviewContent: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 16,
+    paddingHorizontal: 20,
+  },
+  reviewPhotoStrip: {
+    flexGrow: 0,
+    marginTop: 8,
+  },
+  reviewThumb: {
+    width: 90,
+    height: 90,
+    borderRadius: 12,
+    marginRight: 10,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  reviewActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 16,
   },
   detectedViewText: {
     fontSize: 16,
