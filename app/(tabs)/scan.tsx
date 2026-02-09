@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   StyleSheet,
   View,
@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
+import { useFocusEffect } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
 
@@ -26,6 +27,7 @@ export default function ScanScreen() {
   const [phase, setPhase] = useState<ScanPhase>("ready");
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
+  const hasAutoLaunched = useRef(false);
 
   const [doctorName, setDoctorName] = useState("");
   const [patientInitials, setPatientInitials] = useState("");
@@ -35,6 +37,38 @@ export default function ScanScreen() {
   const [isRush, setIsRush] = useState(false);
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("2026-02-20");
+
+  useFocusEffect(
+    useCallback(() => {
+      if (phase === "ready" && !hasAutoLaunched.current) {
+        hasAutoLaunched.current = true;
+        launchCameraOnFocus();
+      }
+      return () => {
+        hasAutoLaunched.current = false;
+      };
+    }, [phase])
+  );
+
+  async function launchCameraOnFocus() {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      setCapturedUri(result.assets[0].uri);
+      setPhase("scanning");
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
+    }
+  }
 
   useEffect(() => {
     if (phase === "scanning") {
