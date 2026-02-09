@@ -200,6 +200,189 @@ export const SAMPLE_CASES: LabCase[] = [
   },
 ];
 
+export interface Client {
+  id: string;
+  practiceName: string;
+  leadDoctor: string;
+  phone: string;
+  email: string;
+  tier: "Standard" | "Premium" | "Elite";
+  discountRate: number;
+  createdAt: number;
+}
+
+export interface LabUser {
+  id: string;
+  name: string;
+  email: string;
+  role: "tech" | "admin";
+  station: string;
+  active: boolean;
+  createdAt: number;
+}
+
+export interface Invoice {
+  id: string;
+  invoiceNumber: string;
+  clientId: string;
+  clientName: string;
+  caseIds: string[];
+  amount: number;
+  status: "open" | "sent" | "paid" | "overdue";
+  issuedAt: number;
+  dueAt: number;
+}
+
+export const SAMPLE_CLIENTS: Client[] = [
+  {
+    id: generateId(),
+    practiceName: "Elite Dental Group",
+    leadDoctor: "Dr. Aris",
+    phone: "(555) 100-2000",
+    email: "front@elitedental.com",
+    tier: "Elite",
+    discountRate: 15,
+    createdAt: Date.now() - 86400000 * 90,
+  },
+  {
+    id: generateId(),
+    practiceName: "City Smiles",
+    leadDoctor: "Dr. Bloom",
+    phone: "(555) 200-3000",
+    email: "office@citysmiles.com",
+    tier: "Premium",
+    discountRate: 10,
+    createdAt: Date.now() - 86400000 * 60,
+  },
+  {
+    id: generateId(),
+    practiceName: "North Lab Dentistry",
+    leadDoctor: "Dr. Chen",
+    phone: "(555) 300-4000",
+    email: "info@northlabdent.com",
+    tier: "Standard",
+    discountRate: 0,
+    createdAt: Date.now() - 86400000 * 30,
+  },
+  {
+    id: generateId(),
+    practiceName: "Pacific Dental Care",
+    leadDoctor: "Dr. Patel",
+    phone: "(555) 400-5000",
+    email: "hello@pacificdental.com",
+    tier: "Premium",
+    discountRate: 10,
+    createdAt: Date.now() - 86400000 * 120,
+  },
+  {
+    id: generateId(),
+    practiceName: "Sunrise Family Dental",
+    leadDoctor: "Dr. Martinez",
+    phone: "(555) 500-6000",
+    email: "contact@sunrisedental.com",
+    tier: "Elite",
+    discountRate: 15,
+    createdAt: Date.now() - 86400000 * 200,
+  },
+];
+
+export const SAMPLE_USERS: LabUser[] = [
+  {
+    id: generateId(),
+    name: "Alex Rivera",
+    email: "alex@drivesynclab.com",
+    role: "admin",
+    station: "All",
+    active: true,
+    createdAt: Date.now() - 86400000 * 365,
+  },
+  {
+    id: generateId(),
+    name: "Jordan Lee",
+    email: "jordan@drivesynclab.com",
+    role: "tech",
+    station: "Design",
+    active: true,
+    createdAt: Date.now() - 86400000 * 180,
+  },
+  {
+    id: generateId(),
+    name: "Sam Torres",
+    email: "sam@drivesynclab.com",
+    role: "tech",
+    station: "Porcelain",
+    active: true,
+    createdAt: Date.now() - 86400000 * 90,
+  },
+  {
+    id: generateId(),
+    name: "Maya Chen",
+    email: "maya@drivesynclab.com",
+    role: "tech",
+    station: "Wax-Up",
+    active: false,
+    createdAt: Date.now() - 86400000 * 60,
+  },
+];
+
+export const SAMPLE_INVOICES: Invoice[] = [
+  {
+    id: generateId(),
+    invoiceNumber: "INV-2026-001",
+    clientId: SAMPLE_CLIENTS[0].id,
+    clientName: "Elite Dental Group",
+    caseIds: [],
+    amount: 3830.0,
+    status: "open",
+    issuedAt: Date.now() - 86400000 * 5,
+    dueAt: Date.now() + 86400000 * 25,
+  },
+  {
+    id: generateId(),
+    invoiceNumber: "INV-2026-002",
+    clientId: SAMPLE_CLIENTS[1].id,
+    clientName: "City Smiles",
+    caseIds: [],
+    amount: 680.0,
+    status: "sent",
+    issuedAt: Date.now() - 86400000 * 10,
+    dueAt: Date.now() + 86400000 * 20,
+  },
+  {
+    id: generateId(),
+    invoiceNumber: "INV-2026-003",
+    clientId: SAMPLE_CLIENTS[2].id,
+    clientName: "North Lab Dentistry",
+    caseIds: [],
+    amount: 1580.0,
+    status: "overdue",
+    issuedAt: Date.now() - 86400000 * 40,
+    dueAt: Date.now() - 86400000 * 10,
+  },
+  {
+    id: generateId(),
+    invoiceNumber: "INV-2025-048",
+    clientId: SAMPLE_CLIENTS[3].id,
+    clientName: "Pacific Dental Care",
+    caseIds: [],
+    amount: 920.0,
+    status: "paid",
+    issuedAt: Date.now() - 86400000 * 30,
+    dueAt: Date.now() - 86400000 * 1,
+  },
+  {
+    id: generateId(),
+    invoiceNumber: "INV-2026-004",
+    clientId: SAMPLE_CLIENTS[4].id,
+    clientName: "Sunrise Family Dental",
+    caseIds: [],
+    amount: 4200.0,
+    status: "open",
+    issuedAt: Date.now() - 86400000 * 2,
+    dueAt: Date.now() + 86400000 * 28,
+  },
+];
+
 export const SAMPLE_NOTIFICATIONS: Notification[] = [
   {
     id: generateId(),

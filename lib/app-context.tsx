@@ -12,9 +12,15 @@ import {
   LabCase,
   Notification,
   CaseStatus,
+  Client,
+  LabUser,
+  Invoice,
   generateId,
   SAMPLE_CASES,
   SAMPLE_NOTIFICATIONS,
+  SAMPLE_CLIENTS,
+  SAMPLE_USERS,
+  SAMPLE_INVOICES,
 } from "./data";
 
 interface AppContextValue {
@@ -31,6 +37,15 @@ interface AppContextValue {
   activeCaseCount: number;
   rushCaseCount: number;
   isLoading: boolean;
+  clients: Client[];
+  addClient: (c: Omit<Client, "id" | "createdAt">) => void;
+  updateClient: (id: string, c: Partial<Client>) => void;
+  users: LabUser[];
+  addUser: (u: Omit<LabUser, "id" | "createdAt">) => void;
+  updateUser: (id: string, u: Partial<LabUser>) => void;
+  invoices: Invoice[];
+  addInvoice: (inv: Omit<Invoice, "id">) => void;
+  updateInvoice: (id: string, inv: Partial<Invoice>) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -38,12 +53,18 @@ const AppContext = createContext<AppContextValue | null>(null);
 const CASES_KEY = "@drivesync_cases";
 const ROLE_KEY = "@drivesync_role";
 const NOTIFS_KEY = "@drivesync_notifs";
+const CLIENTS_KEY = "@drivesync_clients";
+const USERS_KEY = "@drivesync_users";
+const INVOICES_KEY = "@drivesync_invoices";
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRoleState] = useState<UserRole>("tech");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [cases, setCases] = useState<LabCase[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [users, setUsers] = useState<LabUser[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -52,10 +73,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function loadData() {
     try {
-      const [savedCases, savedRole, savedNotifs] = await Promise.all([
+      const [savedCases, savedRole, savedNotifs, savedClients, savedUsers, savedInvoices] = await Promise.all([
         AsyncStorage.getItem(CASES_KEY),
         AsyncStorage.getItem(ROLE_KEY),
         AsyncStorage.getItem(NOTIFS_KEY),
+        AsyncStorage.getItem(CLIENTS_KEY),
+        AsyncStorage.getItem(USERS_KEY),
+        AsyncStorage.getItem(INVOICES_KEY),
       ]);
 
       if (savedCases) {
@@ -73,14 +97,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setNotifications(JSON.parse(savedNotifs));
       } else {
         setNotifications(SAMPLE_NOTIFICATIONS);
-        await AsyncStorage.setItem(
-          NOTIFS_KEY,
-          JSON.stringify(SAMPLE_NOTIFICATIONS),
-        );
+        await AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(SAMPLE_NOTIFICATIONS));
+      }
+
+      if (savedClients) {
+        setClients(JSON.parse(savedClients));
+      } else {
+        setClients(SAMPLE_CLIENTS);
+        await AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(SAMPLE_CLIENTS));
+      }
+
+      if (savedUsers) {
+        setUsers(JSON.parse(savedUsers));
+      } else {
+        setUsers(SAMPLE_USERS);
+        await AsyncStorage.setItem(USERS_KEY, JSON.stringify(SAMPLE_USERS));
+      }
+
+      if (savedInvoices) {
+        setInvoices(JSON.parse(savedInvoices));
+      } else {
+        setInvoices(SAMPLE_INVOICES);
+        await AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(SAMPLE_INVOICES));
       }
     } catch (e) {
       setCases(SAMPLE_CASES);
       setNotifications(SAMPLE_NOTIFICATIONS);
+      setClients(SAMPLE_CLIENTS);
+      setUsers(SAMPLE_USERS);
+      setInvoices(SAMPLE_INVOICES);
     } finally {
       setIsLoading(false);
     }
@@ -165,6 +210,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
   }
 
+  function addClient(c: Omit<Client, "id" | "createdAt">) {
+    const newClient: Client = { ...c, id: generateId(), createdAt: Date.now() };
+    const updated = [newClient, ...clients];
+    setClients(updated);
+    AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updated));
+  }
+
+  function updateClient(id: string, c: Partial<Client>) {
+    const updated = clients.map((cl) => (cl.id === id ? { ...cl, ...c } : cl));
+    setClients(updated);
+    AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updated));
+  }
+
+  function addUser(u: Omit<LabUser, "id" | "createdAt">) {
+    const newUser: LabUser = { ...u, id: generateId(), createdAt: Date.now() };
+    const updated = [newUser, ...users];
+    setUsers(updated);
+    AsyncStorage.setItem(USERS_KEY, JSON.stringify(updated));
+  }
+
+  function updateUser(id: string, u: Partial<LabUser>) {
+    const updated = users.map((usr) => (usr.id === id ? { ...usr, ...u } : usr));
+    setUsers(updated);
+    AsyncStorage.setItem(USERS_KEY, JSON.stringify(updated));
+  }
+
+  function addInvoice(inv: Omit<Invoice, "id">) {
+    const newInv: Invoice = { ...inv, id: generateId() };
+    const updated = [newInv, ...invoices];
+    setInvoices(updated);
+    AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
+  }
+
+  function updateInvoice(id: string, inv: Partial<Invoice>) {
+    const updated = invoices.map((i) => (i.id === id ? { ...i, ...inv } : i));
+    setInvoices(updated);
+    AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
+  }
+
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
     [notifications],
@@ -196,8 +280,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       activeCaseCount,
       rushCaseCount,
       isLoading,
+      clients,
+      addClient,
+      updateClient,
+      users,
+      addUser,
+      updateUser,
+      invoices,
+      addInvoice,
+      updateInvoice,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, users, invoices],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
