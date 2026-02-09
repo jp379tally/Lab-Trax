@@ -36,15 +36,32 @@ function TechDashboard() {
       }}
       showsVerticalScrollIndicator={false}
     >
+      <View style={styles.avatarSection}>
+        <LinearGradient
+          colors={[Colors.light.tint, "#3B82F6"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.avatarRing}
+        >
+          <View style={styles.avatarInner}>
+            <Ionicons name="person" size={32} color={Colors.light.tint} />
+          </View>
+        </LinearGradient>
+        <Text style={styles.avatarName}>Lab Technician</Text>
+        <View style={styles.statusDot}>
+          <View style={styles.liveDot} />
+          <Text style={styles.liveText}>ON SHIFT</Text>
+        </View>
+      </View>
+
       <View style={styles.headerRow}>
         <View>
           <Text style={styles.greeting}>Lab Floor</Text>
           <Text style={styles.headerTitle}>Production Dashboard</Text>
         </View>
-        <View style={styles.statusDot}>
-          <View style={styles.liveDot} />
-          <Text style={styles.liveText}>LIVE</Text>
-        </View>
+        <Pressable onPress={() => setRole("admin")} style={styles.adminBtn}>
+          <Ionicons name="shield" size={18} color={Colors.light.tint} />
+        </Pressable>
       </View>
 
       <LinearGradient
@@ -130,19 +147,17 @@ function TechDashboard() {
             styles.quickBtn,
             pressed && styles.quickBtnPressed,
           ]}
-          onPress={() => {
-            setRole("admin");
-          }}
+          onPress={() => router.push("/(tabs)/notifications")}
         >
           <View
             style={[
               styles.quickIcon,
-              { backgroundColor: Colors.light.dark },
+              { backgroundColor: Colors.light.warningLight },
             ]}
           >
-            <Ionicons name="shield" size={22} color="#FFF" />
+            <Ionicons name="notifications" size={22} color={Colors.light.warning} />
           </View>
-          <Text style={styles.quickLabel}>Admin</Text>
+          <Text style={styles.quickLabel}>Alerts</Text>
         </Pressable>
       </View>
 
@@ -975,6 +990,40 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: Colors.light.background,
+  },
+  avatarSection: {
+    alignItems: "center",
+    marginBottom: 24,
+    gap: 8,
+  },
+  avatarRing: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 3,
+  },
+  avatarInner: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  avatarName: {
+    fontSize: 17,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  adminBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center",
+    alignItems: "center",
   },
   headerRow: {
     flexDirection: "row",
