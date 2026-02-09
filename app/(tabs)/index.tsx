@@ -803,6 +803,7 @@ type AdminView =
   | "client-detail"
   | "add-client"
   | "edit-client"
+  | "edit-price-list"
   | "add-user"
   | "edit-user"
   | "invoices"
@@ -833,6 +834,27 @@ function AdminDashboard() {
 
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [editingUser, setEditingUser] = useState<LabUser | null>(null);
+
+  const PRICE_LIST_ITEMS = [
+    { key: "zirconia_crown", label: "Zirconia Crown" },
+    { key: "emax_crown", label: "Emax Crown" },
+    { key: "pfm_crown", label: "PFM Crown" },
+    { key: "pfz_crown", label: "PFZ Crown" },
+    { key: "denture", label: "Denture" },
+    { key: "partial", label: "Partial" },
+    { key: "flipper", label: "Flipper" },
+    { key: "implant", label: "Implant" },
+    { key: "night_guard", label: "Night Guard" },
+    { key: "temporary", label: "Temporary" },
+    { key: "essix", label: "Essix" },
+  ] as const;
+
+  const [priceList, setPriceList] = useState<Record<string, string>>(() => {
+    const initial: Record<string, string> = {};
+    PRICE_LIST_ITEMS.forEach((item) => { initial[item.key] = ""; });
+    return initial;
+  });
+  const [priceConfirmVisible, setPriceConfirmVisible] = useState(false);
 
   function resetClientForm() {
     setNewClientName("");
@@ -924,6 +946,7 @@ function AdminDashboard() {
 
     const menuItems: { icon: string; iconSet: "ion" | "mci" | "feather"; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
       { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · $${totalOpenBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} open`, view: "clients" },
+      { icon: "pricetag", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Edit Client Price List", sub: "Update service pricing", view: "edit-price-list" },
       { icon: "person-add", iconSet: "ion", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
       { icon: "people", iconSet: "ion", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${clients.length} registered practices`, view: "edit-client" },
       { icon: "person-add-outline", iconSet: "ion", color: Colors.light.success, bg: Colors.light.successLight, title: "Add User", sub: "Create lab staff account", view: "add-user" },
@@ -1646,6 +1669,106 @@ function AdminDashboard() {
     );
   }
 
+  function renderEditPriceList() {
+    function handleUpdatePrice(key: string, value: string) {
+      const cleaned = value.replace(/[^0-9.]/g, "");
+      setPriceList((prev) => ({ ...prev, [key]: cleaned }));
+    }
+
+    function handleConfirmYes() {
+      setPriceConfirmVisible(false);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Saved", "Client price list has been updated.");
+      setAdminView("hub");
+    }
+
+    function handleConfirmNo() {
+      setPriceConfirmVisible(false);
+      setAdminView("hub");
+    }
+
+    return (
+      <View style={{ flex: 1 }}>
+        <ScrollView
+          style={styles.container}
+          contentContainerStyle={{
+            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          }}
+          showsVerticalScrollIndicator={false}
+        >
+          {renderBackHeader("Edit Client Price List")}
+          <View style={adm.formArea}>
+            <Text style={adm.formDesc}>Set the price for each service item.</Text>
+
+            {PRICE_LIST_ITEMS.map((item) => (
+              <View key={item.key} style={{ flexDirection: "row", alignItems: "center", marginBottom: 12, backgroundColor: "#fff", borderRadius: 12, padding: 14, shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 1 }, elevation: 1 }}>
+                <View style={{ flex: 1, marginRight: 12 }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{item.label}</Text>
+                </View>
+                <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: Colors.light.surfaceAlt, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, minWidth: 120 }}>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.subText, marginRight: 4 }}>$</Text>
+                  <TextInput
+                    style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text, flex: 1, padding: 0 }}
+                    value={priceList[item.key]}
+                    onChangeText={(v) => handleUpdatePrice(item.key, v)}
+                    placeholder="0.00"
+                    placeholderTextColor={Colors.light.textTertiary}
+                    keyboardType="decimal-pad"
+                    testID={`price-${item.key}`}
+                  />
+                </View>
+              </View>
+            ))}
+
+            <Pressable
+              style={({ pressed }) => [adm.submitBtn, pressed && { opacity: 0.85 }]}
+              onPress={() => setPriceConfirmVisible(true)}
+              testID="price-complete-btn"
+            >
+              <Ionicons name="checkmark-circle" size={20} color="#FFF" />
+              <Text style={adm.submitBtnText}>Complete</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+
+        <Modal visible={priceConfirmVisible} transparent animationType="fade" onRequestClose={() => setPriceConfirmVisible(false)}>
+          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+            <View style={{ backgroundColor: "#fff", borderRadius: 20, padding: 24, width: "100%", maxWidth: 340, alignItems: "center" }}>
+              <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: "#FEF3C7", justifyContent: "center", alignItems: "center", marginBottom: 16 }}>
+                <Ionicons name="help-circle" size={32} color="#D97706" />
+              </View>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text, textAlign: "center", marginBottom: 8 }}>Save Price List</Text>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.subText, textAlign: "center", marginBottom: 24 }}>Are you sure you want to save these prices?</Text>
+
+              <Pressable
+                onPress={handleConfirmYes}
+                style={({ pressed }) => ({ backgroundColor: Colors.light.tint, borderRadius: 12, paddingVertical: 14, width: "100%", alignItems: "center", marginBottom: 10, opacity: pressed ? 0.85 : 1 })}
+                testID="price-confirm-yes"
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Yes</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleConfirmNo}
+                style={({ pressed }) => ({ backgroundColor: Colors.light.error, borderRadius: 12, paddingVertical: 14, width: "100%", alignItems: "center", marginBottom: 10, opacity: pressed ? 0.85 : 1 })}
+                testID="price-confirm-no"
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>No</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setPriceConfirmVisible(false)}
+                style={({ pressed }) => ({ backgroundColor: Colors.light.surfaceAlt, borderRadius: 12, paddingVertical: 14, width: "100%", alignItems: "center", opacity: pressed ? 0.85 : 1 })}
+                testID="price-confirm-continue"
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Continue Editing</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
   function renderSales() {
     const completedCases = cases.filter((c) => c.status === "COMPLETE" || c.status === "SHIP");
     const activeCases = cases.filter((c) => c.status !== "COMPLETE" && c.status !== "SHIP");
@@ -1746,6 +1869,7 @@ function AdminDashboard() {
     case "client-detail": return renderClientDetail();
     case "add-client": return renderAddClient();
     case "edit-client": return renderEditClient();
+    case "edit-price-list": return renderEditPriceList();
     case "add-user": return renderAddUser();
     case "edit-user": return renderEditUser();
     case "invoices": return renderInvoices();
