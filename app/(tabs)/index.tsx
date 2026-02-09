@@ -799,6 +799,8 @@ function AdminLockScreen() {
 
 type AdminView =
   | "hub"
+  | "clients"
+  | "client-detail"
   | "add-client"
   | "edit-client"
   | "add-user"
@@ -820,7 +822,9 @@ function AdminDashboard() {
   const [newClientDoctor, setNewClientDoctor] = useState("");
   const [newClientPhone, setNewClientPhone] = useState("");
   const [newClientEmail, setNewClientEmail] = useState("");
+  const [newClientAddress, setNewClientAddress] = useState("");
   const [newClientTier, setNewClientTier] = useState<"Standard" | "Premium" | "Elite">("Standard");
+  const [selectedClient, setSelectedClient] = useState<Client | null>(null);
 
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
@@ -835,6 +839,7 @@ function AdminDashboard() {
     setNewClientDoctor("");
     setNewClientPhone("");
     setNewClientEmail("");
+    setNewClientAddress("");
     setNewClientTier("Standard");
   }
 
@@ -855,6 +860,7 @@ function AdminDashboard() {
       leadDoctor: newClientDoctor.trim(),
       phone: newClientPhone.trim(),
       email: newClientEmail.trim(),
+      address: newClientAddress.trim(),
       tier: newClientTier,
       discountRate: newClientTier === "Elite" ? 15 : newClientTier === "Premium" ? 10 : 0,
     });
@@ -911,7 +917,13 @@ function AdminDashboard() {
   }
 
   function renderHub() {
+    const totalOpenBalance = clients.reduce((sum, c) => {
+      const clientInvoices = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+      return sum + clientInvoices.reduce((s, inv) => s + inv.amount, 0);
+    }, 0);
+
     const menuItems: { icon: string; iconSet: "ion" | "mci" | "feather"; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
+      { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · $${totalOpenBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} open`, view: "clients" },
       { icon: "person-add", iconSet: "ion", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
       { icon: "people", iconSet: "ion", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${clients.length} registered practices`, view: "edit-client" },
       { icon: "person-add-outline", iconSet: "ion", color: Colors.light.success, bg: Colors.light.successLight, title: "Add User", sub: "Create lab staff account", view: "add-user" },

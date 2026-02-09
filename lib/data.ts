@@ -427,6 +427,7 @@ export interface Client {
   leadDoctor: string;
   phone: string;
   email: string;
+  address: string;
   tier: "Standard" | "Premium" | "Elite";
   discountRate: number;
   createdAt: number;
@@ -461,6 +462,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     leadDoctor: "Dr. Aris",
     phone: "(555) 100-2000",
     email: "front@elitedental.com",
+    address: "1200 Park Ave, Suite 400, New York, NY 10128",
     tier: "Elite",
     discountRate: 15,
     createdAt: Date.now() - 86400000 * 90,
@@ -471,6 +473,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     leadDoctor: "Dr. Bloom",
     phone: "(555) 200-3000",
     email: "office@citysmiles.com",
+    address: "345 Market St, Floor 2, San Francisco, CA 94105",
     tier: "Premium",
     discountRate: 10,
     createdAt: Date.now() - 86400000 * 60,
@@ -481,6 +484,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     leadDoctor: "Dr. Chen",
     phone: "(555) 300-4000",
     email: "info@northlabdent.com",
+    address: "890 Elm St, Chicago, IL 60614",
     tier: "Standard",
     discountRate: 0,
     createdAt: Date.now() - 86400000 * 30,
@@ -491,6 +495,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     leadDoctor: "Dr. Patel",
     phone: "(555) 400-5000",
     email: "hello@pacificdental.com",
+    address: "2100 Ocean Blvd, Suite 110, Los Angeles, CA 90015",
     tier: "Premium",
     discountRate: 10,
     createdAt: Date.now() - 86400000 * 120,
@@ -501,6 +506,7 @@ export const SAMPLE_CLIENTS: Client[] = [
     leadDoctor: "Dr. Martinez",
     phone: "(555) 500-6000",
     email: "contact@sunrisedental.com",
+    address: "456 Sunrise Blvd, Miami, FL 33101",
     tier: "Elite",
     discountRate: 15,
     createdAt: Date.now() - 86400000 * 200,
