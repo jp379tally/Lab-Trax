@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import {
   StyleSheet,
   View,
@@ -7,20 +7,29 @@ import {
   Pressable,
   Platform,
   Alert,
+  Modal,
+  TextInput,
+  Image,
+  KeyboardAvoidingView,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus } from "@/lib/data";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, role, adminUnlocked } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, role, adminUnlocked } = useApp();
   const insets = useSafeAreaInsets();
   const [showRouting, setShowRouting] = useState(false);
+  const [showNoteModal, setShowNoteModal] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
+  const [showPhotoPreview, setShowPhotoPreview] = useState(false);
 
   const caseItem = cases.find((c) => c.id === id);
   const showPrice = role === "admin" && adminUnlocked;
@@ -37,9 +46,6 @@ export default function CaseDetailScreen() {
   }
 
   const stationInfo = getStationInfo(caseItem.status);
-  const currentStationIdx = STATIONS.findIndex(
-    (s) => s.id === caseItem.status,
-  );
 
   function handleRoute(newStatus: CaseStatus) {
     updateCaseStatus(caseItem!.id, newStatus);
@@ -61,6 +67,67 @@ export default function CaseDetailScreen() {
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  async function handleTakePhoto() {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Camera access is required to take photos.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+      allowsEditing: false,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const uri = result.assets[0].uri;
+      setCapturedPhotos((prev) => [...prev, uri]);
+      setShowPhotoPreview(true);
+    }
+  }
+
+  async function handleAddMorePhoto() {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Camera access is required to take photos.");
+      return;
+    }
+    setShowPhotoPreview(false);
+    setTimeout(async () => {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+        allowsEditing: false,
+      });
+      if (!result.canceled && result.assets[0]) {
+        const uri = result.assets[0].uri;
+        setCapturedPhotos((prev) => [...prev, uri]);
+      }
+      setShowPhotoPreview(true);
+    }, 500);
+  }
+
+  function handleFinishPhotos() {
+    capturedPhotos.forEach((uri) => {
+      addCasePhoto(caseItem!.id, uri);
+    });
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    Alert.alert("Photos Saved", `${capturedPhotos.length} photo${capturedPhotos.length > 1 ? "s" : ""} added to case.`);
+    setCapturedPhotos([]);
+    setShowPhotoPreview(false);
+  }
+
+  function handleSaveNote() {
+    if (!noteText.trim()) return;
+    addCaseNote(caseItem!.id, noteText.trim());
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    setNoteText("");
+    setShowNoteModal(false);
   }
 
   return (
@@ -111,7 +178,9 @@ export default function CaseDetailScreen() {
           </View>
           <View style={styles.infoItem}>
             <Text style={styles.infoLabel}>Patient</Text>
-            <Text style={styles.infoValue}>{caseItem.patientInitials}</Text>
+            <Text style={styles.infoValue}>
+              {(caseItem as any).patientFullName || caseItem.patientInitials}
+            </Text>
           </View>
           <View style={styles.infoItem}>
             <Text style={styles.infoLabel}>Teeth</Text>
@@ -145,6 +214,23 @@ export default function CaseDetailScreen() {
             <Text style={styles.notesText}>{caseItem.notes}</Text>
           </View>
         ) : null}
+
+        {(caseItem.photos?.length ?? 0) > 0 && (
+          <View style={{ marginBottom: 16 }}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Photos ({caseItem.photos!.length})</Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
+              {caseItem.photos!.map((uri, idx) => (
+                <Image
+                  key={idx}
+                  source={{ uri }}
+                  style={styles.photoThumb}
+                />
+              ))}
+            </ScrollView>
+          </View>
+        )}
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Route History</Text>
@@ -186,17 +272,18 @@ export default function CaseDetailScreen() {
           })}
         </View>
 
-        <View style={styles.routeSection}>
+        <View style={styles.actionSection}>
           <Pressable
             onPress={() => setShowRouting(!showRouting)}
             style={({ pressed }) => [
-              styles.routeBtn,
+              styles.actionBtn,
+              { backgroundColor: Colors.light.tint },
               pressed && { opacity: 0.85 },
             ]}
           >
-            <Ionicons name="git-branch" size={20} color="#FFF" />
-            <Text style={styles.routeBtnText}>
-              {showRouting ? "Hide Stations" : "Route to Station"}
+            <Ionicons name="navigate" size={20} color="#FFF" />
+            <Text style={styles.actionBtnText}>
+              {showRouting ? "Hide Stations" : "Locate"}
             </Text>
           </Pressable>
 
@@ -246,8 +333,141 @@ export default function CaseDetailScreen() {
               })}
             </View>
           )}
+
+          <View style={styles.actionRow}>
+            <Pressable
+              onPress={handleTakePhoto}
+              style={({ pressed }) => [
+                styles.actionBtn,
+                styles.actionBtnHalf,
+                { backgroundColor: "#0EA5E9" },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Ionicons name="camera" size={20} color="#FFF" />
+              <Text style={styles.actionBtnText}>Add Picture</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setShowNoteModal(true)}
+              style={({ pressed }) => [
+                styles.actionBtn,
+                styles.actionBtnHalf,
+                { backgroundColor: "#8B5CF6" },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <MaterialCommunityIcons name="note-plus" size={20} color="#FFF" />
+              <Text style={styles.actionBtnText}>Add Note</Text>
+            </Pressable>
+          </View>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={showPhotoPreview}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          setCapturedPhotos([]);
+          setShowPhotoPreview(false);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.photoModal, { paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }]}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>
+              {capturedPhotos.length} Photo{capturedPhotos.length !== 1 ? "s" : ""} Captured
+            </Text>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoStrip}>
+              {capturedPhotos.map((uri, idx) => (
+                <Image key={idx} source={{ uri }} style={styles.previewPhoto} />
+              ))}
+            </ScrollView>
+
+            <View style={styles.photoActions}>
+              <Pressable
+                onPress={handleAddMorePhoto}
+                style={({ pressed }) => [
+                  styles.photoActionBtn,
+                  { backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="camera" size={20} color={Colors.light.text} />
+                <Text style={[styles.photoActionText, { color: Colors.light.text }]}>Add More</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleFinishPhotos}
+                style={({ pressed }) => [
+                  styles.photoActionBtn,
+                  { backgroundColor: Colors.light.tint },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="checkmark" size={20} color="#FFF" />
+                <Text style={[styles.photoActionText, { color: "#FFF" }]}>Done</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showNoteModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          setNoteText("");
+          setShowNoteModal(false);
+        }}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.noteModal, { paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }]}>
+            <View style={styles.modalHandle} />
+            <View style={styles.noteModalHeader}>
+              <Text style={styles.modalTitle}>Add Note</Text>
+              <Pressable
+                onPress={() => {
+                  setNoteText("");
+                  setShowNoteModal(false);
+                }}
+              >
+                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+
+            <TextInput
+              style={styles.noteInput}
+              placeholder="Type your note here..."
+              placeholderTextColor={Colors.light.textTertiary}
+              value={noteText}
+              onChangeText={setNoteText}
+              multiline
+              autoFocus
+              textAlignVertical="top"
+            />
+
+            <Pressable
+              onPress={handleSaveNote}
+              style={({ pressed }) => [
+                styles.saveNoteBtn,
+                !noteText.trim() && { opacity: 0.5 },
+                pressed && { opacity: 0.85 },
+              ]}
+              disabled={!noteText.trim()}
+            >
+              <Ionicons name="checkmark" size={20} color="#FFF" />
+              <Text style={styles.saveNoteBtnText}>Save Note</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -396,6 +616,13 @@ const styles = StyleSheet.create({
     color: Colors.light.text,
     lineHeight: 20,
   },
+  photoThumb: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    marginRight: 8,
+    backgroundColor: Colors.light.border,
+  },
   sectionHeader: {
     marginBottom: 12,
   },
@@ -441,19 +668,25 @@ const styles = StyleSheet.create({
     color: Colors.light.textTertiary,
     marginTop: 2,
   },
-  routeSection: {
-    gap: 14,
+  actionSection: {
+    gap: 12,
   },
-  routeBtn: {
+  actionRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  actionBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    backgroundColor: Colors.light.tint,
     paddingVertical: 16,
     borderRadius: 16,
   },
-  routeBtnText: {
+  actionBtnHalf: {
+    flex: 1,
+  },
+  actionBtnText: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
     color: "#FFF",
@@ -486,5 +719,97 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_500Medium",
     color: Colors.light.text,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  modalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.light.border,
+    alignSelf: "center",
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    marginBottom: 16,
+  },
+  photoModal: {
+    backgroundColor: Colors.light.background,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingTop: 16,
+  },
+  photoStrip: {
+    marginBottom: 20,
+  },
+  previewPhoto: {
+    width: 120,
+    height: 120,
+    borderRadius: 14,
+    marginRight: 10,
+    backgroundColor: Colors.light.border,
+  },
+  photoActions: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  photoActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 14,
+  },
+  photoActionText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+  },
+  noteModal: {
+    backgroundColor: Colors.light.background,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingTop: 16,
+    maxHeight: "70%",
+  },
+  noteModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  noteInput: {
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    padding: 16,
+    fontSize: 15,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    minHeight: 120,
+    marginBottom: 16,
+  },
+  saveNoteBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#8B5CF6",
+    paddingVertical: 14,
+    borderRadius: 14,
+  },
+  saveNoteBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
   },
 });
