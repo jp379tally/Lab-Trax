@@ -20,6 +20,7 @@ interface AuthContextValue {
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  register: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   registeredUsers: StoredUser[];
 }
@@ -129,6 +130,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { success: true };
   }
 
+  async function register(username: string, password: string): Promise<{ success: boolean; error?: string }> {
+    const savedRaw = await AsyncStorage.getItem(USERS_STORE_KEY);
+    let allUsers = [...DEFAULT_USERS];
+    if (savedRaw) {
+      try {
+        const saved: StoredUser[] = JSON.parse(savedRaw);
+        for (const su of saved) {
+          const isDefault = DEFAULT_USERS.some(
+            (d) => d.username.toLowerCase() === su.username.toLowerCase(),
+          );
+          if (!isDefault) {
+            allUsers.push(su);
+          }
+        }
+      } catch {}
+    }
+
+    const exists = allUsers.some(
+      (u) => u.username.toLowerCase() === username.toLowerCase(),
+    );
+    if (exists) {
+      return { success: false, error: "Username already taken." };
+    }
+
+    const newUser: StoredUser = { username, password };
+    allUsers.push(newUser);
+    setRegisteredUsers(allUsers);
+    await AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(allUsers));
+
+    setIsAuthenticated(true);
+    setCurrentUser(username);
+    await AsyncStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({ loggedIn: true, username }),
+    );
+    return { success: true };
+  }
+
   function logout() {
     setIsAuthenticated(false);
     setCurrentUser(null);
@@ -143,6 +182,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profilePicUri,
       setProfilePicUri,
       login,
+      register,
       logout,
       registeredUsers,
     }),

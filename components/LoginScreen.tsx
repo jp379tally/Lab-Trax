@@ -19,9 +19,11 @@ import Colors from "@/constants/colors";
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const { login } = useAuth();
+  const { login, register } = useAuth();
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +33,15 @@ export default function LoginScreen() {
   useEffect(() => {
     checkBiometrics();
   }, []);
+
+  function switchMode(newMode: "signin" | "signup") {
+    setMode(newMode);
+    setError(null);
+    setUsername("");
+    setPassword("");
+    setConfirmPassword("");
+    setShowPassword(false);
+  }
 
   async function checkBiometrics() {
     try {
@@ -85,6 +96,34 @@ export default function LoginScreen() {
 
     if (!result.success) {
       setError(result.error || "Login failed.");
+    }
+  }
+
+  async function handleSignUp() {
+    if (!username.trim() || !password.trim()) {
+      setError("Please enter both username and password.");
+      return;
+    }
+    if (username.trim().length < 3) {
+      setError("Username must be at least 3 characters.");
+      return;
+    }
+    if (password.trim().length < 3) {
+      setError("Password must be at least 3 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setError(null);
+    setIsLoggingIn(true);
+    const result = await register(username.trim(), password.trim());
+    setIsLoggingIn(false);
+
+    if (!result.success) {
+      setError(result.error || "Registration failed.");
     }
   }
 
@@ -166,10 +205,27 @@ export default function LoginScreen() {
                   <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={18} color="rgba(255,255,255,0.4)" />
                 </Pressable>
               </View>
+
+              {mode === "signup" && (
+                <View style={styles.inputWrapper}>
+                  <Ionicons name="lock-closed-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+                  <TextInput
+                    style={[styles.input, { flex: 1 }]}
+                    value={confirmPassword}
+                    onChangeText={(t) => { setConfirmPassword(t); setError(null); }}
+                    placeholder="Confirm Password"
+                    placeholderTextColor="rgba(255,255,255,0.3)"
+                    secureTextEntry={!showPassword}
+                    autoCapitalize="none"
+                    editable={!isLoggingIn}
+                    testID="login-confirm-password"
+                  />
+                </View>
+              )}
             </View>
 
             <Pressable
-              onPress={handleLogin}
+              onPress={mode === "signin" ? handleLogin : handleSignUp}
               disabled={isLoggingIn}
               style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, isLoggingIn && { opacity: 0.6 }]}
               testID="login-submit"
@@ -178,13 +234,13 @@ export default function LoginScreen() {
                 <ActivityIndicator size="small" color="#FFF" />
               ) : (
                 <>
-                  <Ionicons name="log-in-outline" size={20} color="#FFF" />
-                  <Text style={styles.loginBtnText}>Sign In</Text>
+                  <Ionicons name={mode === "signin" ? "log-in-outline" : "person-add-outline"} size={20} color="#FFF" />
+                  <Text style={styles.loginBtnText}>{mode === "signin" ? "Sign In" : "Create Account"}</Text>
                 </>
               )}
             </Pressable>
 
-            {biometricAvailable && (
+            {mode === "signin" && biometricAvailable && (
               <>
                 <View style={styles.dividerRow}>
                   <View style={styles.dividerLine} />
@@ -209,9 +265,25 @@ export default function LoginScreen() {
             )}
           </View>
 
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Secure Access Only</Text>
-            <Ionicons name="shield-checkmark" size={14} color="rgba(255,255,255,0.25)" />
+          <View style={styles.bottomSection}>
+            <View style={styles.switchRow}>
+              <Text style={styles.switchText}>
+                {mode === "signin" ? "Don't have an account?" : "Already have an account?"}
+              </Text>
+              <Pressable
+                onPress={() => switchMode(mode === "signin" ? "signup" : "signin")}
+                style={({ pressed }) => [pressed && { opacity: 0.7 }]}
+                testID="switch-mode-btn"
+              >
+                <Text style={styles.switchLink}>
+                  {mode === "signin" ? "Sign Up" : "Sign In"}
+                </Text>
+              </Pressable>
+            </View>
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>Secure Access Only</Text>
+              <Ionicons name="shield-checkmark" size={14} color="rgba(255,255,255,0.25)" />
+            </View>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -346,6 +418,25 @@ const styles = StyleSheet.create({
   biometricBtnText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  bottomSection: {
+    gap: 16,
+  },
+  switchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  switchText: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.45)",
+  },
+  switchLink: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
     color: Colors.light.tint,
   },
   footer: {
