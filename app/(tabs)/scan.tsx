@@ -10,9 +10,10 @@ import {
   Alert,
   Animated as RNAnimated,
 } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
+import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
@@ -23,6 +24,7 @@ export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const { addCase, cases } = useApp();
   const [phase, setPhase] = useState<ScanPhase>("ready");
+  const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
 
   const [doctorName, setDoctorName] = useState("");
@@ -56,15 +58,56 @@ export default function ScanScreen() {
         if (Platform.OS !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }
-      }, 3000);
+      }, 2500);
       return () => clearTimeout(timer);
     }
   }, [phase]);
 
-  function handleScan() {
-    setPhase("scanning");
-    if (Platform.OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  async function handleTakePhoto() {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Camera Permission",
+        "Camera access is needed to scan prescriptions. Please enable it in your device settings.",
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      setCapturedUri(result.assets[0].uri);
+      setPhase("scanning");
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
+    }
+  }
+
+  async function handlePickImage() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Gallery Permission",
+        "Gallery access is needed to select prescription images.",
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      setCapturedUri(result.assets[0].uri);
+      setPhase("scanning");
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
     }
   }
 
@@ -82,9 +125,10 @@ export default function ScanScreen() {
       Alert.alert("Required", "Doctor name is required");
       return;
     }
-    const nextNum = cases.length > 0
-      ? parseInt(cases[0].caseNumber.replace("#", "")) + 1
-      : 4530;
+    const nextNum =
+      cases.length > 0
+        ? parseInt(cases[0].caseNumber.replace("#", "")) + 1
+        : 4530;
 
     addCase({
       caseNumber: `#${nextNum}`,
@@ -105,11 +149,15 @@ export default function ScanScreen() {
     }
 
     resetForm();
-    Alert.alert("Case Added", `Case #${nextNum} has been created and is now in Intake.`);
+    Alert.alert(
+      "Case Added",
+      `Case #${nextNum} has been created and is now in Intake.`,
+    );
   }
 
   function resetForm() {
     setPhase("ready");
+    setCapturedUri(null);
     setDoctorName("");
     setPatientInitials("");
     setToothIndices("");
@@ -128,7 +176,7 @@ export default function ScanScreen() {
 
   if (phase === "form") {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: Colors.light.background }]}>
         <View
           style={[
             styles.formHeader,
@@ -156,14 +204,34 @@ export default function ScanScreen() {
           }}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.detectedBanner}>
-            <Ionicons
-              name="checkmark-circle"
-              size={20}
-              color={Colors.light.success}
-            />
-            <Text style={styles.detectedText}>Rx Document Detected</Text>
-          </View>
+          {capturedUri && (
+            <View style={styles.capturedPreview}>
+              <Image
+                source={{ uri: capturedUri }}
+                style={styles.previewImage}
+                contentFit="cover"
+              />
+              <View style={styles.previewOverlay}>
+                <Ionicons
+                  name="checkmark-circle"
+                  size={20}
+                  color={Colors.light.success}
+                />
+                <Text style={styles.previewText}>Rx Document Captured</Text>
+              </View>
+            </View>
+          )}
+
+          {!capturedUri && (
+            <View style={styles.detectedBanner}>
+              <Ionicons
+                name="checkmark-circle"
+                size={20}
+                color={Colors.light.success}
+              />
+              <Text style={styles.detectedText}>Rx Document Detected</Text>
+            </View>
+          )}
 
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Doctor Name</Text>
@@ -297,33 +365,39 @@ export default function ScanScreen() {
         ]}
       >
         <Text style={styles.scanTitle}>AI Intake</Text>
+        <Text style={styles.scanSubtitle}>
+          Capture or select a prescription document
+        </Text>
       </View>
 
       <View style={styles.scanArea}>
         <View style={styles.viewfinder}>
-          {phase === "scanning" && (
-            <RNAnimated.View
-              style={[
-                styles.scanLine,
-                { transform: [{ translateY: scanTranslateY }] },
-              ]}
-            />
+          {phase === "scanning" && capturedUri && (
+            <>
+              <Image
+                source={{ uri: capturedUri }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+              />
+              <View style={styles.scanOverlay} />
+              <RNAnimated.View
+                style={[
+                  styles.scanLine,
+                  { transform: [{ translateY: scanTranslateY }] },
+                ]}
+              />
+            </>
           )}
-          <View style={styles.viewfinderContent}>
-            {phase === "ready" && (
-              <>
-                <MaterialCommunityIcons
-                  name="file-document-outline"
-                  size={56}
-                  color={Colors.light.textTertiary}
-                />
-                <Text style={styles.viewfinderText}>
-                  Align Prescription Document
-                </Text>
-              </>
-            )}
-            {phase === "scanning" && (
-              <>
+
+          {phase === "scanning" && !capturedUri && (
+            <>
+              <RNAnimated.View
+                style={[
+                  styles.scanLine,
+                  { transform: [{ translateY: scanTranslateY }] },
+                ]}
+              />
+              <View style={styles.viewfinderContent}>
                 <MaterialCommunityIcons
                   name="file-document-outline"
                   size={56}
@@ -332,10 +406,18 @@ export default function ScanScreen() {
                 <View style={styles.detectingBadge}>
                   <Text style={styles.detectingText}>DETECTING RX...</Text>
                 </View>
-              </>
-            )}
-            {phase === "detected" && (
-              <>
+              </View>
+            </>
+          )}
+
+          {phase === "detected" && capturedUri && (
+            <>
+              <Image
+                source={{ uri: capturedUri }}
+                style={StyleSheet.absoluteFill}
+                contentFit="cover"
+              />
+              <View style={styles.detectedOverlay}>
                 <Ionicons
                   name="checkmark-circle"
                   size={56}
@@ -347,9 +429,39 @@ export default function ScanScreen() {
                 <Text style={styles.detectedSubText}>
                   Dr. Williams - Tooth #14, #15 - Shade A2
                 </Text>
-              </>
-            )}
-          </View>
+              </View>
+            </>
+          )}
+
+          {phase === "detected" && !capturedUri && (
+            <View style={styles.viewfinderContent}>
+              <Ionicons
+                name="checkmark-circle"
+                size={56}
+                color={Colors.light.success}
+              />
+              <Text style={styles.detectedViewText}>
+                Prescription Detected
+              </Text>
+              <Text style={styles.detectedSubText}>
+                Dr. Williams - Tooth #14, #15 - Shade A2
+              </Text>
+            </View>
+          )}
+
+          {phase === "ready" && (
+            <View style={styles.viewfinderContent}>
+              <MaterialCommunityIcons
+                name="file-document-outline"
+                size={56}
+                color={Colors.light.textTertiary}
+              />
+              <Text style={styles.viewfinderText}>
+                Take a photo of the Rx
+              </Text>
+            </View>
+          )}
+
           <View style={styles.cornerTL} />
           <View style={styles.cornerTR} />
           <View style={styles.cornerBL} />
@@ -360,19 +472,58 @@ export default function ScanScreen() {
       <View
         style={[
           styles.scanControls,
-          { paddingBottom: Platform.OS === "web" ? 84 + 20 : insets.bottom + 80 },
+          {
+            paddingBottom:
+              Platform.OS === "web" ? 84 + 20 : insets.bottom + 80,
+          },
         ]}
       >
         {phase === "ready" && (
-          <Pressable
-            onPress={handleScan}
-            style={({ pressed }) => [
-              styles.captureBtn,
-              pressed && { transform: [{ scale: 0.95 }] },
-            ]}
-          >
-            <View style={styles.captureBtnInner} />
-          </Pressable>
+          <View style={styles.readyActions}>
+            <Pressable
+              onPress={handlePickImage}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons name="images-outline" size={24} color="#FFF" />
+              <Text style={styles.secondaryBtnText}>Gallery</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={handleTakePhoto}
+              style={({ pressed }) => [
+                styles.captureBtn,
+                pressed && { transform: [{ scale: 0.95 }] },
+              ]}
+            >
+              <View style={styles.captureBtnInner}>
+                <Ionicons name="camera" size={28} color={Colors.light.dark} />
+              </View>
+            </Pressable>
+
+            <Pressable
+              onPress={() => {
+                setCapturedUri(null);
+                setPhase("scanning");
+                if (Platform.OS !== "web") {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                }
+              }}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="text-box-outline"
+                size={24}
+                color="#FFF"
+              />
+              <Text style={styles.secondaryBtnText}>Manual</Text>
+            </Pressable>
+          </View>
         )}
         {phase === "scanning" && (
           <View style={styles.scanningIndicator}>
@@ -389,7 +540,7 @@ export default function ScanScreen() {
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <Ionicons name="refresh" size={22} color={Colors.light.text} />
+              <Ionicons name="refresh" size={22} color="#FFF" />
             </Pressable>
             <Pressable
               onPress={handleDetected}
@@ -423,6 +574,12 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: "#FFF",
   },
+  scanSubtitle: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.5)",
+    marginTop: 4,
+  },
   scanArea: {
     flex: 1,
     justifyContent: "center",
@@ -451,6 +608,10 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     color: "rgba(255,255,255,0.4)",
   },
+  scanOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.3)",
+  },
   scanLine: {
     position: "absolute",
     left: 0,
@@ -475,6 +636,13 @@ const styles = StyleSheet.create({
     color: "#FFF",
     letterSpacing: 1,
   },
+  detectedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+  },
   detectedViewText: {
     fontSize: 16,
     fontFamily: "Inter_700Bold",
@@ -483,7 +651,7 @@ const styles = StyleSheet.create({
   detectedSubText: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: "rgba(255,255,255,0.5)",
+    color: "rgba(255,255,255,0.7)",
     textAlign: "center",
   },
   cornerTL: {
@@ -534,20 +702,36 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 24,
   },
+  readyActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 24,
+  },
+  secondaryBtn: {
+    alignItems: "center",
+    gap: 6,
+  },
+  secondaryBtnText: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.6)",
+  },
   captureBtn: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     borderWidth: 4,
     borderColor: "rgba(255,255,255,0.3)",
     justifyContent: "center",
     alignItems: "center",
   },
   captureBtnInner: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     backgroundColor: "#FFF",
+    justifyContent: "center",
+    alignItems: "center",
   },
   scanningIndicator: {
     paddingVertical: 16,
@@ -616,6 +800,33 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.light.background,
     padding: 20,
+  },
+  capturedPreview: {
+    borderRadius: 14,
+    overflow: "hidden",
+    marginBottom: 20,
+    height: 160,
+  },
+  previewImage: {
+    width: "100%",
+    height: "100%",
+  },
+  previewOverlay: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  previewText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
   },
   detectedBanner: {
     flexDirection: "row",
