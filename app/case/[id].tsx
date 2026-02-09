@@ -233,36 +233,113 @@ export default function CaseDetailScreen() {
         )}
 
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Route History</Text>
+          <Text style={styles.sectionTitle}>Case History</Text>
         </View>
         <View style={styles.timeline}>
-          {caseItem.routeHistory.map((entry, idx) => {
-            const info = getStationInfo(entry.station);
-            const isLast = idx === caseItem.routeHistory.length - 1;
+          {(caseItem.activityLog && caseItem.activityLog.length > 0
+            ? [...caseItem.activityLog].sort((a, b) => a.timestamp - b.timestamp)
+            : caseItem.routeHistory.map((rh) => ({
+                id: String(rh.timestamp),
+                type: "station_change" as const,
+                timestamp: rh.timestamp,
+                description: `Case moved to ${getStationInfo(rh.station).label}`,
+                station: rh.station,
+              }))
+          ).map((entry, idx, arr) => {
+            const isLast = idx === arr.length - 1;
+            const isStation = entry.type === "station_change" || entry.type === "created" || entry.type === "scan";
+            const isNote = entry.type === "note";
+            const isPhoto = entry.type === "photo";
+            const stationInfo = entry.station ? getStationInfo(entry.station) : null;
+
+            let dotColor = Colors.light.textTertiary;
+            let iconName: keyof typeof Ionicons.glyphMap = "ellipse";
+            let iconSize = 12;
+            let iconColor = "#fff";
+
+            if (isStation && stationInfo) {
+              dotColor = isLast ? stationInfo.color : Colors.light.textTertiary;
+              iconName = "navigate";
+              iconSize = 10;
+            } else if (isNote) {
+              dotColor = "#F59E0B";
+              iconName = "document-text";
+              iconSize = 10;
+            } else if (isPhoto) {
+              dotColor = "#8B5CF6";
+              iconName = "camera";
+              iconSize = 10;
+            }
+
             return (
-              <View key={idx} style={styles.timelineItem}>
+              <View key={entry.id || idx} style={styles.timelineItem}>
                 <View style={styles.timelineLine}>
                   <View
                     style={[
                       styles.timelineDot,
-                      {
-                        backgroundColor: isLast
-                          ? info.color
-                          : Colors.light.textTertiary,
-                      },
-                    ]}
-                  />
-                  {!isLast && <View style={styles.timelineConnector} />}
-                </View>
-                <View style={styles.timelineContent}>
-                  <Text
-                    style={[
-                      styles.timelineStation,
-                      isLast && { color: info.color, fontFamily: "Inter_700Bold" },
+                      { backgroundColor: dotColor, justifyContent: "center", alignItems: "center" },
                     ]}
                   >
-                    {info.label}
-                  </Text>
+                    <Ionicons name={iconName} size={iconSize} color={iconColor} />
+                  </View>
+                  {!isLast && <View style={styles.timelineConnector} />}
+                </View>
+                <View style={[styles.timelineContent, isPhoto && entry.imageUri ? { paddingBottom: 20 } : {}]}>
+                  {isStation && stationInfo ? (
+                    <Text
+                      style={[
+                        styles.timelineStation,
+                        isLast && { color: stationInfo.color, fontFamily: "Inter_700Bold" },
+                      ]}
+                    >
+                      {stationInfo.label}
+                    </Text>
+                  ) : (
+                    <View style={{
+                      backgroundColor: isNote ? "#FFF7ED" : "#F5F3FF",
+                      borderRadius: 10,
+                      padding: 10,
+                      borderLeftWidth: 3,
+                      borderLeftColor: isNote ? "#F59E0B" : "#8B5CF6",
+                    }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <Ionicons
+                          name={isNote ? "document-text" : "camera"}
+                          size={13}
+                          color={isNote ? "#D97706" : "#7C3AED"}
+                        />
+                        <Text style={{
+                          fontSize: 11,
+                          fontFamily: "Inter_600SemiBold",
+                          color: isNote ? "#D97706" : "#7C3AED",
+                          textTransform: "uppercase",
+                          letterSpacing: 0.5,
+                        }}>
+                          {isNote ? "Note" : "Photo"}
+                        </Text>
+                      </View>
+                      <Text style={{
+                        fontSize: 13,
+                        fontFamily: "Inter_500Medium",
+                        color: Colors.light.text,
+                        lineHeight: 18,
+                      }}>
+                        {entry.description}
+                      </Text>
+                      {isPhoto && entry.imageUri && (
+                        <Image
+                          source={{ uri: entry.imageUri }}
+                          style={{
+                            width: "100%",
+                            height: 120,
+                            borderRadius: 8,
+                            marginTop: 8,
+                          }}
+                          resizeMode="cover"
+                        />
+                      )}
+                    </View>
+                  )}
                   <Text style={styles.timelineTime}>
                     {formatTimestamp(entry.timestamp)}
                   </Text>
@@ -640,16 +717,17 @@ const styles = StyleSheet.create({
   },
   timelineLine: {
     alignItems: "center",
-    width: 20,
+    width: 24,
   },
   timelineDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
   },
   timelineConnector: {
     width: 2,
-    height: 28,
+    flex: 1,
+    minHeight: 20,
     backgroundColor: Colors.light.border,
     marginVertical: 4,
   },
