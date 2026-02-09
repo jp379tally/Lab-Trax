@@ -33,6 +33,8 @@ interface AppContextValue {
   cases: LabCase[];
   addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => void;
   updateCaseStatus: (caseId: string, newStatus: CaseStatus) => void;
+  addCasePhoto: (caseId: string, photoUri: string) => void;
+  addCaseNote: (caseId: string, note: string) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
   unreadCount: number;
@@ -223,6 +225,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function addCasePhoto(caseId: string, photoUri: string) {
+    const now = Date.now();
+    const photoEntry: ActivityEntry = {
+      id: generateId(),
+      type: "note",
+      timestamp: now,
+      description: "Photo added to case",
+    };
+    const updated = cases.map((c) => {
+      if (c.id === caseId) {
+        return {
+          ...c,
+          updatedAt: now,
+          photos: [...(c.photos || []), photoUri],
+          activityLog: [...(c.activityLog || []), photoEntry],
+        };
+      }
+      return c;
+    });
+    setCases(updated);
+    AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+  }
+
+  function addCaseNote(caseId: string, note: string) {
+    const now = Date.now();
+    const noteEntry: ActivityEntry = {
+      id: generateId(),
+      type: "note",
+      timestamp: now,
+      description: note,
+    };
+    const updated = cases.map((c) => {
+      if (c.id === caseId) {
+        return {
+          ...c,
+          updatedAt: now,
+          notes: c.notes ? `${c.notes}\n${note}` : note,
+          activityLog: [...(c.activityLog || []), noteEntry],
+        };
+      }
+      return c;
+    });
+    setCases(updated);
+    AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+  }
+
   function markNotificationRead(id: string) {
     const updated = notifications.map((n) =>
       n.id === id ? { ...n, read: true } : n,
@@ -301,6 +349,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cases,
       addCase,
       updateCaseStatus,
+      addCasePhoto,
+      addCaseNote,
       notifications,
       markNotificationRead,
       unreadCount,
