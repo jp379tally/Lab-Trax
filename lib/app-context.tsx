@@ -12,10 +12,12 @@ import {
   LabCase,
   Notification,
   CaseStatus,
+  ActivityEntry,
   Client,
   LabUser,
   Invoice,
   generateId,
+  getStationInfo,
   SAMPLE_CASES,
   SAMPLE_NOTIFICATIONS,
   SAMPLE_CLIENTS,
@@ -141,12 +143,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">,
   ) {
     const now = Date.now();
+    const createdEntry: import("@/lib/data").ActivityEntry = {
+      id: generateId(),
+      type: "created",
+      timestamp: now,
+      description: "Case created and scanned in at Intake",
+      station: c.status,
+    };
     const newCase: LabCase = {
       ...c,
       id: generateId(),
       createdAt: now,
       updatedAt: now,
       routeHistory: [{ station: c.status, timestamp: now }],
+      photos: c.photos || [],
+      activityLog: [...(c.activityLog || []), createdEntry],
     };
     const updated = [newCase, ...cases];
     setCases(updated);
@@ -168,6 +179,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   function updateCaseStatus(caseId: string, newStatus: CaseStatus) {
     const now = Date.now();
+    const stationLabel = getStationInfo(newStatus).label;
+    const stationEntry: ActivityEntry = {
+      id: generateId(),
+      type: "station_change",
+      timestamp: now,
+      description: `Case moved to ${stationLabel}`,
+      station: newStatus,
+    };
     const updated = cases.map((c) => {
       if (c.id === caseId) {
         return {
@@ -178,6 +197,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ...c.routeHistory,
             { station: newStatus, timestamp: now },
           ],
+          activityLog: [...(c.activityLog || []), stationEntry],
         };
       }
       return c;

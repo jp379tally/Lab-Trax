@@ -19,8 +19,37 @@ import * as Haptics from "expo-haptics";
 import { useFocusEffect } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
+import { ActivityEntry, generateId } from "@/lib/data";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "form";
+
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts);
+  const month = d.toLocaleString("en-US", { month: "short" });
+  const day = d.getDate();
+  const hours = d.getHours();
+  const mins = d.getMinutes().toString().padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  const h = hours % 12 || 12;
+  return `${month} ${day}, ${h}:${mins} ${ampm}`;
+}
+
+function getActivityIcon(type: string): { name: string; color: string } {
+  switch (type) {
+    case "photo":
+      return { name: "camera", color: "#8B5CF6" };
+    case "scan":
+      return { name: "scan", color: Colors.light.tint };
+    case "note":
+      return { name: "document-text", color: "#F59E0B" };
+    case "station_change":
+      return { name: "swap-horizontal", color: "#06B6D4" };
+    case "created":
+      return { name: "add-circle", color: Colors.light.success };
+    default:
+      return { name: "ellipse", color: Colors.light.textTertiary };
+  }
+}
 
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
@@ -41,6 +70,8 @@ export default function ScanScreen() {
   const [isRush, setIsRush] = useState(false);
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("2026-02-20");
+  const [casePhotos, setCasePhotos] = useState<string[]>([]);
+  const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
 
   useFocusEffect(
     useCallback(() => {
@@ -156,14 +187,102 @@ export default function ScanScreen() {
     setToothIndices("#14, #15");
     setShade("A2");
     setIsRush(false);
+    const scanEntry: ActivityEntry = {
+      id: generateId(),
+      type: "scan",
+      timestamp: Date.now(),
+      description: "Prescription scanned via AI Intake",
+    };
+    const entries: ActivityEntry[] = [scanEntry];
+    if (capturedUri) {
+      const photoEntry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: Date.now(),
+        description: "Rx photo captured",
+        imageUri: capturedUri,
+      };
+      entries.push(photoEntry);
+      setCasePhotos([capturedUri]);
+    }
+    setActivityEntries(entries);
     setPhase("form");
   }
 
   function handleManualEntry() {
     setCapturedUri(null);
     setPhase("scanning");
+    setCasePhotos([]);
+    setActivityEntries([{
+      id: generateId(),
+      type: "scan",
+      timestamp: Date.now(),
+      description: "Manual entry started",
+    }]);
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+  }
+
+  async function handleAddMorePhotos() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      const newUris = result.assets.map((a) => a.uri);
+      setCasePhotos((prev) => [...prev, ...newUris]);
+      const newEntries: ActivityEntry[] = newUris.map((uri) => ({
+        id: generateId(),
+        type: "photo" as const,
+        timestamp: Date.now(),
+        description: "Photo added",
+        imageUri: uri,
+      }));
+      setActivityEntries((prev) => [...newEntries, ...prev]);
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+    }
+  }
+
+  async function handleAddPhotoFromCamera() {
+    if (cameraRef.current) {
+      try {
+        const photo = await cameraRef.current.takePictureAsync();
+        if (photo?.uri) {
+          setCasePhotos((prev) => [...prev, photo.uri]);
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "photo",
+            timestamp: Date.now(),
+            description: "Photo captured from camera",
+            imageUri: photo.uri,
+          };
+          setActivityEntries((prev) => [entry, ...prev]);
+          if (Platform.OS !== "web") {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }
+        }
+      } catch {
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          quality: 0.8,
+        });
+        if (!result.canceled && result.assets[0]) {
+          const uri = result.assets[0].uri;
+          setCasePhotos((prev) => [...prev, uri]);
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "photo",
+            timestamp: Date.now(),
+            description: "Photo captured from camera",
+            imageUri: uri,
+          };
+          setActivityEntries((prev) => [entry, ...prev]);
+        }
+      }
     }
   }
 
@@ -189,6 +308,8 @@ export default function ScanScreen() {
       notes: notes.trim(),
       price: Math.round(500 + Math.random() * 3000),
       dueDate,
+      photos: casePhotos,
+      activityLog: activityEntries,
     });
 
     if (Platform.OS !== "web") {
@@ -213,6 +334,8 @@ export default function ScanScreen() {
     setIsRush(false);
     setNotes("");
     setDueDate("2026-02-20");
+    setCasePhotos([]);
+    setActivityEntries([]);
     scanAnim.setValue(0);
   }
 
@@ -251,25 +374,32 @@ export default function ScanScreen() {
           }}
           showsVerticalScrollIndicator={false}
         >
-          {capturedUri && (
-            <View style={styles.capturedPreview}>
-              <Image
-                source={{ uri: capturedUri }}
-                style={styles.previewImage}
-                contentFit="cover"
-              />
-              <View style={styles.previewOverlay}>
-                <Ionicons
-                  name="checkmark-circle"
-                  size={20}
-                  color={Colors.light.success}
-                />
-                <Text style={styles.previewText}>Rx Document Captured</Text>
+          {casePhotos.length > 0 ? (
+            <View style={styles.photoStripSection}>
+              <View style={styles.photoStripHeader}>
+                <Text style={styles.formLabel}>Photos ({casePhotos.length})</Text>
               </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoStrip}>
+                {casePhotos.map((uri, idx) => (
+                  <View key={idx} style={styles.photoThumbWrap}>
+                    <Image source={{ uri }} style={styles.photoThumb} contentFit="cover" />
+                    <Pressable
+                      onPress={() => {
+                        setCasePhotos((prev) => prev.filter((_, i) => i !== idx));
+                        setActivityEntries((prev) => prev.filter((e) => e.imageUri !== uri));
+                      }}
+                      style={styles.photoRemoveBtn}
+                    >
+                      <Ionicons name="close-circle" size={20} color="#EF4444" />
+                    </Pressable>
+                  </View>
+                ))}
+                <Pressable onPress={handleAddMorePhotos} style={styles.addPhotoThumb}>
+                  <Ionicons name="add" size={28} color={Colors.light.tint} />
+                </Pressable>
+              </ScrollView>
             </View>
-          )}
-
-          {!capturedUri && (
+          ) : (
             <View style={styles.detectedBanner}>
               <Ionicons
                 name="checkmark-circle"
@@ -279,6 +409,23 @@ export default function ScanScreen() {
               <Text style={styles.detectedText}>Rx Document Detected</Text>
             </View>
           )}
+
+          <View style={styles.addPhotoBtnRow}>
+            <Pressable
+              onPress={handleAddMorePhotos}
+              style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="images-outline" size={18} color={Colors.light.tint} />
+              <Text style={styles.addMorePhotosBtnText}>Add Pictures</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleAddPhotoFromCamera}
+              style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="camera-outline" size={18} color={Colors.light.tint} />
+              <Text style={styles.addMorePhotosBtnText}>Take Photo</Text>
+            </Pressable>
+          </View>
 
           <View style={styles.formGroup}>
             <Text style={styles.formLabel}>Doctor Name</Text>
@@ -398,6 +545,35 @@ export default function ScanScreen() {
               numberOfLines={3}
             />
           </View>
+
+          {activityEntries.length > 0 && (
+            <View style={styles.activitySection}>
+              <View style={styles.activityHeader}>
+                <Ionicons name="time-outline" size={16} color={Colors.light.textSecondary} />
+                <Text style={styles.activityHeaderText}>Activity Log</Text>
+                <View style={styles.activityBadge}>
+                  <Text style={styles.activityBadgeText}>{activityEntries.length}</Text>
+                </View>
+              </View>
+              {[...activityEntries].sort((a, b) => b.timestamp - a.timestamp).map((entry) => {
+                const icon = getActivityIcon(entry.type);
+                return (
+                  <View key={entry.id} style={styles.activityRow}>
+                    <View style={[styles.activityIconWrap, { backgroundColor: icon.color + "18" }]}>
+                      <Ionicons name={icon.name as any} size={16} color={icon.color} />
+                    </View>
+                    <View style={styles.activityContent}>
+                      <Text style={styles.activityDesc}>{entry.description}</Text>
+                      <Text style={styles.activityTime}>{formatTimestamp(entry.timestamp)}</Text>
+                    </View>
+                    {entry.imageUri && (
+                      <Image source={{ uri: entry.imageUri }} style={styles.activityThumb} contentFit="cover" />
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
         </ScrollView>
       </View>
     );
@@ -1069,5 +1245,129 @@ const styles = StyleSheet.create({
   rushToggleDotActive: {
     alignSelf: "flex-end" as const,
     backgroundColor: "#EF4444",
+  },
+  photoStripSection: {
+    marginBottom: 16,
+  },
+  photoStripHeader: {
+    marginBottom: 8,
+  },
+  photoStrip: {
+    flexDirection: "row",
+  },
+  photoThumbWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 12,
+    overflow: "hidden",
+    marginRight: 10,
+    position: "relative",
+  },
+  photoThumb: {
+    width: 80,
+    height: 80,
+  },
+  photoRemoveBtn: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    borderRadius: 10,
+  },
+  addPhotoThumb: {
+    width: 80,
+    height: 80,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: Colors.light.tint + "40",
+    borderStyle: "dashed" as const,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: Colors.light.tintLight,
+  },
+  addPhotoBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 20,
+  },
+  addMorePhotosBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.light.tintLight,
+    borderWidth: 1,
+    borderColor: Colors.light.tint + "30",
+  },
+  addMorePhotosBtnText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  activitySection: {
+    marginTop: 8,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: Colors.light.borderLight,
+  },
+  activityHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 14,
+  },
+  activityHeaderText: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    flex: 1,
+  },
+  activityBadge: {
+    backgroundColor: Colors.light.tintLight,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  activityBadgeText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+  },
+  activityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  activityIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  activityContent: {
+    flex: 1,
+    gap: 2,
+  },
+  activityDesc: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  activityTime: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+  },
+  activityThumb: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
   },
 });
