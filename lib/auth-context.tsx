@@ -11,6 +11,9 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 interface StoredUser {
   username: string;
   password: string;
+  email?: string;
+  phone?: string;
+  wantsUpdates?: boolean;
 }
 
 interface AuthContextValue {
@@ -20,7 +23,7 @@ interface AuthContextValue {
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  register: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   registeredUsers: StoredUser[];
 }
@@ -130,7 +133,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { success: true };
   }
 
-  async function register(username: string, password: string): Promise<{ success: boolean; error?: string }> {
+  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean }): Promise<{ success: boolean; error?: string }> {
     const savedRaw = await AsyncStorage.getItem(USERS_STORE_KEY);
     let allUsers = [...DEFAULT_USERS];
     if (savedRaw) {
@@ -148,22 +151,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const exists = allUsers.some(
-      (u) => u.username.toLowerCase() === username.toLowerCase(),
+      (u) => u.username.toLowerCase() === data.username.toLowerCase(),
     );
     if (exists) {
       return { success: false, error: "Username already taken." };
     }
 
-    const newUser: StoredUser = { username, password };
+    const newUser: StoredUser = {
+      username: data.username,
+      password: data.password,
+      email: data.email,
+      phone: data.phone,
+      wantsUpdates: data.wantsUpdates,
+    };
     allUsers.push(newUser);
     setRegisteredUsers(allUsers);
     await AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(allUsers));
 
     setIsAuthenticated(true);
-    setCurrentUser(username);
+    setCurrentUser(data.username);
     await AsyncStorage.setItem(
       AUTH_KEY,
-      JSON.stringify({ loggedIn: true, username }),
+      JSON.stringify({ loggedIn: true, username: data.username }),
     );
     return { success: true };
   }
