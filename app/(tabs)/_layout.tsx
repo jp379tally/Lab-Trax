@@ -43,7 +43,7 @@ function ClassicTabLayout() {
   const isDark = colorScheme === "dark";
   const isWeb = Platform.OS === "web";
   const isIOS = Platform.OS === "ios";
-  const { unreadCount } = useApp();
+  const { unreadCount, role, setRole, setAdminUnlocked } = useApp();
 
   return (
     <Tabs
@@ -91,6 +91,14 @@ function ClassicTabLayout() {
               color={color}
             />
           ),
+        }}
+        listeners={{
+          tabPress: () => {
+            if (role === "admin") {
+              setRole("tech");
+              setAdminUnlocked(false);
+            }
+          },
         }}
       />
       <Tabs.Screen
