@@ -513,6 +513,69 @@ function TechDashboard() {
         </View>
       </LinearGradient>
 
+      {(() => {
+        const today = new Date();
+        const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+        const dueTodayCases = cases.filter(
+          (c) => c.dueDate === todayStr && c.status !== "COMPLETE" && c.status !== "SHIP",
+        );
+        return (
+          <>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Due Today</Text>
+              <View style={styles.dueTodayBadge}>
+                <Text style={styles.dueTodayBadgeText}>{dueTodayCases.length}</Text>
+              </View>
+            </View>
+            {dueTodayCases.length === 0 ? (
+              <View style={styles.dueTodayEmpty}>
+                <Ionicons name="checkmark-circle-outline" size={28} color={Colors.light.success} />
+                <Text style={styles.dueTodayEmptyText}>No cases due today</Text>
+              </View>
+            ) : (
+              <View style={styles.caseList}>
+                {dueTodayCases.map((c) => {
+                  const stationInfo = getStationInfo(c.status);
+                  return (
+                    <Pressable
+                      key={c.id}
+                      style={({ pressed }) => [styles.caseCard, styles.dueTodayCard, pressed && { opacity: 0.7 }]}
+                      onPress={() => router.push({ pathname: "/case/[id]", params: { id: c.id } })}
+                    >
+                      <View style={styles.caseCardTop}>
+                        <View style={styles.caseInfo}>
+                          <View style={styles.caseNumberRow}>
+                            <Text style={styles.caseNumber}>{c.caseNumber}</Text>
+                            {c.isRush && (
+                              <View style={styles.rushBadge}>
+                                <Ionicons name="flash" size={10} color="#EF4444" />
+                                <Text style={styles.rushText}>RUSH</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text style={styles.caseDoctor}>{c.doctorName}</Text>
+                        </View>
+                        <View style={[styles.statusBadge, { backgroundColor: stationInfo.color + "18" }]}>
+                          <Text style={[styles.statusText, { color: stationInfo.color }]}>
+                            {stationInfo.label.toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.caseCardBottom}>
+                        <Text style={styles.caseMeta}>
+                          {c.toothIndices} · {c.shade} · {c.material}
+                        </Text>
+                        <Feather name="chevron-right" size={16} color={Colors.light.textTertiary} />
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
+          </>
+        );
+      })()}
+
       <View style={styles.quickActions}>
         <Pressable
           style={({ pressed }) => [
@@ -1712,6 +1775,40 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: Colors.light.tint,
+  },
+  dueTodayBadge: {
+    backgroundColor: "#FEF2F2",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+  dueTodayBadgeText: {
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    color: "#EF4444",
+  },
+  dueTodayEmpty: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: Colors.light.successLight,
+    borderRadius: 16,
+    padding: 18,
+    marginHorizontal: 20,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "rgba(34,197,94,0.15)",
+  },
+  dueTodayEmptyText: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.success,
+  },
+  dueTodayCard: {
+    borderLeftWidth: 3,
+    borderLeftColor: "#F59E0B",
   },
   caseList: {
     paddingHorizontal: 20,

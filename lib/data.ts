@@ -296,7 +296,7 @@ export const SAMPLE_CASES: LabCase[] = [
     createdAt: Date.now() - 86400000 * 3,
     updatedAt: Date.now() - 14400000,
     price: 4200.0,
-    dueDate: "2026-02-11",
+    dueDate: "2026-02-09",
     routeHistory: [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 3 },
       { station: "DESIGN", timestamp: Date.now() - 86400000 * 2 },
@@ -341,7 +341,7 @@ export const SAMPLE_CASES: LabCase[] = [
     createdAt: Date.now() - 86400000 * 10,
     updatedAt: Date.now() - 900000,
     price: 720.0,
-    dueDate: "2026-02-10",
+    dueDate: "2026-02-09",
     routeHistory: [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 10 },
       { station: "DESIGN", timestamp: Date.now() - 86400000 * 8 },
