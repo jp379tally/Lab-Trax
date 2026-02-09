@@ -79,8 +79,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function login(username: string, password: string): Promise<{ success: boolean; error?: string }> {
-    const users = registeredUsers.length > 0 ? registeredUsers : DEFAULT_USERS;
-    const found = users.find(
+    const savedRaw = await AsyncStorage.getItem(USERS_STORE_KEY);
+    let allUsers = [...DEFAULT_USERS];
+    if (savedRaw) {
+      try {
+        const saved: StoredUser[] = JSON.parse(savedRaw);
+        for (const su of saved) {
+          const isDefault = DEFAULT_USERS.some(
+            (d) => d.username.toLowerCase() === su.username.toLowerCase(),
+          );
+          if (!isDefault) {
+            allUsers.push(su);
+          }
+        }
+      } catch {}
+    }
+    const found = allUsers.find(
       (u) => u.username.toLowerCase() === username.toLowerCase() && u.password === password,
     );
 
