@@ -142,23 +142,6 @@ function TechDashboard() {
           </View>
           <Text style={styles.quickLabel}>Search Cases</Text>
         </Pressable>
-        <Pressable
-          style={({ pressed }) => [
-            styles.quickBtn,
-            pressed && styles.quickBtnPressed,
-          ]}
-          onPress={() => router.push("/(tabs)/notifications")}
-        >
-          <View
-            style={[
-              styles.quickIcon,
-              { backgroundColor: Colors.light.warningLight },
-            ]}
-          >
-            <Ionicons name="notifications" size={22} color={Colors.light.warning} />
-          </View>
-          <Text style={styles.quickLabel}>Alerts</Text>
-        </Pressable>
       </View>
 
       <View style={styles.sectionHeader}>
