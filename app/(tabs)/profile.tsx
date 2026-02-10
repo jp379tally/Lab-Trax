@@ -15,13 +15,13 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 
-type WorkStatus = "working" | "break" | "left";
+type WorkStatus = "available" | "break" | "out_of_office";
 
 export default function ProfileScreen() {
   const { role, setRole, adminUnlocked, setAdminUnlocked } = useApp();
   const { logout, currentUser, profilePicUri } = useAuth();
   const insets = useSafeAreaInsets();
-  const [workStatus, setWorkStatus] = useState<WorkStatus>("working");
+  const [workStatus, setWorkStatus] = useState<WorkStatus>("available");
 
   function handleStatusChange(status: WorkStatus) {
     setWorkStatus(status);
@@ -31,9 +31,9 @@ export default function ProfileScreen() {
   }
 
   const statusConfig: { key: WorkStatus; label: string; icon: keyof typeof Ionicons.glyphMap; color: string; bg: string }[] = [
-    { key: "working", label: "Working", icon: "flash", color: Colors.light.success, bg: Colors.light.successLight },
+    { key: "available", label: "Available", icon: "checkmark-circle", color: Colors.light.success, bg: Colors.light.successLight },
     { key: "break", label: "Taking a Break", icon: "cafe", color: Colors.light.warning, bg: Colors.light.warningLight },
-    { key: "left", label: "Left for the Day", icon: "moon", color: Colors.light.textSecondary, bg: Colors.light.surfaceSecondary },
+    { key: "out_of_office", label: "Out of Office", icon: "airplane", color: Colors.light.textSecondary, bg: Colors.light.surfaceSecondary },
   ];
 
   return (
@@ -54,7 +54,7 @@ export default function ProfileScreen() {
               <Ionicons name="person" size={36} color={Colors.light.tint} />
             </View>
           )}
-          <View style={[styles.statusDot, { backgroundColor: workStatus === "working" ? Colors.light.success : workStatus === "break" ? Colors.light.warning : Colors.light.textTertiary }]} />
+          <View style={[styles.statusDot, { backgroundColor: workStatus === "available" ? Colors.light.success : workStatus === "break" ? Colors.light.warning : Colors.light.textSecondary }]} />
         </View>
         <Text style={styles.profileName}>
           {currentUser ? currentUser.charAt(0).toUpperCase() + currentUser.slice(1) : role === "tech" ? "Lab Technician" : "Lab Administrator"}
@@ -87,186 +87,35 @@ export default function ProfileScreen() {
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>ACTIVE ROLE</Text>
-        <View style={styles.roleToggle}>
-          <Pressable
-            onPress={() => setRole("tech")}
-            style={[
-              styles.roleBtn,
-              role === "tech" && styles.roleBtnActive,
-            ]}
-          >
-            <Ionicons
-              name="construct"
-              size={18}
-              color={role === "tech" ? "#FFF" : Colors.light.textSecondary}
-            />
-            <Text
-              style={[
-                styles.roleBtnText,
-                role === "tech" && styles.roleBtnTextActive,
-              ]}
-            >
-              Technician
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setRole("admin")}
-            style={[
-              styles.roleBtn,
-              role === "admin" && styles.roleBtnActive,
-            ]}
-          >
-            <Ionicons
-              name="shield"
-              size={18}
-              color={role === "admin" ? "#FFF" : Colors.light.textSecondary}
-            />
-            <Text
-              style={[
-                styles.roleBtnText,
-                role === "admin" && styles.roleBtnTextActive,
-              ]}
-            >
-              Admin
-            </Text>
-          </Pressable>
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>SYSTEM</Text>
+        <Text style={styles.sectionTitle}>CREDENTIALS</Text>
         <View style={styles.menuGroup}>
           <View style={styles.menuItem}>
-            <View
-              style={[
-                styles.menuIcon,
-                { backgroundColor: Colors.light.tintLight },
-              ]}
-            >
-              <Ionicons
-                name="shield-checkmark"
-                size={18}
-                color={Colors.light.tint}
-              />
+            <View style={[styles.menuIcon, { backgroundColor: Colors.light.tintLight }]}>
+              <Ionicons name="person-circle" size={18} color={Colors.light.tint} />
             </View>
             <View style={styles.menuInfo}>
-              <Text style={styles.menuTitle}>Security</Text>
-              <Text style={styles.menuSub}>HIPAA Compliant - AES-256</Text>
+              <Text style={styles.menuTitle}>Username</Text>
+              <Text style={styles.menuSub}>{currentUser || "Not set"}</Text>
             </View>
           </View>
-
           <View style={styles.menuDivider} />
-
           <View style={styles.menuItem}>
-            <View
-              style={[
-                styles.menuIcon,
-                { backgroundColor: Colors.light.successLight },
-              ]}
-            >
-              <Ionicons
-                name="cloud-done"
-                size={18}
-                color={Colors.light.success}
-              />
+            <View style={[styles.menuIcon, { backgroundColor: Colors.light.successLight }]}>
+              <Ionicons name="shield-checkmark" size={18} color={Colors.light.success} />
             </View>
             <View style={styles.menuInfo}>
-              <Text style={styles.menuTitle}>Cloud Sync</Text>
-              <Text style={styles.menuSub}>OneDrive Connected</Text>
+              <Text style={styles.menuTitle}>Role</Text>
+              <Text style={styles.menuSub}>{role === "tech" ? "Technician" : "Administrator"}</Text>
             </View>
           </View>
-
           <View style={styles.menuDivider} />
-
           <View style={styles.menuItem}>
-            <View
-              style={[
-                styles.menuIcon,
-                { backgroundColor: Colors.light.accentLight },
-              ]}
-            >
-              <MaterialCommunityIcons
-                name="database-check"
-                size={18}
-                color={Colors.light.accent}
-              />
-            </View>
-            <View style={styles.menuInfo}>
-              <Text style={styles.menuTitle}>Local Cache</Text>
-              <Text style={styles.menuSub}>
-                Offline mode ready - syncs when online
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.menuDivider} />
-
-          <View style={styles.menuItem}>
-            <View
-              style={[
-                styles.menuIcon,
-                { backgroundColor: Colors.light.warningLight },
-              ]}
-            >
-              <Ionicons
-                name="finger-print"
-                size={18}
-                color={Colors.light.warning}
-              />
+            <View style={[styles.menuIcon, { backgroundColor: Colors.light.warningLight }]}>
+              <Ionicons name="finger-print" size={18} color={Colors.light.warning} />
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Biometric Auth</Text>
-              <Text style={styles.menuSub}>
-                FaceID / TouchID for admin access
-              </Text>
-            </View>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>ABOUT</Text>
-        <View style={styles.menuGroup}>
-          <View style={styles.menuItem}>
-            <View
-              style={[
-                styles.menuIcon,
-                { backgroundColor: Colors.light.surfaceSecondary },
-              ]}
-            >
-              <Ionicons
-                name="information-circle"
-                size={18}
-                color={Colors.light.textSecondary}
-              />
-            </View>
-            <View style={styles.menuInfo}>
-              <Text style={styles.menuTitle}>Version</Text>
-              <Text style={styles.menuSub}>v2.1 (2026 Ready)</Text>
-            </View>
-          </View>
-
-          <View style={styles.menuDivider} />
-
-          <View style={styles.menuItem}>
-            <View
-              style={[
-                styles.menuIcon,
-                { backgroundColor: Colors.light.surfaceSecondary },
-              ]}
-            >
-              <Ionicons
-                name="code-slash"
-                size={18}
-                color={Colors.light.textSecondary}
-              />
-            </View>
-            <View style={styles.menuInfo}>
-              <Text style={styles.menuTitle}>Audit Trail</Text>
-              <Text style={styles.menuSub}>
-                Immutable cryptographic timestamps
-              </Text>
+              <Text style={styles.menuSub}>Face ID Enabled</Text>
             </View>
           </View>
         </View>
@@ -371,32 +220,6 @@ const styles = StyleSheet.create({
     color: Colors.light.textTertiary,
     letterSpacing: 1.5,
     marginBottom: 12,
-  },
-  roleToggle: {
-    flexDirection: "row",
-    backgroundColor: Colors.light.surfaceSecondary,
-    borderRadius: 16,
-    padding: 4,
-  },
-  roleBtn: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 13,
-  },
-  roleBtnActive: {
-    backgroundColor: Colors.light.tint,
-  },
-  roleBtnText: {
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textSecondary,
-  },
-  roleBtnTextActive: {
-    color: "#FFF",
   },
   menuGroup: {
     backgroundColor: Colors.light.surface,

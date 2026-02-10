@@ -633,10 +633,16 @@ export default function ScanScreen() {
   }
 
   function createCase() {
-    const nextNum =
-      cases.length > 0
-        ? parseInt(cases[0].caseNumber.replace("#", "")) + 1
-        : 4530;
+    const currentYear = new Date().getFullYear();
+    const yy = String(currentYear).slice(-2);
+    const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
+    const maxN = yearCases.reduce((max, c) => {
+      const parts = c.caseNumber.split("-");
+      const n = parseInt(parts[1]) || 0;
+      return n > max ? n : max;
+    }, 0);
+    const nextN = maxN + 1;
+    const caseNumber = `${yy}-${nextN}`;
 
     const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
       num,
@@ -644,7 +650,7 @@ export default function ScanScreen() {
     }));
 
     addCase({
-      caseNumber: `#${nextNum}`,
+      caseNumber,
       doctorName: doctorName.trim(),
       patientName: patientName.trim(),
       patientInitials: patientName.trim().split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
@@ -669,7 +675,7 @@ export default function ScanScreen() {
     const createdStr = `${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getDate().toString().padStart(2, "0")}/${now.getFullYear()}`;
 
     const savedLabel: LabelData = {
-      caseNumber: `#${nextNum}`,
+      caseNumber,
       doctorName: doctorName.trim(),
       patientName: patientName.trim(),
       caseType: caseType || "",
@@ -686,7 +692,7 @@ export default function ScanScreen() {
     resetForm();
     Alert.alert(
       "Case Added",
-      `Case #${nextNum} has been created and is now in Intake.`,
+      `Case ${caseNumber} has been created and is now in Intake.`,
       [
         { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
         { text: "Done", onPress: () => router.push("/(tabs)") },
@@ -695,10 +701,16 @@ export default function ScanScreen() {
   }
 
   function createCaseAsRemake() {
-    const nextNum =
-      cases.length > 0
-        ? parseInt(cases[0].caseNumber.replace("#", "")) + 1
-        : 4530;
+    const currentYear = new Date().getFullYear();
+    const yy = String(currentYear).slice(-2);
+    const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
+    const maxN = yearCases.reduce((max, c) => {
+      const parts = c.caseNumber.split("-");
+      const n = parseInt(parts[1]) || 0;
+      return n > max ? n : max;
+    }, 0);
+    const nextN = maxN + 1;
+    const caseNumber = `${yy}-${nextN}`;
 
     const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
       num,
@@ -710,7 +722,7 @@ export default function ScanScreen() {
       : "(REMAKE - No Charge)";
 
     addCase({
-      caseNumber: `#${nextNum}`,
+      caseNumber,
       doctorName: doctorName.trim(),
       patientName: patientName.trim(),
       patientInitials: patientName.trim().split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
@@ -735,7 +747,7 @@ export default function ScanScreen() {
     const createdStr = `${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getDate().toString().padStart(2, "0")}/${now.getFullYear()}`;
 
     const savedLabel: LabelData = {
-      caseNumber: `#${nextNum}`,
+      caseNumber,
       doctorName: doctorName.trim(),
       patientName: patientName.trim(),
       caseType: caseType || "",
@@ -752,7 +764,7 @@ export default function ScanScreen() {
     resetForm();
     Alert.alert(
       "Remake Case Added",
-      `Case #${nextNum} has been created as a remake (No Charge).`,
+      `Case ${caseNumber} has been created as a remake (No Charge).`,
       [
         { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
         { text: "Done", onPress: () => router.push("/(tabs)") },
@@ -1889,13 +1901,13 @@ export default function ScanScreen() {
         transparent
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={() => { setLabelModalVisible(false); router.push("/(tabs)"); }}
+        onRequestClose={() => { setLabelModalVisible(false); router.push("/(tabs)/cases"); }}
       >
         <View style={labelStyles.overlay}>
           <View style={labelStyles.container}>
             <View style={labelStyles.header}>
               <Text style={labelStyles.headerTitle}>Case Label</Text>
-              <Pressable onPress={() => { setLabelModalVisible(false); router.push("/(tabs)"); }} hitSlop={12}>
+              <Pressable onPress={() => { setLabelModalVisible(false); router.push("/(tabs)/cases"); }} hitSlop={12}>
                 <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
               </Pressable>
             </View>
@@ -1989,7 +2001,7 @@ export default function ScanScreen() {
                 onPress={() => {
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Print", "Label sent to printer.", [
-                    { text: "OK", onPress: () => { setLabelModalVisible(false); router.push("/(tabs)"); } },
+                    { text: "OK", onPress: () => { setLabelModalVisible(false); router.push("/(tabs)/cases"); } },
                   ]);
                 }}
               >
@@ -1998,7 +2010,7 @@ export default function ScanScreen() {
               </Pressable>
               <Pressable
                 style={({ pressed }) => [labelStyles.doneBtn, pressed && { opacity: 0.8 }]}
-                onPress={() => { setLabelModalVisible(false); router.push("/(tabs)"); }}
+                onPress={() => { setLabelModalVisible(false); router.push("/(tabs)/cases"); }}
               >
                 <Text style={labelStyles.doneBtnText}>Done</Text>
               </Pressable>

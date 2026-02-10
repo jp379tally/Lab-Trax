@@ -46,7 +46,8 @@ export default function CaseDetailScreen() {
   const [itemMaterial, setItemMaterial] = useState("Zirconia");
 
   const caseItem = cases.find((c) => c.id === id);
-  const showPrice = role === "admin" && adminUnlocked;
+  const isAdmin = role === "admin" && adminUnlocked;
+  const showPrice = isAdmin;
 
   if (!caseItem) {
     return (
@@ -436,6 +437,7 @@ export default function CaseDetailScreen() {
         contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 34 + 40 : insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
       >
+        {isAdmin && (
         <Pressable
           style={[styles.statusCard, (caseItem.status === "COMPLETE" || caseItem.status === "SHIP") && styles.statusCardTappable]}
           onPress={() => {
@@ -466,6 +468,7 @@ export default function CaseDetailScreen() {
             <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
           )}
         </Pressable>
+        )}
 
         <View style={styles.infoGrid}>
           <View style={styles.infoItem}>
@@ -652,6 +655,7 @@ export default function CaseDetailScreen() {
         </View>
 
         <View style={styles.actionSection}>
+          {isAdmin && (
           <Pressable
             onPress={() => setShowRouting(!showRouting)}
             style={({ pressed }) => [
@@ -665,8 +669,9 @@ export default function CaseDetailScreen() {
               {showRouting ? "Hide Stations" : "Locate"}
             </Text>
           </Pressable>
+          )}
 
-          {showRouting && (
+          {isAdmin && showRouting && (
             <View style={styles.stationGrid}>
               {STATIONS.map((station) => {
                 const isCurrent = station.id === caseItem.status;
@@ -872,6 +877,7 @@ export default function CaseDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {isAdmin && (
       <Modal
         visible={showCompleteInfo}
         transparent
@@ -939,6 +945,7 @@ export default function CaseDetailScreen() {
           </View>
         </View>
       </Modal>
+      )}
 
       <Modal
         visible={showAddItemModal}
