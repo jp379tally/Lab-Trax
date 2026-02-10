@@ -1204,171 +1204,159 @@ export default function ScanScreen() {
                 </View>
 
                 <View style={styles.archContainer}>
-                  <Text style={styles.archLabel}>Upper</Text>
-                  <View style={styles.archRow}>
-                    <View style={styles.archSide}>
+                  <Text style={styles.archSectionTitle}>UPPER</Text>
+                  <View style={styles.archHorseshoe}>
+                    <View style={styles.archColumn}>
                       {[1,2,3,4,5,6,7,8].map((num) => {
                         const isSelected = selectedTeeth.includes(num);
                         const tType = toothTypes[num] || "normal";
-                        const isMolar = num <= 3;
-                        const isPremolar = num === 4 || num === 5;
                         return (
-                          <View key={num} style={[styles.archToothWrap, isMolar && styles.archMolarOffset, isPremolar && styles.archPremolarOffset]}>
-                            <Pressable
-                              onPress={() => handleToothTap(num)}
-                              onLongPress={() => handleToothLongPress(num)}
-                              delayLongPress={400}
-                              style={[
-                                styles.archToothBtn,
-                                isSelected && tType === "normal" && styles.toothBtnSelected,
-                                isSelected && tType === "bridge" && styles.toothBtnBridge,
-                                isSelected && tType === "missing" && styles.toothBtnMissing,
-                              ]}
-                            >
-                              {isSelected && tType === "missing" ? (
-                                <View style={styles.toothMissingWrap}>
-                                  <Text style={[styles.archToothText, styles.toothBtnTextMissing]}>{num}</Text>
-                                  <View style={styles.toothXOverlay}>
-                                    <Ionicons name="close" size={18} color={Colors.light.error} />
-                                  </View>
+                          <Pressable
+                            key={num}
+                            onPress={() => handleToothTap(num)}
+                            onLongPress={() => handleToothLongPress(num)}
+                            delayLongPress={400}
+                            style={[
+                              styles.archToothBtn,
+                              isSelected && tType === "normal" && styles.toothBtnSelected,
+                              isSelected && tType === "bridge" && styles.toothBtnBridge,
+                              isSelected && tType === "missing" && styles.toothBtnMissing,
+                            ]}
+                          >
+                            {isSelected && tType === "missing" ? (
+                              <View style={styles.toothMissingWrap}>
+                                <Text style={[styles.archToothText, styles.toothBtnTextMissing]}>{num}</Text>
+                                <View style={styles.toothXOverlay}>
+                                  <Ionicons name="close" size={16} color={Colors.light.error} />
                                 </View>
-                              ) : (
-                                <Text style={[
-                                  styles.archToothText,
-                                  isSelected && tType === "normal" && styles.toothBtnTextSelected,
-                                  isSelected && tType === "bridge" && styles.toothBtnTextBridge,
-                                ]}>{num}</Text>
-                              )}
-                            </Pressable>
-                          </View>
+                              </View>
+                            ) : (
+                              <Text style={[
+                                styles.archToothText,
+                                isSelected && tType === "normal" && styles.toothBtnTextSelected,
+                                isSelected && tType === "bridge" && styles.toothBtnTextBridge,
+                              ]}>{num}</Text>
+                            )}
+                          </Pressable>
                         );
                       })}
                     </View>
-                    <View style={styles.archMidline} />
-                    <View style={[styles.archSide, styles.archSideRight]}>
+                    <View style={styles.archCurveUpper}>
+                      <View style={styles.archCurveInner} />
+                    </View>
+                    <View style={styles.archColumn}>
                       {[9,10,11,12,13,14,15,16].map((num) => {
                         const isSelected = selectedTeeth.includes(num);
                         const tType = toothTypes[num] || "normal";
-                        const isMolar = num >= 14;
-                        const isPremolar = num === 12 || num === 13;
                         return (
-                          <View key={num} style={[styles.archToothWrap, isMolar && styles.archMolarOffset, isPremolar && styles.archPremolarOffset]}>
-                            <Pressable
-                              onPress={() => handleToothTap(num)}
-                              onLongPress={() => handleToothLongPress(num)}
-                              delayLongPress={400}
-                              style={[
-                                styles.archToothBtn,
-                                isSelected && tType === "normal" && styles.toothBtnSelected,
-                                isSelected && tType === "bridge" && styles.toothBtnBridge,
-                                isSelected && tType === "missing" && styles.toothBtnMissing,
-                              ]}
-                            >
-                              {isSelected && tType === "missing" ? (
-                                <View style={styles.toothMissingWrap}>
-                                  <Text style={[styles.archToothText, styles.toothBtnTextMissing]}>{num}</Text>
-                                  <View style={styles.toothXOverlay}>
-                                    <Ionicons name="close" size={18} color={Colors.light.error} />
-                                  </View>
+                          <Pressable
+                            key={num}
+                            onPress={() => handleToothTap(num)}
+                            onLongPress={() => handleToothLongPress(num)}
+                            delayLongPress={400}
+                            style={[
+                              styles.archToothBtn,
+                              isSelected && tType === "normal" && styles.toothBtnSelected,
+                              isSelected && tType === "bridge" && styles.toothBtnBridge,
+                              isSelected && tType === "missing" && styles.toothBtnMissing,
+                            ]}
+                          >
+                            {isSelected && tType === "missing" ? (
+                              <View style={styles.toothMissingWrap}>
+                                <Text style={[styles.archToothText, styles.toothBtnTextMissing]}>{num}</Text>
+                                <View style={styles.toothXOverlay}>
+                                  <Ionicons name="close" size={16} color={Colors.light.error} />
                                 </View>
-                              ) : (
-                                <Text style={[
-                                  styles.archToothText,
-                                  isSelected && tType === "normal" && styles.toothBtnTextSelected,
-                                  isSelected && tType === "bridge" && styles.toothBtnTextBridge,
-                                ]}>{num}</Text>
-                              )}
-                            </Pressable>
-                          </View>
+                              </View>
+                            ) : (
+                              <Text style={[
+                                styles.archToothText,
+                                isSelected && tType === "normal" && styles.toothBtnTextSelected,
+                                isSelected && tType === "bridge" && styles.toothBtnTextBridge,
+                              ]}>{num}</Text>
+                            )}
+                          </Pressable>
                         );
                       })}
                     </View>
                   </View>
 
-                  <View style={styles.archDivider}>
-                    <View style={styles.archDividerLine} />
-                    <Text style={styles.archDividerLabel}>R</Text>
-                    <View style={styles.archDividerDash} />
-                    <Text style={styles.archDividerLabel}>L</Text>
-                    <View style={styles.archDividerLine} />
+                  <View style={styles.archGap}>
+                    <View style={styles.archGapLine} />
                   </View>
 
-                  <Text style={styles.archLabel}>Lower</Text>
-                  <View style={styles.archRow}>
-                    <View style={styles.archSide}>
+                  <Text style={styles.archSectionTitle}>LOWER</Text>
+                  <View style={styles.archHorseshoe}>
+                    <View style={styles.archColumn}>
                       {[32,31,30,29,28,27,26,25].map((num) => {
                         const isSelected = selectedTeeth.includes(num);
                         const tType = toothTypes[num] || "normal";
-                        const isMolar = num >= 30;
-                        const isPremolar = num === 28 || num === 29;
                         return (
-                          <View key={num} style={[styles.archToothWrap, isMolar && styles.archMolarOffsetLower, isPremolar && styles.archPremolarOffsetLower]}>
-                            <Pressable
-                              onPress={() => handleToothTap(num)}
-                              onLongPress={() => handleToothLongPress(num)}
-                              delayLongPress={400}
-                              style={[
-                                styles.archToothBtn,
-                                isSelected && tType === "normal" && styles.toothBtnSelected,
-                                isSelected && tType === "bridge" && styles.toothBtnBridge,
-                                isSelected && tType === "missing" && styles.toothBtnMissing,
-                              ]}
-                            >
-                              {isSelected && tType === "missing" ? (
-                                <View style={styles.toothMissingWrap}>
-                                  <Text style={[styles.archToothText, styles.toothBtnTextMissing]}>{num}</Text>
-                                  <View style={styles.toothXOverlay}>
-                                    <Ionicons name="close" size={18} color={Colors.light.error} />
-                                  </View>
+                          <Pressable
+                            key={num}
+                            onPress={() => handleToothTap(num)}
+                            onLongPress={() => handleToothLongPress(num)}
+                            delayLongPress={400}
+                            style={[
+                              styles.archToothBtn,
+                              isSelected && tType === "normal" && styles.toothBtnSelected,
+                              isSelected && tType === "bridge" && styles.toothBtnBridge,
+                              isSelected && tType === "missing" && styles.toothBtnMissing,
+                            ]}
+                          >
+                            {isSelected && tType === "missing" ? (
+                              <View style={styles.toothMissingWrap}>
+                                <Text style={[styles.archToothText, styles.toothBtnTextMissing]}>{num}</Text>
+                                <View style={styles.toothXOverlay}>
+                                  <Ionicons name="close" size={16} color={Colors.light.error} />
                                 </View>
-                              ) : (
-                                <Text style={[
-                                  styles.archToothText,
-                                  isSelected && tType === "normal" && styles.toothBtnTextSelected,
-                                  isSelected && tType === "bridge" && styles.toothBtnTextBridge,
-                                ]}>{num}</Text>
-                              )}
-                            </Pressable>
-                          </View>
+                              </View>
+                            ) : (
+                              <Text style={[
+                                styles.archToothText,
+                                isSelected && tType === "normal" && styles.toothBtnTextSelected,
+                                isSelected && tType === "bridge" && styles.toothBtnTextBridge,
+                              ]}>{num}</Text>
+                            )}
+                          </Pressable>
                         );
                       })}
                     </View>
-                    <View style={styles.archMidline} />
-                    <View style={[styles.archSide, styles.archSideRight]}>
+                    <View style={styles.archCurveLower}>
+                      <View style={styles.archCurveInner} />
+                    </View>
+                    <View style={styles.archColumn}>
                       {[24,23,22,21,20,19,18,17].map((num) => {
                         const isSelected = selectedTeeth.includes(num);
                         const tType = toothTypes[num] || "normal";
-                        const isMolar = num <= 19;
-                        const isPremolar = num === 20 || num === 21;
                         return (
-                          <View key={num} style={[styles.archToothWrap, isMolar && styles.archMolarOffsetLower, isPremolar && styles.archPremolarOffsetLower]}>
-                            <Pressable
-                              onPress={() => handleToothTap(num)}
-                              onLongPress={() => handleToothLongPress(num)}
-                              delayLongPress={400}
-                              style={[
-                                styles.archToothBtn,
-                                isSelected && tType === "normal" && styles.toothBtnSelected,
-                                isSelected && tType === "bridge" && styles.toothBtnBridge,
-                                isSelected && tType === "missing" && styles.toothBtnMissing,
-                              ]}
-                            >
-                              {isSelected && tType === "missing" ? (
-                                <View style={styles.toothMissingWrap}>
-                                  <Text style={[styles.archToothText, styles.toothBtnTextMissing]}>{num}</Text>
-                                  <View style={styles.toothXOverlay}>
-                                    <Ionicons name="close" size={18} color={Colors.light.error} />
-                                  </View>
+                          <Pressable
+                            key={num}
+                            onPress={() => handleToothTap(num)}
+                            onLongPress={() => handleToothLongPress(num)}
+                            delayLongPress={400}
+                            style={[
+                              styles.archToothBtn,
+                              isSelected && tType === "normal" && styles.toothBtnSelected,
+                              isSelected && tType === "bridge" && styles.toothBtnBridge,
+                              isSelected && tType === "missing" && styles.toothBtnMissing,
+                            ]}
+                          >
+                            {isSelected && tType === "missing" ? (
+                              <View style={styles.toothMissingWrap}>
+                                <Text style={[styles.archToothText, styles.toothBtnTextMissing]}>{num}</Text>
+                                <View style={styles.toothXOverlay}>
+                                  <Ionicons name="close" size={16} color={Colors.light.error} />
                                 </View>
-                              ) : (
-                                <Text style={[
-                                  styles.archToothText,
-                                  isSelected && tType === "normal" && styles.toothBtnTextSelected,
-                                  isSelected && tType === "bridge" && styles.toothBtnTextBridge,
-                                ]}>{num}</Text>
-                              )}
-                            </Pressable>
-                          </View>
+                              </View>
+                            ) : (
+                              <Text style={[
+                                styles.archToothText,
+                                isSelected && tType === "normal" && styles.toothBtnTextSelected,
+                                isSelected && tType === "bridge" && styles.toothBtnTextBridge,
+                              ]}>{num}</Text>
+                            )}
+                          </Pressable>
                         );
                       })}
                     </View>
@@ -2491,89 +2479,90 @@ const styles = StyleSheet.create({
   },
   archContainer: {
     alignItems: "center" as const,
-    paddingVertical: 4,
+    paddingVertical: 8,
+    backgroundColor: "#EFF4FB",
+    borderRadius: 16,
+    paddingHorizontal: 8,
+    marginVertical: 4,
   },
-  archLabel: {
-    fontSize: 10,
-    fontFamily: "Inter_600SemiBold",
-    color: Colors.light.textTertiary,
-    textTransform: "uppercase" as const,
-    letterSpacing: 1,
-    marginBottom: 4,
+  archSectionTitle: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+    letterSpacing: 2,
+    marginBottom: 6,
+    marginTop: 4,
   },
-  archRow: {
+  archHorseshoe: {
     flexDirection: "row",
-    alignItems: "flex-end" as const,
+    alignItems: "center" as const,
     justifyContent: "center",
+    paddingHorizontal: 4,
   },
-  archSide: {
-    flexDirection: "row",
-    alignItems: "flex-end" as const,
-    gap: 2,
-  },
-  archSideRight: {
-    flexDirection: "row",
-  },
-  archToothWrap: {
+  archColumn: {
+    gap: 3,
     alignItems: "center" as const,
   },
-  archMolarOffset: {
-    marginBottom: 12,
+  archCurveUpper: {
+    width: 60,
+    height: 220,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: Colors.light.border,
+    marginHorizontal: 6,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    opacity: 0.4,
   },
-  archPremolarOffset: {
-    marginBottom: 5,
+  archCurveLower: {
+    width: 60,
+    height: 220,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    borderTopWidth: 2,
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: Colors.light.border,
+    marginHorizontal: 6,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    opacity: 0.4,
   },
-  archMolarOffsetLower: {
-    marginTop: 12,
-    marginBottom: 0,
+  archCurveInner: {
+    width: 30,
+    height: "60%",
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+    opacity: 0.5,
   },
-  archPremolarOffsetLower: {
-    marginTop: 5,
-    marginBottom: 0,
+  archGap: {
+    width: "80%",
+    paddingVertical: 8,
+    alignItems: "center" as const,
   },
-  archMidline: {
-    width: 1,
-    height: 40,
-    backgroundColor: Colors.light.borderLight,
-    marginHorizontal: 4,
-    alignSelf: "center" as const,
+  archGapLine: {
+    width: "100%",
+    height: 1,
+    backgroundColor: Colors.light.border,
   },
   archToothBtn: {
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: Colors.light.surfaceSecondary,
+    backgroundColor: Colors.light.surface,
     alignItems: "center" as const,
     justifyContent: "center" as const,
     borderWidth: 1.5,
-    borderColor: Colors.light.borderLight,
+    borderColor: Colors.light.border,
   },
   archToothText: {
     fontSize: 10,
     fontFamily: "Inter_700Bold",
     color: Colors.light.textSecondary,
-  },
-  archDivider: {
-    flexDirection: "row",
-    alignItems: "center",
-    width: "100%",
-    marginVertical: 8,
-    gap: 6,
-  },
-  archDividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: Colors.light.borderLight,
-  },
-  archDividerDash: {
-    width: 20,
-    height: 1,
-    backgroundColor: Colors.light.border,
-  },
-  archDividerLabel: {
-    fontSize: 10,
-    fontFamily: "Inter_700Bold",
-    color: Colors.light.textTertiary,
   },
   toothRow: {
     flexDirection: "row",
