@@ -102,7 +102,7 @@ export default function CasesScreen() {
 
   const filters: { id: CaseStatus | "ALL"; label: string }[] = [
     { id: "ALL", label: "All" },
-    ...STATIONS.filter((s) => s.id !== "COMPLETE").map((s) => ({
+    ...STATIONS.map((s) => ({
       id: s.id,
       label: s.label,
     })),
