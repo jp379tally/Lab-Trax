@@ -36,6 +36,7 @@ interface AppContextValue {
   updateCaseStatus: (caseId: string, newStatus: CaseStatus) => void;
   addCasePhoto: (caseId: string, photoUri: string) => void;
   addCaseNote: (caseId: string, note: string) => void;
+  addTrackingNumber: (caseId: string, tracking: string) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
   unreadCount: number;
@@ -292,6 +293,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function addTrackingNumber(caseId: string, tracking: string) {
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          return {
+            ...c,
+            updatedAt: Date.now(),
+            trackingNumbers: [...(c.trackingNumbers || []), tracking],
+          };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   function markNotificationRead(id: string) {
     const updated = notifications.map((n) =>
       n.id === id ? { ...n, read: true } : n,
@@ -394,6 +412,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateCaseStatus,
       addCasePhoto,
       addCaseNote,
+      addTrackingNumber,
       notifications,
       markNotificationRead,
       unreadCount,

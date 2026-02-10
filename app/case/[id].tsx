@@ -23,13 +23,14 @@ import { getStationInfo, STATIONS, CaseStatus } from "@/lib/data";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, role, adminUnlocked } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, role, adminUnlocked } = useApp();
   const insets = useSafeAreaInsets();
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
   const [showPhotoPreview, setShowPhotoPreview] = useState(false);
+  const [showCompleteInfo, setShowCompleteInfo] = useState(false);
 
   const caseItem = cases.find((c) => c.id === id);
   const showPrice = role === "admin" && adminUnlocked;
@@ -197,7 +198,16 @@ export default function CaseDetailScreen() {
         contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 34 + 40 : insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.statusCard}>
+        <Pressable
+          style={[styles.statusCard, (caseItem.status === "COMPLETE" || caseItem.status === "SHIP") && styles.statusCardTappable]}
+          onPress={() => {
+            if (caseItem.status === "COMPLETE" || caseItem.status === "SHIP") {
+              setShowCompleteInfo(true);
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }
+          }}
+          disabled={caseItem.status !== "COMPLETE" && caseItem.status !== "SHIP"}
+        >
           <View
             style={[
               styles.statusIndicator,
@@ -214,7 +224,10 @@ export default function CaseDetailScreen() {
               <Text style={styles.rushText}>RUSH</Text>
             </View>
           )}
-        </View>
+          {(caseItem.status === "COMPLETE" || caseItem.status === "SHIP") && (
+            <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+          )}
+        </Pressable>
 
         <View style={styles.infoGrid}>
           <View style={styles.infoItem}>
@@ -590,6 +603,74 @@ export default function CaseDetailScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <Modal
+        visible={showCompleteInfo}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowCompleteInfo(false)}
+      >
+        <View style={styles.completeOverlay}>
+          <View style={styles.completeSheet}>
+            <View style={styles.completeHeader}>
+              <Text style={styles.completeTitle}>
+                {caseItem.status === "COMPLETE" ? "Completed Case" : "Shipped Case"}
+              </Text>
+              <Pressable onPress={() => setShowCompleteInfo(false)}>
+                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} style={styles.completeScroll}>
+              <View style={styles.completeSectionWrap}>
+                <View style={styles.completeSectionHeader}>
+                  <Ionicons name="navigate" size={16} color="#6366F1" />
+                  <Text style={styles.completeSectionTitle}>Tracking Numbers</Text>
+                </View>
+                {(caseItem.trackingNumbers?.length ?? 0) > 0 ? (
+                  caseItem.trackingNumbers!.map((tn, idx) => (
+                    <View key={idx} style={styles.trackingItem}>
+                      <View style={styles.trackingDot} />
+                      <Text style={styles.trackingItemText}>{tn}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.completeEmptyText}>No tracking numbers recorded</Text>
+                )}
+              </View>
+
+              <View style={styles.completeSectionWrap}>
+                <View style={styles.completeSectionHeader}>
+                  <Ionicons name="camera" size={16} color="#8B5CF6" />
+                  <Text style={styles.completeSectionTitle}>Completion Photos</Text>
+                </View>
+                {(() => {
+                  const completePhotos = (caseItem.activityLog || [])
+                    .filter((a) => a.type === "photo" && a.imageUri)
+                    .map((a) => a.imageUri!);
+                  const allPhotos = [...(caseItem.photos || []), ...completePhotos];
+                  const uniquePhotos = [...new Set(allPhotos)];
+                  if (uniquePhotos.length === 0) {
+                    return <Text style={styles.completeEmptyText}>No photos available</Text>;
+                  }
+                  return (
+                    <View style={styles.completePhotoGrid}>
+                      {uniquePhotos.map((uri, idx) => (
+                        <Image
+                          key={idx}
+                          source={{ uri }}
+                          style={styles.completePhoto}
+                          resizeMode="cover"
+                        />
+                      ))}
+                    </View>
+                  );
+                })()}
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -934,5 +1015,88 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_700Bold",
     color: "#FFF",
+  },
+  statusCardTappable: {
+    borderColor: Colors.light.tint + "30",
+    borderWidth: 1.5,
+  },
+  completeOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  completeSheet: {
+    backgroundColor: Colors.light.background,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingTop: 16,
+    maxHeight: "75%",
+  },
+  completeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 20,
+  },
+  completeTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  completeScroll: {
+    flex: 1,
+  },
+  completeSectionWrap: {
+    marginBottom: 24,
+  },
+  completeSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 12,
+  },
+  completeSectionTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  completeEmptyText: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    paddingLeft: 24,
+  },
+  trackingItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    backgroundColor: "#EEF2FF",
+    borderRadius: 10,
+    marginBottom: 8,
+  },
+  trackingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#6366F1",
+  },
+  trackingItemText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#4338CA",
+  },
+  completePhotoGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  completePhoto: {
+    width: 100,
+    height: 100,
+    borderRadius: 12,
+    backgroundColor: Colors.light.border,
   },
 });

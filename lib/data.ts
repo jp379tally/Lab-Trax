@@ -60,6 +60,7 @@ export interface LabCase {
   routeHistory: { station: CaseStatus; timestamp: number }[];
   photos: string[];
   activityLog: ActivityEntry[];
+  trackingNumbers?: string[];
 }
 
 export interface Notification {

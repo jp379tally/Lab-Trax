@@ -262,7 +262,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber } = useApp();
   const { logout, profilePicUri, setProfilePicUri } = useAuth();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -271,9 +271,18 @@ function TechDashboard() {
   const [shippingModalVisible, setShippingModalVisible] = useState(false);
   const [shippingCaseId, setShippingCaseId] = useState("");
   const [shippingAddress, setShippingAddress] = useState("");
+  const [activeFilter, setActiveFilter] = useState<"intake" | "progress" | "shipped" | null>(null);
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
     .slice(0, 5);
+
+  const intakeCases = cases.filter((c) => c.status === "INTAKE");
+  const inProgressCases = cases.filter(
+    (c) => c.status !== "INTAKE" && c.status !== "SHIP" && c.status !== "COMPLETE",
+  );
+  const shippedCases = cases.filter(
+    (c) => c.status === "SHIP" || c.status === "COMPLETE",
+  );
 
   function handleAdminFromDrawer() {
     setDrawerOpen(false);
@@ -558,39 +567,96 @@ function TechDashboard() {
           {rushCaseCount} Rush{rushCaseCount !== 1 ? "es" : ""} Pending
         </Text>
         <View style={styles.heroStats}>
-          <View style={styles.heroStat}>
-            <Text style={styles.heroStatNum}>
-              {cases.filter((c) => c.status === "INTAKE").length}
-            </Text>
+          <Pressable
+            style={[styles.heroStat, activeFilter === "intake" && styles.heroStatActive]}
+            onPress={() => setActiveFilter(activeFilter === "intake" ? null : "intake")}
+          >
+            <Text style={styles.heroStatNum}>{intakeCases.length}</Text>
             <Text style={styles.heroStatLabel}>Intake</Text>
-          </View>
+          </Pressable>
           <View style={[styles.heroStatDivider]} />
-          <View style={styles.heroStat}>
-            <Text style={styles.heroStatNum}>
-              {
-                cases.filter(
-                  (c) =>
-                    c.status !== "INTAKE" &&
-                    c.status !== "SHIP" &&
-                    c.status !== "COMPLETE",
-                ).length
-              }
-            </Text>
+          <Pressable
+            style={[styles.heroStat, activeFilter === "progress" && styles.heroStatActive]}
+            onPress={() => setActiveFilter(activeFilter === "progress" ? null : "progress")}
+          >
+            <Text style={styles.heroStatNum}>{inProgressCases.length}</Text>
             <Text style={styles.heroStatLabel}>In Progress</Text>
-          </View>
+          </Pressable>
           <View style={[styles.heroStatDivider]} />
-          <View style={styles.heroStat}>
-            <Text style={styles.heroStatNum}>
-              {
-                cases.filter(
-                  (c) => c.status === "SHIP" || c.status === "COMPLETE",
-                ).length
-              }
-            </Text>
+          <Pressable
+            style={[styles.heroStat, activeFilter === "shipped" && styles.heroStatActive]}
+            onPress={() => setActiveFilter(activeFilter === "shipped" ? null : "shipped")}
+          >
+            <Text style={styles.heroStatNum}>{shippedCases.length}</Text>
             <Text style={styles.heroStatLabel}>Shipped</Text>
-          </View>
+          </Pressable>
         </View>
       </LinearGradient>
+
+      {activeFilter !== null && (
+        <View style={styles.filterSection}>
+          <View style={styles.filterHeader}>
+            <Text style={styles.filterTitle}>
+              {activeFilter === "intake" ? "Intake Cases" : activeFilter === "progress" ? "In Progress Cases" : "Shipped Cases"}
+            </Text>
+            <Pressable onPress={() => setActiveFilter(null)}>
+              <Ionicons name="close-circle" size={22} color={Colors.light.textTertiary} />
+            </Pressable>
+          </View>
+          {(activeFilter === "intake" ? intakeCases : activeFilter === "progress" ? inProgressCases : shippedCases).length === 0 ? (
+            <View style={styles.filterEmpty}>
+              <Ionicons name="file-tray-outline" size={28} color={Colors.light.textTertiary} />
+              <Text style={styles.filterEmptyText}>
+                No {activeFilter === "intake" ? "intake" : activeFilter === "progress" ? "in progress" : "shipped"} cases
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.caseList}>
+              {(activeFilter === "intake" ? intakeCases : activeFilter === "progress" ? inProgressCases : shippedCases).map((c) => {
+                const si = getStationInfo(c.status);
+                return (
+                  <Pressable
+                    key={c.id}
+                    style={({ pressed }) => [styles.caseCard, pressed && { opacity: 0.7 }]}
+                    onPress={() => router.push({ pathname: "/case/[id]", params: { id: c.id } })}
+                  >
+                    <View style={styles.caseCardTop}>
+                      <View style={styles.caseInfo}>
+                        <Text style={styles.casePatient}>{c.patientName || c.patientInitials}</Text>
+                        <Text style={styles.caseDoctor}>{c.doctorName}</Text>
+                        {c.isRush && (
+                          <View style={styles.rushBadge}>
+                            <Ionicons name="flash" size={10} color="#EF4444" />
+                            <Text style={styles.rushText}>RUSH</Text>
+                          </View>
+                        )}
+                      </View>
+                      <View style={[styles.statusBadge, { backgroundColor: si.color + "18" }]}>
+                        <Text style={[styles.statusText, { color: si.color }]}>{si.label.toUpperCase()}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.caseCardBottom}>
+                      <Text style={styles.caseMeta}>
+                        {c.toothIndices} · {c.shade} · {c.material}
+                      </Text>
+                      {activeFilter === "shipped" && (c.trackingNumbers?.length ?? 0) > 0 ? (
+                        <View style={styles.trackingRow}>
+                          <Ionicons name="navigate" size={12} color="#6366F1" />
+                          <Text style={styles.trackingText} numberOfLines={1}>
+                            {c.trackingNumbers!.join(", ")}
+                          </Text>
+                        </View>
+                      ) : (
+                        <Feather name="chevron-right" size={16} color={Colors.light.textTertiary} />
+                      )}
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </View>
+      )}
 
       {(() => {
         const today = new Date();
@@ -2506,6 +2572,11 @@ const styles = StyleSheet.create({
   heroStat: {
     flex: 1,
     alignItems: "center",
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  heroStatActive: {
+    backgroundColor: "rgba(255,255,255,0.15)",
   },
   heroStatNum: {
     fontSize: 20,
@@ -2522,6 +2593,42 @@ const styles = StyleSheet.create({
     width: 1,
     height: 30,
     backgroundColor: "rgba(255,255,255,0.15)",
+  },
+  filterSection: {
+    paddingHorizontal: 20,
+    marginBottom: 20,
+  },
+  filterHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  filterTitle: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  filterEmpty: {
+    alignItems: "center",
+    paddingVertical: 24,
+    gap: 8,
+  },
+  filterEmptyText: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textTertiary,
+  },
+  trackingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    maxWidth: 140,
+  },
+  trackingText: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    color: "#6366F1",
   },
   quickActions: {
     flexDirection: "row",
