@@ -19,6 +19,10 @@ import {
   ShippingAccount,
   ChatMessage,
   Conversation,
+  ToothEntry,
+  ToothType,
+  CaseTypeValue,
+  MATERIAL_PRICES,
   generateId,
   getStationInfo,
   SAMPLE_CASES,
@@ -41,6 +45,7 @@ interface AppContextValue {
   addCasePhoto: (caseId: string, photoUri: string) => void;
   addCaseNote: (caseId: string, note: string) => void;
   addTrackingNumber: (caseId: string, tracking: string) => void;
+  addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
   unreadCount: number;
@@ -341,6 +346,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function addCaseItem(caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypesMap: Record<number, ToothType>, mat: string) {
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
+            num,
+            type: toothTypesMap[num] || "normal",
+          }));
+          const sorted = [...selectedTeeth].sort((a, b) => a - b);
+          const parts: string[] = [];
+          let i = 0;
+          while (i < sorted.length) {
+            const t = sorted[i];
+            const tp = toothTypesMap[t] || "normal";
+            if (tp === "missing") { parts.push(`X${t}`); i++; }
+            else if (tp === "bridge") {
+              let end = i;
+              while (end + 1 < sorted.length && (toothTypesMap[sorted[end + 1]] || "normal") === "bridge") end++;
+              parts.push(end > i ? `#${sorted[i]}-#${sorted[end]}` : `#${t}`);
+              i = end + 1;
+            } else { parts.push(`#${t}`); i++; }
+          }
+          const toothDisplay = parts.join(", ");
+          const normalCount = selectedTeeth.filter((t) => (toothTypesMap[t] || "normal") === "normal").length;
+          const hasPontic = selectedTeeth.some((t) => (toothTypesMap[t] || "normal") === "bridge");
+          const billable = normalCount + (hasPontic ? 1 : 0);
+          const unitPrice = MATERIAL_PRICES[mat] || 250;
+          const price = unitPrice * Math.max(billable, 1);
+
+          const newActivity: ActivityEntry = {
+            id: generateId(),
+            type: "note",
+            description: `Item added: ${caseType} - ${toothDisplay} (${mat})`,
+            timestamp: Date.now(),
+            user: "tech",
+          };
+
+          return {
+            ...c,
+            caseType: caseType as CaseTypeValue,
+            toothIndices: toothDisplay || c.toothIndices,
+            toothMap: toothMapEntries.length > 0 ? toothMapEntries : c.toothMap,
+            material: mat,
+            price,
+            updatedAt: Date.now(),
+            activityLog: [...c.activityLog, newActivity],
+          };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   function markNotificationRead(id: string) {
     const updated = notifications.map((n) =>
       n.id === id ? { ...n, read: true } : n,
@@ -500,6 +560,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addCasePhoto,
       addCaseNote,
       addTrackingNumber,
+      addCaseItem,
       notifications,
       markNotificationRead,
       unreadCount,
