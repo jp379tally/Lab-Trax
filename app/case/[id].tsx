@@ -965,162 +965,94 @@ export default function CaseDetailScreen() {
 
                   <View style={styles.aiArchContainer}>
                     <Text style={styles.aiArchSectionTitle}>UPPER</Text>
-                    <View style={styles.aiArchHorseshoe}>
-                      <View style={styles.aiArchColumn}>
-                        {[1,2,3,4,5,6,7,8].map((num) => {
-                          const isSelected = itemSelectedTeeth.includes(num);
-                          const tType = itemToothTypes[num] || "normal";
-                          return (
-                            <Pressable
-                              key={num}
-                              onPress={() => handleItemToothTap(num)}
-                              onLongPress={() => handleItemToothLongPress(num)}
-                              delayLongPress={400}
-                              style={[
-                                styles.aiArchToothBtn,
-                                isSelected && tType === "normal" && styles.aiToothBtnSelected,
-                                isSelected && tType === "bridge" && styles.aiToothBtnBridge,
-                                isSelected && tType === "missing" && styles.aiToothBtnMissing,
-                              ]}
-                            >
-                              {isSelected && tType === "missing" ? (
-                                <View style={styles.aiToothMissingWrap}>
-                                  <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
-                                  <View style={styles.aiToothXOverlay}>
-                                    <Ionicons name="close" size={16} color={Colors.light.error} />
+                    {[[1,16],[2,15],[3,14],[4,13],[5,12],[6,11],[7,10],[8,9]].map(([left, right], idx) => {
+                      const gapWidths = [140, 130, 118, 104, 88, 68, 46, 24];
+                      const gap = gapWidths[idx];
+                      return (
+                        <View key={`upper-${idx}`} style={[styles.aiArchRow, { gap }]}>
+                          {[left, right].map((num) => {
+                            const isSelected = itemSelectedTeeth.includes(num);
+                            const tType = itemToothTypes[num] || "normal";
+                            return (
+                              <Pressable
+                                key={num}
+                                onPress={() => handleItemToothTap(num)}
+                                onLongPress={() => handleItemToothLongPress(num)}
+                                delayLongPress={400}
+                                style={[
+                                  styles.aiArchToothBtn,
+                                  isSelected && tType === "normal" && styles.aiToothBtnSelected,
+                                  isSelected && tType === "bridge" && styles.aiToothBtnBridge,
+                                  isSelected && tType === "missing" && styles.aiToothBtnMissing,
+                                ]}
+                              >
+                                {isSelected && tType === "missing" ? (
+                                  <View style={styles.aiToothMissingWrap}>
+                                    <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
+                                    <View style={styles.aiToothXOverlay}>
+                                      <Ionicons name="close" size={16} color={Colors.light.error} />
+                                    </View>
                                   </View>
-                                </View>
-                              ) : (
-                                <Text style={[
-                                  styles.aiArchToothText,
-                                  isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
-                                  isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
-                                ]}>{num}</Text>
-                              )}
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                      <View style={styles.aiArchCurveUpper}>
-                        <View style={styles.aiArchCurveInner} />
-                      </View>
-                      <View style={styles.aiArchColumn}>
-                        {[9,10,11,12,13,14,15,16].map((num) => {
-                          const isSelected = itemSelectedTeeth.includes(num);
-                          const tType = itemToothTypes[num] || "normal";
-                          return (
-                            <Pressable
-                              key={num}
-                              onPress={() => handleItemToothTap(num)}
-                              onLongPress={() => handleItemToothLongPress(num)}
-                              delayLongPress={400}
-                              style={[
-                                styles.aiArchToothBtn,
-                                isSelected && tType === "normal" && styles.aiToothBtnSelected,
-                                isSelected && tType === "bridge" && styles.aiToothBtnBridge,
-                                isSelected && tType === "missing" && styles.aiToothBtnMissing,
-                              ]}
-                            >
-                              {isSelected && tType === "missing" ? (
-                                <View style={styles.aiToothMissingWrap}>
-                                  <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
-                                  <View style={styles.aiToothXOverlay}>
-                                    <Ionicons name="close" size={16} color={Colors.light.error} />
-                                  </View>
-                                </View>
-                              ) : (
-                                <Text style={[
-                                  styles.aiArchToothText,
-                                  isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
-                                  isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
-                                ]}>{num}</Text>
-                              )}
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    </View>
+                                ) : (
+                                  <Text style={[
+                                    styles.aiArchToothText,
+                                    isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
+                                    isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
+                                  ]}>{num}</Text>
+                                )}
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      );
+                    })}
 
                     <View style={styles.aiArchGap}>
                       <View style={styles.aiArchGapLine} />
                     </View>
 
                     <Text style={styles.aiArchSectionTitle}>LOWER</Text>
-                    <View style={styles.aiArchHorseshoe}>
-                      <View style={styles.aiArchColumn}>
-                        {[32,31,30,29,28,27,26,25].map((num) => {
-                          const isSelected = itemSelectedTeeth.includes(num);
-                          const tType = itemToothTypes[num] || "normal";
-                          return (
-                            <Pressable
-                              key={num}
-                              onPress={() => handleItemToothTap(num)}
-                              onLongPress={() => handleItemToothLongPress(num)}
-                              delayLongPress={400}
-                              style={[
-                                styles.aiArchToothBtn,
-                                isSelected && tType === "normal" && styles.aiToothBtnSelected,
-                                isSelected && tType === "bridge" && styles.aiToothBtnBridge,
-                                isSelected && tType === "missing" && styles.aiToothBtnMissing,
-                              ]}
-                            >
-                              {isSelected && tType === "missing" ? (
-                                <View style={styles.aiToothMissingWrap}>
-                                  <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
-                                  <View style={styles.aiToothXOverlay}>
-                                    <Ionicons name="close" size={16} color={Colors.light.error} />
+                    {[[32,17],[31,18],[30,19],[29,20],[28,21],[27,22],[26,23],[25,24]].map(([left, right], idx) => {
+                      const gapWidths = [140, 130, 118, 104, 88, 68, 46, 24];
+                      const gap = gapWidths[idx];
+                      return (
+                        <View key={`lower-${idx}`} style={[styles.aiArchRow, { gap }]}>
+                          {[left, right].map((num) => {
+                            const isSelected = itemSelectedTeeth.includes(num);
+                            const tType = itemToothTypes[num] || "normal";
+                            return (
+                              <Pressable
+                                key={num}
+                                onPress={() => handleItemToothTap(num)}
+                                onLongPress={() => handleItemToothLongPress(num)}
+                                delayLongPress={400}
+                                style={[
+                                  styles.aiArchToothBtn,
+                                  isSelected && tType === "normal" && styles.aiToothBtnSelected,
+                                  isSelected && tType === "bridge" && styles.aiToothBtnBridge,
+                                  isSelected && tType === "missing" && styles.aiToothBtnMissing,
+                                ]}
+                              >
+                                {isSelected && tType === "missing" ? (
+                                  <View style={styles.aiToothMissingWrap}>
+                                    <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
+                                    <View style={styles.aiToothXOverlay}>
+                                      <Ionicons name="close" size={16} color={Colors.light.error} />
+                                    </View>
                                   </View>
-                                </View>
-                              ) : (
-                                <Text style={[
-                                  styles.aiArchToothText,
-                                  isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
-                                  isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
-                                ]}>{num}</Text>
-                              )}
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                      <View style={styles.aiArchCurveLower}>
-                        <View style={styles.aiArchCurveInner} />
-                      </View>
-                      <View style={styles.aiArchColumn}>
-                        {[24,23,22,21,20,19,18,17].map((num) => {
-                          const isSelected = itemSelectedTeeth.includes(num);
-                          const tType = itemToothTypes[num] || "normal";
-                          return (
-                            <Pressable
-                              key={num}
-                              onPress={() => handleItemToothTap(num)}
-                              onLongPress={() => handleItemToothLongPress(num)}
-                              delayLongPress={400}
-                              style={[
-                                styles.aiArchToothBtn,
-                                isSelected && tType === "normal" && styles.aiToothBtnSelected,
-                                isSelected && tType === "bridge" && styles.aiToothBtnBridge,
-                                isSelected && tType === "missing" && styles.aiToothBtnMissing,
-                              ]}
-                            >
-                              {isSelected && tType === "missing" ? (
-                                <View style={styles.aiToothMissingWrap}>
-                                  <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
-                                  <View style={styles.aiToothXOverlay}>
-                                    <Ionicons name="close" size={16} color={Colors.light.error} />
-                                  </View>
-                                </View>
-                              ) : (
-                                <Text style={[
-                                  styles.aiArchToothText,
-                                  isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
-                                  isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
-                                ]}>{num}</Text>
-                              )}
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    </View>
+                                ) : (
+                                  <Text style={[
+                                    styles.aiArchToothText,
+                                    isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
+                                    isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
+                                  ]}>{num}</Text>
+                                )}
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      );
+                    })}
                   </View>
 
                   {itemSelectedTeeth.length > 0 && (
@@ -1743,10 +1675,10 @@ const styles = StyleSheet.create({
   },
   aiArchContainer: {
     alignItems: "center" as const,
-    paddingVertical: 8,
+    paddingVertical: 10,
     backgroundColor: "#EFF4FB",
     borderRadius: 16,
-    paddingHorizontal: 8,
+    paddingHorizontal: 12,
     marginVertical: 4,
   },
   aiArchSectionTitle: {
@@ -1754,58 +1686,18 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: Colors.light.tint,
     letterSpacing: 2,
-    marginBottom: 6,
+    marginBottom: 4,
     marginTop: 4,
   },
-  aiArchHorseshoe: {
+  aiArchRow: {
     flexDirection: "row" as const,
     alignItems: "center" as const,
     justifyContent: "center" as const,
-    paddingHorizontal: 4,
-  },
-  aiArchColumn: {
-    gap: 3,
-    alignItems: "center" as const,
-  },
-  aiArchCurveUpper: {
-    width: 60,
-    height: 220,
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
-    borderRightWidth: 2,
-    borderColor: Colors.light.border,
-    marginHorizontal: 6,
-    alignItems: "center" as const,
-    justifyContent: "center" as const,
-    opacity: 0.4,
-  },
-  aiArchCurveLower: {
-    width: 60,
-    height: 220,
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    borderTopWidth: 2,
-    borderLeftWidth: 2,
-    borderRightWidth: 2,
-    borderColor: Colors.light.border,
-    marginHorizontal: 6,
-    alignItems: "center" as const,
-    justifyContent: "center" as const,
-    opacity: 0.4,
-  },
-  aiArchCurveInner: {
-    width: 30,
-    height: "60%",
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: Colors.light.borderLight,
-    opacity: 0.5,
+    marginVertical: 1,
   },
   aiArchGap: {
-    width: "80%",
-    paddingVertical: 8,
+    width: "60%",
+    paddingVertical: 6,
     alignItems: "center" as const,
   },
   aiArchGapLine: {
