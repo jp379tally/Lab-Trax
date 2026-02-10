@@ -1351,12 +1351,14 @@ function AdminLockScreen() {
 
 type AdminView =
   | "hub"
+  | "client-hub"
   | "clients"
   | "client-detail"
   | "add-client"
   | "edit-client"
   | "edit-price-list"
   | "edit-tier-pricing"
+  | "user-hub"
   | "add-user"
   | "edit-user"
   | "invoices"
@@ -1365,7 +1367,7 @@ type AdminView =
   | "shipping";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier } = useApp();
+  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups } = useApp();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const [adminView, setAdminView] = useState<AdminView>("hub");
@@ -1428,6 +1430,11 @@ function AdminDashboard() {
   const [selectedPriceClient, setSelectedPriceClient] = useState<Client | null>(null);
   const [showClientPicker, setShowClientPicker] = useState(false);
   const [selectedTierForClient, setSelectedTierForClient] = useState<string>("");
+  const [groupInviteUsername, setGroupInviteUsername] = useState("");
+  const [showGroupInviteConfirm, setShowGroupInviteConfirm] = useState(false);
+  const [showRemoveFromGroupConfirm, setShowRemoveFromGroupConfirm] = useState(false);
+  const [selectedGroupForAction, setSelectedGroupForAction] = useState<string>("");
+  const [selectedMemberForRemoval, setSelectedMemberForRemoval] = useState<string>("");
 
   function resetClientForm() {
     setNewClientName("");
@@ -1519,10 +1526,10 @@ function AdminDashboard() {
     setEditingUser(null);
   }
 
-  function renderBackHeader(title: string) {
+  function renderBackHeader(title: string, backTo: AdminView = "hub") {
     return (
       <View style={adm.subHeader}>
-        <Pressable onPress={() => { setAdminView("hub"); setEditingClient(null); setEditingUser(null); }} style={adm.backBtn}>
+        <Pressable onPress={() => { setAdminView(backTo); setEditingClient(null); setEditingUser(null); }} style={adm.backBtn}>
           <Ionicons name="chevron-back" size={22} color={Colors.light.tint} />
         </Pressable>
         <Text style={adm.subHeaderTitle}>{title}</Text>
@@ -1538,13 +1545,9 @@ function AdminDashboard() {
     }, 0);
 
     const menuItems: { icon: string; iconSet: "ion" | "mci" | "feather"; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
+      { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · Add, Edit, Price List`, view: "client-hub" },
+      { icon: "people", iconSet: "ion", color: "#8B5CF6", bg: "#EDE9FE", title: "Users", sub: `${users.length} staff · Add, Edit, Groups`, view: "user-hub" },
       { icon: "layers", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Edit Tier Pricing", sub: `${pricingTiers.length} pricing tiers`, view: "edit-tier-pricing" as AdminView },
-      { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · $${totalOpenBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} open`, view: "clients" },
-      { icon: "pricetag", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Edit Client Price List", sub: "Update service pricing", view: "edit-price-list" },
-      { icon: "person-add", iconSet: "ion", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
-      { icon: "people", iconSet: "ion", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${clients.length} registered practices`, view: "edit-client" },
-      { icon: "person-add-outline", iconSet: "ion", color: Colors.light.success, bg: Colors.light.successLight, title: "Add User", sub: "Create lab staff account", view: "add-user" },
-      { icon: "people-outline", iconSet: "ion", color: "#8B5CF6", bg: "#EDE9FE", title: "Edit User", sub: `${users.length} lab staff members`, view: "edit-user" },
       { icon: "document-text", iconSet: "ion", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Open Invoices", sub: `${openInvoiceCount} pending`, view: "invoices" },
       { icon: "receipt-outline", iconSet: "ion", color: "#06B6D4", bg: "#CFFAFE", title: "Generate Statements", sub: "Create billing statements", view: "statements" },
       { icon: "trending-up", iconSet: "ion", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
@@ -1615,6 +1618,105 @@ function AdminDashboard() {
     );
   }
 
+  function renderClientHub() {
+    const totalOpenBalance = clients.reduce((sum, c) => {
+      const clientInvoices = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+      return sum + clientInvoices.reduce((s, inv) => s + inv.amount, 0);
+    }, 0);
+    const clientMenuItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
+      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · $${totalOpenBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} open`, view: "clients" },
+      { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
+      { icon: "people", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${clients.length} registered practices`, view: "edit-client" },
+      { icon: "pricetag", color: "#10B981", bg: "#D1FAE5", title: "Edit Client Price List", sub: "Update service pricing", view: "edit-price-list" },
+    ];
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Clients")}
+        <View style={adm.menuSection}>
+          {clientMenuItems.map((item) => (
+            <Pressable
+              key={item.view}
+              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => setAdminView(item.view)}
+            >
+              <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
+                <Ionicons name={item.icon as any} size={20} color={item.color} />
+              </View>
+              <View style={adm.menuInfo}>
+                <Text style={adm.menuTitle}>{item.title}</Text>
+                <Text style={adm.menuSub}>{item.sub}</Text>
+              </View>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+          ))}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderUserHub() {
+    const userMenuItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
+      { icon: "person-add-outline", color: Colors.light.success, bg: Colors.light.successLight, title: "Add User", sub: "Create lab staff account", view: "add-user" },
+      { icon: "people-outline", color: "#8B5CF6", bg: "#EDE9FE", title: "Edit User", sub: `${users.length} lab staff members`, view: "edit-user" },
+    ];
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Users")}
+        <View style={adm.menuSection}>
+          {userMenuItems.map((item) => (
+            <Pressable
+              key={item.view}
+              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => setAdminView(item.view)}
+            >
+              <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
+                <Ionicons name={item.icon as any} size={20} color={item.color} />
+              </View>
+              <View style={adm.menuInfo}>
+                <Text style={adm.menuTitle}>{item.title}</Text>
+                <Text style={adm.menuSub}>{item.sub}</Text>
+              </View>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+          ))}
+        </View>
+
+        {groups.length > 0 && (
+          <View style={{ paddingHorizontal: 20, marginTop: 16 }}>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.subText, marginBottom: 12 }}>Groups</Text>
+            {groups.map((g) => (
+              <View key={g.id} style={{ backgroundColor: "#fff", borderRadius: 14, marginBottom: 10, padding: 14, shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 1 }, elevation: 1 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: g.type === "lab" ? "#EDE9FE" : "#E0F2FE", justifyContent: "center", alignItems: "center" }}>
+                    <Ionicons name={g.type === "lab" ? "flask" : "business"} size={16} color={g.type === "lab" ? "#8B5CF6" : "#0EA5E9"} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{g.name}</Text>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""} · {g.type}</Text>
+                  </View>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+    );
+  }
+
   function renderAddClient() {
     return (
       <ScrollView
@@ -1625,7 +1727,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Add Client")}
+        {renderBackHeader("Add Client", "client-hub")}
         <View style={adm.formArea}>
           <Text style={adm.formDesc}>Onboard a new dental practice.</Text>
 
@@ -1682,7 +1784,7 @@ function AdminDashboard() {
           }}
           showsVerticalScrollIndicator={false}
         >
-          {renderBackHeader("Edit Client")}
+          {renderBackHeader("Edit Client", "client-hub")}
           <View style={adm.formArea}>
             <View style={adm.field}>
               <Text style={adm.fieldLabel}>Practice Name</Text>
@@ -1738,7 +1840,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Edit Client")}
+        {renderBackHeader("Edit Client", "client-hub")}
         <View style={adm.listArea}>
           <Text style={adm.formDesc}>Select a client to edit.</Text>
           {clients.map((c) => (
@@ -1774,7 +1876,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Add User")}
+        {renderBackHeader("Add User", "user-hub")}
         <View style={adm.formArea}>
           <Text style={adm.formDesc}>Create a new lab staff account.</Text>
 
@@ -1827,7 +1929,7 @@ function AdminDashboard() {
           }}
           showsVerticalScrollIndicator={false}
         >
-          {renderBackHeader("Edit User")}
+          {renderBackHeader("Edit User", "user-hub")}
           <View style={adm.formArea}>
             <View style={adm.field}>
               <Text style={adm.fieldLabel}>Full Name</Text>
@@ -1879,6 +1981,155 @@ function AdminDashboard() {
               <Ionicons name="trash-outline" size={20} color="#FFF" />
               <Text style={adm.removeUserBtnText}>Remove User</Text>
             </Pressable>
+
+            <View style={{ marginTop: 24, borderTopWidth: 1, borderTopColor: Colors.light.border, paddingTop: 20 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginBottom: 12 }}>Group Management</Text>
+
+              {(() => {
+                const userGroups = groups.filter(g => g.members.some(m => m.username === editingUser.name || m.userId === editingUser.id));
+                return userGroups.length > 0 ? (
+                  <View style={{ marginBottom: 16 }}>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginBottom: 8 }}>Current Groups</Text>
+                    {userGroups.map(g => (
+                      <View key={g.id} style={{ flexDirection: "row", alignItems: "center", backgroundColor: Colors.light.surfaceAlt, borderRadius: 10, padding: 12, marginBottom: 8 }}>
+                        <Ionicons name={g.type === "lab" ? "flask" : "business"} size={18} color={g.type === "lab" ? "#8B5CF6" : "#0EA5E9"} style={{ marginRight: 10 }} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{g.name}</Text>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""}</Text>
+                        </View>
+                        <Pressable
+                          onPress={() => {
+                            setSelectedGroupForAction(g.id);
+                            setSelectedMemberForRemoval(editingUser.id);
+                            setShowRemoveFromGroupConfirm(true);
+                          }}
+                          style={({ pressed }) => ({ padding: 6, opacity: pressed ? 0.6 : 1 })}
+                        >
+                          <Ionicons name="remove-circle-outline" size={22} color={Colors.light.error} />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginBottom: 12 }}>Not a member of any group.</Text>
+                );
+              })()}
+
+              <View style={{ marginBottom: 12 }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginBottom: 8 }}>Add User to Group</Text>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <TextInput
+                    style={[adm.input, { flex: 1 }]}
+                    placeholder="Username to invite"
+                    placeholderTextColor={Colors.light.textTertiary}
+                    value={groupInviteUsername}
+                    onChangeText={setGroupInviteUsername}
+                    autoCapitalize="none"
+                  />
+                </View>
+                {groups.length > 0 && (
+                  <View style={{ marginTop: 8 }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginBottom: 6 }}>Select Group</Text>
+                    <View style={adm.chipRow}>
+                      {groups.map(g => (
+                        <Pressable
+                          key={g.id}
+                          onPress={() => setSelectedGroupForAction(g.id)}
+                          style={[adm.chip, selectedGroupForAction === g.id && adm.chipActive]}
+                        >
+                          <Text style={[adm.chipText, selectedGroupForAction === g.id && adm.chipTextActive]}>{g.name}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                )}
+                <Pressable
+                  style={({ pressed }) => [adm.submitBtn, { marginTop: 12 }, pressed && { opacity: 0.85 }]}
+                  onPress={() => {
+                    if (!groupInviteUsername.trim()) {
+                      Alert.alert("Required", "Please enter a username to invite.");
+                      return;
+                    }
+                    if (!selectedGroupForAction) {
+                      Alert.alert("Required", "Please select a group.");
+                      return;
+                    }
+                    setShowGroupInviteConfirm(true);
+                  }}
+                >
+                  <Ionicons name="person-add" size={18} color="#FFF" />
+                  <Text style={adm.submitBtnText}>Add User to Group</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <Modal transparent visible={showGroupInviteConfirm} animationType="fade" onRequestClose={() => setShowGroupInviteConfirm(false)}>
+              <View style={adm.confirmOverlay}>
+                <View style={adm.confirmCard}>
+                  <View style={[adm.confirmIconWrap, { backgroundColor: "#DBEAFE" }]}>
+                    <Ionicons name="people" size={32} color="#2563EB" />
+                  </View>
+                  <Text style={adm.confirmTitle}>Are you sure you want to add this user to your group?</Text>
+                  <Text style={adm.confirmDesc}>They will have access to confidential information.</Text>
+                  <View style={adm.confirmBtns}>
+                    <Pressable
+                      style={({ pressed }) => [adm.confirmYesBtn, pressed && { opacity: 0.85 }]}
+                      onPress={() => {
+                        const group = groups.find(g => g.id === selectedGroupForAction);
+                        if (group) {
+                          sendGroupInvitation(selectedGroupForAction, groupInviteUsername.trim(), "admin");
+                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                          Alert.alert("Invitation Sent", `An invitation has been sent to ${groupInviteUsername.trim()} to join ${group.name}. They must accept before they are added.`);
+                        }
+                        setShowGroupInviteConfirm(false);
+                        setGroupInviteUsername("");
+                      }}
+                    >
+                      <Text style={adm.confirmYesText}>Yes</Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [adm.confirmNoBtn, pressed && { opacity: 0.85 }]}
+                      onPress={() => setShowGroupInviteConfirm(false)}
+                    >
+                      <Text style={adm.confirmNoText}>No</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
+            <Modal transparent visible={showRemoveFromGroupConfirm} animationType="fade" onRequestClose={() => setShowRemoveFromGroupConfirm(false)}>
+              <View style={adm.confirmOverlay}>
+                <View style={adm.confirmCard}>
+                  <View style={adm.confirmIconWrap}>
+                    <Ionicons name="warning" size={32} color="#EF4444" />
+                  </View>
+                  <Text style={adm.confirmTitle}>Remove user from group?</Text>
+                  <Text style={adm.confirmDesc}>This user will lose access to the group's information.</Text>
+                  <View style={adm.confirmBtns}>
+                    <Pressable
+                      style={({ pressed }) => [adm.confirmYesBtn, pressed && { opacity: 0.85 }]}
+                      onPress={() => {
+                        removeUserFromGroup(selectedGroupForAction, selectedMemberForRemoval);
+                        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                        Alert.alert("Removed", "User has been removed from the group.");
+                        setShowRemoveFromGroupConfirm(false);
+                        setSelectedGroupForAction("");
+                        setSelectedMemberForRemoval("");
+                      }}
+                    >
+                      <Text style={adm.confirmYesText}>Yes</Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [adm.confirmNoBtn, pressed && { opacity: 0.85 }]}
+                      onPress={() => setShowRemoveFromGroupConfirm(false)}
+                    >
+                      <Text style={adm.confirmNoText}>No</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            </Modal>
 
             <Modal
               transparent
@@ -1941,7 +2192,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Edit User")}
+        {renderBackHeader("Edit User", "user-hub")}
         <View style={adm.listArea}>
           <Text style={adm.formDesc}>Select a user to edit.</Text>
           {users.map((u) => (
@@ -2150,7 +2401,7 @@ function AdminDashboard() {
     return (
       <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingBottom: 40 }}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
-          <Pressable onPress={() => setAdminView("hub")} style={{ marginRight: 12 }}>
+          <Pressable onPress={() => setAdminView("client-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
           </Pressable>
           <View style={{ flex: 1 }}>
@@ -2503,7 +2754,7 @@ function AdminDashboard() {
           }}
           showsVerticalScrollIndicator={false}
         >
-          {renderBackHeader("Edit Client Price List")}
+          {renderBackHeader("Edit Client Price List", "client-hub")}
           <View style={adm.formArea}>
             <Text style={adm.formDesc}>Select a client and assign a pricing tier, then customize prices.</Text>
 
@@ -2828,12 +3079,14 @@ function AdminDashboard() {
   }
 
   switch (adminView) {
+    case "client-hub": return renderClientHub();
     case "clients": return renderClients();
     case "client-detail": return renderClientDetail();
     case "add-client": return renderAddClient();
     case "edit-client": return renderEditClient();
     case "edit-price-list": return renderEditPriceList();
     case "edit-tier-pricing": return renderEditTierPricing();
+    case "user-hub": return renderUserHub();
     case "add-user": return renderAddUser();
     case "edit-user": return renderEditUser();
     case "invoices": return renderInvoices();

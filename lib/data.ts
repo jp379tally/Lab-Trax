@@ -108,6 +108,32 @@ export interface Conversation {
   unreadCount: number;
 }
 
+export interface Group {
+  id: string;
+  name: string;
+  type: "provider" | "lab";
+  address: string;
+  members: GroupMember[];
+  createdAt: number;
+}
+
+export interface GroupMember {
+  userId: string;
+  username: string;
+  role: "admin" | "tech";
+  joinedAt: number;
+}
+
+export interface GroupInvitation {
+  id: string;
+  groupId: string;
+  groupName: string;
+  invitedUsername: string;
+  invitedBy: string;
+  status: "pending" | "accepted" | "declined";
+  createdAt: number;
+}
+
 export function getStationInfo(status: CaseStatus) {
   return STATIONS.find((s) => s.id === status) || STATIONS[0];
 }

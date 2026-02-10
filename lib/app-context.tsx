@@ -34,6 +34,9 @@ import {
   SAMPLE_CHAT_MESSAGES,
   PricingTier,
   DEFAULT_PRICING_TIERS,
+  Group,
+  GroupMember,
+  GroupInvitation,
 } from "./data";
 
 interface AppContextValue {
@@ -75,6 +78,16 @@ interface AppContextValue {
   sendChatMessage: (conversationId: string, content: string, imageUri?: string) => void;
   markConversationRead: (conversationId: string) => void;
   totalUnreadMessages: number;
+  groups: Group[];
+  groupInvitations: GroupInvitation[];
+  createGroup: (name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "tech") => Group;
+  addUserToGroup: (groupId: string, username: string, role: "admin" | "tech") => void;
+  removeUserFromGroup: (groupId: string, userId: string) => void;
+  sendGroupInvitation: (groupId: string, invitedUsername: string, invitedBy: string) => void;
+  respondToGroupInvitation: (invitationId: string, accept: boolean, userRole?: "admin" | "tech") => void;
+  getUserGroups: (username: string) => Group[];
+  getGroupByNameAndAddress: (name: string, address: string) => Group | undefined;
+  findOrCreateGroup: (name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "tech") => Group;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -89,6 +102,8 @@ const SHIPPING_KEY = "@drivesync_shipping";
 const CONVERSATIONS_KEY = "@drivesync_conversations";
 const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
 const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
+const GROUPS_KEY = "@drivesync_groups";
+const GROUP_INVITATIONS_KEY = "@drivesync_group_invitations";
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRoleState] = useState<UserRole>("tech");
@@ -102,6 +117,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [pricingTiers, setPricingTiers] = useState<PricingTier[]>(DEFAULT_PRICING_TIERS);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [groupInvitations, setGroupInvitations] = useState<GroupInvitation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -185,6 +202,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       } else {
         setPricingTiers(DEFAULT_PRICING_TIERS);
         await AsyncStorage.setItem(PRICING_TIERS_KEY, JSON.stringify(DEFAULT_PRICING_TIERS));
+      }
+
+      const [savedGroups, savedGroupInvitations] = await Promise.all([
+        AsyncStorage.getItem(GROUPS_KEY),
+        AsyncStorage.getItem(GROUP_INVITATIONS_KEY),
+      ]);
+
+      if (savedGroups) {
+        setGroups(JSON.parse(savedGroups));
+      }
+
+      if (savedGroupInvitations) {
+        setGroupInvitations(JSON.parse(savedGroupInvitations));
       }
     } catch (e) {
       setCases(SAMPLE_CASES);
@@ -544,6 +574,114 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function createGroup(name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "tech"): Group {
+    const now = Date.now();
+    const newGroup: Group = {
+      id: generateId(),
+      name,
+      type,
+      address,
+      members: [
+        {
+          userId: generateId(),
+          username: creatorUsername,
+          role: creatorRole,
+          joinedAt: now,
+        },
+      ],
+      createdAt: now,
+    };
+    const updated = [...groups, newGroup];
+    setGroups(updated);
+    AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(updated));
+    return newGroup;
+  }
+
+  function addUserToGroup(groupId: string, username: string, role: "admin" | "tech") {
+    const now = Date.now();
+    const newMember: GroupMember = {
+      userId: generateId(),
+      username,
+      role,
+      joinedAt: now,
+    };
+    const updated = groups.map(g => {
+      if (g.id === groupId) {
+        const alreadyMember = g.members.some(m => m.username === username);
+        if (alreadyMember) return g;
+        return { ...g, members: [...g.members, newMember] };
+      }
+      return g;
+    });
+    setGroups(updated);
+    AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(updated));
+  }
+
+  function removeUserFromGroup(groupId: string, userId: string) {
+    const updated = groups.map(g => {
+      if (g.id === groupId) {
+        return { ...g, members: g.members.filter(m => m.userId !== userId) };
+      }
+      return g;
+    });
+    setGroups(updated);
+    AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(updated));
+  }
+
+  function sendGroupInvitation(groupId: string, invitedUsername: string, invitedBy: string) {
+    const group = groups.find(g => g.id === groupId);
+    const invitation: GroupInvitation = {
+      id: generateId(),
+      groupId,
+      groupName: group?.name || "",
+      invitedUsername,
+      invitedBy,
+      status: "pending",
+      createdAt: Date.now(),
+    };
+    const updated = [...groupInvitations, invitation];
+    setGroupInvitations(updated);
+    AsyncStorage.setItem(GROUP_INVITATIONS_KEY, JSON.stringify(updated));
+  }
+
+  function respondToGroupInvitation(invitationId: string, accept: boolean, userRole?: "admin" | "tech") {
+    const invitation = groupInvitations.find(inv => inv.id === invitationId);
+    if (!invitation) return;
+
+    const updatedInvitations = groupInvitations.map(inv => {
+      if (inv.id === invitationId) {
+        return { ...inv, status: accept ? "accepted" as const : "declined" as const };
+      }
+      return inv;
+    });
+    setGroupInvitations(updatedInvitations);
+    AsyncStorage.setItem(GROUP_INVITATIONS_KEY, JSON.stringify(updatedInvitations));
+
+    if (accept) {
+      addUserToGroup(invitation.groupId, invitation.invitedUsername, userRole || "tech");
+    }
+  }
+
+  function getUserGroups(username: string): Group[] {
+    return groups.filter(g => g.members.some(m => m.username === username));
+  }
+
+  function getGroupByNameAndAddress(name: string, address: string): Group | undefined {
+    return groups.find(g => g.name === name && g.address === address);
+  }
+
+  function findOrCreateGroup(name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "tech"): Group {
+    const existing = getGroupByNameAndAddress(name, address);
+    if (existing) {
+      const alreadyMember = existing.members.some(m => m.username === username);
+      if (!alreadyMember) {
+        addUserToGroup(existing.id, username, role);
+      }
+      return existing;
+    }
+    return createGroup(name, type, address, username, role);
+  }
+
   function markConversationRead(conversationId: string) {
     setChatMessages(prev => {
       const updated = prev.map(m => {
@@ -628,8 +766,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sendChatMessage,
       markConversationRead,
       totalUnreadMessages,
+      groups,
+      groupInvitations,
+      createGroup,
+      addUserToGroup,
+      removeUserFromGroup,
+      sendGroupInvitation,
+      respondToGroupInvitation,
+      getUserGroups,
+      getGroupByNameAndAddress,
+      findOrCreateGroup,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
