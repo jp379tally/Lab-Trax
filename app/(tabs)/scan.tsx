@@ -66,6 +66,8 @@ export default function ScanScreen() {
   const [doctorName, setDoctorName] = useState("");
   const [patientName, setPatientName] = useState("");
   const [toothIndices, setToothIndices] = useState("");
+  const [selectedTeeth, setSelectedTeeth] = useState<number[]>([]);
+  const [toothChartOpen, setToothChartOpen] = useState(false);
   const [shade, setShade] = useState("");
   const [material, setMaterial] = useState("Zirconia");
   const [isRush, setIsRush] = useState(false);
@@ -265,7 +267,11 @@ export default function ScanScreen() {
             if (d.doctorName) setDoctorName(d.doctorName);
             if (d.patientName) setPatientName(d.patientName);
             else if (d.patientInitials) setPatientName(d.patientInitials);
-            if (d.toothIndices) setToothIndices(d.toothIndices);
+            if (d.toothIndices) {
+              setToothIndices(d.toothIndices);
+              const nums = d.toothIndices.match(/\d+/g);
+              if (nums) setSelectedTeeth(nums.map(Number).filter((n: number) => n >= 1 && n <= 32).sort((a: number, b: number) => a - b));
+            }
             if (d.shade) setShade(d.shade);
             if (d.material) setMaterial(d.material);
             if (d.isRush !== undefined) setIsRush(d.isRush);
@@ -441,6 +447,8 @@ export default function ScanScreen() {
     setAddingNewPatient(false);
     setNewPatientInput("");
     setToothIndices("");
+    setSelectedTeeth([]);
+    setToothChartOpen(false);
     setShade("");
     setMaterial("Zirconia");
     setIsRush(false);
@@ -770,14 +778,99 @@ export default function ScanScreen() {
           </View>
 
           <View style={styles.formGroup}>
-            <Text style={styles.formLabel}>Tooth Indices</Text>
-            <TextInput
-              style={styles.formInput}
-              value={toothIndices}
-              onChangeText={setToothIndices}
-              placeholder="#8, #9, #10"
-              placeholderTextColor={Colors.light.textTertiary}
-            />
+            <Text style={styles.formLabel}>Tooth Indicator</Text>
+            <Pressable
+              onPress={() => setToothChartOpen(!toothChartOpen)}
+              style={[styles.formInput, styles.dropdownTrigger]}
+            >
+              <Text style={[styles.dropdownTriggerText, selectedTeeth.length === 0 && { color: Colors.light.textTertiary }]}>
+                {selectedTeeth.length > 0
+                  ? selectedTeeth.sort((a, b) => a - b).map((t) => `#${t}`).join(", ")
+                  : "Select teeth"}
+              </Text>
+              <Ionicons
+                name={toothChartOpen ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={Colors.light.textSecondary}
+              />
+            </Pressable>
+            {toothChartOpen && (
+              <View style={styles.toothChartPanel}>
+                <View style={styles.toothChartHeader}>
+                  <Text style={styles.toothChartTitle}>American Dental Numbering</Text>
+                  {selectedTeeth.length > 0 && (
+                    <Pressable
+                      onPress={() => {
+                        setSelectedTeeth([]);
+                        setToothIndices("");
+                      }}
+                      style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+                    >
+                      <Text style={styles.toothChartClear}>Clear</Text>
+                    </Pressable>
+                  )}
+                </View>
+
+                <Text style={styles.toothChartSectionLabel}>Upper Right → Upper Left</Text>
+                <View style={styles.toothRow}>
+                  {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map((num) => {
+                    const isSelected = selectedTeeth.includes(num);
+                    return (
+                      <Pressable
+                        key={num}
+                        onPress={() => {
+                          setSelectedTeeth((prev) => {
+                            const next = prev.includes(num) ? prev.filter((t) => t !== num) : [...prev, num];
+                            const sorted = next.sort((a, b) => a - b);
+                            setToothIndices(sorted.map((t) => `#${t}`).join(", "));
+                            return sorted;
+                          });
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={[styles.toothBtn, isSelected && styles.toothBtnSelected]}
+                      >
+                        <Text style={[styles.toothBtnText, isSelected && styles.toothBtnTextSelected]}>{num}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.toothChartDivider} />
+
+                <Text style={styles.toothChartSectionLabel}>Lower Right → Lower Left</Text>
+                <View style={styles.toothRow}>
+                  {[32,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17].map((num) => {
+                    const isSelected = selectedTeeth.includes(num);
+                    return (
+                      <Pressable
+                        key={num}
+                        onPress={() => {
+                          setSelectedTeeth((prev) => {
+                            const next = prev.includes(num) ? prev.filter((t) => t !== num) : [...prev, num];
+                            const sorted = next.sort((a, b) => a - b);
+                            setToothIndices(sorted.map((t) => `#${t}`).join(", "));
+                            return sorted;
+                          });
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={[styles.toothBtn, isSelected && styles.toothBtnSelected]}
+                      >
+                        <Text style={[styles.toothBtnText, isSelected && styles.toothBtnTextSelected]}>{num}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                {selectedTeeth.length > 0 && (
+                  <View style={styles.toothChartSummary}>
+                    <Ionicons name="checkmark-circle" size={16} color={Colors.light.tint} />
+                    <Text style={styles.toothChartSummaryText}>
+                      {selectedTeeth.length} {selectedTeeth.length === 1 ? "tooth" : "teeth"} selected: {selectedTeeth.sort((a, b) => a - b).map((t) => `#${t}`).join(", ")}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
           </View>
 
           <View style={styles.formRow}>
@@ -1627,6 +1720,86 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: "#FFF",
+  },
+  toothChartPanel: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    padding: 12,
+    gap: 8,
+  },
+  toothChartHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 2,
+  },
+  toothChartTitle: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  toothChartClear: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.error,
+  },
+  toothChartSectionLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textTertiary,
+    textTransform: "uppercase" as const,
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  toothRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 4,
+  },
+  toothBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: Colors.light.surfaceSecondary,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+  },
+  toothBtnSelected: {
+    backgroundColor: Colors.light.tint,
+    borderColor: Colors.light.tint,
+  },
+  toothBtnText: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+  toothBtnTextSelected: {
+    color: "#FFF",
+  },
+  toothChartDivider: {
+    height: 1,
+    backgroundColor: Colors.light.borderLight,
+    marginVertical: 4,
+  },
+  toothChartSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: Colors.light.borderLight,
+    marginTop: 4,
+  },
+  toothChartSummaryText: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.tint,
+    flex: 1,
   },
   formTextArea: {
     minHeight: 80,
