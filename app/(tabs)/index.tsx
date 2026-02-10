@@ -862,10 +862,21 @@ function AdminLockScreen() {
   const { setAdminUnlocked } = useApp();
   const insets = useSafeAreaInsets();
   const [authStatus, setAuthStatus] = useState<string>("");
-  const [biometricType, setBiometricType] = useState<string>("Biometric");
+  const [biometricType, setBiometricType] = useState<string>("Face ID");
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const mountedRef = React.useRef(true);
 
   useEffect(() => {
-    attemptBiometricUnlock();
+    mountedRef.current = true;
+    const timer = setTimeout(() => {
+      if (mountedRef.current) {
+        attemptBiometricUnlock();
+      }
+    }, 600);
+    return () => {
+      mountedRef.current = false;
+      clearTimeout(timer);
+    };
   }, []);
 
   async function attemptBiometricUnlock() {
@@ -878,6 +889,7 @@ function AdminLockScreen() {
       const isEnrolled = await LocalAuthentication.isEnrolledAsync();
 
       if (hasHardware && isEnrolled) {
+        setBiometricAvailable(true);
         const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
         if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
           setBiometricType("Face ID");
@@ -885,26 +897,29 @@ function AdminLockScreen() {
           setBiometricType("Touch ID");
         }
 
+        if (!mountedRef.current) return;
         setAuthStatus("scanning");
         const result = await LocalAuthentication.authenticateAsync({
           promptMessage: "Authenticate to unlock Admin Vault",
+          fallbackLabel: "Use passcode",
           disableDeviceFallback: false,
           cancelLabel: "Cancel",
         });
 
+        if (!mountedRef.current) return;
         if (result.success) {
-          if (Platform.OS !== "web") {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          }
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           setAdminUnlocked(true);
         } else {
-          setAuthStatus("failed");
+          setAuthStatus("retry");
         }
       } else {
         setAuthStatus("tap");
       }
     } catch {
-      setAuthStatus("tap");
+      if (mountedRef.current) {
+        setAuthStatus("tap");
+      }
     }
   }
 
@@ -925,9 +940,11 @@ function AdminLockScreen() {
         <Text style={styles.lockDesc}>
           {authStatus === "scanning"
             ? `Verifying with ${biometricType}...`
-            : "Accessing sensitive financial data requires facial recognition."}
+            : authStatus === "retry"
+            ? "Authentication was cancelled or failed."
+            : `Accessing sensitive data requires ${biometricType} authentication.`}
         </Text>
-        {authStatus === "failed" && (
+        {(authStatus === "retry" || authStatus === "failed") && (
           <Pressable
             style={({ pressed }) => [
               styles.unlockBtn,
@@ -941,7 +958,7 @@ function AdminLockScreen() {
               color="#FFF"
               style={{ marginRight: 8 }}
             />
-            <Text style={styles.unlockBtnText}>Try Again</Text>
+            <Text style={styles.unlockBtnText}>Try {biometricType} Again</Text>
           </Pressable>
         )}
         {authStatus === "tap" && (
@@ -950,18 +967,26 @@ function AdminLockScreen() {
               styles.unlockBtn,
               pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
             ]}
-            onPress={() => setAdminUnlocked(true)}
+            onPress={() => {
+              if (Platform.OS !== "web" && biometricAvailable) {
+                attemptBiometricUnlock();
+              } else {
+                setAdminUnlocked(true);
+              }
+            }}
           >
             <Ionicons
-              name="finger-print"
+              name={biometricAvailable ? "scan" : "finger-print"}
               size={20}
               color="#FFF"
               style={{ marginRight: 8 }}
             />
-            <Text style={styles.unlockBtnText}>Unlock Vault</Text>
+            <Text style={styles.unlockBtnText}>
+              {biometricAvailable ? `Unlock with ${biometricType}` : "Unlock Vault"}
+            </Text>
           </Pressable>
         )}
-        {authStatus === "scanning" && (
+        {(authStatus === "" || authStatus === "scanning") && (
           <View style={styles.scanningFaceWrap}>
             <Ionicons name="scan" size={40} color={Colors.light.tint} />
           </View>
