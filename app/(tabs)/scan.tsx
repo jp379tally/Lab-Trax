@@ -605,7 +605,7 @@ export default function ScanScreen() {
     }
 
     const matchingCases = cases.filter(
-      (c) => c.patientName.toLowerCase() === patientName.trim().toLowerCase()
+      (c) => (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase()
     );
 
     if (matchingCases.length > 0) {
