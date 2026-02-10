@@ -65,6 +65,8 @@ export default function ScanScreen() {
 
   const [doctorName, setDoctorName] = useState("");
   const [patientName, setPatientName] = useState("");
+  const [caseType, setCaseType] = useState("");
+  const [caseTypeOpen, setCaseTypeOpen] = useState(false);
   const [toothIndices, setToothIndices] = useState("");
   const [selectedTeeth, setSelectedTeeth] = useState<number[]>([]);
   const [toothTypes, setToothTypes] = useState<Record<number, ToothType>>({});
@@ -630,6 +632,8 @@ export default function ScanScreen() {
     setPatientSearch("");
     setAddingNewPatient(false);
     setNewPatientInput("");
+    setCaseType("");
+    setCaseTypeOpen(false);
     setToothIndices("");
     setSelectedTeeth([]);
     setToothTypes({});
@@ -955,6 +959,49 @@ export default function ScanScreen() {
                     </View>
                   </View>
                 )}
+              </View>
+            )}
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.formLabel}>Case Type</Text>
+            <Pressable
+              onPress={() => setCaseTypeOpen(!caseTypeOpen)}
+              style={[styles.formInput, styles.dropdownTrigger]}
+            >
+              <Text style={[styles.dropdownTriggerText, !caseType && { color: Colors.light.textTertiary }]}>
+                {caseType || "Select case type"}
+              </Text>
+              <Ionicons
+                name={caseTypeOpen ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={Colors.light.textSecondary}
+              />
+            </Pressable>
+            {caseTypeOpen && (
+              <View style={styles.caseTypeDropdown}>
+                {["Restorative", "Removable", "Appliance", "Temporary"].map((type) => (
+                  <Pressable
+                    key={type}
+                    onPress={() => {
+                      setCaseType(type);
+                      setCaseTypeOpen(false);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => [
+                      styles.caseTypeItem,
+                      caseType === type && styles.caseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <Text style={[styles.caseTypeItemText, caseType === type && styles.caseTypeItemTextSelected]}>
+                      {type}
+                    </Text>
+                    {caseType === type && (
+                      <Ionicons name="checkmark-circle" size={18} color={Colors.light.tint} />
+                    )}
+                  </Pressable>
+                ))}
               </View>
             )}
           </View>
@@ -1940,6 +1987,35 @@ const styles = StyleSheet.create({
   },
   formGroup: {
     marginBottom: 18,
+  },
+  caseTypeDropdown: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    overflow: "hidden" as const,
+  },
+  caseTypeItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  caseTypeItemSelected: {
+    backgroundColor: Colors.light.tintLight,
+  },
+  caseTypeItemText: {
+    fontSize: 15,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  caseTypeItemTextSelected: {
+    color: Colors.light.tint,
+    fontFamily: "Inter_600SemiBold",
   },
   dueDateRow: {
     flexDirection: "row",
