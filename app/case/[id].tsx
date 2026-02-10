@@ -20,11 +20,11 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue } from "@/lib/data";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, role, adminUnlocked, users } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users } = useApp();
   const insets = useSafeAreaInsets();
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
@@ -32,6 +32,13 @@ export default function CaseDetailScreen() {
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
   const [showPhotoPreview, setShowPhotoPreview] = useState(false);
   const [showCompleteInfo, setShowCompleteInfo] = useState(false);
+
+  const [showAddItemModal, setShowAddItemModal] = useState(false);
+  const [addItemStep, setAddItemStep] = useState<"caseType" | "toothChart">("caseType");
+  const [itemCaseType, setItemCaseType] = useState<CaseTypeValue>("");
+  const [itemSelectedTeeth, setItemSelectedTeeth] = useState<number[]>([]);
+  const [itemToothTypes, setItemToothTypes] = useState<Record<number, ToothType>>({});
+  const [itemMaterial, setItemMaterial] = useState("Zirconia");
 
   const caseItem = cases.find((c) => c.id === id);
   const showPrice = role === "admin" && adminUnlocked;
@@ -153,6 +160,110 @@ export default function CaseDetailScreen() {
       }
       setShowPhotoPreview(true);
     }, 500);
+  }
+
+  function itemUpdateToothDisplay(teeth: number[], types: Record<number, ToothType>) {
+    const sorted = [...teeth].sort((a, b) => a - b);
+    const parts: string[] = [];
+    let i = 0;
+    while (i < sorted.length) {
+      const t = sorted[i];
+      const tp = types[t] || "normal";
+      if (tp === "missing") { parts.push(`X${t}`); i++; }
+      else if (tp === "bridge") {
+        let end = i;
+        while (end + 1 < sorted.length && (types[sorted[end + 1]] || "normal") === "bridge") end++;
+        parts.push(end > i ? `#${sorted[i]}-#${sorted[end]}` : `#${t}`);
+        i = end + 1;
+      } else { parts.push(`#${t}`); i++; }
+    }
+    return parts.join(", ");
+  }
+
+  function handleItemToothTap(num: number) {
+    const wasSelected = itemSelectedTeeth.includes(num);
+    setItemSelectedTeeth((prev) => {
+      const next = wasSelected ? prev.filter((t) => t !== num) : [...prev, num];
+      return next.sort((a, b) => a - b);
+    });
+    if (wasSelected) {
+      setItemToothTypes((prevTypes) => {
+        const updated = { ...prevTypes };
+        delete updated[num];
+        return updated;
+      });
+    }
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }
+
+  function handleItemToothLongPress(num: number) {
+    if (!itemSelectedTeeth.includes(num)) {
+      setItemSelectedTeeth((prev) => [...prev, num].sort((a, b) => a - b));
+    }
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    Alert.alert(
+      `Tooth #${num}`,
+      "Select a designation for this tooth:",
+      [
+        {
+          text: "Pontic",
+          onPress: () => setItemToothTypes((prev) => ({ ...prev, [num]: "bridge" as ToothType })),
+        },
+        {
+          text: "Missing",
+          onPress: () => setItemToothTypes((prev) => ({ ...prev, [num]: "missing" as ToothType })),
+        },
+        {
+          text: "Normal",
+          onPress: () => setItemToothTypes((prev) => {
+            const updated = { ...prev };
+            delete updated[num];
+            return updated;
+          }),
+        },
+        { text: "Cancel", style: "cancel" },
+      ]
+    );
+  }
+
+  const itemBillableCount = React.useMemo(() => {
+    const normalCount = itemSelectedTeeth.filter((t) => (itemToothTypes[t] || "normal") === "normal").length;
+    const hasPontic = itemSelectedTeeth.some((t) => (itemToothTypes[t] || "normal") === "bridge");
+    return normalCount + (hasPontic ? 1 : 0);
+  }, [itemSelectedTeeth, itemToothTypes]);
+
+  const itemCalculatedPrice = React.useMemo(() => {
+    const unitPrice = MATERIAL_PRICES[itemMaterial] || 250;
+    return unitPrice * Math.max(itemBillableCount, 1);
+  }, [itemMaterial, itemBillableCount]);
+
+  const itemToothDisplay = React.useMemo(() => {
+    return itemUpdateToothDisplay(itemSelectedTeeth, itemToothTypes);
+  }, [itemSelectedTeeth, itemToothTypes]);
+
+  function openAddItemModal() {
+    setAddItemStep("caseType");
+    setItemCaseType("");
+    setItemSelectedTeeth([]);
+    setItemToothTypes({});
+    setItemMaterial("Zirconia");
+    setShowAddItemModal(true);
+  }
+
+  function handleSaveItem() {
+    if (!itemCaseType) {
+      Alert.alert("Missing Info", "Please select a case type.");
+      return;
+    }
+    if (itemSelectedTeeth.length === 0) {
+      Alert.alert("Missing Info", "Please select at least one tooth.");
+      return;
+    }
+    addCaseItem(caseItem!.id, itemCaseType, itemSelectedTeeth, itemToothTypes, itemMaterial);
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    setShowAddItemModal(false);
   }
 
   function handleAttachFile() {
@@ -569,6 +680,18 @@ export default function CaseDetailScreen() {
             <Ionicons name="attach" size={20} color={Colors.light.tint} />
             <Text style={[styles.actionBtnText, { color: Colors.light.tint }]}>Attach File</Text>
           </Pressable>
+
+          <Pressable
+            onPress={openAddItemModal}
+            style={({ pressed }) => [
+              styles.actionBtn,
+              { backgroundColor: "#10B981" },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Ionicons name="add-circle" size={20} color="#FFF" />
+            <Text style={styles.actionBtnText}>Add Item</Text>
+          </Pressable>
         </View>
       </ScrollView>
 
@@ -741,6 +864,315 @@ export default function CaseDetailScreen() {
                 })()}
               </View>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showAddItemModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowAddItemModal(false)}
+      >
+        <View style={styles.addItemOverlay}>
+          <View style={[styles.addItemSheet, { paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }]}>
+            <View style={styles.modalHandle} />
+            <View style={styles.addItemHeader}>
+              <Pressable onPress={() => {
+                if (addItemStep === "toothChart") {
+                  setAddItemStep("caseType");
+                } else {
+                  setShowAddItemModal(false);
+                }
+              }}>
+                <Ionicons name={addItemStep === "toothChart" ? "arrow-back" : "close"} size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+              <Text style={styles.addItemTitle}>
+                {addItemStep === "caseType" ? "Select Case Type" : "Select Teeth"}
+              </Text>
+              <View style={{ width: 24 }} />
+            </View>
+
+            {addItemStep === "caseType" ? (
+              <View style={styles.addItemCaseTypeList}>
+                {(["Restorative", "Removable", "Appliance", "Temporary"] as CaseTypeValue[]).map((type) => (
+                  <Pressable
+                    key={type}
+                    onPress={() => {
+                      setItemCaseType(type);
+                      setAddItemStep("toothChart");
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => [
+                      styles.addItemCaseTypeItem,
+                      itemCaseType === type && styles.addItemCaseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={styles.addItemCaseTypeIcon}>
+                      <Ionicons
+                        name={type === "Restorative" ? "construct" : type === "Removable" ? "swap-horizontal" : type === "Appliance" ? "hardware-chip" : "timer"}
+                        size={20}
+                        color={itemCaseType === type ? Colors.light.tint : Colors.light.textSecondary}
+                      />
+                    </View>
+                    <Text style={[styles.addItemCaseTypeText, itemCaseType === type && styles.addItemCaseTypeTextSelected]}>
+                      {type}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
+                <View style={styles.addItemSelectedType}>
+                  <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                  <Text style={styles.addItemSelectedTypeText}>{itemCaseType}</Text>
+                </View>
+
+                <View style={styles.aiToothChartPanel}>
+                  <View style={styles.aiToothChartHeader}>
+                    <Text style={styles.aiToothChartTitle}>American Dental Numbering</Text>
+                    {itemSelectedTeeth.length > 0 && (
+                      <Pressable
+                        onPress={() => { setItemSelectedTeeth([]); setItemToothTypes({}); }}
+                        style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+                      >
+                        <Text style={styles.aiToothChartClear}>Clear</Text>
+                      </Pressable>
+                    )}
+                  </View>
+
+                  <View style={styles.aiToothChartLegend}>
+                    <View style={styles.aiLegendItem}>
+                      <View style={[styles.aiLegendDot, { backgroundColor: Colors.light.tint }]} />
+                      <Text style={styles.aiLegendText}>Normal</Text>
+                    </View>
+                    <View style={styles.aiLegendItem}>
+                      <View style={[styles.aiLegendDot, { backgroundColor: Colors.light.accent }]} />
+                      <Text style={styles.aiLegendText}>Pontic</Text>
+                    </View>
+                    <View style={styles.aiLegendItem}>
+                      <View style={[styles.aiLegendDot, { backgroundColor: Colors.light.error }]} />
+                      <Text style={styles.aiLegendText}>Missing</Text>
+                    </View>
+                    <Text style={styles.aiLegendHint}>Hold to set type</Text>
+                  </View>
+
+                  <View style={styles.aiArchContainer}>
+                    <Text style={styles.aiArchSectionTitle}>UPPER</Text>
+                    <View style={styles.aiArchHorseshoe}>
+                      <View style={styles.aiArchColumn}>
+                        {[1,2,3,4,5,6,7,8].map((num) => {
+                          const isSelected = itemSelectedTeeth.includes(num);
+                          const tType = itemToothTypes[num] || "normal";
+                          return (
+                            <Pressable
+                              key={num}
+                              onPress={() => handleItemToothTap(num)}
+                              onLongPress={() => handleItemToothLongPress(num)}
+                              delayLongPress={400}
+                              style={[
+                                styles.aiArchToothBtn,
+                                isSelected && tType === "normal" && styles.aiToothBtnSelected,
+                                isSelected && tType === "bridge" && styles.aiToothBtnBridge,
+                                isSelected && tType === "missing" && styles.aiToothBtnMissing,
+                              ]}
+                            >
+                              {isSelected && tType === "missing" ? (
+                                <View style={styles.aiToothMissingWrap}>
+                                  <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
+                                  <View style={styles.aiToothXOverlay}>
+                                    <Ionicons name="close" size={16} color={Colors.light.error} />
+                                  </View>
+                                </View>
+                              ) : (
+                                <Text style={[
+                                  styles.aiArchToothText,
+                                  isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
+                                  isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
+                                ]}>{num}</Text>
+                              )}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                      <View style={styles.aiArchCurveUpper}>
+                        <View style={styles.aiArchCurveInner} />
+                      </View>
+                      <View style={styles.aiArchColumn}>
+                        {[9,10,11,12,13,14,15,16].map((num) => {
+                          const isSelected = itemSelectedTeeth.includes(num);
+                          const tType = itemToothTypes[num] || "normal";
+                          return (
+                            <Pressable
+                              key={num}
+                              onPress={() => handleItemToothTap(num)}
+                              onLongPress={() => handleItemToothLongPress(num)}
+                              delayLongPress={400}
+                              style={[
+                                styles.aiArchToothBtn,
+                                isSelected && tType === "normal" && styles.aiToothBtnSelected,
+                                isSelected && tType === "bridge" && styles.aiToothBtnBridge,
+                                isSelected && tType === "missing" && styles.aiToothBtnMissing,
+                              ]}
+                            >
+                              {isSelected && tType === "missing" ? (
+                                <View style={styles.aiToothMissingWrap}>
+                                  <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
+                                  <View style={styles.aiToothXOverlay}>
+                                    <Ionicons name="close" size={16} color={Colors.light.error} />
+                                  </View>
+                                </View>
+                              ) : (
+                                <Text style={[
+                                  styles.aiArchToothText,
+                                  isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
+                                  isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
+                                ]}>{num}</Text>
+                              )}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+
+                    <View style={styles.aiArchGap}>
+                      <View style={styles.aiArchGapLine} />
+                    </View>
+
+                    <Text style={styles.aiArchSectionTitle}>LOWER</Text>
+                    <View style={styles.aiArchHorseshoe}>
+                      <View style={styles.aiArchColumn}>
+                        {[32,31,30,29,28,27,26,25].map((num) => {
+                          const isSelected = itemSelectedTeeth.includes(num);
+                          const tType = itemToothTypes[num] || "normal";
+                          return (
+                            <Pressable
+                              key={num}
+                              onPress={() => handleItemToothTap(num)}
+                              onLongPress={() => handleItemToothLongPress(num)}
+                              delayLongPress={400}
+                              style={[
+                                styles.aiArchToothBtn,
+                                isSelected && tType === "normal" && styles.aiToothBtnSelected,
+                                isSelected && tType === "bridge" && styles.aiToothBtnBridge,
+                                isSelected && tType === "missing" && styles.aiToothBtnMissing,
+                              ]}
+                            >
+                              {isSelected && tType === "missing" ? (
+                                <View style={styles.aiToothMissingWrap}>
+                                  <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
+                                  <View style={styles.aiToothXOverlay}>
+                                    <Ionicons name="close" size={16} color={Colors.light.error} />
+                                  </View>
+                                </View>
+                              ) : (
+                                <Text style={[
+                                  styles.aiArchToothText,
+                                  isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
+                                  isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
+                                ]}>{num}</Text>
+                              )}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                      <View style={styles.aiArchCurveLower}>
+                        <View style={styles.aiArchCurveInner} />
+                      </View>
+                      <View style={styles.aiArchColumn}>
+                        {[24,23,22,21,20,19,18,17].map((num) => {
+                          const isSelected = itemSelectedTeeth.includes(num);
+                          const tType = itemToothTypes[num] || "normal";
+                          return (
+                            <Pressable
+                              key={num}
+                              onPress={() => handleItemToothTap(num)}
+                              onLongPress={() => handleItemToothLongPress(num)}
+                              delayLongPress={400}
+                              style={[
+                                styles.aiArchToothBtn,
+                                isSelected && tType === "normal" && styles.aiToothBtnSelected,
+                                isSelected && tType === "bridge" && styles.aiToothBtnBridge,
+                                isSelected && tType === "missing" && styles.aiToothBtnMissing,
+                              ]}
+                            >
+                              {isSelected && tType === "missing" ? (
+                                <View style={styles.aiToothMissingWrap}>
+                                  <Text style={[styles.aiArchToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
+                                  <View style={styles.aiToothXOverlay}>
+                                    <Ionicons name="close" size={16} color={Colors.light.error} />
+                                  </View>
+                                </View>
+                              ) : (
+                                <Text style={[
+                                  styles.aiArchToothText,
+                                  isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
+                                  isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
+                                ]}>{num}</Text>
+                              )}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  </View>
+
+                  {itemSelectedTeeth.length > 0 && (
+                    <View style={styles.aiToothChartSummary}>
+                      <View style={styles.aiToothSummaryRow}>
+                        <Ionicons name="checkmark-circle" size={16} color={Colors.light.tint} />
+                        <Text style={styles.aiToothChartSummaryText}>{itemToothDisplay}</Text>
+                      </View>
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.aiMaterialSection}>
+                  <Text style={styles.aiMaterialLabel}>Material</Text>
+                  <View style={styles.aiMaterialSelector}>
+                    {["Zirconia", "E.max", "PFM", "Gold"].map((m) => (
+                      <Pressable
+                        key={m}
+                        onPress={() => setItemMaterial(m)}
+                        style={[
+                          styles.aiMaterialChip,
+                          itemMaterial === m && styles.aiMaterialChipActive,
+                        ]}
+                      >
+                        <Text style={[
+                          styles.aiMaterialText,
+                          itemMaterial === m && styles.aiMaterialTextActive,
+                        ]}>{m}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+
+                {itemSelectedTeeth.length > 0 && (
+                  <View style={styles.aiPricingRow}>
+                    <Text style={styles.aiPricingLabel}>
+                      {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${MATERIAL_PRICES[itemMaterial] || 250}/{itemMaterial}
+                    </Text>
+                    <Text style={styles.aiPricingTotal}>${itemCalculatedPrice.toLocaleString()}</Text>
+                  </View>
+                )}
+
+                <Pressable
+                  onPress={handleSaveItem}
+                  style={({ pressed }) => [
+                    styles.aiSaveItemBtn,
+                    (!itemCaseType || itemSelectedTeeth.length === 0) && { opacity: 0.5 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  disabled={!itemCaseType || itemSelectedTeeth.length === 0}
+                >
+                  <Ionicons name="checkmark" size={20} color="#FFF" />
+                  <Text style={styles.aiSaveItemBtnText}>Save Item</Text>
+                </Pressable>
+              </ScrollView>
+            )}
           </View>
         </View>
       </Modal>
@@ -1171,5 +1603,349 @@ const styles = StyleSheet.create({
     height: 100,
     borderRadius: 12,
     backgroundColor: Colors.light.border,
+  },
+  addItemOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  addItemSheet: {
+    backgroundColor: Colors.light.background,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    paddingTop: 12,
+    maxHeight: "90%",
+  },
+  addItemHeader: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "space-between" as const,
+    marginBottom: 20,
+  },
+  addItemTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  addItemCaseTypeList: {
+    gap: 8,
+  },
+  addItemCaseTypeItem: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1.5,
+    borderColor: Colors.light.border,
+    gap: 14,
+  },
+  addItemCaseTypeItemSelected: {
+    borderColor: Colors.light.tint,
+    backgroundColor: Colors.light.tintLight,
+  },
+  addItemCaseTypeIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: Colors.light.surfaceSecondary,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  addItemCaseTypeText: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  addItemCaseTypeTextSelected: {
+    color: Colors.light.tint,
+  },
+  addItemToothScroll: {
+    flex: 1,
+  },
+  addItemSelectedType: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 6,
+    backgroundColor: Colors.light.tintLight,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    alignSelf: "flex-start" as const,
+    marginBottom: 12,
+  },
+  addItemSelectedTypeText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  aiToothChartPanel: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    padding: 12,
+    gap: 8,
+  },
+  aiToothChartHeader: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "space-between" as const,
+    marginBottom: 2,
+  },
+  aiToothChartTitle: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  aiToothChartClear: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.error,
+  },
+  aiToothChartLegend: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+    marginBottom: 4,
+  },
+  aiLegendItem: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 4,
+  },
+  aiLegendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  aiLegendText: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  aiLegendHint: {
+    fontSize: 9,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    fontStyle: "italic" as const,
+    marginLeft: "auto",
+  },
+  aiArchContainer: {
+    alignItems: "center" as const,
+    paddingVertical: 8,
+    backgroundColor: "#EFF4FB",
+    borderRadius: 16,
+    paddingHorizontal: 8,
+    marginVertical: 4,
+  },
+  aiArchSectionTitle: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+    letterSpacing: 2,
+    marginBottom: 6,
+    marginTop: 4,
+  },
+  aiArchHorseshoe: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    paddingHorizontal: 4,
+  },
+  aiArchColumn: {
+    gap: 3,
+    alignItems: "center" as const,
+  },
+  aiArchCurveUpper: {
+    width: 60,
+    height: 220,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: Colors.light.border,
+    marginHorizontal: 6,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    opacity: 0.4,
+  },
+  aiArchCurveLower: {
+    width: 60,
+    height: 220,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    borderTopWidth: 2,
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: Colors.light.border,
+    marginHorizontal: 6,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    opacity: 0.4,
+  },
+  aiArchCurveInner: {
+    width: 30,
+    height: "60%",
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+    opacity: 0.5,
+  },
+  aiArchGap: {
+    width: "80%",
+    paddingVertical: 8,
+    alignItems: "center" as const,
+  },
+  aiArchGapLine: {
+    width: "100%",
+    height: 1,
+    backgroundColor: Colors.light.border,
+  },
+  aiArchToothBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: Colors.light.surface,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    borderWidth: 1.5,
+    borderColor: Colors.light.border,
+  },
+  aiArchToothText: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.textSecondary,
+  },
+  aiToothBtnSelected: {
+    backgroundColor: Colors.light.tint,
+    borderColor: Colors.light.tint,
+  },
+  aiToothBtnBridge: {
+    backgroundColor: Colors.light.accent,
+    borderColor: Colors.light.accent,
+  },
+  aiToothBtnMissing: {
+    backgroundColor: Colors.light.errorLight,
+    borderColor: Colors.light.error,
+  },
+  aiToothBtnTextSelected: {
+    color: "#FFF",
+  },
+  aiToothBtnTextBridge: {
+    color: "#FFF",
+  },
+  aiToothBtnTextMissing: {
+    color: Colors.light.error,
+    fontSize: 11,
+  },
+  aiToothMissingWrap: {
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    position: "relative" as const,
+  },
+  aiToothXOverlay: {
+    position: "absolute" as const,
+    top: -4,
+    left: -2,
+    right: -2,
+    bottom: -4,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  aiToothChartSummary: {
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: Colors.light.borderLight,
+    marginTop: 4,
+    gap: 6,
+  },
+  aiToothSummaryRow: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 6,
+  },
+  aiToothChartSummaryText: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.tint,
+    flex: 1,
+  },
+  aiMaterialSection: {
+    marginTop: 14,
+    marginBottom: 10,
+  },
+  aiMaterialLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+    marginBottom: 8,
+  },
+  aiMaterialSelector: {
+    flexDirection: "row" as const,
+    gap: 8,
+  },
+  aiMaterialChip: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: Colors.light.surfaceSecondary,
+    alignItems: "center" as const,
+    borderWidth: 1.5,
+    borderColor: Colors.light.border,
+  },
+  aiMaterialChipActive: {
+    backgroundColor: Colors.light.tintLight,
+    borderColor: Colors.light.tint,
+  },
+  aiMaterialText: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+  aiMaterialTextActive: {
+    color: Colors.light.tint,
+  },
+  aiPricingRow: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "space-between" as const,
+    backgroundColor: Colors.light.tintLight,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  aiPricingLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  aiPricingTotal: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+  },
+  aiSaveItemBtn: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    gap: 8,
+    backgroundColor: "#10B981",
+    paddingVertical: 14,
+    borderRadius: 14,
+    marginBottom: 8,
+  },
+  aiSaveItemBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
   },
 });
