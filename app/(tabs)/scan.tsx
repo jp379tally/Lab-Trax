@@ -54,7 +54,8 @@ function getActivityIcon(type: string): { name: string; color: string } {
 
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
-  const { addCase, cases, clients } = useApp();
+  const { addCase, cases, clients, role, adminUnlocked } = useApp();
+  const showPrice = role === "admin" && adminUnlocked;
   const [phase, setPhase] = useState<ScanPhase>("camera");
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
@@ -1303,12 +1304,14 @@ export default function ScanScreen() {
                         {toothIndices}
                       </Text>
                     </View>
-                    <View style={styles.toothPricingRow}>
-                      <Text style={styles.toothPricingLabel}>
-                        {billableTeethCount} billable {billableTeethCount === 1 ? "tooth" : "teeth"} × ${MATERIAL_PRICES[material] || 250}/{material}
-                      </Text>
-                      <Text style={styles.toothPricingTotal}>${calculatedPrice.toLocaleString()}</Text>
-                    </View>
+                    {showPrice && (
+                      <View style={styles.toothPricingRow}>
+                        <Text style={styles.toothPricingLabel}>
+                          {billableTeethCount} billable {billableTeethCount === 1 ? "tooth" : "teeth"} × ${MATERIAL_PRICES[material] || 250}/{material}
+                        </Text>
+                        <Text style={styles.toothPricingTotal}>${calculatedPrice.toLocaleString()}</Text>
+                      </View>
+                    )}
                   </View>
                 )}
               </View>

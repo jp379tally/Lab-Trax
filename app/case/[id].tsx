@@ -1086,7 +1086,7 @@ export default function CaseDetailScreen() {
                   </View>
                 </View>
 
-                {itemSelectedTeeth.length > 0 && (
+                {itemSelectedTeeth.length > 0 && showPrice && (
                   <View style={styles.aiPricingRow}>
                     <Text style={styles.aiPricingLabel}>
                       {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${MATERIAL_PRICES[itemMaterial] || 250}/{itemMaterial}
