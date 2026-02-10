@@ -59,6 +59,8 @@ export default function LoginScreen() {
   const [emailCode, setEmailCode] = useState("");
   const [codeSending, setCodeSending] = useState(false);
   const [codeResendTimer, setCodeResendTimer] = useState(0);
+  const [demoPhoneCode, setDemoPhoneCode] = useState<string | null>(null);
+  const [demoEmailCode, setDemoEmailCode] = useState<string | null>(null);
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -245,11 +247,13 @@ export default function LoginScreen() {
     setSignUpError(null);
     try {
       const apiUrl = getApiUrl();
-      await fetch(new URL("/api/send-phone-code", apiUrl).toString(), {
+      const res = await fetch(new URL("/api/send-phone-code", apiUrl).toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone: signUpPhone.trim() }),
       });
+      const data = await res.json();
+      if (data.demoCode) setDemoPhoneCode(data.demoCode);
       setCodeResendTimer(60);
       setSignUpStep("phone_verify");
       setPhoneCode("");
@@ -291,11 +295,13 @@ export default function LoginScreen() {
     setSignUpError(null);
     try {
       const apiUrl = getApiUrl();
-      await fetch(new URL("/api/send-email-code", apiUrl).toString(), {
+      const res = await fetch(new URL("/api/send-email-code", apiUrl).toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: signUpEmail.trim() }),
       });
+      const data = await res.json();
+      if (data.demoCode) setDemoEmailCode(data.demoCode);
       setCodeResendTimer(60);
       setSignUpStep("email_verify");
       setEmailCode("");
@@ -694,6 +700,14 @@ export default function LoginScreen() {
           </Text>
         </View>
 
+        {demoPhoneCode && (
+          <View style={styles.demoCodeBanner}>
+            <Ionicons name="key" size={16} color="#F59E0B" />
+            <Text style={styles.demoCodeLabel}>Demo Code:</Text>
+            <Text style={styles.demoCodeValue}>{demoPhoneCode}</Text>
+          </View>
+        )}
+
         <View style={styles.codeInputRow}>
           {[0, 1, 2, 3, 4, 5].map((i) => (
             <TextInput
@@ -774,6 +788,14 @@ export default function LoginScreen() {
             Code sent to {signUpEmail}
           </Text>
         </View>
+
+        {demoEmailCode && (
+          <View style={styles.demoCodeBanner}>
+            <Ionicons name="key" size={16} color="#F59E0B" />
+            <Text style={styles.demoCodeLabel}>Demo Code:</Text>
+            <Text style={styles.demoCodeValue}>{demoEmailCode}</Text>
+          </View>
+        )}
 
         <View style={styles.codeInputRow}>
           {[0, 1, 2, 3, 4, 5].map((i) => (
@@ -1251,6 +1273,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: "Inter_500Medium",
     color: "rgba(255,255,255,0.55)",
+  },
+  demoCodeBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "rgba(245,158,11,0.15)",
+    borderWidth: 1,
+    borderColor: "rgba(245,158,11,0.3)",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  demoCodeLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#F59E0B",
+  },
+  demoCodeValue: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+    letterSpacing: 4,
   },
   codeInputRow: {
     flexDirection: "row",

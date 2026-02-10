@@ -37,7 +37,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     console.log(`[SMS VERIFICATION] Code for ${phone}: ${code}`);
 
-    res.json({ success: true, message: "Verification code sent via SMS." });
+    res.json({ success: true, message: "Verification code sent via SMS.", demoCode: code });
   });
 
   app.post("/api/verify-phone-code", (req, res) => {
@@ -76,7 +76,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     console.log(`[EMAIL VERIFICATION] Code for ${email}: ${code}`);
 
-    res.json({ success: true, message: "Verification code sent to your email." });
+    res.json({ success: true, message: "Verification code sent to your email.", demoCode: code });
   });
 
   app.post("/api/verify-email-code", (req, res) => {
