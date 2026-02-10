@@ -42,12 +42,14 @@ function SideDrawer({
   onAdmin,
   onProfile,
   onSignOut,
+  onShipping,
 }: {
   visible: boolean;
   onClose: () => void;
   onAdmin: () => void;
   onProfile: () => void;
   onSignOut: () => void;
+  onShipping: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const translateX = useSharedValue(-DRAWER_WIDTH);
@@ -90,6 +92,7 @@ function SideDrawer({
 
   const menuItems = [
     { key: "admin", icon: "shield-checkmark" as const, label: "Admin", color: Colors.light.tint, bg: Colors.light.tintLight, onPress: onAdmin },
+    { key: "shipping", icon: "airplane" as const, label: "Shipping Label", color: "#6366F1", bg: "#E0E7FF", onPress: onShipping },
     { key: "settings", icon: "settings" as const, label: "Settings", color: "#8B5CF6", bg: "#EDE9FE", onPress: () => { closeDrawer(); router.push("/(tabs)/profile"); } },
     { key: "profile", icon: "person" as const, label: "Profile", color: Colors.light.accent, bg: Colors.light.accentLight, onPress: () => { closeDrawer(); router.push("/(tabs)/profile"); } },
   ];
@@ -259,12 +262,15 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts } = useApp();
   const { logout, profilePicUri, setProfilePicUri } = useAuth();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
   const [pendingPicAction, setPendingPicAction] = useState<"take" | "pick" | null>(null);
+  const [shippingModalVisible, setShippingModalVisible] = useState(false);
+  const [shippingCaseId, setShippingCaseId] = useState("");
+  const [shippingAddress, setShippingAddress] = useState("");
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
     .slice(0, 5);
@@ -277,6 +283,11 @@ function TechDashboard() {
   function handleProfileFromDrawer() {
     setDrawerOpen(false);
     setTimeout(() => router.push("/(tabs)/profile"), 300);
+  }
+
+  function handleShippingFromDrawer() {
+    setDrawerOpen(false);
+    setTimeout(() => setShippingModalVisible(true), 300);
   }
 
   function handleSignOut() {
@@ -746,7 +757,103 @@ function TechDashboard() {
       onAdmin={handleAdminFromDrawer}
       onProfile={handleProfileFromDrawer}
       onSignOut={handleSignOut}
+      onShipping={handleShippingFromDrawer}
     />
+
+    <Modal
+      transparent
+      visible={shippingModalVisible}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={() => setShippingModalVisible(false)}
+    >
+      <Pressable
+        style={styles.picModalOverlay}
+        onPress={() => setShippingModalVisible(false)}
+      >
+        <View style={styles.picModalContent} onStartShouldSetResponder={() => true}>
+          <View style={styles.picModalHandle} />
+          <Text style={styles.picModalTitle}>Generate Shipping Label</Text>
+
+          {shippingAccounts.length > 0 ? (
+            <View style={{ backgroundColor: "#E0E7FF", borderRadius: 12, padding: 14, marginBottom: 16 }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#6366F1", marginBottom: 4 }}>SHIPPING ACCOUNT</Text>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{shippingAccounts[0].companyName}</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>
+                ****{shippingAccounts[0].accountNumber.slice(-4)}
+              </Text>
+            </View>
+          ) : (
+            <View style={{ backgroundColor: "#FEF3C7", borderRadius: 12, padding: 14, marginBottom: 16 }}>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>No shipping account connected. Ask admin to add one.</Text>
+            </View>
+          )}
+
+          <View style={{ marginBottom: 12 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Case Number</Text>
+            <TextInput
+              style={{ backgroundColor: Colors.light.surfaceAlt, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+              value={shippingCaseId}
+              onChangeText={setShippingCaseId}
+              placeholder="e.g. #4521"
+              placeholderTextColor={Colors.light.textTertiary}
+            />
+          </View>
+
+          <View style={{ marginBottom: 16 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Shipping Address</Text>
+            <TextInput
+              style={{ backgroundColor: Colors.light.surfaceAlt, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, minHeight: 60, textAlignVertical: "top" as const }}
+              value={shippingAddress}
+              onChangeText={setShippingAddress}
+              placeholder="1200 Park Ave, Suite 400, New York, NY"
+              placeholderTextColor={Colors.light.textTertiary}
+              multiline
+            />
+          </View>
+
+          <Pressable
+            onPress={() => {
+              if (!shippingCaseId.trim() || !shippingAddress.trim()) {
+                Alert.alert("Required", "Case number and shipping address are required.");
+                return;
+              }
+              if (shippingAccounts.length === 0) {
+                Alert.alert("No Account", "No shipping account connected. Ask admin to add one.");
+                return;
+              }
+              const account = shippingAccounts[0];
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert(
+                "Shipping Label Generated",
+                `Label created for case ${shippingCaseId.trim()}\nCarrier: ${account.companyName}\nAccount: ****${account.accountNumber.slice(-4)}\nShip to: ${shippingAddress.trim()}`,
+              );
+              setShippingCaseId("");
+              setShippingAddress("");
+              setShippingModalVisible(false);
+            }}
+            style={({ pressed }) => ({
+              backgroundColor: shippingAccounts.length > 0 ? "#6366F1" : "#94A3B8",
+              borderRadius: 14,
+              paddingVertical: 14,
+              alignItems: "center" as const,
+              marginBottom: 8,
+              opacity: pressed ? 0.85 : 1,
+            })}
+            disabled={shippingAccounts.length === 0}
+          >
+            <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" }}>Generate Label</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setShippingModalVisible(false)}
+            style={styles.picModalCancel}
+          >
+            <Text style={styles.picModalCancelText}>Cancel</Text>
+          </Pressable>
+        </View>
+      </Pressable>
+    </Modal>
     </>
   );
 }
@@ -875,10 +982,11 @@ type AdminView =
   | "edit-user"
   | "invoices"
   | "statements"
-  | "sales";
+  | "sales"
+  | "shipping";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole } = useApp();
+  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount } = useApp();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const [adminView, setAdminView] = useState<AdminView>("hub");
@@ -901,6 +1009,8 @@ function AdminDashboard() {
 
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [editingUser, setEditingUser] = useState<LabUser | null>(null);
+  const [newShipCompany, setNewShipCompany] = useState("");
+  const [newShipAccount, setNewShipAccount] = useState("");
 
   const PRICE_LIST_ITEMS = [
     { key: "zirconia_crown", label: "Zirconia Crown" },
@@ -1041,6 +1151,7 @@ function AdminDashboard() {
       { icon: "document-text", iconSet: "ion", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Open Invoices", sub: `${openInvoiceCount} pending`, view: "invoices" },
       { icon: "receipt-outline", iconSet: "ion", color: "#06B6D4", bg: "#CFFAFE", title: "Generate Statements", sub: "Create billing statements", view: "statements" },
       { icon: "trending-up", iconSet: "ion", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
+      { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
     ];
 
     return (
@@ -2018,6 +2129,106 @@ function AdminDashboard() {
     );
   }
 
+  function renderShipping() {
+    function handleAddShipping() {
+      if (!newShipCompany.trim() || !newShipAccount.trim()) {
+        Alert.alert("Required", "Company name and account number are required.");
+        return;
+      }
+      addShippingAccount(newShipCompany.trim(), newShipAccount.trim());
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Account Added", `${newShipCompany.trim()} shipping account has been added.`);
+      setNewShipCompany("");
+      setNewShipAccount("");
+    }
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Shipping Accounts")}
+        <View style={adm.formArea}>
+          <Text style={adm.formDesc}>Connect carrier accounts for shipping labels.</Text>
+
+          <View style={adm.field}>
+            <Text style={adm.fieldLabel}>Shipping Company Name</Text>
+            <TextInput
+              style={adm.input}
+              value={newShipCompany}
+              onChangeText={setNewShipCompany}
+              placeholder="UPS, FedEx, DHL"
+              placeholderTextColor={Colors.light.textTertiary}
+            />
+          </View>
+          <View style={adm.field}>
+            <Text style={adm.fieldLabel}>Account Number</Text>
+            <TextInput
+              style={adm.input}
+              value={newShipAccount}
+              onChangeText={setNewShipAccount}
+              placeholder="Enter account number"
+              placeholderTextColor={Colors.light.textTertiary}
+            />
+          </View>
+
+          <Pressable
+            style={({ pressed }) => [adm.submitBtn, { backgroundColor: "#6366F1" }, pressed && { opacity: 0.85 }]}
+            onPress={handleAddShipping}
+          >
+            <Ionicons name="add" size={20} color="#FFF" />
+            <Text style={adm.submitBtnText}>Add Account</Text>
+          </Pressable>
+        </View>
+
+        {shippingAccounts.length > 0 && (
+          <View style={adm.listArea}>
+            <Text style={adm.formDesc}>{shippingAccounts.length} connected account{shippingAccounts.length !== 1 ? "s" : ""}</Text>
+            {shippingAccounts.map((acc) => (
+              <View key={acc.id} style={adm.listItem}>
+                <View style={adm.listItemLeft}>
+                  <View style={[adm.listAvatar, { backgroundColor: "#E0E7FF" }]}>
+                    <Ionicons name="airplane" size={18} color="#6366F1" />
+                  </View>
+                  <View>
+                    <Text style={adm.listItemTitle}>{acc.companyName}</Text>
+                    <Text style={adm.listItemSub}>****{acc.accountNumber.slice(-4)}</Text>
+                  </View>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    Alert.alert(
+                      "Remove Account",
+                      `Remove ${acc.companyName} shipping account?`,
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Remove",
+                          style: "destructive",
+                          onPress: () => {
+                            removeShippingAccount(acc.id);
+                            if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                          },
+                        },
+                      ],
+                    );
+                  }}
+                  style={({ pressed }) => [{ padding: 8 }, pressed && { opacity: 0.6 }]}
+                >
+                  <Ionicons name="trash-outline" size={20} color={Colors.light.error} />
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+    );
+  }
+
   switch (adminView) {
     case "clients": return renderClients();
     case "client-detail": return renderClientDetail();
@@ -2029,6 +2240,7 @@ function AdminDashboard() {
     case "invoices": return renderInvoices();
     case "statements": return renderStatements();
     case "sales": return renderSales();
+    case "shipping": return renderShipping();
     default: return renderHub();
   }
 }

@@ -72,6 +72,13 @@ export interface Notification {
   timestamp: number;
 }
 
+export interface ShippingAccount {
+  id: string;
+  companyName: string;
+  accountNumber: string;
+  createdAt: number;
+}
+
 export function getStationInfo(status: CaseStatus) {
   return STATIONS.find((s) => s.id === status) || STATIONS[0];
 }

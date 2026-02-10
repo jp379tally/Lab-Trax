@@ -16,6 +16,7 @@ import {
   Client,
   LabUser,
   Invoice,
+  ShippingAccount,
   generateId,
   getStationInfo,
   SAMPLE_CASES,
@@ -51,6 +52,9 @@ interface AppContextValue {
   invoices: Invoice[];
   addInvoice: (inv: Omit<Invoice, "id">) => void;
   updateInvoice: (id: string, inv: Partial<Invoice>) => void;
+  shippingAccounts: ShippingAccount[];
+  addShippingAccount: (companyName: string, accountNumber: string) => void;
+  removeShippingAccount: (id: string) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -61,6 +65,7 @@ const NOTIFS_KEY = "@drivesync_notifs";
 const CLIENTS_KEY = "@drivesync_clients";
 const USERS_KEY = "@drivesync_users";
 const INVOICES_KEY = "@drivesync_invoices";
+const SHIPPING_KEY = "@drivesync_shipping";
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRoleState] = useState<UserRole>("tech");
@@ -70,6 +75,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [clients, setClients] = useState<Client[]>([]);
   const [users, setUsers] = useState<LabUser[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [shippingAccounts, setShippingAccounts] = useState<ShippingAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -78,13 +84,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function loadData() {
     try {
-      const [savedCases, savedRole, savedNotifs, savedClients, savedUsers, savedInvoices] = await Promise.all([
+      const [savedCases, savedRole, savedNotifs, savedClients, savedUsers, savedInvoices, savedShipping] = await Promise.all([
         AsyncStorage.getItem(CASES_KEY),
         AsyncStorage.getItem(ROLE_KEY),
         AsyncStorage.getItem(NOTIFS_KEY),
         AsyncStorage.getItem(CLIENTS_KEY),
         AsyncStorage.getItem(USERS_KEY),
         AsyncStorage.getItem(INVOICES_KEY),
+        AsyncStorage.getItem(SHIPPING_KEY),
       ]);
 
       if (savedCases) {
@@ -124,6 +131,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       } else {
         setInvoices(SAMPLE_INVOICES);
         await AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(SAMPLE_INVOICES));
+      }
+
+      if (savedShipping) {
+        setShippingAccounts(JSON.parse(savedShipping));
       }
     } catch (e) {
       setCases(SAMPLE_CASES);
@@ -334,6 +345,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
   }
 
+  function addShippingAccount(companyName: string, accountNumber: string) {
+    const newAccount: ShippingAccount = {
+      id: generateId(),
+      companyName,
+      accountNumber,
+      createdAt: Date.now(),
+    };
+    setShippingAccounts(prev => {
+      const updated = [...prev, newAccount];
+      AsyncStorage.setItem(SHIPPING_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function removeShippingAccount(id: string) {
+    setShippingAccounts(prev => {
+      const updated = prev.filter(a => a.id !== id);
+      AsyncStorage.setItem(SHIPPING_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
     [notifications],
@@ -377,8 +410,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       invoices,
       addInvoice,
       updateInvoice,
+      shippingAccounts,
+      addShippingAccount,
+      removeShippingAccount,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, users, invoices],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, users, invoices, shippingAccounts],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
