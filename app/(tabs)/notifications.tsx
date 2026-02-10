@@ -17,6 +17,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { Notification, GroupInvitation } from "@/lib/data";
+import { ChatButton } from "@/components/ChatButton";
 
 function getNotifIcon(type: Notification["type"]) {
   switch (type) {
@@ -142,7 +143,10 @@ export default function NotificationsScreen() {
           { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
         ]}
       >
-        <Text style={styles.title}>Notifications</Text>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <Text style={styles.title}>Notifications</Text>
+          <ChatButton />
+        </View>
       </View>
       <FlatList
         data={notifications}

@@ -14,6 +14,7 @@ import { router } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, LabCase } from "@/lib/data";
+import { ChatButton } from "@/components/ChatButton";
 
 export default function CasesScreen() {
   const { cases, role, adminUnlocked } = useApp();
@@ -119,7 +120,10 @@ export default function CasesScreen() {
           },
         ]}
       >
-        <Text style={styles.title}>Cases</Text>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <Text style={styles.title}>Cases</Text>
+          <ChatButton />
+        </View>
         <View style={styles.searchRow}>
           <View style={styles.searchBox}>
             <Feather

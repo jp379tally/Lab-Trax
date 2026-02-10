@@ -22,6 +22,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue } from "@/lib/data";
+import { ChatButton } from "@/components/ChatButton";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -432,7 +433,7 @@ export default function CaseDetailScreen() {
           <Ionicons name="arrow-back" size={22} color={Colors.light.text} />
         </Pressable>
         <Text style={styles.headerTitle}>{caseItem.caseNumber}</Text>
-        <View style={{ width: 44 }} />
+        <ChatButton />
       </View>
 
       <ScrollView

@@ -14,6 +14,7 @@ import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
+import { ChatButton } from "@/components/ChatButton";
 
 type WorkStatus = "available" | "break" | "out_of_office";
 
@@ -45,6 +46,9 @@ export default function ProfileScreen() {
       }}
       showsVerticalScrollIndicator={false}
     >
+      <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 20, marginBottom: 4 }}>
+        <ChatButton />
+      </View>
       <View style={styles.profileCard}>
         <View style={styles.avatarContainer}>
           {profilePicUri ? (
