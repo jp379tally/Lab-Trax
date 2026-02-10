@@ -41,6 +41,20 @@ export interface ActivityEntry {
   user?: string;
 }
 
+export type ToothType = "normal" | "bridge" | "missing";
+
+export interface ToothEntry {
+  num: number;
+  type: ToothType;
+}
+
+export const MATERIAL_PRICES: Record<string, number> = {
+  "Zirconia": 250,
+  "E.max": 300,
+  "PFM": 200,
+  "Gold": 400,
+};
+
 export interface LabCase {
   id: string;
   caseNumber: string;
@@ -61,6 +75,7 @@ export interface LabCase {
   photos: string[];
   activityLog: ActivityEntry[];
   trackingNumbers?: string[];
+  toothMap?: ToothEntry[];
 }
 
 export interface Notification {

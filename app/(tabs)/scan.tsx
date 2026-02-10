@@ -19,7 +19,7 @@ import * as Haptics from "expo-haptics";
 import { useFocusEffect } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
-import { ActivityEntry, generateId } from "@/lib/data";
+import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES } from "@/lib/data";
 import { getApiUrl } from "@/lib/query-client";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
@@ -67,6 +67,7 @@ export default function ScanScreen() {
   const [patientName, setPatientName] = useState("");
   const [toothIndices, setToothIndices] = useState("");
   const [selectedTeeth, setSelectedTeeth] = useState<number[]>([]);
+  const [toothTypes, setToothTypes] = useState<Record<number, ToothType>>({});
   const [toothChartOpen, setToothChartOpen] = useState(false);
   const [shade, setShade] = useState("");
   const [material, setMaterial] = useState("Zirconia");
@@ -98,6 +99,111 @@ export default function ScanScreen() {
   const filteredPatients = existingPatients.filter((name) =>
     name.toLowerCase().includes(patientSearch.toLowerCase())
   );
+
+  function updateToothDisplay(teeth: number[], types: Record<number, ToothType>) {
+    const sorted = [...teeth].sort((a, b) => a - b);
+    const parts: string[] = [];
+    let i = 0;
+    while (i < sorted.length) {
+      const t = sorted[i];
+      const tp = types[t] || "normal";
+      if (tp === "missing") {
+        parts.push(`X${t}`);
+        i++;
+      } else if (tp === "bridge") {
+        let end = i;
+        while (end + 1 < sorted.length && (types[sorted[end + 1]] || "normal") === "bridge") {
+          end++;
+        }
+        if (end > i) {
+          parts.push(`#${sorted[i]}-#${sorted[end]}`);
+        } else {
+          parts.push(`#${t}`);
+        }
+        i = end + 1;
+      } else {
+        parts.push(`#${t}`);
+        i++;
+      }
+    }
+    setToothIndices(parts.join(", "));
+  }
+
+  function handleToothTap(num: number) {
+    setSelectedTeeth((prev) => {
+      const next = prev.includes(num) ? prev.filter((t) => t !== num) : [...prev, num];
+      const sorted = next.sort((a, b) => a - b);
+      if (!prev.includes(num)) {
+        updateToothDisplay(sorted, toothTypes);
+      } else {
+        setToothTypes((prevTypes) => {
+          const updated = { ...prevTypes };
+          delete updated[num];
+          updateToothDisplay(sorted, updated);
+          return updated;
+        });
+      }
+      return sorted;
+    });
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }
+
+  function handleToothLongPress(num: number) {
+    if (!selectedTeeth.includes(num)) {
+      setSelectedTeeth((prev) => [...prev, num].sort((a, b) => a - b));
+    }
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    Alert.alert(
+      `Tooth #${num}`,
+      "Select a designation for this tooth:",
+      [
+        {
+          text: "Bridge",
+          onPress: () => {
+            setToothTypes((prev) => {
+              const updated = { ...prev, [num]: "bridge" as ToothType };
+              const teeth = selectedTeeth.includes(num) ? selectedTeeth : [...selectedTeeth, num].sort((a, b) => a - b);
+              updateToothDisplay(teeth, updated);
+              return updated;
+            });
+          },
+        },
+        {
+          text: "Missing",
+          onPress: () => {
+            setToothTypes((prev) => {
+              const updated = { ...prev, [num]: "missing" as ToothType };
+              const teeth = selectedTeeth.includes(num) ? selectedTeeth : [...selectedTeeth, num].sort((a, b) => a - b);
+              updateToothDisplay(teeth, updated);
+              return updated;
+            });
+          },
+        },
+        {
+          text: "Normal",
+          onPress: () => {
+            setToothTypes((prev) => {
+              const updated = { ...prev };
+              delete updated[num];
+              const teeth = selectedTeeth.includes(num) ? selectedTeeth : [...selectedTeeth, num].sort((a, b) => a - b);
+              updateToothDisplay(teeth, updated);
+              return updated;
+            });
+          },
+        },
+        { text: "Cancel", style: "cancel" },
+      ]
+    );
+  }
+
+  const billableTeethCount = React.useMemo(() => {
+    return selectedTeeth.filter((t) => (toothTypes[t] || "normal") !== "missing").length;
+  }, [selectedTeeth, toothTypes]);
+
+  const calculatedPrice = React.useMemo(() => {
+    const unitPrice = MATERIAL_PRICES[material] || 250;
+    return unitPrice * Math.max(billableTeethCount, 1);
+  }, [material, billableTeethCount]);
 
   useFocusEffect(
     useCallback(() => {
@@ -380,6 +486,11 @@ export default function ScanScreen() {
         ? parseInt(cases[0].caseNumber.replace("#", "")) + 1
         : 4530;
 
+    const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
+      num,
+      type: (toothTypes[num] || "normal") as ToothType,
+    }));
+
     addCase({
       caseNumber: `#${nextNum}`,
       doctorName: doctorName.trim(),
@@ -391,10 +502,11 @@ export default function ScanScreen() {
       status: "INTAKE",
       isRush,
       notes: notes.trim(),
-      price: Math.round(500 + Math.random() * 3000),
+      price: calculatedPrice,
       dueDate,
       photos: casePhotos,
       activityLog: activityEntries,
+      toothMap: toothMapEntries,
     });
 
     if (Platform.OS !== "web") {
@@ -448,6 +560,7 @@ export default function ScanScreen() {
     setNewPatientInput("");
     setToothIndices("");
     setSelectedTeeth([]);
+    setToothTypes({});
     setToothChartOpen(false);
     setShade("");
     setMaterial("Zirconia");
@@ -784,9 +897,7 @@ export default function ScanScreen() {
               style={[styles.formInput, styles.dropdownTrigger]}
             >
               <Text style={[styles.dropdownTriggerText, selectedTeeth.length === 0 && { color: Colors.light.textTertiary }]}>
-                {selectedTeeth.length > 0
-                  ? selectedTeeth.sort((a, b) => a - b).map((t) => `#${t}`).join(", ")
-                  : "Select teeth"}
+                {selectedTeeth.length > 0 ? toothIndices || "Select teeth" : "Select teeth"}
               </Text>
               <Ionicons
                 name={toothChartOpen ? "chevron-up" : "chevron-down"}
@@ -802,6 +913,7 @@ export default function ScanScreen() {
                     <Pressable
                       onPress={() => {
                         setSelectedTeeth([]);
+                        setToothTypes({});
                         setToothIndices("");
                       }}
                       style={({ pressed }) => [pressed && { opacity: 0.6 }]}
@@ -811,25 +923,54 @@ export default function ScanScreen() {
                   )}
                 </View>
 
+                <View style={styles.toothChartLegend}>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: Colors.light.tint }]} />
+                    <Text style={styles.legendText}>Normal</Text>
+                  </View>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: Colors.light.accent }]} />
+                    <Text style={styles.legendText}>Bridge</Text>
+                  </View>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: Colors.light.error }]} />
+                    <Text style={styles.legendText}>Missing</Text>
+                  </View>
+                  <Text style={styles.legendHint}>Hold to set type</Text>
+                </View>
+
                 <Text style={styles.toothChartSectionLabel}>Upper Right → Upper Left</Text>
                 <View style={styles.toothRow}>
                   {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map((num) => {
                     const isSelected = selectedTeeth.includes(num);
+                    const tType = toothTypes[num] || "normal";
                     return (
                       <Pressable
                         key={num}
-                        onPress={() => {
-                          setSelectedTeeth((prev) => {
-                            const next = prev.includes(num) ? prev.filter((t) => t !== num) : [...prev, num];
-                            const sorted = next.sort((a, b) => a - b);
-                            setToothIndices(sorted.map((t) => `#${t}`).join(", "));
-                            return sorted;
-                          });
-                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        }}
-                        style={[styles.toothBtn, isSelected && styles.toothBtnSelected]}
+                        onPress={() => handleToothTap(num)}
+                        onLongPress={() => handleToothLongPress(num)}
+                        delayLongPress={400}
+                        style={[
+                          styles.toothBtn,
+                          isSelected && tType === "normal" && styles.toothBtnSelected,
+                          isSelected && tType === "bridge" && styles.toothBtnBridge,
+                          isSelected && tType === "missing" && styles.toothBtnMissing,
+                        ]}
                       >
-                        <Text style={[styles.toothBtnText, isSelected && styles.toothBtnTextSelected]}>{num}</Text>
+                        {isSelected && tType === "missing" ? (
+                          <View style={styles.toothMissingWrap}>
+                            <Text style={[styles.toothBtnText, styles.toothBtnTextMissing]}>{num}</Text>
+                            <View style={styles.toothXOverlay}>
+                              <Ionicons name="close" size={22} color={Colors.light.error} />
+                            </View>
+                          </View>
+                        ) : (
+                          <Text style={[
+                            styles.toothBtnText,
+                            isSelected && tType === "normal" && styles.toothBtnTextSelected,
+                            isSelected && tType === "bridge" && styles.toothBtnTextBridge,
+                          ]}>{num}</Text>
+                        )}
                       </Pressable>
                     );
                   })}
@@ -841,21 +982,34 @@ export default function ScanScreen() {
                 <View style={styles.toothRow}>
                   {[32,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17].map((num) => {
                     const isSelected = selectedTeeth.includes(num);
+                    const tType = toothTypes[num] || "normal";
                     return (
                       <Pressable
                         key={num}
-                        onPress={() => {
-                          setSelectedTeeth((prev) => {
-                            const next = prev.includes(num) ? prev.filter((t) => t !== num) : [...prev, num];
-                            const sorted = next.sort((a, b) => a - b);
-                            setToothIndices(sorted.map((t) => `#${t}`).join(", "));
-                            return sorted;
-                          });
-                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        }}
-                        style={[styles.toothBtn, isSelected && styles.toothBtnSelected]}
+                        onPress={() => handleToothTap(num)}
+                        onLongPress={() => handleToothLongPress(num)}
+                        delayLongPress={400}
+                        style={[
+                          styles.toothBtn,
+                          isSelected && tType === "normal" && styles.toothBtnSelected,
+                          isSelected && tType === "bridge" && styles.toothBtnBridge,
+                          isSelected && tType === "missing" && styles.toothBtnMissing,
+                        ]}
                       >
-                        <Text style={[styles.toothBtnText, isSelected && styles.toothBtnTextSelected]}>{num}</Text>
+                        {isSelected && tType === "missing" ? (
+                          <View style={styles.toothMissingWrap}>
+                            <Text style={[styles.toothBtnText, styles.toothBtnTextMissing]}>{num}</Text>
+                            <View style={styles.toothXOverlay}>
+                              <Ionicons name="close" size={22} color={Colors.light.error} />
+                            </View>
+                          </View>
+                        ) : (
+                          <Text style={[
+                            styles.toothBtnText,
+                            isSelected && tType === "normal" && styles.toothBtnTextSelected,
+                            isSelected && tType === "bridge" && styles.toothBtnTextBridge,
+                          ]}>{num}</Text>
+                        )}
                       </Pressable>
                     );
                   })}
@@ -863,10 +1017,18 @@ export default function ScanScreen() {
 
                 {selectedTeeth.length > 0 && (
                   <View style={styles.toothChartSummary}>
-                    <Ionicons name="checkmark-circle" size={16} color={Colors.light.tint} />
-                    <Text style={styles.toothChartSummaryText}>
-                      {selectedTeeth.length} {selectedTeeth.length === 1 ? "tooth" : "teeth"} selected: {selectedTeeth.sort((a, b) => a - b).map((t) => `#${t}`).join(", ")}
-                    </Text>
+                    <View style={styles.toothSummaryRow}>
+                      <Ionicons name="checkmark-circle" size={16} color={Colors.light.tint} />
+                      <Text style={styles.toothChartSummaryText}>
+                        {toothIndices}
+                      </Text>
+                    </View>
+                    <View style={styles.toothPricingRow}>
+                      <Text style={styles.toothPricingLabel}>
+                        {billableTeethCount} billable {billableTeethCount === 1 ? "tooth" : "teeth"} × ${MATERIAL_PRICES[material] || 250}/{material}
+                      </Text>
+                      <Text style={styles.toothPricingTotal}>${calculatedPrice.toLocaleString()}</Text>
+                    </View>
                   </View>
                 )}
               </View>
@@ -1773,6 +1935,14 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.light.tint,
     borderColor: Colors.light.tint,
   },
+  toothBtnBridge: {
+    backgroundColor: Colors.light.accent,
+    borderColor: Colors.light.accent,
+  },
+  toothBtnMissing: {
+    backgroundColor: Colors.light.errorLight,
+    borderColor: Colors.light.error,
+  },
   toothBtnText: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
@@ -1781,25 +1951,100 @@ const styles = StyleSheet.create({
   toothBtnTextSelected: {
     color: "#FFF",
   },
+  toothBtnTextBridge: {
+    color: "#FFF",
+  },
+  toothBtnTextMissing: {
+    color: Colors.light.error,
+    fontSize: 11,
+  },
+  toothMissingWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  toothXOverlay: {
+    position: "absolute",
+    top: -4,
+    left: -2,
+    right: -2,
+    bottom: -4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toothChartLegend: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+    marginBottom: 4,
+  },
+  legendItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  legendText: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  legendHint: {
+    fontSize: 9,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    fontStyle: "italic" as const,
+    marginLeft: "auto",
+  },
   toothChartDivider: {
     height: 1,
     backgroundColor: Colors.light.borderLight,
     marginVertical: 4,
   },
   toothChartSummary: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingTop: 6,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: Colors.light.borderLight,
     marginTop: 4,
+    gap: 6,
+  },
+  toothSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
   toothChartSummaryText: {
     fontSize: 12,
     fontFamily: "Inter_500Medium",
     color: Colors.light.tint,
     flex: 1,
+  },
+  toothPricingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: Colors.light.tintLight,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  toothPricingLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  toothPricingTotal: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
   },
   formTextArea: {
     minHeight: 80,
