@@ -41,9 +41,9 @@ interface AppContextValue {
   setAdminUnlocked: (v: boolean) => void;
   cases: LabCase[];
   addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => void;
-  updateCaseStatus: (caseId: string, newStatus: CaseStatus) => void;
-  addCasePhoto: (caseId: string, photoUri: string) => void;
-  addCaseNote: (caseId: string, note: string) => void;
+  updateCaseStatus: (caseId: string, newStatus: CaseStatus, user?: string) => void;
+  addCasePhoto: (caseId: string, photoUri: string, user?: string) => void;
+  addCaseNote: (caseId: string, note: string, user?: string) => void;
   addTrackingNumber: (caseId: string, tracking: string) => void;
   addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string) => void;
   notifications: Notification[];
@@ -228,7 +228,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updatedNotifs));
   }
 
-  function updateCaseStatus(caseId: string, newStatus: CaseStatus) {
+  function updateCaseStatus(caseId: string, newStatus: CaseStatus, user?: string) {
     const now = Date.now();
     const stationLabel = getStationInfo(newStatus).label;
     const stationEntry: ActivityEntry = {
@@ -237,6 +237,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       timestamp: now,
       description: `Case moved to ${stationLabel}`,
       station: newStatus,
+      user: user || undefined,
     };
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
@@ -278,7 +279,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function addCasePhoto(caseId: string, photoUri: string) {
+  function addCasePhoto(caseId: string, photoUri: string, user?: string) {
     const now = Date.now();
     const photoEntry: ActivityEntry = {
       id: generateId(),
@@ -286,6 +287,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       timestamp: now,
       description: "Photo added to case",
       imageUri: photoUri,
+      user: user || undefined,
     };
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
@@ -304,13 +306,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function addCaseNote(caseId: string, note: string) {
+  function addCaseNote(caseId: string, note: string, user?: string) {
     const now = Date.now();
     const noteEntry: ActivityEntry = {
       id: generateId(),
       type: "note",
       timestamp: now,
       description: note,
+      user: user || undefined,
     };
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
