@@ -17,6 +17,8 @@ import {
   LabUser,
   Invoice,
   ShippingAccount,
+  ChatMessage,
+  Conversation,
   generateId,
   getStationInfo,
   SAMPLE_CASES,
@@ -24,6 +26,8 @@ import {
   SAMPLE_CLIENTS,
   SAMPLE_USERS,
   SAMPLE_INVOICES,
+  SAMPLE_CONVERSATIONS,
+  SAMPLE_CHAT_MESSAGES,
 } from "./data";
 
 interface AppContextValue {
@@ -56,6 +60,11 @@ interface AppContextValue {
   shippingAccounts: ShippingAccount[];
   addShippingAccount: (companyName: string, accountNumber: string) => void;
   removeShippingAccount: (id: string) => void;
+  conversations: Conversation[];
+  chatMessages: ChatMessage[];
+  sendChatMessage: (conversationId: string, content: string, imageUri?: string) => void;
+  markConversationRead: (conversationId: string) => void;
+  totalUnreadMessages: number;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -67,6 +76,8 @@ const CLIENTS_KEY = "@drivesync_clients";
 const USERS_KEY = "@drivesync_users";
 const INVOICES_KEY = "@drivesync_invoices";
 const SHIPPING_KEY = "@drivesync_shipping";
+const CONVERSATIONS_KEY = "@drivesync_conversations";
+const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRoleState] = useState<UserRole>("tech");
@@ -77,6 +88,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [users, setUsers] = useState<LabUser[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [shippingAccounts, setShippingAccounts] = useState<ShippingAccount[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -85,7 +98,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function loadData() {
     try {
-      const [savedCases, savedRole, savedNotifs, savedClients, savedUsers, savedInvoices, savedShipping] = await Promise.all([
+      const [savedCases, savedRole, savedNotifs, savedClients, savedUsers, savedInvoices, savedShipping, savedConversations, savedChatMessages] = await Promise.all([
         AsyncStorage.getItem(CASES_KEY),
         AsyncStorage.getItem(ROLE_KEY),
         AsyncStorage.getItem(NOTIFS_KEY),
@@ -93,6 +106,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         AsyncStorage.getItem(USERS_KEY),
         AsyncStorage.getItem(INVOICES_KEY),
         AsyncStorage.getItem(SHIPPING_KEY),
+        AsyncStorage.getItem(CONVERSATIONS_KEY),
+        AsyncStorage.getItem(CHAT_MESSAGES_KEY),
       ]);
 
       if (savedCases) {
@@ -137,12 +152,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (savedShipping) {
         setShippingAccounts(JSON.parse(savedShipping));
       }
+
+      if (savedConversations) {
+        setConversations(JSON.parse(savedConversations));
+      } else {
+        setConversations(SAMPLE_CONVERSATIONS);
+        await AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(SAMPLE_CONVERSATIONS));
+      }
+
+      if (savedChatMessages) {
+        setChatMessages(JSON.parse(savedChatMessages));
+      } else {
+        setChatMessages(SAMPLE_CHAT_MESSAGES);
+        await AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(SAMPLE_CHAT_MESSAGES));
+      }
     } catch (e) {
       setCases(SAMPLE_CASES);
       setNotifications(SAMPLE_NOTIFICATIONS);
       setClients(SAMPLE_CLIENTS);
       setUsers(SAMPLE_USERS);
       setInvoices(SAMPLE_INVOICES);
+      setConversations(SAMPLE_CONVERSATIONS);
+      setChatMessages(SAMPLE_CHAT_MESSAGES);
     } finally {
       setIsLoading(false);
     }
@@ -385,6 +416,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function sendChatMessage(conversationId: string, content: string, imageUri?: string) {
+    const msg: ChatMessage = {
+      id: generateId(),
+      conversationId,
+      senderId: "lab",
+      senderType: "lab",
+      content,
+      imageUri,
+      timestamp: Date.now(),
+      read: true,
+    };
+    setChatMessages(prev => {
+      const updated = [...prev, msg];
+      AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+    setConversations(prev => {
+      const updated = prev.map(c => {
+        if (c.id === conversationId) {
+          return { ...c, lastMessage: imageUri ? "Photo" : content, lastMessageTime: Date.now() };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function markConversationRead(conversationId: string) {
+    setChatMessages(prev => {
+      const updated = prev.map(m => {
+        if (m.conversationId === conversationId && !m.read) {
+          return { ...m, read: true };
+        }
+        return m;
+      });
+      AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+    setConversations(prev => {
+      const updated = prev.map(c => {
+        if (c.id === conversationId) {
+          return { ...c, unreadCount: 0 };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
     [notifications],
@@ -399,6 +481,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         (c) => c.isRush && c.status !== "COMPLETE" && c.status !== "SHIP",
       ).length,
     [cases],
+  );
+
+  const totalUnreadMessages = useMemo(
+    () => conversations.reduce((sum, c) => sum + c.unreadCount, 0),
+    [conversations],
   );
 
   const value = useMemo(
@@ -432,8 +519,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       shippingAccounts,
       addShippingAccount,
       removeShippingAccount,
+      conversations,
+      chatMessages,
+      sendChatMessage,
+      markConversationRead,
+      totalUnreadMessages,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, users, invoices, shippingAccounts],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

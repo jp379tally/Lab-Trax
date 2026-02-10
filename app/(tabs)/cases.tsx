@@ -32,6 +32,7 @@ export default function CasesScreen() {
         (c) =>
           c.caseNumber.toLowerCase().includes(q) ||
           c.doctorName.toLowerCase().includes(q) ||
+          c.patientName.toLowerCase().includes(q) ||
           c.material.toLowerCase().includes(q) ||
           c.shade.toLowerCase().includes(q),
       );

@@ -80,6 +80,26 @@ export interface ShippingAccount {
   createdAt: number;
 }
 
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderType: "office" | "lab";
+  content: string;
+  imageUri?: string;
+  timestamp: number;
+  read: boolean;
+}
+
+export interface Conversation {
+  id: string;
+  clientId: string;
+  clientName: string;
+  lastMessage: string;
+  lastMessageTime: number;
+  unreadCount: number;
+}
+
 export function getStationInfo(status: CaseStatus) {
   return STATIONS.find((s) => s.id === status) || STATIONS[0];
 }
@@ -633,6 +653,176 @@ export const SAMPLE_INVOICES: Invoice[] = [
     status: "open",
     issuedAt: Date.now() - 86400000 * 2,
     dueAt: Date.now() + 86400000 * 28,
+  },
+];
+
+const CONV_IDS = [generateId(), generateId(), generateId(), generateId(), generateId()];
+
+export const SAMPLE_CONVERSATIONS: Conversation[] = [
+  {
+    id: CONV_IDS[0],
+    clientId: SAMPLE_CLIENTS[0].id,
+    clientName: SAMPLE_CLIENTS[0].practiceName,
+    lastMessage: "Currently in the design phase, should be ready by Thursday",
+    lastMessageTime: Date.now() - 1200000,
+    unreadCount: 1,
+  },
+  {
+    id: CONV_IDS[1],
+    clientId: SAMPLE_CLIENTS[1].id,
+    clientName: SAMPLE_CLIENTS[1].practiceName,
+    lastMessage: "We just received the impression, looks good",
+    lastMessageTime: Date.now() - 3600000,
+    unreadCount: 0,
+  },
+  {
+    id: CONV_IDS[2],
+    clientId: SAMPLE_CLIENTS[2].id,
+    clientName: SAMPLE_CLIENTS[2].practiceName,
+    lastMessage: "Can you send a photo of the wax-up before investing?",
+    lastMessageTime: Date.now() - 7200000,
+    unreadCount: 2,
+  },
+  {
+    id: CONV_IDS[3],
+    clientId: SAMPLE_CLIENTS[3].id,
+    clientName: SAMPLE_CLIENTS[3].practiceName,
+    lastMessage: "Gold crown passed QC, shipping today",
+    lastMessageTime: Date.now() - 14400000,
+    unreadCount: 0,
+  },
+  {
+    id: CONV_IDS[4],
+    clientId: SAMPLE_CLIENTS[4].id,
+    clientName: SAMPLE_CLIENTS[4].practiceName,
+    lastMessage: "Please confirm the shade match on the veneers",
+    lastMessageTime: Date.now() - 5400000,
+    unreadCount: 1,
+  },
+];
+
+export const SAMPLE_CHAT_MESSAGES: ChatMessage[] = [
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[0],
+    senderId: SAMPLE_CLIENTS[0].id,
+    senderType: "office",
+    content: "Hi, checking on case #4521 status?",
+    timestamp: Date.now() - 3600000,
+    read: true,
+  },
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[0],
+    senderId: "lab",
+    senderType: "lab",
+    content: "Currently in the design phase, should be ready by Thursday",
+    timestamp: Date.now() - 1800000,
+    read: true,
+  },
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[0],
+    senderId: SAMPLE_CLIENTS[0].id,
+    senderType: "office",
+    content: "Great, the patient is asking about the shade. Can you double check A2?",
+    timestamp: Date.now() - 1200000,
+    read: false,
+  },
+
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[1],
+    senderId: SAMPLE_CLIENTS[1].id,
+    senderType: "office",
+    content: "Sending over the Zirconia crown impression for case #4522",
+    timestamp: Date.now() - 7200000,
+    read: true,
+  },
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[1],
+    senderId: "lab",
+    senderType: "lab",
+    content: "We just received the impression, looks good",
+    timestamp: Date.now() - 3600000,
+    read: true,
+  },
+
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[2],
+    senderId: SAMPLE_CLIENTS[2].id,
+    senderType: "office",
+    content: "How is the PFM bridge coming along for Robert Lang?",
+    timestamp: Date.now() - 14400000,
+    read: true,
+  },
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[2],
+    senderId: "lab",
+    senderType: "lab",
+    content: "Moving through porcelain now. Rush case so we prioritized it.",
+    timestamp: Date.now() - 10800000,
+    read: true,
+  },
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[2],
+    senderId: SAMPLE_CLIENTS[2].id,
+    senderType: "office",
+    content: "Can you send a photo of the wax-up before investing?",
+    timestamp: Date.now() - 7200000,
+    read: false,
+    imageUri: "",
+  },
+
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[3],
+    senderId: SAMPLE_CLIENTS[3].id,
+    senderType: "office",
+    content: "Any update on the gold crown for Amanda Wells?",
+    timestamp: Date.now() - 28800000,
+    read: true,
+  },
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[3],
+    senderId: "lab",
+    senderType: "lab",
+    content: "Gold crown passed QC, shipping today",
+    timestamp: Date.now() - 14400000,
+    read: true,
+  },
+
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[4],
+    senderId: SAMPLE_CLIENTS[4].id,
+    senderType: "office",
+    content: "The veneer case for Tyler Hughes - is BL2 the right shade?",
+    timestamp: Date.now() - 10800000,
+    read: true,
+  },
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[4],
+    senderId: "lab",
+    senderType: "lab",
+    content: "BL2 confirmed per the prescription. Working on the wax-up now.",
+    timestamp: Date.now() - 7200000,
+    read: true,
+  },
+  {
+    id: generateId(),
+    conversationId: CONV_IDS[4],
+    senderId: SAMPLE_CLIENTS[4].id,
+    senderType: "office",
+    content: "Please confirm the shade match on the veneers",
+    timestamp: Date.now() - 5400000,
+    read: false,
   },
 ];
 
