@@ -54,7 +54,7 @@ function getActivityIcon(type: string): { name: string; color: string } {
 
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
-  const { addCase, cases } = useApp();
+  const { addCase, cases, clients } = useApp();
   const [phase, setPhase] = useState<ScanPhase>("camera");
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
@@ -73,6 +73,13 @@ export default function ScanScreen() {
   const [dueDate, setDueDate] = useState("2026-02-20");
   const [casePhotos, setCasePhotos] = useState<string[]>([]);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
+  const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
+  const [doctorSearch, setDoctorSearch] = useState("");
+
+  const filteredClients = clients.filter((c) => {
+    const q = doctorSearch.toLowerCase();
+    return c.leadDoctor.toLowerCase().includes(q) || c.practiceName.toLowerCase().includes(q);
+  });
 
   useFocusEffect(
     useCallback(() => {
@@ -485,15 +492,83 @@ export default function ScanScreen() {
             </Pressable>
           </View>
 
-          <View style={styles.formGroup}>
+          <View style={[styles.formGroup, { zIndex: 10 }]}>
             <Text style={styles.formLabel}>Doctor Name</Text>
-            <TextInput
-              style={styles.formInput}
-              value={doctorName}
-              onChangeText={setDoctorName}
-              placeholder="Dr. Smith"
-              placeholderTextColor={Colors.light.textTertiary}
-            />
+            <Pressable
+              onPress={() => {
+                setDoctorDropdownOpen(!doctorDropdownOpen);
+                setDoctorSearch("");
+              }}
+              style={[styles.formInput, styles.dropdownTrigger]}
+            >
+              <Text style={[styles.dropdownTriggerText, !doctorName && { color: Colors.light.textTertiary }]}>
+                {doctorName || "Select Doctor"}
+              </Text>
+              <Ionicons
+                name={doctorDropdownOpen ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={Colors.light.textSecondary}
+              />
+            </Pressable>
+            {doctorDropdownOpen && (
+              <View style={styles.dropdownPanel}>
+                <View style={styles.dropdownSearchWrap}>
+                  <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+                  <TextInput
+                    style={styles.dropdownSearchInput}
+                    value={doctorSearch}
+                    onChangeText={setDoctorSearch}
+                    placeholder="Search by name..."
+                    placeholderTextColor={Colors.light.textTertiary}
+                    autoFocus
+                  />
+                  {doctorSearch.length > 0 && (
+                    <Pressable onPress={() => setDoctorSearch("")}>
+                      <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                    </Pressable>
+                  )}
+                </View>
+                <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                  {filteredClients.length === 0 ? (
+                    <Text style={styles.dropdownEmpty}>No matching clients</Text>
+                  ) : (
+                    filteredClients.map((c) => (
+                      <Pressable
+                        key={c.id}
+                        onPress={() => {
+                          setDoctorName(c.leadDoctor);
+                          setDoctorDropdownOpen(false);
+                          setDoctorSearch("");
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [
+                          styles.dropdownItem,
+                          doctorName === c.leadDoctor && styles.dropdownItemSelected,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <View style={styles.dropdownItemLeft}>
+                          <View style={[styles.dropdownAvatar, doctorName === c.leadDoctor && { backgroundColor: Colors.light.tint }]}>
+                            <Text style={[styles.dropdownAvatarText, doctorName === c.leadDoctor && { color: "#FFF" }]}>
+                              {c.leadDoctor.replace("Dr. ", "").charAt(0)}
+                            </Text>
+                          </View>
+                          <View>
+                            <Text style={[styles.dropdownItemName, doctorName === c.leadDoctor && { color: Colors.light.tint }]}>
+                              {c.leadDoctor}
+                            </Text>
+                            <Text style={styles.dropdownItemSub}>{c.practiceName}</Text>
+                          </View>
+                        </View>
+                        {doctorName === c.leadDoctor && (
+                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                        )}
+                      </Pressable>
+                    ))
+                  )}
+                </ScrollView>
+              </View>
+            )}
           </View>
 
           <View style={styles.formRow}>
@@ -1237,6 +1312,91 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_500Medium",
     color: Colors.light.text,
+  },
+  dropdownTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  dropdownTriggerText: {
+    fontSize: 15,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  dropdownPanel: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    overflow: "hidden",
+  },
+  dropdownSearchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  dropdownSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+    paddingVertical: 0,
+  },
+  dropdownList: {
+    maxHeight: 200,
+  },
+  dropdownEmpty: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    textAlign: "center",
+    paddingVertical: 20,
+  },
+  dropdownItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  dropdownItemSelected: {
+    backgroundColor: Colors.light.tintLight,
+  },
+  dropdownItemLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  dropdownAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.light.surfaceSecondary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dropdownAvatarText: {
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.textSecondary,
+  },
+  dropdownItemName: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  dropdownItemSub: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 1,
   },
   formTextArea: {
     minHeight: 80,
