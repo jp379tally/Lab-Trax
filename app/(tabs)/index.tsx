@@ -1412,6 +1412,23 @@ function AdminDashboard() {
   });
   const [priceConfirmVisible, setPriceConfirmVisible] = useState(false);
 
+  const [expandedTier, setExpandedTier] = useState<string | null>(null);
+  const [tierPrices, setTierPrices] = useState<Record<string, Record<string, string>>>(() => {
+    const initial: Record<string, Record<string, string>> = {};
+    pricingTiers.forEach(t => {
+      initial[t.id] = {};
+      DEFAULT_TIER_ITEMS.forEach(item => {
+        initial[t.id][item.key] = t.prices[item.key]?.toString() || "0";
+      });
+    });
+    return initial;
+  });
+  const [showAddTier, setShowAddTier] = useState(false);
+  const [newTierName, setNewTierName] = useState("");
+  const [selectedPriceClient, setSelectedPriceClient] = useState<Client | null>(null);
+  const [showClientPicker, setShowClientPicker] = useState(false);
+  const [selectedTierForClient, setSelectedTierForClient] = useState<string>("");
+
   function resetClientForm() {
     setNewClientName("");
     setNewClientDoctor("");
@@ -2319,20 +2336,6 @@ function AdminDashboard() {
   }
 
   function renderEditTierPricing() {
-    const [expandedTier, setExpandedTier] = useState<string | null>(null);
-    const [tierPrices, setTierPrices] = useState<Record<string, Record<string, string>>>(() => {
-      const initial: Record<string, Record<string, string>> = {};
-      pricingTiers.forEach(t => {
-        initial[t.id] = {};
-        DEFAULT_TIER_ITEMS.forEach(item => {
-          initial[t.id][item.key] = t.prices[item.key]?.toString() || "0";
-        });
-      });
-      return initial;
-    });
-    const [showAddTier, setShowAddTier] = useState(false);
-    const [newTierName, setNewTierName] = useState("");
-
     function handleSaveTier(tierId: string) {
       const prices: Record<string, number> = {};
       DEFAULT_TIER_ITEMS.forEach(item => {
@@ -2458,10 +2461,6 @@ function AdminDashboard() {
   }
 
   function renderEditPriceList() {
-    const [selectedPriceClient, setSelectedPriceClient] = useState<Client | null>(null);
-    const [showClientPicker, setShowClientPicker] = useState(false);
-    const [selectedTierForClient, setSelectedTierForClient] = useState<string>("");
-
     function handleUpdatePrice(key: string, value: string) {
       const cleaned = value.replace(/[^0-9.]/g, "");
       setPriceList((prev) => ({ ...prev, [key]: cleaned }));
