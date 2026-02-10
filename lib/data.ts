@@ -479,6 +479,14 @@ export interface LabUser {
   createdAt: number;
 }
 
+export interface InvoiceLineItem {
+  qty: number;
+  item: string;
+  description: string;
+  rate: number;
+  amount: number;
+}
+
 export interface Invoice {
   id: string;
   invoiceNumber: string;
@@ -486,9 +494,17 @@ export interface Invoice {
   clientName: string;
   caseIds: string[];
   amount: number;
+  credits: number;
   status: "open" | "sent" | "paid" | "overdue";
   issuedAt: number;
   dueAt: number;
+  billTo: string;
+  patientName: string;
+  caseType: string;
+  teeth: string;
+  shade: string;
+  caseNotes: string;
+  lineItems: InvoiceLineItem[];
 }
 
 export const SAMPLE_CLIENTS: Client[] = [
@@ -606,9 +622,22 @@ export const SAMPLE_INVOICES: Invoice[] = [
     clientName: "Elite Dental Group",
     caseIds: [],
     amount: 3830.0,
+    credits: 0,
     status: "open",
     issuedAt: Date.now() - 86400000 * 5,
     dueAt: Date.now() + 86400000 * 25,
+    billTo: "Elite Dental Group",
+    patientName: "Michael Klein",
+    caseType: "Crown & Bridge",
+    teeth: "#8, #9, #10",
+    shade: "A2",
+    caseNotes: "Bridge prep - verify margins on #9",
+    lineItems: [
+      { qty: 3, item: "E.max Crown", description: "Anterior bridge units #8-#10", rate: 895.00, amount: 2685.00 },
+      { qty: 1, item: "Custom Shade", description: "Vita A2 shade match", rate: 145.00, amount: 145.00 },
+      { qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500.00, amount: 500.00 },
+      { qty: 1, item: "Model Work", description: "Diagnostic models and articulation", rate: 500.00, amount: 500.00 },
+    ],
   },
   {
     id: generateId(),
@@ -617,9 +646,20 @@ export const SAMPLE_INVOICES: Invoice[] = [
     clientName: "City Smiles",
     caseIds: [],
     amount: 680.0,
+    credits: 0,
     status: "sent",
     issuedAt: Date.now() - 86400000 * 10,
     dueAt: Date.now() + 86400000 * 20,
+    billTo: "City Smiles",
+    patientName: "Sarah Johnson",
+    caseType: "Single Crown",
+    teeth: "#14",
+    shade: "B1",
+    caseNotes: "PFM crown, porcelain butt margin",
+    lineItems: [
+      { qty: 1, item: "PFM Crown", description: "Porcelain fused to metal crown #14", rate: 580.00, amount: 580.00 },
+      { qty: 1, item: "Die & Model", description: "Working model with removable dies", rate: 100.00, amount: 100.00 },
+    ],
   },
   {
     id: generateId(),
@@ -628,9 +668,20 @@ export const SAMPLE_INVOICES: Invoice[] = [
     clientName: "North Lab Dentistry",
     caseIds: [],
     amount: 1580.0,
+    credits: 0,
     status: "overdue",
     issuedAt: Date.now() - 86400000 * 40,
     dueAt: Date.now() - 86400000 * 10,
+    billTo: "North Lab Dentistry",
+    patientName: "Robert Davis",
+    caseType: "Implant",
+    teeth: "#19, #30",
+    shade: "A3",
+    caseNotes: "Implant-supported crowns, verify abutment seating",
+    lineItems: [
+      { qty: 2, item: "Implant Crown", description: "Screw-retained implant crowns", rate: 650.00, amount: 1300.00 },
+      { qty: 2, item: "Custom Abutment", description: "Titanium custom abutments", rate: 140.00, amount: 280.00 },
+    ],
   },
   {
     id: generateId(),
@@ -639,9 +690,20 @@ export const SAMPLE_INVOICES: Invoice[] = [
     clientName: "Pacific Dental Care",
     caseIds: [],
     amount: 920.0,
+    credits: 0,
     status: "paid",
     issuedAt: Date.now() - 86400000 * 30,
     dueAt: Date.now() - 86400000 * 1,
+    billTo: "Pacific Dental Care",
+    patientName: "Lisa Wang",
+    caseType: "Veneer",
+    teeth: "#6, #7, #8, #9, #10, #11",
+    shade: "BL2",
+    caseNotes: "Minimal prep veneers, matching existing laterals",
+    lineItems: [
+      { qty: 6, item: "Porcelain Veneer", description: "Feldspathic porcelain veneers #6-#11", rate: 120.00, amount: 720.00 },
+      { qty: 1, item: "Wax-Up", description: "Diagnostic wax-up for approval", rate: 200.00, amount: 200.00 },
+    ],
   },
   {
     id: generateId(),
@@ -650,9 +712,21 @@ export const SAMPLE_INVOICES: Invoice[] = [
     clientName: "Sunrise Family Dental",
     caseIds: [],
     amount: 4200.0,
+    credits: 0,
     status: "open",
     issuedAt: Date.now() - 86400000 * 2,
     dueAt: Date.now() + 86400000 * 28,
+    billTo: "Sunrise Family Dental",
+    patientName: "James Rodriguez",
+    caseType: "Full Arch",
+    teeth: "Upper Full Arch",
+    shade: "A1",
+    caseNotes: "Full arch zirconia prosthesis, implant-supported",
+    lineItems: [
+      { qty: 1, item: "Full Arch Zirconia", description: "Upper full arch implant prosthesis", rate: 3500.00, amount: 3500.00 },
+      { qty: 4, item: "Multi-Unit Abutment", description: "Titanium multi-unit abutments", rate: 125.00, amount: 500.00 },
+      { qty: 1, item: "Try-In", description: "PMMA try-in prosthesis", rate: 200.00, amount: 200.00 },
+    ],
   },
 ];
 
