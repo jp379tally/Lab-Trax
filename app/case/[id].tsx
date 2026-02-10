@@ -26,7 +26,7 @@ import { ChatButton } from "@/components/ChatButton";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate } = useApp();
   const { currentUser } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
@@ -48,6 +48,15 @@ export default function CaseDetailScreen() {
   const [itemSelectedTeeth, setItemSelectedTeeth] = useState<number[]>([]);
   const [itemToothTypes, setItemToothTypes] = useState<Record<number, ToothType>>({});
   const [itemMaterial, setItemMaterial] = useState("Zirconia");
+
+  const [showCourtesyModal, setShowCourtesyModal] = useState(false);
+  const [courtesyMessage, setCourtesyMessage] = useState("");
+  const [showDateProposalModal, setShowDateProposalModal] = useState(false);
+  const [proposalDate, setProposalDate] = useState("");
+  const [proposalTime, setProposalTime] = useState("");
+  const [activeCourtesyId, setActiveCourtesyId] = useState("");
+  const [declineNote, setDeclineNote] = useState("");
+  const [showDeclineModal, setShowDeclineModal] = useState(false);
 
   const caseItem = cases.find((c) => c.id === id);
   const isAdmin = role === "admin" && adminUnlocked;
@@ -785,6 +794,154 @@ export default function CaseDetailScreen() {
             <Ionicons name="add-circle" size={20} color="#FFF" />
             <Text style={styles.actionBtnText}>Add Item</Text>
           </Pressable>
+
+          <Pressable
+            onPress={() => {
+              const stationInfo = getStationInfo(caseItem.status);
+              const msg = `Hello Dr. ${caseItem.doctorName}, this is a courtesy text to inform you that patient ${caseItem.patientName} has a case that was delayed in production. The case is currently in ${stationInfo.label}. If the patient is scheduled and you would like a more specific updated estimated delivery date and time please let us know.`;
+              setCourtesyMessage(msg);
+              setShowCourtesyModal(true);
+            }}
+            style={({ pressed }) => [
+              styles.actionBtn,
+              { backgroundColor: "#F59E0B" },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Ionicons name="time" size={20} color="#FFF" />
+            <Text style={styles.actionBtnText}>Courtesy Text</Text>
+          </Pressable>
+
+          {(caseItem.courtesyTexts || []).length > 0 && (
+            <View style={ctStyles.courtesySection}>
+              <Text style={ctStyles.sectionTitle}>Courtesy Text History</Text>
+              {(caseItem.courtesyTexts || []).map((ct) => {
+                const statusColors: Record<string, string> = {
+                  sent: "#F59E0B",
+                  date_requested: "#EF4444",
+                  date_proposed: "#3B82F6",
+                  accepted: "#22C55E",
+                  declined: "#EF4444",
+                };
+                const statusLabels: Record<string, string> = {
+                  sent: "Awaiting Response",
+                  date_requested: "Date Requested",
+                  date_proposed: "Date Proposed",
+                  accepted: "Resolved",
+                  declined: "Declined",
+                };
+                return (
+                  <View key={ct.id} style={ctStyles.courtesyCard}>
+                    <View style={ctStyles.courtesyHeader}>
+                      <Ionicons name="chatbubble-ellipses" size={16} color={statusColors[ct.status] || "#94A3B8"} />
+                      <Text style={[ctStyles.statusBadge, { backgroundColor: statusColors[ct.status] || "#94A3B8" }]}>
+                        {statusLabels[ct.status] || ct.status}
+                      </Text>
+                    </View>
+                    <Text style={ctStyles.courtesyMsg} numberOfLines={3}>{ct.message}</Text>
+                    <Text style={ctStyles.courtesyMeta}>
+                      Sent by {ct.sentBy} {"\u2022"} {new Date(ct.sentAt).toLocaleDateString()}
+                    </Text>
+
+                    {ct.proposedDate && ct.status === "date_proposed" && (
+                      <View style={ctStyles.proposedDateBox}>
+                        <Ionicons name="calendar" size={16} color="#3B82F6" />
+                        <Text style={ctStyles.proposedDateText}>
+                          Proposed: {ct.proposedDate} at {ct.proposedTime}
+                        </Text>
+                      </View>
+                    )}
+
+                    {ct.status === "sent" && (
+                      <View style={ctStyles.responseRow}>
+                        <Text style={ctStyles.responseLabel}>Would you like an updated delivery date?</Text>
+                        <View style={ctStyles.responseBtns}>
+                          <Pressable
+                            onPress={() => {
+                              respondToCourtesyText(caseItem.id, ct.id, true, currentUser || "client");
+                              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                            }}
+                            style={({ pressed }) => [ctStyles.responseBtn, ctStyles.yesBtn, pressed && { opacity: 0.85 }]}
+                          >
+                            <Text style={ctStyles.responseBtnText}>Yes</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => {
+                              respondToCourtesyText(caseItem.id, ct.id, false, currentUser || "client");
+                              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                            }}
+                            style={({ pressed }) => [ctStyles.responseBtn, ctStyles.noBtn, pressed && { opacity: 0.85 }]}
+                          >
+                            <Text style={ctStyles.responseBtnText}>No</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    )}
+
+                    {ct.status === "date_requested" && isAdmin && (
+                      <Pressable
+                        onPress={() => {
+                          setActiveCourtesyId(ct.id);
+                          setProposalDate("");
+                          setProposalTime("");
+                          setShowDateProposalModal(true);
+                        }}
+                        style={({ pressed }) => [ctStyles.proposeBtn, pressed && { opacity: 0.85 }]}
+                      >
+                        <Ionicons name="calendar" size={18} color="#FFF" />
+                        <Text style={ctStyles.proposeBtnText}>Propose Delivery Date</Text>
+                      </Pressable>
+                    )}
+
+                    {ct.status === "date_proposed" && (
+                      <View style={ctStyles.responseBtns}>
+                        <Pressable
+                          onPress={() => {
+                            respondToProposedDate(caseItem.id, ct.id, true, currentUser || "client");
+                            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                          }}
+                          style={({ pressed }) => [ctStyles.responseBtn, ctStyles.yesBtn, { flex: 1 }, pressed && { opacity: 0.85 }]}
+                        >
+                          <Ionicons name="checkmark" size={18} color="#FFF" />
+                          <Text style={ctStyles.responseBtnText}>Accept</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => {
+                            setActiveCourtesyId(ct.id);
+                            setDeclineNote("");
+                            setShowDeclineModal(true);
+                          }}
+                          style={({ pressed }) => [ctStyles.responseBtn, ctStyles.noBtn, { flex: 1 }, pressed && { opacity: 0.85 }]}
+                        >
+                          <Ionicons name="close" size={18} color="#FFF" />
+                          <Text style={ctStyles.responseBtnText}>Decline</Text>
+                        </Pressable>
+                      </View>
+                    )}
+
+                    {ct.responseHistory.length > 0 && (
+                      <View style={ctStyles.historySection}>
+                        {ct.responseHistory.map((r) => (
+                          <View key={r.id} style={ctStyles.historyItem}>
+                            <View style={[ctStyles.historyDot, { backgroundColor: r.type === "accepted" ? "#22C55E" : r.type === "declined" ? "#EF4444" : "#3B82F6" }]} />
+                            <View style={{ flex: 1 }}>
+                              <Text style={ctStyles.historyText}>
+                                {r.type === "date_requested" ? r.note :
+                                 r.type === "date_proposed" ? `Proposed: ${r.proposedDate} at ${r.proposedTime}` :
+                                 r.type === "accepted" ? "Delivery date accepted" :
+                                 `Declined${r.note ? `: ${r.note}` : ""}`}
+                              </Text>
+                              <Text style={ctStyles.historyMeta}>{r.by} {"\u2022"} {new Date(r.timestamp).toLocaleString()}</Text>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
         </View>
       </ScrollView>
 
@@ -1267,6 +1424,157 @@ export default function CaseDetailScreen() {
             )}
           </View>
         </View>
+      </Modal>
+
+      <Modal
+        visible={showCourtesyModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowCourtesyModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={ctStyles.modalOverlay}
+        >
+          <View style={ctStyles.modalCard}>
+            <View style={ctStyles.modalHeader}>
+              <Text style={ctStyles.modalTitle}>Courtesy Text</Text>
+              <Pressable onPress={() => setShowCourtesyModal(false)}>
+                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={ctStyles.modalSubtitle}>
+              Send a delay notification to the doctor. You can edit the message before sending.
+            </Text>
+            <TextInput
+              style={ctStyles.messageInput}
+              value={courtesyMessage}
+              onChangeText={setCourtesyMessage}
+              multiline
+              textAlignVertical="top"
+              placeholder="Courtesy message..."
+              placeholderTextColor="#94A3B8"
+            />
+            <Pressable
+              onPress={() => {
+                if (courtesyMessage.trim()) {
+                  sendCourtesyText(caseItem.id, courtesyMessage.trim(), currentUser || "lab");
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setShowCourtesyModal(false);
+                  setCourtesyMessage("");
+                }
+              }}
+              style={({ pressed }) => [ctStyles.sendBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="send" size={20} color="#FFF" />
+              <Text style={ctStyles.sendBtnText}>Send Courtesy Text</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showDateProposalModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowDateProposalModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={ctStyles.modalOverlay}
+        >
+          <View style={ctStyles.modalCard}>
+            <View style={ctStyles.modalHeader}>
+              <Text style={ctStyles.modalTitle}>Propose Delivery Date</Text>
+              <Pressable onPress={() => setShowDateProposalModal(false)}>
+                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={ctStyles.modalSubtitle}>
+              Provide an updated delivery date and time for the client to review.
+            </Text>
+            <Text style={ctStyles.inputLabel}>Date (MM/DD/YYYY)</Text>
+            <TextInput
+              style={ctStyles.dateInput}
+              value={proposalDate}
+              onChangeText={setProposalDate}
+              placeholder="03/15/2026"
+              placeholderTextColor="#94A3B8"
+            />
+            <Text style={ctStyles.inputLabel}>Time</Text>
+            <TextInput
+              style={ctStyles.dateInput}
+              value={proposalTime}
+              onChangeText={setProposalTime}
+              placeholder="2:00 PM"
+              placeholderTextColor="#94A3B8"
+            />
+            <Pressable
+              onPress={() => {
+                if (proposalDate.trim() && proposalTime.trim() && activeCourtesyId) {
+                  proposeDeliveryDate(caseItem.id, activeCourtesyId, proposalDate.trim(), proposalTime.trim(), currentUser || "lab");
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setShowDateProposalModal(false);
+                  setProposalDate("");
+                  setProposalTime("");
+                  setActiveCourtesyId("");
+                }
+              }}
+              style={({ pressed }) => [ctStyles.sendBtn, { backgroundColor: "#3B82F6" }, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="calendar" size={20} color="#FFF" />
+              <Text style={ctStyles.sendBtnText}>Propose Date</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showDeclineModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowDeclineModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={ctStyles.modalOverlay}
+        >
+          <View style={ctStyles.modalCard}>
+            <View style={ctStyles.modalHeader}>
+              <Text style={ctStyles.modalTitle}>Decline Proposed Date</Text>
+              <Pressable onPress={() => setShowDeclineModal(false)}>
+                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={ctStyles.modalSubtitle}>
+              Let the lab know why this date doesn't work so they can propose a better one.
+            </Text>
+            <TextInput
+              style={ctStyles.messageInput}
+              value={declineNote}
+              onChangeText={setDeclineNote}
+              multiline
+              textAlignVertical="top"
+              placeholder="Optional note..."
+              placeholderTextColor="#94A3B8"
+            />
+            <Pressable
+              onPress={() => {
+                if (activeCourtesyId) {
+                  respondToProposedDate(caseItem.id, activeCourtesyId, false, currentUser || "client", declineNote.trim() || undefined);
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                  setShowDeclineModal(false);
+                  setDeclineNote("");
+                  setActiveCourtesyId("");
+                }
+              }}
+              style={({ pressed }) => [ctStyles.sendBtn, { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="close-circle" size={20} color="#FFF" />
+              <Text style={ctStyles.sendBtnText}>Decline & Request New Date</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
     </View>
@@ -2207,5 +2515,211 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontFamily: "Inter_700Bold",
     color: Colors.light.tint,
+  },
+});
+
+const ctStyles = StyleSheet.create({
+  courtesySection: {
+    marginTop: 20,
+    gap: 12,
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    marginBottom: 4,
+  },
+  courtesyCard: {
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+    gap: 10,
+  },
+  courtesyHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  statusBadge: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  courtesyMsg: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    lineHeight: 19,
+  },
+  courtesyMeta: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+  },
+  proposedDateBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#EFF6FF",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  proposedDateText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#1E40AF",
+  },
+  responseRow: {
+    gap: 8,
+  },
+  responseLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  responseBtns: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  responseBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+  },
+  yesBtn: {
+    backgroundColor: "#22C55E",
+  },
+  noBtn: {
+    backgroundColor: "#EF4444",
+  },
+  responseBtnText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  proposeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#3B82F6",
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  proposeBtnText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  historySection: {
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: Colors.light.borderLight,
+    paddingTop: 10,
+  },
+  historyItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  historyDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginTop: 5,
+  },
+  historyText: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+  },
+  historyMeta: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 24,
+    width: "100%",
+    maxWidth: 400,
+    gap: 12,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    lineHeight: 19,
+  },
+  messageInput: {
+    backgroundColor: Colors.light.background,
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    minHeight: 120,
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+  },
+  dateInput: {
+    backgroundColor: Colors.light.background,
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  sendBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#F59E0B",
+    paddingVertical: 14,
+    borderRadius: 14,
+    marginTop: 4,
+  },
+  sendBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
   },
 });

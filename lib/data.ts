@@ -19,7 +19,32 @@ export const STATIONS: { id: CaseStatus; label: string; color: string }[] = [
   { id: "COMPLETE", label: "Complete", color: "#22C55E" },
 ];
 
-export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created";
+export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created" | "courtesy_text";
+
+export type CourtesyTextStatus = "sent" | "date_requested" | "date_proposed" | "accepted" | "declined";
+
+export interface CourtesyTextRequest {
+  id: string;
+  caseId: string;
+  message: string;
+  sentBy: string;
+  sentAt: number;
+  status: CourtesyTextStatus;
+  wantsUpdatedDate: boolean | null;
+  proposedDate?: string;
+  proposedTime?: string;
+  responseHistory: CourtesyTextResponse[];
+}
+
+export interface CourtesyTextResponse {
+  id: string;
+  type: "date_requested" | "date_proposed" | "accepted" | "declined";
+  by: string;
+  timestamp: number;
+  proposedDate?: string;
+  proposedTime?: string;
+  note?: string;
+}
 
 export interface ActivityEntry {
   id: string;
@@ -69,6 +94,7 @@ export interface LabCase {
   activityLog: ActivityEntry[];
   trackingNumbers?: string[];
   toothMap?: ToothEntry[];
+  courtesyTexts?: CourtesyTextRequest[];
 }
 
 export interface Notification {

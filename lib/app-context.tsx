@@ -25,6 +25,8 @@ import {
   MATERIAL_PRICES,
   generateId,
   getStationInfo,
+  CourtesyTextRequest,
+  CourtesyTextResponse,
   SAMPLE_CASES,
   SAMPLE_NOTIFICATIONS,
   SAMPLE_CLIENTS,
@@ -88,6 +90,10 @@ interface AppContextValue {
   getUserGroups: (username: string) => Group[];
   getGroupByNameAndAddress: (name: string, address: string) => Group | undefined;
   findOrCreateGroup: (name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "tech") => Group;
+  sendCourtesyText: (caseId: string, message: string, sentBy: string) => void;
+  respondToCourtesyText: (caseId: string, courtesyTextId: string, wantsUpdatedDate: boolean, respondedBy: string) => void;
+  proposeDeliveryDate: (caseId: string, courtesyTextId: string, proposedDate: string, proposedTime: string, proposedBy: string) => void;
+  respondToProposedDate: (caseId: string, courtesyTextId: string, accept: boolean, respondedBy: string, note?: string) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -478,6 +484,216 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function sendCourtesyText(caseId: string, message: string, sentBy: string) {
+    const now = Date.now();
+    const courtesyText: CourtesyTextRequest = {
+      id: generateId(),
+      caseId,
+      message,
+      sentBy,
+      sentAt: now,
+      status: "sent",
+      wantsUpdatedDate: null,
+      responseHistory: [],
+    };
+    const noteEntry: ActivityEntry = {
+      id: generateId(),
+      type: "courtesy_text",
+      timestamp: now,
+      description: `Courtesy text sent: "${message}"`,
+      user: sentBy,
+    };
+    setCases((prev) => {
+      const updated = prev.map((c) => {
+        if (c.id === caseId) {
+          return {
+            ...c,
+            updatedAt: now,
+            courtesyTexts: [...(c.courtesyTexts || []), courtesyText],
+            activityLog: [...(c.activityLog || []), noteEntry],
+          };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+    const notif: Notification = {
+      id: generateId(),
+      title: "Courtesy Text Sent",
+      message: `A courtesy text was sent for case ${caseId.slice(0, 6)}`,
+      type: "alert",
+      caseId,
+      read: false,
+      timestamp: now,
+    };
+    const updNotifs = [notif, ...notifications];
+    setNotifications(updNotifs);
+    AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updNotifs));
+  }
+
+  function respondToCourtesyText(caseId: string, courtesyTextId: string, wantsUpdatedDate: boolean, respondedBy: string) {
+    const now = Date.now();
+    const response: CourtesyTextResponse = {
+      id: generateId(),
+      type: "date_requested",
+      by: respondedBy,
+      timestamp: now,
+      note: wantsUpdatedDate ? "Client requested updated delivery date" : "Client does not need updated delivery date",
+    };
+    const noteEntry: ActivityEntry = {
+      id: generateId(),
+      type: "courtesy_text",
+      timestamp: now,
+      description: wantsUpdatedDate
+        ? `Client (${respondedBy}) requested an updated delivery date/time`
+        : `Client (${respondedBy}) acknowledged delay - no updated date needed`,
+      user: respondedBy,
+    };
+    setCases((prev) => {
+      const updated = prev.map((c) => {
+        if (c.id === caseId) {
+          const updatedTexts = (c.courtesyTexts || []).map((ct) => {
+            if (ct.id === courtesyTextId) {
+              return {
+                ...ct,
+                status: wantsUpdatedDate ? "date_requested" as const : "accepted" as const,
+                wantsUpdatedDate,
+                responseHistory: [...ct.responseHistory, response],
+              };
+            }
+            return ct;
+          });
+          return { ...c, updatedAt: now, courtesyTexts: updatedTexts, activityLog: [...(c.activityLog || []), noteEntry] };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+    if (wantsUpdatedDate) {
+      const notif: Notification = {
+        id: generateId(),
+        title: "Delivery Date Requested",
+        message: `Client requested an updated delivery date for case`,
+        type: "alert",
+        caseId,
+        read: false,
+        timestamp: now,
+      };
+      const updNotifs = [notif, ...notifications];
+      setNotifications(updNotifs);
+      AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updNotifs));
+    }
+  }
+
+  function proposeDeliveryDate(caseId: string, courtesyTextId: string, proposedDate: string, proposedTime: string, proposedBy: string) {
+    const now = Date.now();
+    const response: CourtesyTextResponse = {
+      id: generateId(),
+      type: "date_proposed",
+      by: proposedBy,
+      timestamp: now,
+      proposedDate,
+      proposedTime,
+    };
+    const noteEntry: ActivityEntry = {
+      id: generateId(),
+      type: "courtesy_text",
+      timestamp: now,
+      description: `Lab proposed new delivery: ${proposedDate} at ${proposedTime}`,
+      user: proposedBy,
+    };
+    setCases((prev) => {
+      const updated = prev.map((c) => {
+        if (c.id === caseId) {
+          const updatedTexts = (c.courtesyTexts || []).map((ct) => {
+            if (ct.id === courtesyTextId) {
+              return {
+                ...ct,
+                status: "date_proposed" as const,
+                proposedDate,
+                proposedTime,
+                responseHistory: [...ct.responseHistory, response],
+              };
+            }
+            return ct;
+          });
+          return { ...c, updatedAt: now, courtesyTexts: updatedTexts, activityLog: [...(c.activityLog || []), noteEntry] };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+    const notif: Notification = {
+      id: generateId(),
+      title: "New Delivery Date Proposed",
+      message: `Lab proposed delivery on ${proposedDate} at ${proposedTime}`,
+      type: "update",
+      caseId,
+      read: false,
+      timestamp: now,
+    };
+    const updNotifs = [notif, ...notifications];
+    setNotifications(updNotifs);
+    AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updNotifs));
+  }
+
+  function respondToProposedDate(caseId: string, courtesyTextId: string, accept: boolean, respondedBy: string, note?: string) {
+    const now = Date.now();
+    const response: CourtesyTextResponse = {
+      id: generateId(),
+      type: accept ? "accepted" : "declined",
+      by: respondedBy,
+      timestamp: now,
+      note,
+    };
+    const noteEntry: ActivityEntry = {
+      id: generateId(),
+      type: "courtesy_text",
+      timestamp: now,
+      description: accept
+        ? `Client accepted proposed delivery date`
+        : `Client declined proposed delivery date${note ? `: ${note}` : ""}`,
+      user: respondedBy,
+    };
+    setCases((prev) => {
+      const updated = prev.map((c) => {
+        if (c.id === caseId) {
+          const updatedTexts = (c.courtesyTexts || []).map((ct) => {
+            if (ct.id === courtesyTextId) {
+              return {
+                ...ct,
+                status: accept ? "accepted" as const : "date_requested" as const,
+                responseHistory: [...ct.responseHistory, response],
+              };
+            }
+            return ct;
+          });
+          return { ...c, updatedAt: now, courtesyTexts: updatedTexts, activityLog: [...(c.activityLog || []), noteEntry] };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+    const notif: Notification = {
+      id: generateId(),
+      title: accept ? "Delivery Date Accepted" : "Delivery Date Declined",
+      message: accept
+        ? `Client accepted the proposed delivery date`
+        : `Client declined the proposed delivery date`,
+      type: accept ? "update" : "alert",
+      caseId,
+      read: false,
+      timestamp: now,
+    };
+    const updNotifs = [notif, ...notifications];
+    setNotifications(updNotifs);
+    AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updNotifs));
+  }
+
   function markNotificationRead(id: string) {
     const updated = notifications.map((n) =>
       n.id === id ? { ...n, read: true } : n,
@@ -805,6 +1021,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       getUserGroups,
       getGroupByNameAndAddress,
       findOrCreateGroup,
+      sendCourtesyText,
+      respondToCourtesyText,
+      proposeDeliveryDate,
+      respondToProposedDate,
     }),
     [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations],
   );
