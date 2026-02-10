@@ -264,6 +264,7 @@ function TechDashboard() {
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
+  const [pendingPicAction, setPendingPicAction] = useState<"take" | "pick" | null>(null);
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
     .slice(0, 5);
@@ -283,10 +284,21 @@ function TechDashboard() {
     setTimeout(() => logout(), 300);
   }
 
-  async function handleTakeProfilePhoto() {
-    setPicModalVisible(false);
-    await new Promise((r) => setTimeout(r, 500));
+  useEffect(() => {
+    if (pendingPicAction && !picModalVisible) {
+      const timer = setTimeout(async () => {
+        if (pendingPicAction === "take") {
+          await launchProfileCamera();
+        } else if (pendingPicAction === "pick") {
+          await launchProfileGallery();
+        }
+        setPendingPicAction(null);
+      }, 600);
+      return () => clearTimeout(timer);
+    }
+  }, [pendingPicAction, picModalVisible]);
 
+  async function launchProfileCamera() {
     if (Platform.OS === "web") {
       try {
         const input = document.createElement("input");
@@ -333,9 +345,31 @@ function TechDashboard() {
     }
   }
 
-  async function handlePickProfilePhoto() {
-    setPicModalVisible(false);
-    await new Promise((r) => setTimeout(r, 500));
+  async function launchProfileGallery() {
+    if (Platform.OS === "web") {
+      try {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "image/*";
+        input.onchange = (e: any) => {
+          const file = e.target?.files?.[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (typeof reader.result === "string") {
+                setProfilePicUri(reader.result);
+              }
+            };
+            reader.readAsDataURL(file);
+          }
+        };
+        input.click();
+      } catch (e) {
+        Alert.alert("Gallery Error", "Unable to open photo library. Please try again.");
+      }
+      return;
+    }
+
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
       Alert.alert("Gallery Permission", "Photo library access is needed to select a profile photo.");
@@ -350,13 +384,21 @@ function TechDashboard() {
       });
       if (!result.canceled && result.assets[0]) {
         setProfilePicUri(result.assets[0].uri);
-        if (Platform.OS !== "web") {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        }
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
     } catch (e) {
       Alert.alert("Gallery Error", "Unable to open photo library. Please try again.");
     }
+  }
+
+  function handleTakeProfilePhoto() {
+    setPicModalVisible(false);
+    setPendingPicAction("take");
+  }
+
+  function handlePickProfilePhoto() {
+    setPicModalVisible(false);
+    setPendingPicAction("pick");
   }
 
   return (
