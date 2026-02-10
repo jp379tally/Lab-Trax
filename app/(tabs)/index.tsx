@@ -607,7 +607,14 @@ function TechDashboard() {
         >
           <Ionicons name="menu" size={26} color={Colors.light.text} />
         </Pressable>
-        <View style={{ width: 40 }} />
+        <View style={styles.headerActions}>
+          <Pressable onPress={() => router.push("/settings")} hitSlop={12} style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+            <Ionicons name="settings-outline" size={22} color={Colors.light.textSecondary} />
+          </Pressable>
+          <Pressable onPress={() => router.push("/(tabs)/profile")} hitSlop={12} style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+            <Ionicons name="person-circle-outline" size={24} color={Colors.light.textSecondary} />
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.avatarSection}>
@@ -994,6 +1001,20 @@ function TechDashboard() {
           );
         })}
       </View>
+
+      <Pressable
+        onPress={() => router.push("/chat")}
+        style={({ pressed }) => [styles.aiChatCard, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
+      >
+        <View style={styles.aiChatIcon}>
+          <Ionicons name="sparkles" size={22} color={Colors.light.tint} />
+        </View>
+        <View style={styles.aiChatInfo}>
+          <Text style={styles.aiChatTitle}>AI Assistant</Text>
+          <Text style={styles.aiChatSub}>Ask about cases, materials, or workflows</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={20} color={Colors.light.textTertiary} />
+      </Pressable>
     </ScrollView>
 
     <SideDrawer
@@ -2642,6 +2663,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+  },
   avatarSection: {
     alignItems: "center",
     marginBottom: 24,
@@ -3882,5 +3908,40 @@ const chatStyles = StyleSheet.create({
   },
   imagePreviewRemove: {
     marginLeft: 8,
+  },
+  aiChatCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.light.surface,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    gap: 14,
+    marginBottom: 20,
+    marginHorizontal: 20,
+    marginTop: 16,
+  },
+  aiChatIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  aiChatTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  aiChatSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
+  aiChatInfo: {
+    flex: 1,
   },
 });

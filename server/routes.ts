@@ -275,6 +275,43 @@ IMPORTANT RULES:
     }
   });
 
+  app.post("/api/ai-chat", async (req, res) => {
+    try {
+      const { message, caseContext } = req.body;
+      if (!message || typeof message !== "string") {
+        return res.status(400).json({ error: "Message required" });
+      }
+
+      const systemPrompt = `You are DriveSync Lab's AI assistant for dental laboratory case management. You help dental office staff and lab technicians with questions about their cases, procedures, materials, and lab workflows.
+
+You have access to the following case information from the lab:
+${caseContext || "No specific case data provided."}
+
+Key knowledge:
+- Lab stations: Intake, Design, Porcelain, QC (Quality Check), Ship, Hold, Complete
+- Materials: Zirconia ($250/unit), E.max ($300/unit), PFM ($200/unit), Gold ($400/unit)
+- Case types: Restorative (crowns, bridges, veneers), Removable (dentures, partials), Appliance (retainers, guards), Temporary (provisionals)
+- American dental numbering system (1-32)
+
+Be helpful, concise, and professional. If asked about a specific case, reference the case data provided. If no case data is available, provide general dental lab information.`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: message },
+        ],
+        max_tokens: 500,
+      });
+
+      const reply = response.choices[0]?.message?.content || "I'm sorry, I couldn't process your request.";
+      res.json({ success: true, reply });
+    } catch (error: any) {
+      console.error("AI chat error:", error?.message || error);
+      res.status(500).json({ error: "Failed to process chat message" });
+    }
+  });
+
   const httpServer = createServer(app);
 
   return httpServer;
