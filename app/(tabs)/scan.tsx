@@ -8,6 +8,7 @@ import {
   TextInput,
   ScrollView,
   Alert,
+  Modal,
   Animated as RNAnimated,
 } from "react-native";
 import { Image } from "expo-image";
@@ -16,7 +17,7 @@ import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES } from "@/lib/data";
@@ -52,10 +53,28 @@ function getActivityIcon(type: string): { name: string; color: string } {
   }
 }
 
+interface LabelData {
+  caseNumber: string;
+  doctorName: string;
+  patientName: string;
+  caseType: string;
+  toothIndices: string;
+  shade: string;
+  material: string;
+  isRush: boolean;
+  dueDate: string;
+  notes: string;
+  price: number;
+  createdAt: string;
+}
+
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { addCase, cases, clients, role, adminUnlocked } = useApp();
   const showPrice = role === "admin" && adminUnlocked;
+  const [labelModalVisible, setLabelModalVisible] = useState(false);
+  const [labelData, setLabelData] = useState<LabelData | null>(null);
   const [phase, setPhase] = useState<ScanPhase>("camera");
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
@@ -588,11 +607,32 @@ export default function ScanScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
 
+    const now = new Date();
+    const createdStr = `${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getDate().toString().padStart(2, "0")}/${now.getFullYear()}`;
+
+    const savedLabel: LabelData = {
+      caseNumber: `#${nextNum}`,
+      doctorName: doctorName.trim(),
+      patientName: patientName.trim(),
+      caseType: caseType || "",
+      toothIndices: toothIndices.trim(),
+      shade: shade.trim(),
+      material,
+      isRush,
+      dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
+      notes: notes.trim(),
+      price: calculatedPrice,
+      createdAt: createdStr,
+    };
+
     resetForm();
     Alert.alert(
       "Case Added",
       `Case #${nextNum} has been created and is now in Intake.`,
-      [{ text: "OK", onPress: () => router.push("/(tabs)") }],
+      [
+        { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
+        { text: "Done", onPress: () => router.push("/(tabs)") },
+      ],
     );
   }
 
@@ -1625,9 +1665,271 @@ export default function ScanScreen() {
           </View>
         )}
       </View>
+
+      <Modal
+        visible={labelModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => { setLabelModalVisible(false); router.push("/(tabs)"); }}
+      >
+        <View style={labelStyles.overlay}>
+          <View style={labelStyles.container}>
+            <View style={labelStyles.header}>
+              <Text style={labelStyles.headerTitle}>Case Label</Text>
+              <Pressable onPress={() => { setLabelModalVisible(false); router.push("/(tabs)"); }} hitSlop={12}>
+                <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+
+            {labelData && (
+              <ScrollView style={labelStyles.scroll} showsVerticalScrollIndicator={false}>
+                <View style={labelStyles.labelCard}>
+                  <View style={labelStyles.labelTopBar}>
+                    <Text style={labelStyles.labName}>DRIVESYNC LAB</Text>
+                    {labelData.isRush && (
+                      <View style={labelStyles.rushTag}>
+                        <Text style={labelStyles.rushTagText}>RUSH</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={labelStyles.divider} />
+
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Case #</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.caseNumber}</Text>
+                  </View>
+
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Patient</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.patientName}</Text>
+                  </View>
+
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Doctor</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.doctorName}</Text>
+                  </View>
+
+                  {labelData.caseType ? (
+                    <View style={labelStyles.labelRow}>
+                      <Text style={labelStyles.labelKey}>Case Type</Text>
+                      <Text style={labelStyles.labelValue}>{labelData.caseType}</Text>
+                    </View>
+                  ) : null}
+
+                  {labelData.toothIndices ? (
+                    <View style={labelStyles.labelRow}>
+                      <Text style={labelStyles.labelKey}>Tooth #</Text>
+                      <Text style={labelStyles.labelValue}>{labelData.toothIndices}</Text>
+                    </View>
+                  ) : null}
+
+                  {labelData.shade ? (
+                    <View style={labelStyles.labelRow}>
+                      <Text style={labelStyles.labelKey}>Shade</Text>
+                      <Text style={labelStyles.labelValue}>{labelData.shade}</Text>
+                    </View>
+                  ) : null}
+
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Material</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.material}</Text>
+                  </View>
+
+                  {labelData.dueDate ? (
+                    <View style={labelStyles.labelRow}>
+                      <Text style={labelStyles.labelKey}>Due Date</Text>
+                      <Text style={labelStyles.labelValue}>{labelData.dueDate}</Text>
+                    </View>
+                  ) : null}
+
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Created</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.createdAt}</Text>
+                  </View>
+
+                  {labelData.notes ? (
+                    <>
+                      <View style={labelStyles.divider} />
+                      <View style={labelStyles.notesSection}>
+                        <Text style={labelStyles.labelKey}>Notes</Text>
+                        <Text style={labelStyles.notesText}>{labelData.notes}</Text>
+                      </View>
+                    </>
+                  ) : null}
+
+                  <View style={labelStyles.divider} />
+                  <Text style={labelStyles.labelFooter}>Station: INTAKE</Text>
+                </View>
+              </ScrollView>
+            )}
+
+            <View style={labelStyles.actions}>
+              <Pressable
+                style={({ pressed }) => [labelStyles.printBtn, pressed && { opacity: 0.8 }]}
+                onPress={() => {
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert("Print", "Label sent to printer.", [
+                    { text: "OK", onPress: () => { setLabelModalVisible(false); router.push("/(tabs)"); } },
+                  ]);
+                }}
+              >
+                <Ionicons name="print-outline" size={20} color="#FFF" />
+                <Text style={labelStyles.printBtnText}>Print Label</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [labelStyles.doneBtn, pressed && { opacity: 0.8 }]}
+                onPress={() => { setLabelModalVisible(false); router.push("/(tabs)"); }}
+              >
+                <Text style={labelStyles.doneBtnText}>Done</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
+
+const labelStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  container: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    width: "100%",
+    maxWidth: 400,
+    maxHeight: "85%",
+    overflow: "hidden",
+  },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 12,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  scroll: {
+    paddingHorizontal: 20,
+  },
+  labelCard: {
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: Colors.light.borderLight,
+    borderStyle: "dashed",
+    padding: 18,
+  },
+  labelTopBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  labName: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+    letterSpacing: 1.5,
+  },
+  rushTag: {
+    backgroundColor: Colors.light.warningLight,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  rushTagText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.warning,
+    letterSpacing: 0.5,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: Colors.light.borderLight,
+    marginVertical: 12,
+  },
+  labelRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    paddingVertical: 5,
+  },
+  labelKey: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+    width: 80,
+  },
+  labelValue: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+    flex: 1,
+    textAlign: "right",
+  },
+  notesSection: {
+    gap: 6,
+  },
+  notesText: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    lineHeight: 18,
+  },
+  labelFooter: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textTertiary,
+    textAlign: "center",
+  },
+  actions: {
+    flexDirection: "row",
+    gap: 12,
+    padding: 20,
+    paddingTop: 16,
+  },
+  printBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  printBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  doneBtn: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.light.surfaceSecondary,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  doneBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+});
 
 const styles = StyleSheet.create({
   container: {
