@@ -592,6 +592,7 @@ export default function ScanScreen() {
     Alert.alert(
       "Case Added",
       `Case #${nextNum} has been created and is now in Intake.`,
+      [{ text: "OK", onPress: () => router.push("/(tabs)") }],
     );
   }
 
