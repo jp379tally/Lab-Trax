@@ -158,7 +158,7 @@ export default function ScanScreen() {
       "Select a designation for this tooth:",
       [
         {
-          text: "Bridge",
+          text: "Pontic",
           onPress: () => {
             setToothTypes((prev) => {
               const updated = { ...prev, [num]: "bridge" as ToothType };
@@ -197,7 +197,9 @@ export default function ScanScreen() {
   }
 
   const billableTeethCount = React.useMemo(() => {
-    return selectedTeeth.filter((t) => (toothTypes[t] || "normal") !== "missing").length;
+    const normalCount = selectedTeeth.filter((t) => (toothTypes[t] || "normal") === "normal").length;
+    const hasPontic = selectedTeeth.some((t) => (toothTypes[t] || "normal") === "bridge");
+    return normalCount + (hasPontic ? 1 : 0);
   }, [selectedTeeth, toothTypes]);
 
   const calculatedPrice = React.useMemo(() => {
@@ -930,7 +932,7 @@ export default function ScanScreen() {
                   </View>
                   <View style={styles.legendItem}>
                     <View style={[styles.legendDot, { backgroundColor: Colors.light.accent }]} />
-                    <Text style={styles.legendText}>Bridge</Text>
+                    <Text style={styles.legendText}>Pontic</Text>
                   </View>
                   <View style={styles.legendItem}>
                     <View style={[styles.legendDot, { backgroundColor: Colors.light.error }]} />
