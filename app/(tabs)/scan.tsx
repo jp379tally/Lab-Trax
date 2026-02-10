@@ -64,7 +64,7 @@ export default function ScanScreen() {
   const [permission, requestPermission] = useCameraPermissions();
 
   const [doctorName, setDoctorName] = useState("");
-  const [patientInitials, setPatientInitials] = useState("");
+  const [patientName, setPatientName] = useState("");
   const [toothIndices, setToothIndices] = useState("");
   const [shade, setShade] = useState("");
   const [material, setMaterial] = useState("Zirconia");
@@ -75,11 +75,27 @@ export default function ScanScreen() {
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
   const [doctorSearch, setDoctorSearch] = useState("");
+  const [patientDropdownOpen, setPatientDropdownOpen] = useState(false);
+  const [patientSearch, setPatientSearch] = useState("");
+  const [addingNewPatient, setAddingNewPatient] = useState(false);
+  const [newPatientInput, setNewPatientInput] = useState("");
 
   const filteredClients = clients.filter((c) => {
     const q = doctorSearch.toLowerCase();
     return c.leadDoctor.toLowerCase().includes(q) || c.practiceName.toLowerCase().includes(q);
   });
+
+  const existingPatients = React.useMemo(() => {
+    const names = new Set<string>();
+    cases.forEach((c) => {
+      if (c.patientName && c.patientName.trim()) names.add(c.patientName.trim());
+    });
+    return Array.from(names).sort();
+  }, [cases]);
+
+  const filteredPatients = existingPatients.filter((name) =>
+    name.toLowerCase().includes(patientSearch.toLowerCase())
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -247,7 +263,8 @@ export default function ScanScreen() {
           if (result.success && result.data) {
             const d = result.data;
             if (d.doctorName) setDoctorName(d.doctorName);
-            if (d.patientInitials) setPatientInitials(d.patientInitials);
+            if (d.patientName) setPatientName(d.patientName);
+            else if (d.patientInitials) setPatientName(d.patientInitials);
             if (d.toothIndices) setToothIndices(d.toothIndices);
             if (d.shade) setShade(d.shade);
             if (d.material) setMaterial(d.material);
@@ -351,11 +368,7 @@ export default function ScanScreen() {
     }
   }
 
-  function handleSubmit() {
-    if (!doctorName.trim()) {
-      Alert.alert("Required", "Doctor name is required");
-      return;
-    }
+  function createCase() {
     const nextNum =
       cases.length > 0
         ? parseInt(cases[0].caseNumber.replace("#", "")) + 1
@@ -364,7 +377,8 @@ export default function ScanScreen() {
     addCase({
       caseNumber: `#${nextNum}`,
       doctorName: doctorName.trim(),
-      patientInitials: patientInitials.trim(),
+      patientName: patientName.trim(),
+      patientInitials: patientName.trim().split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
       toothIndices: toothIndices.trim(),
       shade: shade.trim(),
       material,
@@ -388,11 +402,44 @@ export default function ScanScreen() {
     );
   }
 
+  function handleSubmit() {
+    if (!doctorName.trim()) {
+      Alert.alert("Required", "Doctor name is required");
+      return;
+    }
+    if (!patientName.trim()) {
+      Alert.alert("Required", "Patient name is required");
+      return;
+    }
+
+    const matchingCases = cases.filter(
+      (c) => c.patientName.toLowerCase() === patientName.trim().toLowerCase()
+    );
+
+    if (matchingCases.length > 0) {
+      const caseNums = matchingCases.map((c) => c.caseNumber).join(", ");
+      Alert.alert(
+        "Patient Already on File",
+        `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Add Case", onPress: () => createCase() },
+        ]
+      );
+    } else {
+      createCase();
+    }
+  }
+
   function resetForm() {
     setPhase("camera");
     setCapturedUri(null);
     setDoctorName("");
-    setPatientInitials("");
+    setPatientName("");
+    setPatientDropdownOpen(false);
+    setPatientSearch("");
+    setAddingNewPatient(false);
+    setNewPatientInput("");
     setToothIndices("");
     setShade("");
     setMaterial("Zirconia");
@@ -571,27 +618,155 @@ export default function ScanScreen() {
             )}
           </View>
 
-          <View style={styles.formRow}>
-            <View style={[styles.formGroup, { flex: 1 }]}>
-              <Text style={styles.formLabel}>Patient Initials</Text>
-              <TextInput
-                style={styles.formInput}
-                value={patientInitials}
-                onChangeText={setPatientInitials}
-                placeholder="J.S."
-                placeholderTextColor={Colors.light.textTertiary}
+          <View style={[styles.formGroup, { zIndex: 9 }]}>
+            <Text style={styles.formLabel}>Patient Name</Text>
+            <Pressable
+              onPress={() => {
+                setPatientDropdownOpen(!patientDropdownOpen);
+                setPatientSearch("");
+                setAddingNewPatient(false);
+                setNewPatientInput("");
+              }}
+              style={[styles.formInput, styles.dropdownTrigger]}
+            >
+              <Text style={[styles.dropdownTriggerText, !patientName && { color: Colors.light.textTertiary }]}>
+                {patientName || "Select Patient"}
+              </Text>
+              <Ionicons
+                name={patientDropdownOpen ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={Colors.light.textSecondary}
               />
-            </View>
-            <View style={[styles.formGroup, { flex: 1 }]}>
-              <Text style={styles.formLabel}>Due Date</Text>
-              <TextInput
-                style={styles.formInput}
-                value={dueDate}
-                onChangeText={setDueDate}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={Colors.light.textTertiary}
-              />
-            </View>
+            </Pressable>
+            {patientDropdownOpen && (
+              <View style={styles.dropdownPanel}>
+                {!addingNewPatient ? (
+                  <>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={patientSearch}
+                        onChangeText={setPatientSearch}
+                        placeholder="Search patients..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoFocus
+                      />
+                      {patientSearch.length > 0 && (
+                        <Pressable onPress={() => setPatientSearch("")}>
+                          <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                        </Pressable>
+                      )}
+                    </View>
+                    <Pressable
+                      onPress={() => {
+                        setAddingNewPatient(true);
+                        setNewPatientInput("");
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }}
+                      style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
+                    >
+                      <Ionicons name="person-add-outline" size={18} color={Colors.light.tint} />
+                      <Text style={styles.addNewPatientBtnText}>Add New Patient</Text>
+                    </Pressable>
+                    <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                      {filteredPatients.length === 0 ? (
+                        <Text style={styles.dropdownEmpty}>No matching patients</Text>
+                      ) : (
+                        filteredPatients.map((name) => {
+                          const patientCases = cases.filter(
+                            (c) => c.patientName.toLowerCase() === name.toLowerCase()
+                          );
+                          return (
+                            <Pressable
+                              key={name}
+                              onPress={() => {
+                                setPatientName(name);
+                                setPatientDropdownOpen(false);
+                                setPatientSearch("");
+                                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              }}
+                              style={({ pressed }) => [
+                                styles.dropdownItem,
+                                patientName === name && styles.dropdownItemSelected,
+                                pressed && { opacity: 0.7 },
+                              ]}
+                            >
+                              <View style={styles.dropdownItemLeft}>
+                                <View style={[styles.dropdownAvatar, patientName === name && { backgroundColor: Colors.light.tint }]}>
+                                  <Text style={[styles.dropdownAvatarText, patientName === name && { color: "#FFF" }]}>
+                                    {name.charAt(0).toUpperCase()}
+                                  </Text>
+                                </View>
+                                <View>
+                                  <Text style={[styles.dropdownItemName, patientName === name && { color: Colors.light.tint }]}>
+                                    {name}
+                                  </Text>
+                                  <Text style={styles.dropdownItemSub}>
+                                    {patientCases.length} case{patientCases.length !== 1 ? "s" : ""} on file
+                                  </Text>
+                                </View>
+                              </View>
+                              {patientName === name && (
+                                <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                              )}
+                            </Pressable>
+                          );
+                        })
+                      )}
+                    </ScrollView>
+                  </>
+                ) : (
+                  <View style={styles.addNewPatientPanel}>
+                    <Text style={styles.addNewPatientTitle}>New Patient</Text>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newPatientInput}
+                        onChangeText={setNewPatientInput}
+                        placeholder="Enter full name..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoFocus
+                      />
+                    </View>
+                    <View style={styles.addNewPatientActions}>
+                      <Pressable
+                        onPress={() => { setAddingNewPatient(false); setNewPatientInput(""); }}
+                        style={({ pressed }) => [styles.addNewPatientCancelBtn, pressed && { opacity: 0.7 }]}
+                      >
+                        <Text style={styles.addNewPatientCancelText}>Back</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          if (!newPatientInput.trim()) return;
+                          setPatientName(newPatientInput.trim());
+                          setPatientDropdownOpen(false);
+                          setAddingNewPatient(false);
+                          setNewPatientInput("");
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
+                      >
+                        <Ionicons name="checkmark" size={18} color="#FFF" />
+                        <Text style={styles.addNewPatientConfirmText}>Add</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.formLabel}>Due Date</Text>
+            <TextInput
+              style={styles.formInput}
+              value={dueDate}
+              onChangeText={setDueDate}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={Colors.light.textTertiary}
+            />
           </View>
 
           <View style={styles.formGroup}>
@@ -1397,6 +1572,61 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_400Regular",
     color: Colors.light.textSecondary,
     marginTop: 1,
+  },
+  addNewPatientBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+    backgroundColor: Colors.light.tintLight,
+  },
+  addNewPatientBtnText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  addNewPatientPanel: {
+    padding: 12,
+    gap: 10,
+  },
+  addNewPatientTitle: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  addNewPatientActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    justifyContent: "flex-end",
+  },
+  addNewPatientCancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: Colors.light.surfaceSecondary,
+  },
+  addNewPatientCancelText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+  addNewPatientConfirmBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: Colors.light.tint,
+  },
+  addNewPatientConfirmText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
   },
   formTextArea: {
     minHeight: 80,
