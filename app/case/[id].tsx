@@ -23,7 +23,7 @@ import { getStationInfo, STATIONS, CaseStatus } from "@/lib/data";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, role, adminUnlocked } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, role, adminUnlocked, users } = useApp();
   const insets = useSafeAreaInsets();
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
@@ -311,23 +311,21 @@ export default function CaseDetailScreen() {
             const stationInfo = entry.station ? getStationInfo(entry.station) : null;
 
             let dotColor = Colors.light.textTertiary;
-            let iconName: keyof typeof Ionicons.glyphMap = "ellipse";
-            let iconSize = 12;
-            let iconColor = "#fff";
 
             if (isStation && stationInfo) {
               dotColor = isLast ? stationInfo.color : Colors.light.textTertiary;
-              iconName = "navigate";
-              iconSize = 10;
             } else if (isNote) {
               dotColor = "#F59E0B";
-              iconName = "document-text";
-              iconSize = 10;
             } else if (isPhoto) {
               dotColor = "#8B5CF6";
-              iconName = "camera";
-              iconSize = 10;
             }
+
+            const entryUserName = entry.user
+              ? (users.find((u) => u.id === entry.user || u.name === entry.user)?.name || entry.user)
+              : "";
+            const userInitials = entryUserName
+              ? entryUserName.split(" ").map((w: string) => w.charAt(0).toUpperCase()).join("").slice(0, 2)
+              : (isStation ? "" : (role === "admin" ? "A" : "T"));
 
             return (
               <View key={entry.id || idx} style={styles.timelineItem}>
@@ -338,7 +336,11 @@ export default function CaseDetailScreen() {
                       { backgroundColor: dotColor, justifyContent: "center", alignItems: "center" },
                     ]}
                   >
-                    <Ionicons name={iconName} size={iconSize} color={iconColor} />
+                    {userInitials ? (
+                      <Text style={{ fontSize: 8, fontFamily: "Inter_700Bold", color: "#FFF" }}>{userInitials}</Text>
+                    ) : (
+                      <Ionicons name="navigate" size={10} color="#FFF" />
+                    )}
                   </View>
                   {!isLast && <View style={styles.timelineConnector} />}
                 </View>
