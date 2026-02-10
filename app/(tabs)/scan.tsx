@@ -73,7 +73,15 @@ export default function ScanScreen() {
   const [material, setMaterial] = useState("Zirconia");
   const [isRush, setIsRush] = useState(false);
   const [notes, setNotes] = useState("");
-  const [dueDate, setDueDate] = useState("2026-02-20");
+  const [dueDate, setDueDate] = useState("");
+  const [dueDateOpen, setDueDateOpen] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
+  const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
+  const [timeDue, setTimeDue] = useState("");
+  const [timeDueOpen, setTimeDueOpen] = useState(false);
+  const [timeDueHour, setTimeDueHour] = useState(9);
+  const [timeDueMinute, setTimeDueMinute] = useState(0);
+  const [timeDuePeriod, setTimeDuePeriod] = useState<"AM" | "PM">("AM");
   const [casePhotos, setCasePhotos] = useState<string[]>([]);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
@@ -195,6 +203,68 @@ export default function ScanScreen() {
       ]
     );
   }
+
+  const setDueDateOneWeek = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    setDueDate(`${yyyy}-${mm}-${dd}`);
+    setCalendarMonth(d.getMonth());
+    setCalendarYear(d.getFullYear());
+  };
+
+  const selectCalendarDay = (day: number) => {
+    const yyyy = calendarYear;
+    const mm = String(calendarMonth + 1).padStart(2, "0");
+    const dd = String(day).padStart(2, "0");
+    setDueDate(`${yyyy}-${mm}-${dd}`);
+  };
+
+  const applyTimeDue = () => {
+    const hh = String(timeDueHour).padStart(2, "0");
+    const min = String(timeDueMinute).padStart(2, "0");
+    setTimeDue(`${hh}:${min} ${timeDuePeriod}`);
+    setTimeDueOpen(false);
+  };
+
+  const calendarDays = React.useMemo(() => {
+    const firstDay = new Date(calendarYear, calendarMonth, 1).getDay();
+    const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+    const blanks = Array.from({ length: firstDay }, (_, i) => ({ key: `b${i}`, day: 0 }));
+    const days = Array.from({ length: daysInMonth }, (_, i) => ({ key: `d${i + 1}`, day: i + 1 }));
+    return [...blanks, ...days];
+  }, [calendarMonth, calendarYear]);
+
+  const calendarMonthLabel = React.useMemo(() => {
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    return `${monthNames[calendarMonth]} ${calendarYear}`;
+  }, [calendarMonth, calendarYear]);
+
+  const selectedCalendarDay = React.useMemo(() => {
+    if (!dueDate) return -1;
+    const parts = dueDate.split("-");
+    if (parseInt(parts[0]) === calendarYear && parseInt(parts[1]) - 1 === calendarMonth) {
+      return parseInt(parts[2]);
+    }
+    return -1;
+  }, [dueDate, calendarMonth, calendarYear]);
+
+  const todayCalendarDay = React.useMemo(() => {
+    const now = new Date();
+    if (now.getMonth() === calendarMonth && now.getFullYear() === calendarYear) {
+      return now.getDate();
+    }
+    return -1;
+  }, [calendarMonth, calendarYear]);
+
+  const dueDateDisplay = React.useMemo(() => {
+    if (!dueDate) return "";
+    const parts = dueDate.split("-");
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${monthNames[parseInt(parts[1]) - 1]} ${parseInt(parts[2])}, ${parts[0]}`;
+  }, [dueDate]);
 
   const billableTeethCount = React.useMemo(() => {
     const normalCount = selectedTeeth.filter((t) => (toothTypes[t] || "normal") === "normal").length;
@@ -505,7 +575,7 @@ export default function ScanScreen() {
       isRush,
       notes: notes.trim(),
       price: calculatedPrice,
-      dueDate,
+      dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
       photos: casePhotos,
       activityLog: activityEntries,
       toothMap: toothMapEntries,
@@ -568,7 +638,15 @@ export default function ScanScreen() {
     setMaterial("Zirconia");
     setIsRush(false);
     setNotes("");
-    setDueDate("2026-02-20");
+    setDueDate("");
+    setDueDateOpen(false);
+    setCalendarMonth(new Date().getMonth());
+    setCalendarYear(new Date().getFullYear());
+    setTimeDue("");
+    setTimeDueOpen(false);
+    setTimeDueHour(9);
+    setTimeDueMinute(0);
+    setTimeDuePeriod("AM");
     setCasePhotos([]);
     setActivityEntries([]);
     scanAnim.setValue(0);
@@ -881,15 +959,152 @@ export default function ScanScreen() {
             )}
           </View>
 
-          <View style={styles.formGroup}>
-            <Text style={styles.formLabel}>Due Date</Text>
-            <TextInput
-              style={styles.formInput}
-              value={dueDate}
-              onChangeText={setDueDate}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor={Colors.light.textTertiary}
-            />
+          <View style={styles.dueDateRow}>
+            <View style={styles.dueDateCol}>
+              <Text style={styles.formLabel}>Due Date</Text>
+              <Pressable
+                onPress={() => { setDueDateOpen(!dueDateOpen); setTimeDueOpen(false); }}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !dueDate && { color: Colors.light.textTertiary }]}>
+                  {dueDateDisplay || "Select date"}
+                </Text>
+                <Ionicons
+                  name={dueDateOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {dueDateOpen && (
+                <View style={styles.dueDateDropdown}>
+                  <Pressable style={styles.quickDateBtn} onPress={() => { setDueDateOneWeek(); }}>
+                    <Ionicons name="time-outline" size={16} color={Colors.light.tint} />
+                    <Text style={styles.quickDateText}>1 Week</Text>
+                    <Text style={styles.quickDateSub}>
+                      {(() => {
+                        const d = new Date(); d.setDate(d.getDate() + 7);
+                        const mn = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                        return `${mn[d.getMonth()]} ${d.getDate()}`;
+                      })()}
+                    </Text>
+                  </Pressable>
+                  <View style={styles.calendarContainer}>
+                    <View style={styles.calendarHeader}>
+                      <Pressable onPress={() => {
+                        if (calendarMonth === 0) { setCalendarMonth(11); setCalendarYear(calendarYear - 1); }
+                        else setCalendarMonth(calendarMonth - 1);
+                      }}>
+                        <Ionicons name="chevron-back" size={20} color={Colors.light.tint} />
+                      </Pressable>
+                      <Text style={styles.calendarMonthText}>{calendarMonthLabel}</Text>
+                      <Pressable onPress={() => {
+                        if (calendarMonth === 11) { setCalendarMonth(0); setCalendarYear(calendarYear + 1); }
+                        else setCalendarMonth(calendarMonth + 1);
+                      }}>
+                        <Ionicons name="chevron-forward" size={20} color={Colors.light.tint} />
+                      </Pressable>
+                    </View>
+                    <View style={styles.calendarWeekRow}>
+                      {["Su","Mo","Tu","We","Th","Fr","Sa"].map((d) => (
+                        <Text key={d} style={styles.calendarWeekDay}>{d}</Text>
+                      ))}
+                    </View>
+                    <View style={styles.calendarGrid}>
+                      {calendarDays.map((item) => (
+                        <Pressable
+                          key={item.key}
+                          style={[
+                            styles.calendarDayBtn,
+                            item.day === selectedCalendarDay && styles.calendarDaySelected,
+                            item.day === todayCalendarDay && item.day !== selectedCalendarDay && styles.calendarDayToday,
+                          ]}
+                          onPress={() => item.day > 0 && selectCalendarDay(item.day)}
+                          disabled={item.day === 0}
+                        >
+                          {item.day > 0 && (
+                            <Text style={[
+                              styles.calendarDayText,
+                              item.day === selectedCalendarDay && styles.calendarDayTextSelected,
+                              item.day === todayCalendarDay && item.day !== selectedCalendarDay && styles.calendarDayTextToday,
+                            ]}>
+                              {item.day}
+                            </Text>
+                          )}
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                </View>
+              )}
+            </View>
+
+            <View style={styles.timeDueCol}>
+              <Text style={styles.formLabel}>Time Due <Text style={styles.optionalLabel}>(optional)</Text></Text>
+              <Pressable
+                onPress={() => { setTimeDueOpen(!timeDueOpen); setDueDateOpen(false); }}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !timeDue && { color: Colors.light.textTertiary }]}>
+                  {timeDue || "Time"}
+                </Text>
+                <Ionicons
+                  name={timeDueOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {timeDueOpen && (
+                <View style={styles.timeDueDropdown}>
+                  <View style={styles.timePickerRow}>
+                    <View style={styles.timePickerCol}>
+                      <Text style={styles.timePickerLabel}>Hour</Text>
+                      <View style={styles.timeSpinnerRow}>
+                        <Pressable onPress={() => setTimeDueHour(timeDueHour <= 1 ? 12 : timeDueHour - 1)} style={styles.timeSpinBtn}>
+                          <Ionicons name="chevron-up" size={18} color={Colors.light.tint} />
+                        </Pressable>
+                        <Text style={styles.timeSpinValue}>{String(timeDueHour).padStart(2, "0")}</Text>
+                        <Pressable onPress={() => setTimeDueHour(timeDueHour >= 12 ? 1 : timeDueHour + 1)} style={styles.timeSpinBtn}>
+                          <Ionicons name="chevron-down" size={18} color={Colors.light.tint} />
+                        </Pressable>
+                      </View>
+                    </View>
+                    <Text style={styles.timeColon}>:</Text>
+                    <View style={styles.timePickerCol}>
+                      <Text style={styles.timePickerLabel}>Min</Text>
+                      <View style={styles.timeSpinnerRow}>
+                        <Pressable onPress={() => setTimeDueMinute(timeDueMinute <= 0 ? 55 : timeDueMinute - 5)} style={styles.timeSpinBtn}>
+                          <Ionicons name="chevron-up" size={18} color={Colors.light.tint} />
+                        </Pressable>
+                        <Text style={styles.timeSpinValue}>{String(timeDueMinute).padStart(2, "0")}</Text>
+                        <Pressable onPress={() => setTimeDueMinute(timeDueMinute >= 55 ? 0 : timeDueMinute + 5)} style={styles.timeSpinBtn}>
+                          <Ionicons name="chevron-down" size={18} color={Colors.light.tint} />
+                        </Pressable>
+                      </View>
+                    </View>
+                    <View style={styles.timePickerCol}>
+                      <Text style={styles.timePickerLabel}>Period</Text>
+                      <View style={styles.amPmToggle}>
+                        <Pressable
+                          style={[styles.amPmBtn, timeDuePeriod === "AM" && styles.amPmBtnActive]}
+                          onPress={() => setTimeDuePeriod("AM")}
+                        >
+                          <Text style={[styles.amPmText, timeDuePeriod === "AM" && styles.amPmTextActive]}>AM</Text>
+                        </Pressable>
+                        <Pressable
+                          style={[styles.amPmBtn, timeDuePeriod === "PM" && styles.amPmBtnActive]}
+                          onPress={() => setTimeDuePeriod("PM")}
+                        >
+                          <Text style={[styles.amPmText, timeDuePeriod === "PM" && styles.amPmTextActive]}>PM</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </View>
+                  <Pressable style={styles.timeApplyBtn} onPress={applyTimeDue}>
+                    <Text style={styles.timeApplyText}>Set Time</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
           </View>
 
           <View style={styles.formGroup}>
@@ -1725,6 +1940,190 @@ const styles = StyleSheet.create({
   },
   formGroup: {
     marginBottom: 18,
+  },
+  dueDateRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 18,
+  },
+  dueDateCol: {
+    flex: 1,
+  },
+  timeDueCol: {
+    width: 130,
+  },
+  optionalLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    textTransform: "none" as const,
+    letterSpacing: 0,
+  },
+  dueDateDropdown: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    overflow: "hidden" as const,
+  },
+  quickDateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  quickDateText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+    flex: 1,
+  },
+  quickDateSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+  },
+  calendarContainer: {
+    padding: 10,
+  },
+  calendarHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
+    marginBottom: 10,
+  },
+  calendarMonthText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  calendarWeekRow: {
+    flexDirection: "row",
+    marginBottom: 4,
+  },
+  calendarWeekDay: {
+    width: `${100 / 7}%` as unknown as number,
+    textAlign: "center" as const,
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textTertiary,
+    paddingVertical: 4,
+  },
+  calendarGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap" as const,
+  },
+  calendarDayBtn: {
+    width: `${100 / 7}%` as unknown as number,
+    aspectRatio: 1,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    borderRadius: 20,
+  },
+  calendarDaySelected: {
+    backgroundColor: Colors.light.tint,
+  },
+  calendarDayToday: {
+    borderWidth: 1,
+    borderColor: Colors.light.tint,
+  },
+  calendarDayText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  calendarDayTextSelected: {
+    color: "#FFF",
+    fontFamily: "Inter_700Bold",
+  },
+  calendarDayTextToday: {
+    color: Colors.light.tint,
+    fontFamily: "Inter_600SemiBold",
+  },
+  timeDueDropdown: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    padding: 10,
+  },
+  timePickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  timePickerCol: {
+    alignItems: "center" as const,
+  },
+  timePickerLabel: {
+    fontSize: 9,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textTertiary,
+    textTransform: "uppercase" as const,
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  timeSpinnerRow: {
+    alignItems: "center" as const,
+    gap: 2,
+  },
+  timeSpinBtn: {
+    padding: 2,
+  },
+  timeSpinValue: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    minWidth: 32,
+    textAlign: "center" as const,
+  },
+  timeColon: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    paddingTop: 16,
+  },
+  amPmToggle: {
+    borderRadius: 8,
+    overflow: "hidden" as const,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    marginTop: 2,
+  },
+  amPmBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  amPmBtnActive: {
+    backgroundColor: Colors.light.tint,
+  },
+  amPmText: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+    textAlign: "center" as const,
+  },
+  amPmTextActive: {
+    color: "#FFF",
+  },
+  timeApplyBtn: {
+    backgroundColor: Colors.light.tint,
+    borderRadius: 8,
+    paddingVertical: 8,
+    alignItems: "center" as const,
+    marginTop: 8,
+  },
+  timeApplyText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
   },
   formLabel: {
     fontSize: 12,
