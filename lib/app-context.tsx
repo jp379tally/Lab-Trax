@@ -216,6 +216,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (savedGroupInvitations) {
         setGroupInvitations(JSON.parse(savedGroupInvitations));
       }
+      const pendingGroupRaw = await AsyncStorage.getItem("@drivesync_pending_group");
+      if (pendingGroupRaw) {
+        try {
+          const pg = JSON.parse(pendingGroupRaw);
+          const loadedGroups: Group[] = savedGroups ? JSON.parse(savedGroups) : [];
+          const existing = loadedGroups.find(g => g.name.toLowerCase() === pg.name.toLowerCase() && g.address.toLowerCase() === pg.address.toLowerCase());
+          if (existing) {
+            const alreadyMember = existing.members.some((m: any) => m.username === pg.username);
+            if (!alreadyMember) {
+              existing.members.push({ userId: Date.now().toString(), username: pg.username, role: pg.role, joinedAt: Date.now() });
+              setGroups([...loadedGroups]);
+              AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(loadedGroups));
+            }
+          } else {
+            const newGroup: Group = {
+              id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+              name: pg.name,
+              type: pg.type,
+              address: pg.address,
+              members: [{ userId: Date.now().toString(), username: pg.username, role: pg.role, joinedAt: Date.now() }],
+              createdAt: Date.now(),
+            };
+            const updatedGroups = [...loadedGroups, newGroup];
+            setGroups(updatedGroups);
+            AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(updatedGroups));
+          }
+        } catch {}
+        AsyncStorage.removeItem("@drivesync_pending_group");
+      }
     } catch (e) {
       setCases(SAMPLE_CASES);
       setNotifications(SAMPLE_NOTIFICATIONS);

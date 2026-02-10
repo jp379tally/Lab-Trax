@@ -15,8 +15,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as Haptics from "expo-haptics";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/lib/auth-context";
-import { useApp } from "@/lib/app-context";
 import { getApiUrl } from "@/lib/query-client";
 import Colors from "@/constants/colors";
 
@@ -34,7 +34,6 @@ function validatePassword(pw: string): { valid: boolean; errors: string[] } {
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const { login, loginWithBiometric, register } = useAuth();
-  const { findOrCreateGroup } = useApp();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
   const [username, setUsername] = useState("");
@@ -389,13 +388,13 @@ export default function LoginScreen() {
         accountNumber: acctNum,
       });
       if (result.success && practiceName.trim() && practiceAddress.trim()) {
-        findOrCreateGroup(
-          practiceName.trim(),
-          (userType || "provider") === "lab" ? "lab" : "provider",
-          practiceAddress.trim(),
-          signUpUsername.trim(),
-          selectedRole || "tech"
-        );
+        await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
+          name: practiceName.trim(),
+          type: (userType || "provider") === "lab" ? "lab" : "provider",
+          address: practiceAddress.trim(),
+          username: signUpUsername.trim(),
+          role: selectedRole || "tech",
+        }));
       }
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");

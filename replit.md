@@ -47,6 +47,27 @@ Preferred communication style: Simple, everyday language.
 - Price information is only visible when role is admin AND admin is unlocked
 - Role switching is available in the Profile tab
 
+### Admin Master Hub Navigation
+- Hub → "Clients" group → client-hub (Add Client, Edit Client, Client List, Edit Pricing, Edit Tier Pricing)
+- Hub → "Users" group → user-hub (Add User, Edit User with group management)
+- Hub → Invoices, Statements, Shipping, Sales (direct navigation)
+
+### Group-Based Permission System
+- Groups identified by practice/lab name + address
+- Users auto-assigned to groups on signup based on practice name and address
+- Group data model: `Group` (id, name, type, address, members[], createdAt), `GroupMember` (userId, username, role, joinedAt), `GroupInvitation` (id, groupId, groupName, invitedUsername, invitedBy, status, createdAt)
+- Admin can add users to groups via invitation flow (Edit User → Group Management)
+- Admin can remove users from groups
+- Pending group assignments stored in AsyncStorage (`@drivesync_pending_group`) and processed on AppProvider initialization
+- Group invitations appear in Notifications tab with Accept/Decline buttons
+
+### Security Features
+- **Inactivity Timeout**: 3-minute inactivity timer (`INACTIVITY_TIMEOUT_MS = 180000ms`) managed in `lib/auth-context.tsx`
+- **Lock Screen**: `components/LockScreen.tsx` displayed when session is locked
+- **Unlock Methods**: Biometric authentication (Face ID / Fingerprint) or password entry
+- **Touch Detection**: `PanResponder` in root layout (`app/_layout.tsx`) resets inactivity timer on any user interaction
+- **AppState Monitoring**: Timer adjusts when app goes to background/foreground
+
 ### Case Workflow
 Cases follow a production pipeline through stations: INTAKE → DESIGN → WAX → INVEST → CAST → FINISH → PORCELAIN → GLAZE → QC → SHIP → COMPLETE (with HOLD as a special status). Each station transition is recorded in a `routeHistory` array with timestamps.
 

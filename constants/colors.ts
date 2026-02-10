@@ -1,11 +1,13 @@
 const Colors = {
   light: {
     text: "#0F172A",
+    subText: "#64748B",
     textSecondary: "#64748B",
     textTertiary: "#94A3B8",
     background: "#F8FAFC",
     surface: "#FFFFFF",
     surfaceSecondary: "#F1F5F9",
+    surfaceAlt: "#F1F5F9",
     tint: "#2563EB",
     tintLight: "#DBEAFE",
     tintDark: "#1D4ED8",
