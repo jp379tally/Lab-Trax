@@ -17,6 +17,7 @@ import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus } from "@/lib/data";
@@ -152,6 +153,64 @@ export default function CaseDetailScreen() {
       }
       setShowPhotoPreview(true);
     }, 500);
+  }
+
+  function handleAttachFile() {
+    Alert.alert(
+      "Attach File",
+      "Choose a source",
+      [
+        {
+          text: "Camera Photos",
+          onPress: async () => {
+            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Photo library access is required.");
+              return;
+            }
+            const result = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images"],
+              quality: 0.8,
+              allowsMultipleSelection: true,
+            });
+            if (!result.canceled && result.assets.length > 0) {
+              result.assets.forEach((asset) => {
+                addCasePhoto(caseItem!.id, asset.uri);
+              });
+              if (Platform.OS !== "web") {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              }
+            }
+          },
+        },
+        {
+          text: "Take Photo",
+          onPress: () => handleTakePhoto(),
+        },
+        {
+          text: "File Explorer",
+          onPress: async () => {
+            try {
+              const result = await DocumentPicker.getDocumentAsync({
+                type: ["image/*", "application/pdf"],
+                multiple: true,
+              });
+              if (!result.canceled && result.assets && result.assets.length > 0) {
+                result.assets.forEach((asset) => {
+                  addCasePhoto(caseItem!.id, asset.uri);
+                });
+                if (Platform.OS !== "web") {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                }
+              }
+            } catch (e) {
+              Alert.alert("Error", "Unable to open file explorer.");
+            }
+          },
+        },
+        { text: "Cancel", style: "cancel" },
+      ]
+    );
   }
 
   function handleFinishPhotos() {
@@ -498,6 +557,18 @@ export default function CaseDetailScreen() {
               <Text style={styles.actionBtnText}>Add Note</Text>
             </Pressable>
           </View>
+
+          <Pressable
+            onPress={handleAttachFile}
+            style={({ pressed }) => [
+              styles.actionBtn,
+              { backgroundColor: Colors.light.surface, borderWidth: 1.5, borderColor: Colors.light.tint },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Ionicons name="attach" size={20} color={Colors.light.tint} />
+            <Text style={[styles.actionBtnText, { color: Colors.light.tint }]}>Attach File</Text>
+          </Pressable>
         </View>
       </ScrollView>
 
