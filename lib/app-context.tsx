@@ -190,39 +190,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
       description: `Case moved to ${stationLabel}`,
       station: newStatus,
     };
-    const updated = cases.map((c) => {
-      if (c.id === caseId) {
-        return {
-          ...c,
-          status: newStatus,
-          updatedAt: now,
-          routeHistory: [
-            ...c.routeHistory,
-            { station: newStatus, timestamp: now },
-          ],
-          activityLog: [...(c.activityLog || []), stationEntry],
-        };
-      }
-      return c;
-    });
-    setCases(updated);
-    AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          return {
+            ...c,
+            status: newStatus,
+            updatedAt: now,
+            routeHistory: [
+              ...c.routeHistory,
+              { station: newStatus, timestamp: now },
+            ],
+            activityLog: [...(c.activityLog || []), stationEntry],
+          };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
 
-    const caseInfo = cases.find((c) => c.id === caseId);
-    if (caseInfo) {
-      const newNotif: Notification = {
-        id: generateId(),
-        title: "Station Update",
-        message: `Case ${caseInfo.caseNumber} moved to ${newStatus}`,
-        type: "update",
-        caseId,
-        read: false,
-        timestamp: now,
-      };
-      const updatedNotifs = [newNotif, ...notifications];
-      setNotifications(updatedNotifs);
-      AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updatedNotifs));
-    }
+      const caseInfo = prevCases.find((c) => c.id === caseId);
+      if (caseInfo) {
+        const newNotif: Notification = {
+          id: generateId(),
+          title: "Station Update",
+          message: `Case ${caseInfo.caseNumber} moved to ${newStatus}`,
+          type: "update",
+          caseId,
+          read: false,
+          timestamp: now,
+        };
+        setNotifications((prevNotifs) => {
+          const updatedNotifs = [newNotif, ...prevNotifs];
+          AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updatedNotifs));
+          return updatedNotifs;
+        });
+      }
+
+      return updated;
+    });
   }
 
   function addCasePhoto(caseId: string, photoUri: string) {
@@ -234,19 +239,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       description: "Photo added to case",
       imageUri: photoUri,
     };
-    const updated = cases.map((c) => {
-      if (c.id === caseId) {
-        return {
-          ...c,
-          updatedAt: now,
-          photos: [...(c.photos || []), photoUri],
-          activityLog: [...(c.activityLog || []), photoEntry],
-        };
-      }
-      return c;
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          return {
+            ...c,
+            updatedAt: now,
+            photos: [...(c.photos || []), photoUri],
+            activityLog: [...(c.activityLog || []), photoEntry],
+          };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
     });
-    setCases(updated);
-    AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
   }
 
   function addCaseNote(caseId: string, note: string) {
@@ -257,19 +264,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       timestamp: now,
       description: note,
     };
-    const updated = cases.map((c) => {
-      if (c.id === caseId) {
-        return {
-          ...c,
-          updatedAt: now,
-          notes: c.notes ? `${c.notes}\n${note}` : note,
-          activityLog: [...(c.activityLog || []), noteEntry],
-        };
-      }
-      return c;
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          return {
+            ...c,
+            updatedAt: now,
+            notes: c.notes ? `${c.notes}\n${note}` : note,
+            activityLog: [...(c.activityLog || []), noteEntry],
+          };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
     });
-    setCases(updated);
-    AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
   }
 
   function markNotificationRead(id: string) {
