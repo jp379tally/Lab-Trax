@@ -53,7 +53,7 @@ interface AppContextValue {
   rushCaseCount: number;
   isLoading: boolean;
   clients: Client[];
-  addClient: (c: Omit<Client, "id" | "createdAt">) => void;
+  addClient: (c: Omit<Client, "id" | "clientNumber" | "createdAt">) => void;
   updateClient: (id: string, c: Partial<Client>) => void;
   users: LabUser[];
   addUser: (u: Omit<LabUser, "id" | "createdAt">) => void;
@@ -409,8 +409,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
   }
 
-  function addClient(c: Omit<Client, "id" | "createdAt">) {
-    const newClient: Client = { ...c, id: generateId(), createdAt: Date.now() };
+  function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt">) {
+    const maxNum = clients.reduce((max, cl) => Math.max(max, cl.clientNumber || 0), 0);
+    const newClient: Client = { ...c, id: generateId(), clientNumber: maxNum + 1, createdAt: Date.now() };
     const updated = [newClient, ...clients];
     setClients(updated);
     AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updated));

@@ -1705,7 +1705,7 @@ function AdminDashboard() {
                 </View>
                 <View>
                   <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                  <Text style={adm.listItemSub}>{c.leadDoctor}</Text>
+                  <Text style={adm.listItemSub}>ID: {c.clientNumber} · {c.leadDoctor}</Text>
                 </View>
               </View>
               <View style={adm.tierBadge}>
@@ -2080,7 +2080,7 @@ function AdminDashboard() {
                   </View>
                   <View>
                     <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                    <Text style={adm.listItemSub}>{clientCases.length} cases · ${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                    <Text style={adm.listItemSub}>ID: {c.clientNumber} · {clientCases.length} cases · ${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
                   </View>
                 </View>
                 <Ionicons name="download-outline" size={20} color={Colors.light.tint} />
@@ -2468,7 +2468,7 @@ function AdminDashboard() {
                   </View>
                   <View>
                     <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                    <Text style={adm.listItemSub}>{clientCases.length} cases</Text>
+                    <Text style={adm.listItemSub}>ID: {c.clientNumber} · {clientCases.length} cases</Text>
                   </View>
                 </View>
                 <Text style={adm.clientRevenueAmount}>${rev.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>

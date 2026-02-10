@@ -487,6 +487,7 @@ export const SAMPLE_CASES: LabCase[] = [
 
 export interface Client {
   id: string;
+  clientNumber: number;
   practiceName: string;
   leadDoctor: string;
   phone: string;
@@ -522,6 +523,7 @@ export interface Invoice {
 export const SAMPLE_CLIENTS: Client[] = [
   {
     id: generateId(),
+    clientNumber: 1,
     practiceName: "Elite Dental Group",
     leadDoctor: "Dr. Aris",
     phone: "(555) 100-2000",
@@ -533,6 +535,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   },
   {
     id: generateId(),
+    clientNumber: 2,
     practiceName: "City Smiles",
     leadDoctor: "Dr. Bloom",
     phone: "(555) 200-3000",
@@ -544,6 +547,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   },
   {
     id: generateId(),
+    clientNumber: 3,
     practiceName: "North Lab Dentistry",
     leadDoctor: "Dr. Chen",
     phone: "(555) 300-4000",
@@ -555,6 +559,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   },
   {
     id: generateId(),
+    clientNumber: 4,
     practiceName: "Pacific Dental Care",
     leadDoctor: "Dr. Patel",
     phone: "(555) 400-5000",
@@ -566,6 +571,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   },
   {
     id: generateId(),
+    clientNumber: 5,
     practiceName: "Sunrise Family Dental",
     leadDoctor: "Dr. Martinez",
     phone: "(555) 500-6000",
