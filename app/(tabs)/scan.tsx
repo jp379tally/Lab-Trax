@@ -107,7 +107,7 @@ export default function ScanScreen() {
   }, [cases]);
 
   const filteredPatients = existingPatients.filter((name) =>
-    name.toLowerCase().includes(patientSearch.toLowerCase())
+    name && name.toLowerCase().includes((patientSearch || "").toLowerCase())
   );
 
   function updateToothDisplay(teeth: number[], types: Record<number, ToothType>) {
@@ -880,7 +880,7 @@ export default function ScanScreen() {
                       ) : (
                         filteredPatients.map((name) => {
                           const patientCases = cases.filter(
-                            (c) => (c.patientName || "").toLowerCase() === name.toLowerCase()
+                            (c) => (c.patientName || "").toLowerCase() === (name || "").toLowerCase()
                           );
                           return (
                             <Pressable
