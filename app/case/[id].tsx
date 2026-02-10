@@ -69,7 +69,41 @@ export default function CaseDetailScreen() {
     });
   }
 
+  function webFilePickerForCamera(): Promise<string | null> {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.capture = "user";
+      input.onchange = (e: any) => {
+        const file = e.target?.files?.[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            resolve(typeof reader.result === "string" ? reader.result : null);
+          };
+          reader.readAsDataURL(file);
+        } else {
+          resolve(null);
+        }
+      };
+      input.click();
+    });
+  }
+
   async function handleTakePhoto() {
+    if (Platform.OS === "web") {
+      try {
+        const uri = await webFilePickerForCamera();
+        if (uri) {
+          setCapturedPhotos((prev) => [...prev, uri]);
+          setShowPhotoPreview(true);
+        }
+      } catch (e) {
+        Alert.alert("Camera Error", "Unable to open camera. Please try again.");
+      }
+      return;
+    }
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
       Alert.alert("Permission needed", "Camera access is required to take photos.");
@@ -88,6 +122,17 @@ export default function CaseDetailScreen() {
   }
 
   async function handleAddMorePhoto() {
+    if (Platform.OS === "web") {
+      try {
+        const uri = await webFilePickerForCamera();
+        if (uri) {
+          setCapturedPhotos((prev) => [...prev, uri]);
+        }
+      } catch (e) {
+        Alert.alert("Camera Error", "Unable to open camera. Please try again.");
+      }
+      return;
+    }
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
       Alert.alert("Permission needed", "Camera access is required to take photos.");

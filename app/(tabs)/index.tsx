@@ -286,6 +286,32 @@ function TechDashboard() {
   async function handleTakeProfilePhoto() {
     setPicModalVisible(false);
     await new Promise((r) => setTimeout(r, 500));
+
+    if (Platform.OS === "web") {
+      try {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "image/*";
+        input.capture = "user";
+        input.onchange = (e: any) => {
+          const file = e.target?.files?.[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (typeof reader.result === "string") {
+                setProfilePicUri(reader.result);
+              }
+            };
+            reader.readAsDataURL(file);
+          }
+        };
+        input.click();
+      } catch (e) {
+        Alert.alert("Camera Error", "Unable to open camera. Please try again.");
+      }
+      return;
+    }
+
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
       Alert.alert("Camera Permission", "Camera access is needed to take a profile photo.");
@@ -300,9 +326,7 @@ function TechDashboard() {
       });
       if (!result.canceled && result.assets[0]) {
         setProfilePicUri(result.assets[0].uri);
-        if (Platform.OS !== "web") {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        }
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
     } catch (e) {
       Alert.alert("Camera Error", "Unable to open camera. Please try again.");
