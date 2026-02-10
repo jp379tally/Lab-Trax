@@ -68,6 +68,24 @@ Preferred communication style: Simple, everyday language.
 - **Touch Detection**: `PanResponder` in root layout (`app/_layout.tsx`) resets inactivity timer on any user interaction
 - **AppState Monitoring**: Timer adjusts when app goes to background/foreground
 
+### Global Chat System
+- **ChatButton component** (`components/ChatButton.tsx`): Shared component displayed on Dashboard, Cases, Notifications, Profile, and Case Detail pages
+- Provides access to conversations list and chat threads with unread badge count
+- Uses `useApp` context for conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages
+
+### Courtesy Text Feature
+- Available on case detail page via amber "Courtesy Text" button
+- Auto-populates delay notification: "Hello Dr. [name], this is a courtesy text to inform you that patient [name] has a case that was delayed in production..."
+- **Negotiation flow**: Client responds yes/no for updated delivery date → Lab admin proposes date/time → Client accepts/declines → Loop until accepted
+- Data model: `CourtesyTextRequest` (id, caseId, message, sentBy, sentAt, status, wantsUpdatedDate, proposedDate, proposedTime, responseHistory[])
+- All communication auto-documented in case activity log as `courtesy_text` type entries
+- Statuses: sent → date_requested → date_proposed → accepted (or back to date_requested if declined)
+- Context functions: `sendCourtesyText`, `respondToCourtesyText`, `proposeDeliveryDate`, `respondToProposedDate`
+
+### Profile Groups Display
+- Under CREDENTIALS section in Profile tab, displays all groups the user belongs to
+- Shows group name with type badge (Provider/Lab) and colored dot indicator
+
 ### Case Workflow
 Cases follow a production pipeline through stations: INTAKE → DESIGN → WAX → INVEST → CAST → FINISH → PORCELAIN → GLAZE → QC → SHIP → COMPLETE (with HOLD as a special status). Each station transition is recorded in a `routeHistory` array with timestamps.
 
