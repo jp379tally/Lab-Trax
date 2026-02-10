@@ -31,7 +31,7 @@ import { useApp } from "@/lib/app-context";
 import { ChatButton } from "@/components/ChatButton";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, Client, LabUser, Invoice, DEFAULT_TIER_ITEMS } from "@/lib/data";
+import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
@@ -1093,6 +1093,7 @@ type AdminView =
   | "add-user"
   | "edit-user"
   | "invoices"
+  | "invoice-detail"
   | "statements"
   | "sales"
   | "shipping";
@@ -1113,6 +1114,7 @@ function AdminDashboard() {
   const [newClientAddress, setNewClientAddress] = useState("");
   const [newClientTier, setNewClientTier] = useState<string>("Standard");
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
 
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
@@ -1988,7 +1990,15 @@ function AdminDashboard() {
           {invoices.map((inv) => {
             const sc = getStatusColor(inv.status);
             return (
-              <View key={inv.id} style={adm.invoiceCard}>
+              <Pressable
+                key={inv.id}
+                style={({ pressed }) => [adm.invoiceCard, pressed && { opacity: 0.7 }]}
+                onPress={() => {
+                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setSelectedInvoice(inv);
+                  setAdminView("invoice-detail");
+                }}
+              >
                 <View style={adm.invoiceCardTop}>
                   <View>
                     <Text style={adm.invoiceNumber}>{inv.invoiceNumber}</Text>
@@ -2002,9 +2012,219 @@ function AdminDashboard() {
                     <Text style={[adm.invoiceStatusText, { color: sc }]}>{inv.status.toUpperCase()}</Text>
                   </View>
                 </View>
-              </View>
+              </Pressable>
             );
           })}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderInvoiceDetail() {
+    if (!selectedInvoice) return renderInvoices();
+    const inv = selectedInvoice;
+    const client = clients.find((c) => c.id === inv.clientId);
+    const dateStr = new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" });
+    const dueDateStr = new Date(inv.dueAt).toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" });
+    const lineTotal = inv.lineItems.reduce((s, li) => s + li.amount, 0);
+    const finalTotal = lineTotal - inv.credits;
+
+    return (
+      <ScrollView
+        style={{ flex: 1, backgroundColor: "#f5f5f0" }}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => { setSelectedInvoice(null); setAdminView("invoices"); }} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color="#333" />
+          </Pressable>
+          <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#333" }}>Invoice Detail</Text>
+        </View>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 4, borderWidth: 1, borderColor: "#333", overflow: "hidden" }}>
+          <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#333" }}>
+            <View style={{ flex: 1, padding: 16 }}>
+              <View style={{ width: 50, height: 50, borderRadius: 8, backgroundColor: Colors.light.tint, justifyContent: "center", alignItems: "center", marginBottom: 10 }}>
+                <Ionicons name="flask" size={28} color="#fff" />
+              </View>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#333" }}>DriveSync Lab</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#555", marginTop: 2 }}>Dental Laboratory Services</Text>
+              <View style={{ flexDirection: "row", marginTop: 12, backgroundColor: "#f8f8f5", borderWidth: 1, borderColor: "#ccc", borderRadius: 2, overflow: "hidden" }}>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 8, borderRightWidth: 1, borderRightColor: "#ccc" }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Phone #</Text>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>(850) 201-4531</Text>
+                </View>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 8 }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>E-mail</Text>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>info@drivesynclab.com</Text>
+                </View>
+              </View>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#333", marginTop: 14 }}>DriveSync Invoice</Text>
+            </View>
+
+            <View style={{ flex: 1, borderLeftWidth: 1, borderLeftColor: "#333" }}>
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999", backgroundColor: "#f0f0ec" }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>CT</Text>
+                </View>
+                <View style={{ flex: 1.2, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999", backgroundColor: "#f0f0ec" }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Invoice #</Text>
+                </View>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6, backgroundColor: "#f0f0ec" }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Date</Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>{inv.caseType}</Text>
+                </View>
+                <View style={{ flex: 1.2, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#333" }}>{inv.invoiceNumber}</Text>
+                </View>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6 }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>{dateStr}</Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999", backgroundColor: "#f0f0ec" }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Bill To</Text>
+                </View>
+                <View style={{ flex: 2.2, paddingVertical: 4, paddingHorizontal: 6, backgroundColor: "#f0f0ec" }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Patient Name</Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>{inv.billTo}</Text>
+                </View>
+                <View style={{ flex: 2.2, paddingVertical: 4, paddingHorizontal: 6 }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#333" }}>{inv.patientName}</Text>
+                </View>
+              </View>
+              <View style={{ borderBottomWidth: 1, borderBottomColor: "#999", paddingVertical: 4, paddingHorizontal: 6, backgroundColor: "#f0f0ec" }}>
+                <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Case Type</Text>
+              </View>
+              <View style={{ borderBottomWidth: 1, borderBottomColor: "#999", paddingVertical: 4, paddingHorizontal: 6 }}>
+                <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>{inv.caseType}</Text>
+              </View>
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+                <View style={{ flex: 1.5, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999", backgroundColor: "#f0f0ec" }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Teeth</Text>
+                </View>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6, backgroundColor: "#f0f0ec" }}>
+                  <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Shade</Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+                <View style={{ flex: 1.5, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>{inv.teeth}</Text>
+                </View>
+                <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6 }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#333" }}>{inv.shade}</Text>
+                </View>
+              </View>
+              <View style={{ paddingVertical: 4, paddingHorizontal: 6, backgroundColor: "#f0f0ec", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+                <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#555" }}>Case Notes</Text>
+              </View>
+              <View style={{ paddingVertical: 4, paddingHorizontal: 6, minHeight: 24 }}>
+                <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>{inv.caseNotes}</Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={{ borderBottomWidth: 1, borderBottomColor: "#333", paddingVertical: 12, paddingHorizontal: 16, alignItems: "center" }}>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#C0392B", letterSpacing: 1 }}>DUE DATE</Text>
+            <View style={{ marginTop: 6, borderWidth: 2, borderColor: "#333", paddingVertical: 8, paddingHorizontal: 24, borderRadius: 2 }}>
+              <Text style={{ fontSize: 28, fontFamily: "Inter_700Bold", color: "#333" }}>{dueDateStr}</Text>
+            </View>
+          </View>
+
+          <View style={{ borderBottomWidth: 1, borderBottomColor: "#333" }}>
+            <View style={{ flexDirection: "row", backgroundColor: "#f0f0ec", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+              <View style={{ width: 40, paddingVertical: 6, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#999", alignItems: "center" }}>
+                <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Qty</Text>
+              </View>
+              <View style={{ width: 80, paddingVertical: 6, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
+                <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Item</Text>
+              </View>
+              <View style={{ flex: 1, paddingVertical: 6, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
+                <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Description</Text>
+              </View>
+              <View style={{ width: 60, paddingVertical: 6, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#999", alignItems: "flex-end" }}>
+                <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Rate</Text>
+              </View>
+              <View style={{ width: 70, paddingVertical: 6, paddingHorizontal: 4, alignItems: "flex-end" }}>
+                <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: "#333" }}>Amount</Text>
+              </View>
+            </View>
+
+            {inv.lineItems.map((li, idx) => (
+              <View key={idx} style={{ flexDirection: "row", borderBottomWidth: idx < inv.lineItems.length - 1 ? 1 : 0, borderBottomColor: "#ddd" }}>
+                <View style={{ width: 40, paddingVertical: 8, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#eee", alignItems: "center" }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#333" }}>{li.qty}</Text>
+                </View>
+                <View style={{ width: 80, paddingVertical: 8, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#eee" }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#333" }}>{li.item}</Text>
+                </View>
+                <View style={{ flex: 1, paddingVertical: 8, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#eee" }}>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#555" }}>{li.description}</Text>
+                </View>
+                <View style={{ width: 60, paddingVertical: 8, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#eee", alignItems: "flex-end" }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#333" }}>${li.rate.toFixed(2)}</Text>
+                </View>
+                <View style={{ width: 70, paddingVertical: 8, paddingHorizontal: 4, alignItems: "flex-end" }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#333" }}>${li.amount.toFixed(2)}</Text>
+                </View>
+              </View>
+            ))}
+
+            {inv.lineItems.length < 6 && Array.from({ length: 6 - inv.lineItems.length }).map((_, idx) => (
+              <View key={`empty-${idx}`} style={{ flexDirection: "row", borderBottomWidth: idx < 5 - inv.lineItems.length ? 1 : 0, borderBottomColor: "#eee", height: 28 }}>
+                <View style={{ width: 40, borderRightWidth: 1, borderRightColor: "#eee" }} />
+                <View style={{ width: 80, borderRightWidth: 1, borderRightColor: "#eee" }} />
+                <View style={{ flex: 1, borderRightWidth: 1, borderRightColor: "#eee" }} />
+                <View style={{ width: 60, borderRightWidth: 1, borderRightColor: "#eee" }} />
+                <View style={{ width: 70 }} />
+              </View>
+            ))}
+          </View>
+
+          <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#999" }}>
+            <View style={{ flex: 1, paddingVertical: 8, paddingHorizontal: 10, justifyContent: "center" }}>
+              <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: "#C0392B", textAlign: "center", textTransform: "uppercase" }}>DO NOT PAY INVOICE.{"\n"}MONTHLY STATEMENTS{"\n"}ARE GENERATED</Text>
+            </View>
+            <View style={{ borderLeftWidth: 1, borderLeftColor: "#999" }}>
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#ccc", paddingVertical: 6, paddingHorizontal: 10 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Total</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>${lineTotal.toFixed(2)}</Text>
+              </View>
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#ccc", paddingVertical: 6, paddingHorizontal: 10 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Credits</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>${inv.credits.toFixed(2)}</Text>
+              </View>
+              <View style={{ flexDirection: "row", paddingVertical: 6, paddingHorizontal: 10 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Total</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", minWidth: 70, textAlign: "right" }}>${finalTotal.toFixed(2)}</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        <View style={{ flexDirection: "row", marginHorizontal: 16, marginTop: 12, gap: 10 }}>
+          <View style={{ flex: 1, backgroundColor: inv.status === "overdue" ? "#FEE2E2" : inv.status === "paid" ? "#D1FAE5" : "#FEF3C7", borderRadius: 10, padding: 12, alignItems: "center" }}>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: inv.status === "overdue" ? "#991B1B" : inv.status === "paid" ? "#065F46" : "#92400E" }}>Status</Text>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: inv.status === "overdue" ? "#DC2626" : inv.status === "paid" ? "#059669" : "#D97706", marginTop: 4, textTransform: "uppercase" }}>{inv.status}</Text>
+          </View>
+          {client && (
+            <View style={{ flex: 1, backgroundColor: "#EFF6FF", borderRadius: 10, padding: 12, alignItems: "center" }}>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#1E40AF" }}>Tier</Text>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 4 }}>{client.tier}</Text>
+            </View>
+          )}
         </View>
       </ScrollView>
     );
@@ -2285,7 +2505,14 @@ function AdminDashboard() {
           <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
             <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 10 }}>Open Invoices</Text>
             {openInvoices.map((inv) => (
-              <View key={inv.id} style={{ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderLeftWidth: 3, borderLeftColor: inv.status === "overdue" ? Colors.light.error : Colors.light.warning }}>
+              <Pressable
+                key={inv.id}
+                style={({ pressed }) => ({ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row" as const, justifyContent: "space-between" as const, alignItems: "center" as const, borderLeftWidth: 3, borderLeftColor: inv.status === "overdue" ? Colors.light.error : Colors.light.warning, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => {
+                  setSelectedInvoice(inv);
+                  setAdminView("invoice-detail");
+                }}
+              >
                 <View>
                   <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Due {new Date(inv.dueAt).toLocaleDateString()}</Text>
@@ -2294,7 +2521,7 @@ function AdminDashboard() {
                   <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning }}>${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning, textTransform: "uppercase", marginTop: 2 }}>{inv.status}</Text>
                 </View>
-              </View>
+              </Pressable>
             ))}
           </View>
         )}
@@ -2303,13 +2530,20 @@ function AdminDashboard() {
           <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
             <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 10 }}>Paid Invoices</Text>
             {paidInvoices.map((inv) => (
-              <View key={inv.id} style={{ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderLeftWidth: 3, borderLeftColor: Colors.light.success }}>
+              <Pressable
+                key={inv.id}
+                style={({ pressed }) => ({ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row" as const, justifyContent: "space-between" as const, alignItems: "center" as const, borderLeftWidth: 3, borderLeftColor: Colors.light.success, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => {
+                  setSelectedInvoice(inv);
+                  setAdminView("invoice-detail");
+                }}
+              >
                 <View>
                   <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Paid {new Date(inv.issuedAt).toLocaleDateString()}</Text>
                 </View>
                 <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.success }}>${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
-              </View>
+              </Pressable>
             ))}
           </View>
         )}
@@ -2821,6 +3055,7 @@ function AdminDashboard() {
     case "add-user": return renderAddUser();
     case "edit-user": return renderEditUser();
     case "invoices": return renderInvoices();
+    case "invoice-detail": return renderInvoiceDetail();
     case "statements": return renderStatements();
     case "sales": return renderSales();
     case "shipping": return renderShipping();
