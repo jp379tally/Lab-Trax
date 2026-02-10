@@ -1,8 +1,8 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect } from "react";
-import { View, ActivityIndicator, StyleSheet } from "react-native";
+import React, { useEffect, useRef, useMemo } from "react";
+import { View, ActivityIndicator, StyleSheet, PanResponder } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import {
@@ -17,6 +17,7 @@ import { queryClient } from "@/lib/query-client";
 import { AppProvider } from "@/lib/app-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import LoginScreen from "@/components/LoginScreen";
+import LockScreen from "@/components/LockScreen";
 import Colors from "@/constants/colors";
 
 SplashScreen.preventAutoHideAsync();
@@ -33,8 +34,30 @@ function RootLayoutNav() {
   );
 }
 
+function InactivityWrapper({ children }: { children: React.ReactNode }) {
+  const { resetInactivityTimer } = useAuth();
+  const panResponder = useMemo(() =>
+    PanResponder.create({
+      onStartShouldSetPanResponderCapture: () => {
+        resetInactivityTimer();
+        return false;
+      },
+      onMoveShouldSetPanResponderCapture: () => {
+        resetInactivityTimer();
+        return false;
+      },
+    }),
+  [resetInactivityTimer]);
+
+  return (
+    <View style={{ flex: 1 }} {...panResponder.panHandlers}>
+      {children}
+    </View>
+  );
+}
+
 function AuthGate() {
-  const { isAuthenticated, isAuthLoading } = useAuth();
+  const { isAuthenticated, isAuthLoading, isLocked } = useAuth();
 
   if (isAuthLoading) {
     return (
@@ -48,9 +71,15 @@ function AuthGate() {
     return <LoginScreen />;
   }
 
+  if (isLocked) {
+    return <LockScreen />;
+  }
+
   return (
     <AppProvider>
-      <RootLayoutNav />
+      <InactivityWrapper>
+        <RootLayoutNav />
+      </InactivityWrapper>
     </AppProvider>
   );
 }

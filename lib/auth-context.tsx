@@ -3,10 +3,14 @@ import React, {
   useContext,
   useState,
   useEffect,
+  useRef,
+  useCallback,
   useMemo,
   ReactNode,
 } from "react";
+import { AppState, AppStateStatus, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as LocalAuthentication from "expo-local-authentication";
 
 interface StoredUser {
   username: string;
@@ -36,6 +40,10 @@ interface AuthContextValue {
   register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "tech" | "admin"; accountNumber?: string }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   registeredUsers: StoredUser[];
+  isLocked: boolean;
+  unlockWithBiometric: () => Promise<{ success: boolean; error?: string }>;
+  unlockWithPassword: (password: string) => { success: boolean; error?: string };
+  resetInactivityTimer: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -50,12 +58,50 @@ const DEFAULT_USERS: StoredUser[] = [
   { username: "tech", password: "tech123" },
 ];
 
+const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<StoredUser[]>([]);
   const [profilePicUri, setProfilePicUriState] = useState<string | null>(null);
+  const [isLocked, setIsLocked] = useState(false);
+  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+
+  const resetInactivityTimer = useCallback(() => {
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
+    }
+    inactivityTimerRef.current = setTimeout(() => {
+      setIsLocked(true);
+    }, INACTIVITY_TIMEOUT_MS);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || isLocked) return;
+    resetInactivityTimer();
+    return () => {
+      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+    };
+  }, [isAuthenticated, isLocked, resetInactivityTimer]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const subscription = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+      if (appStateRef.current.match(/active/) && nextState.match(/inactive|background/)) {
+        if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = setTimeout(() => {
+          setIsLocked(true);
+        }, INACTIVITY_TIMEOUT_MS);
+      } else if (nextState === "active" && !isLocked) {
+        resetInactivityTimer();
+      }
+      appStateRef.current = nextState;
+    });
+    return () => subscription.remove();
+  }, [isAuthenticated, isLocked, resetInactivityTimer]);
 
   useEffect(() => {
     loadAuth();
@@ -217,7 +263,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function logout() {
     setIsAuthenticated(false);
     setCurrentUser(null);
+    setIsLocked(false);
+    if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     AsyncStorage.removeItem(AUTH_KEY);
+  }
+
+  async function unlockWithBiometric(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      if (!hasHardware) {
+        return { success: false, error: "Biometric authentication not available on this device." };
+      }
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: "Authenticate to unlock DriveSync Lab",
+        disableDeviceFallback: false,
+      });
+      if (result.success) {
+        setIsLocked(false);
+        resetInactivityTimer();
+        return { success: true };
+      }
+      return { success: false, error: "Authentication failed. Try again." };
+    } catch {
+      return { success: false, error: "Authentication error." };
+    }
+  }
+
+  function unlockWithPassword(password: string): { success: boolean; error?: string } {
+    if (!currentUser) return { success: false, error: "No user session found." };
+    const user = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
+    if (!user) return { success: false, error: "User not found." };
+    if (user.password !== password) return { success: false, error: "Incorrect password." };
+    setIsLocked(false);
+    resetInactivityTimer();
+    return { success: true };
   }
 
   const value = useMemo(
@@ -232,8 +311,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       register,
       logout,
       registeredUsers,
+      isLocked,
+      unlockWithBiometric,
+      unlockWithPassword,
+      resetInactivityTimer,
     }),
-    [isAuthenticated, isAuthLoading, currentUser, registeredUsers, profilePicUri],
+    [isAuthenticated, isAuthLoading, currentUser, registeredUsers, profilePicUri, isLocked, resetInactivityTimer],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
