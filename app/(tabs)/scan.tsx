@@ -222,6 +222,7 @@ export default function ScanScreen() {
     const mm = String(calendarMonth + 1).padStart(2, "0");
     const dd = String(day).padStart(2, "0");
     setDueDate(`${yyyy}-${mm}-${dd}`);
+    setDueDateOpen(false);
   };
 
   const applyTimeDue = () => {
@@ -264,8 +265,7 @@ export default function ScanScreen() {
   const dueDateDisplay = React.useMemo(() => {
     if (!dueDate) return "";
     const parts = dueDate.split("-");
-    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    return `${monthNames[parseInt(parts[1]) - 1]} ${parseInt(parts[2])}, ${parts[0]}`;
+    return `${parts[1]}/${parts[2]}/${parts[0]}`;
   }, [dueDate]);
 
   const billableTeethCount = React.useMemo(() => {
