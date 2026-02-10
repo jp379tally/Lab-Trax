@@ -427,7 +427,7 @@ function formatRelativeTime(timestamp: number): string {
 
 function TechDashboard() {
   const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages } = useApp();
-  const { logout, profilePicUri, setProfilePicUri } = useAuth();
+  const { logout, profilePicUri, setProfilePicUri, currentUser } = useAuth();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
@@ -642,10 +642,40 @@ function TechDashboard() {
             <Ionicons name="camera" size={12} color="#FFF" />
           </View>
         </Pressable>
+        {currentUser && (
+          <Text style={styles.employeeName}>{currentUser}</Text>
+        )}
         <Text style={styles.avatarName}>Lab Technician</Text>
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
-          <Text style={styles.liveText}>ON SHIFT</Text>
+          <Text style={styles.liveText}>Active</Text>
+        </View>
+
+        <View style={styles.headerQuickActions}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.headerQuickBtn,
+              pressed && styles.quickBtnPressed,
+            ]}
+            onPress={() => router.push("/(tabs)/scan")}
+          >
+            <View style={[styles.quickIcon, { backgroundColor: Colors.light.tintLight }]}>
+              <Ionicons name="add" size={24} color={Colors.light.tint} />
+            </View>
+            <Text style={styles.quickLabel}>New Case</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              styles.headerQuickBtn,
+              pressed && styles.quickBtnPressed,
+            ]}
+            onPress={() => router.push("/(tabs)/cases")}
+          >
+            <View style={[styles.quickIcon, { backgroundColor: Colors.light.accentLight }]}>
+              <Feather name="search" size={22} color={Colors.light.accent} />
+            </View>
+            <Text style={styles.quickLabel}>Search Cases</Text>
+          </Pressable>
         </View>
       </View>
 
@@ -901,40 +931,6 @@ function TechDashboard() {
           </>
         );
       })()}
-
-      <View style={styles.quickActions}>
-        <Pressable
-          style={({ pressed }) => [
-            styles.quickBtn,
-            pressed && styles.quickBtnPressed,
-          ]}
-          onPress={() => router.push("/(tabs)/scan")}
-        >
-          <View
-            style={[styles.quickIcon, { backgroundColor: Colors.light.tintLight }]}
-          >
-            <Ionicons name="add" size={24} color={Colors.light.tint} />
-          </View>
-          <Text style={styles.quickLabel}>New Case</Text>
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [
-            styles.quickBtn,
-            pressed && styles.quickBtnPressed,
-          ]}
-          onPress={() => router.push("/(tabs)/cases")}
-        >
-          <View
-            style={[
-              styles.quickIcon,
-              { backgroundColor: Colors.light.accentLight },
-            ]}
-          >
-            <Feather name="search" size={22} color={Colors.light.accent} />
-          </View>
-          <Text style={styles.quickLabel}>Search Cases</Text>
-        </Pressable>
-      </View>
 
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Recent Cases</Text>
@@ -2746,10 +2742,35 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     color: "#64748B",
   },
-  avatarName: {
-    fontSize: 17,
+  employeeName: {
+    fontSize: 20,
     fontFamily: "Inter_700Bold",
     color: Colors.light.text,
+    marginTop: 6,
+  },
+  avatarName: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
+  headerQuickActions: {
+    flexDirection: "row" as const,
+    gap: 12,
+    marginTop: 14,
+    width: "100%",
+    paddingHorizontal: 16,
+  },
+  headerQuickBtn: {
+    flex: 1,
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    padding: 12,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
   },
   adminBtn: {
     width: 40,
