@@ -30,10 +30,6 @@ function NativeTabLayout() {
         <Label>Alerts</Label>
         {unreadCount > 0 && <Badge>{unreadCount}</Badge>}
       </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="profile">
-        <Icon sf={{ default: "person", selected: "person.fill" }} />
-        <Label>Profile</Label>
-      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }
@@ -145,6 +141,7 @@ function ClassicTabLayout() {
         name="profile"
         options={{
           title: "Profile",
+          href: null,
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
               name={focused ? "person" : "person-outline"}

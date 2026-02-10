@@ -60,7 +60,7 @@ export default function CasesScreen() {
         <View style={styles.caseTop}>
           <View style={styles.caseLeft}>
             <View style={styles.caseHeader}>
-              <Text style={styles.caseNumber}>{item.caseNumber}</Text>
+              <Text style={styles.casePatient}>{item.patientName}</Text>
               {item.isRush && (
                 <View style={styles.rushBadge}>
                   <Ionicons name="flash" size={10} color="#EF4444" />
@@ -90,7 +90,7 @@ export default function CasesScreen() {
           </View>
         </View>
         <View style={styles.caseBottom}>
-          <Text style={styles.caseDue}>Due: {item.dueDate}</Text>
+          <Text style={styles.caseDue}>{item.caseNumber} · Due: {item.dueDate}</Text>
           <Feather
             name="chevron-right"
             size={16}
@@ -277,10 +277,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  caseNumber: {
-    fontSize: 15,
+  casePatient: {
+    fontSize: 16,
     fontFamily: "Inter_700Bold",
     color: Colors.light.text,
+  },
+  caseNumber: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
   },
   rushBadge: {
     flexDirection: "row",

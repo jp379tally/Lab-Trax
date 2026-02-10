@@ -112,6 +112,8 @@ export default function ScanScreen() {
   const [patientSearch, setPatientSearch] = useState("");
   const [addingNewPatient, setAddingNewPatient] = useState(false);
   const [newPatientInput, setNewPatientInput] = useState("");
+  const [addingNewDoctor, setAddingNewDoctor] = useState(false);
+  const [newDoctorInput, setNewDoctorInput] = useState("");
 
   const filteredClients = clients.filter((c) => {
     const q = doctorSearch.toLowerCase();
@@ -120,11 +122,12 @@ export default function ScanScreen() {
 
   const existingPatients = React.useMemo(() => {
     const names = new Set<string>();
-    cases.forEach((c) => {
+    const filtered = cases.filter(c => !doctorName || c.doctorName === doctorName);
+    filtered.forEach((c) => {
       if (c.patientName && c.patientName.trim()) names.add(c.patientName.trim());
     });
     return Array.from(names).sort();
-  }, [cases]);
+  }, [cases, doctorName]);
 
   const filteredPatients = existingPatients.filter((name) =>
     name && name.toLowerCase().includes((patientSearch || "").toLowerCase())
@@ -389,6 +392,59 @@ export default function ScanScreen() {
     }
   }
 
+  async function handleTakeRegularPhoto() {
+    let photoUri: string | null = null;
+
+    if (Platform.OS === "web") {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        photoUri = result.assets[0].uri;
+      }
+    } else if (cameraRef.current && cameraReady) {
+      try {
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
+        if (photo?.uri) {
+          photoUri = photo.uri;
+        }
+      } catch {
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          quality: 0.8,
+        });
+        if (!result.canceled && result.assets[0]) {
+          photoUri = result.assets[0].uri;
+        }
+      }
+    } else {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        photoUri = result.assets[0].uri;
+      }
+    }
+
+    if (photoUri) {
+      setCasePhotos((prev) => [...prev, photoUri!]);
+      const entry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: Date.now(),
+        description: "Photo captured",
+        imageUri: photoUri,
+      };
+      setActivityEntries((prev) => [...prev, entry]);
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+      Alert.alert("Photo Added", `${casePhotos.length + 1} photo(s) attached to this case.`);
+    }
+  }
+
   async function handlePickImage() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
@@ -638,6 +694,72 @@ export default function ScanScreen() {
     );
   }
 
+  function createCaseAsRemake() {
+    const nextNum =
+      cases.length > 0
+        ? parseInt(cases[0].caseNumber.replace("#", "")) + 1
+        : 4530;
+
+    const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
+      num,
+      type: (toothTypes[num] || "normal") as ToothType,
+    }));
+
+    const remakeNotes = notes.trim()
+      ? `${notes.trim()}\n(REMAKE - No Charge)`
+      : "(REMAKE - No Charge)";
+
+    addCase({
+      caseNumber: `#${nextNum}`,
+      doctorName: doctorName.trim(),
+      patientName: patientName.trim(),
+      patientInitials: patientName.trim().split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
+      toothIndices: toothIndices.trim(),
+      shade: shade.trim(),
+      material,
+      status: "INTAKE",
+      isRush,
+      notes: remakeNotes,
+      price: 0,
+      dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
+      photos: casePhotos,
+      activityLog: activityEntries,
+      toothMap: toothMapEntries,
+    });
+
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+
+    const now = new Date();
+    const createdStr = `${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getDate().toString().padStart(2, "0")}/${now.getFullYear()}`;
+
+    const savedLabel: LabelData = {
+      caseNumber: `#${nextNum}`,
+      doctorName: doctorName.trim(),
+      patientName: patientName.trim(),
+      caseType: caseType || "",
+      toothIndices: toothIndices.trim(),
+      shade: shade.trim(),
+      material,
+      isRush,
+      dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
+      notes: remakeNotes,
+      price: 0,
+      createdAt: createdStr,
+    };
+
+    resetForm();
+    Alert.alert(
+      "Remake Case Added",
+      `Case #${nextNum} has been created as a remake (No Charge).`,
+      [
+        { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
+        { text: "Done", onPress: () => router.push("/(tabs)") },
+      ],
+    );
+  }
+
   function handleSubmit() {
     if (!doctorName.trim()) {
       Alert.alert("Required", "Doctor name is required");
@@ -645,6 +767,25 @@ export default function ScanScreen() {
     }
     if (!patientName.trim()) {
       Alert.alert("Required", "Patient name is required");
+      return;
+    }
+
+    const remakeCandidates = cases.filter(c =>
+      (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase() &&
+      (c.toothIndices || "") === toothIndices.trim() &&
+      (caseType && c.caseType && c.caseType === caseType)
+    );
+
+    if (remakeCandidates.length > 0) {
+      Alert.alert(
+        "Possible Remake Detected",
+        `This appears to be a remake of case ${remakeCandidates[0].caseNumber}. Same tooth/case type found.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Remake (No Charge)", onPress: () => createCaseAsRemake() },
+          { text: "New Case (Charge)", onPress: () => createCase() },
+        ]
+      );
       return;
     }
 
@@ -676,6 +817,8 @@ export default function ScanScreen() {
     setPatientSearch("");
     setAddingNewPatient(false);
     setNewPatientInput("");
+    setAddingNewDoctor(false);
+    setNewDoctorInput("");
     setCaseType("");
     setCaseTypeOpen(false);
     setToothIndices("");
@@ -808,61 +951,112 @@ export default function ScanScreen() {
             </Pressable>
             {doctorDropdownOpen && (
               <View style={styles.dropdownPanel}>
-                <View style={styles.dropdownSearchWrap}>
-                  <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
-                  <TextInput
-                    style={styles.dropdownSearchInput}
-                    value={doctorSearch}
-                    onChangeText={setDoctorSearch}
-                    placeholder="Search by name..."
-                    placeholderTextColor={Colors.light.textTertiary}
-                    autoFocus
-                  />
-                  {doctorSearch.length > 0 && (
-                    <Pressable onPress={() => setDoctorSearch("")}>
-                      <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                {!addingNewDoctor ? (
+                  <>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={doctorSearch}
+                        onChangeText={setDoctorSearch}
+                        placeholder="Search by name..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoFocus
+                      />
+                      {doctorSearch.length > 0 && (
+                        <Pressable onPress={() => setDoctorSearch("")}>
+                          <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                        </Pressable>
+                      )}
+                    </View>
+                    <Pressable
+                      onPress={() => {
+                        setAddingNewDoctor(true);
+                        setNewDoctorInput("");
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }}
+                      style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
+                    >
+                      <Ionicons name="person-add-outline" size={18} color={Colors.light.tint} />
+                      <Text style={styles.addNewPatientBtnText}>Add New Doctor</Text>
                     </Pressable>
-                  )}
-                </View>
-                <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                  {filteredClients.length === 0 ? (
-                    <Text style={styles.dropdownEmpty}>No matching clients</Text>
-                  ) : (
-                    filteredClients.map((c) => (
+                    <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                      {filteredClients.length === 0 ? (
+                        <Text style={styles.dropdownEmpty}>No matching clients</Text>
+                      ) : (
+                        filteredClients.map((c) => (
+                          <Pressable
+                            key={c.id}
+                            onPress={() => {
+                              setDoctorName(c.leadDoctor);
+                              setDoctorDropdownOpen(false);
+                              setDoctorSearch("");
+                              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            }}
+                            style={({ pressed }) => [
+                              styles.dropdownItem,
+                              doctorName === c.leadDoctor && styles.dropdownItemSelected,
+                              pressed && { opacity: 0.7 },
+                            ]}
+                          >
+                            <View style={styles.dropdownItemLeft}>
+                              <View style={[styles.dropdownAvatar, doctorName === c.leadDoctor && { backgroundColor: Colors.light.tint }]}>
+                                <Text style={[styles.dropdownAvatarText, doctorName === c.leadDoctor && { color: "#FFF" }]}>
+                                  {c.leadDoctor.replace("Dr. ", "").charAt(0)}
+                                </Text>
+                              </View>
+                              <View>
+                                <Text style={[styles.dropdownItemName, doctorName === c.leadDoctor && { color: Colors.light.tint }]}>
+                                  {c.leadDoctor}
+                                </Text>
+                                <Text style={styles.dropdownItemSub}>{c.practiceName}</Text>
+                              </View>
+                            </View>
+                            {doctorName === c.leadDoctor && (
+                              <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                            )}
+                          </Pressable>
+                        ))
+                      )}
+                    </ScrollView>
+                  </>
+                ) : (
+                  <View style={styles.addNewPatientPanel}>
+                    <Text style={styles.addNewPatientTitle}>New Doctor</Text>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorInput}
+                        onChangeText={setNewDoctorInput}
+                        placeholder="Enter doctor name..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoFocus
+                      />
+                    </View>
+                    <View style={styles.addNewPatientActions}>
                       <Pressable
-                        key={c.id}
+                        onPress={() => { setAddingNewDoctor(false); setNewDoctorInput(""); }}
+                        style={({ pressed }) => [styles.addNewPatientCancelBtn, pressed && { opacity: 0.7 }]}
+                      >
+                        <Text style={styles.addNewPatientCancelText}>Cancel</Text>
+                      </Pressable>
+                      <Pressable
                         onPress={() => {
-                          setDoctorName(c.leadDoctor);
+                          if (!newDoctorInput.trim()) return;
+                          setDoctorName(newDoctorInput.trim());
                           setDoctorDropdownOpen(false);
-                          setDoctorSearch("");
+                          setAddingNewDoctor(false);
+                          setNewDoctorInput("");
                           if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
-                        style={({ pressed }) => [
-                          styles.dropdownItem,
-                          doctorName === c.leadDoctor && styles.dropdownItemSelected,
-                          pressed && { opacity: 0.7 },
-                        ]}
+                        style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
                       >
-                        <View style={styles.dropdownItemLeft}>
-                          <View style={[styles.dropdownAvatar, doctorName === c.leadDoctor && { backgroundColor: Colors.light.tint }]}>
-                            <Text style={[styles.dropdownAvatarText, doctorName === c.leadDoctor && { color: "#FFF" }]}>
-                              {c.leadDoctor.replace("Dr. ", "").charAt(0)}
-                            </Text>
-                          </View>
-                          <View>
-                            <Text style={[styles.dropdownItemName, doctorName === c.leadDoctor && { color: Colors.light.tint }]}>
-                              {c.leadDoctor}
-                            </Text>
-                            <Text style={styles.dropdownItemSub}>{c.practiceName}</Text>
-                          </View>
-                        </View>
-                        {doctorName === c.leadDoctor && (
-                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
-                        )}
+                        <Text style={styles.addNewPatientConfirmText}>Add</Text>
                       </Pressable>
-                    ))
-                  )}
-                </ScrollView>
+                    </View>
+                  </View>
+                )}
               </View>
             )}
           </View>
@@ -1594,44 +1788,66 @@ export default function ScanScreen() {
         ]}
       >
         {phase === "camera" && (
-          <View style={styles.readyActions}>
-            <Pressable
-              onPress={handlePickImage}
-              style={({ pressed }) => [
-                styles.secondaryBtn,
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Ionicons name="images-outline" size={24} color="#FFF" />
-              <Text style={styles.secondaryBtnText}>Gallery</Text>
-            </Pressable>
+          <View style={styles.cameraControlsWrap}>
+            <View style={styles.readyActions}>
+              <Pressable
+                onPress={handlePickImage}
+                style={({ pressed }) => [
+                  styles.secondaryBtn,
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Ionicons name="images-outline" size={24} color="#FFF" />
+                <Text style={styles.secondaryBtnText}>Gallery</Text>
+              </Pressable>
 
-            <Pressable
-              onPress={handleTakePhoto}
-              style={({ pressed }) => [
-                styles.captureBtn,
-                pressed && { transform: [{ scale: 0.95 }] },
-              ]}
-              testID="capture-photo-btn"
-            >
-              <View style={styles.captureBtnInner}>
-                <View style={styles.captureBtnDot} />
+              <View style={styles.captureBtnWrap}>
+                <Pressable
+                  onPress={handleTakePhoto}
+                  style={({ pressed }) => [
+                    styles.captureBtn,
+                    pressed && { transform: [{ scale: 0.95 }] },
+                  ]}
+                  testID="capture-photo-btn"
+                >
+                  <View style={styles.captureBtnInner}>
+                    <View style={styles.captureBtnDot} />
+                  </View>
+                </Pressable>
+                <Text style={styles.captureBtnLabel}>Document</Text>
               </View>
-            </Pressable>
 
+              <View style={styles.captureBtnWrap}>
+                <Pressable
+                  onPress={handleTakeRegularPhoto}
+                  style={({ pressed }) => [
+                    styles.secondaryBtn,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Ionicons name="camera-outline" size={24} color="#FFF" />
+                  <Text style={styles.secondaryBtnText}>Photo</Text>
+                </Pressable>
+                {casePhotos.length > 0 && (
+                  <View style={styles.photoBadge}>
+                    <Text style={styles.photoBadgeText}>{casePhotos.length}</Text>
+                  </View>
+                )}
+              </View>
+            </View>
             <Pressable
               onPress={handleManualEntry}
               style={({ pressed }) => [
-                styles.secondaryBtn,
+                styles.manualEntryLink,
                 pressed && { opacity: 0.7 },
               ]}
             >
               <MaterialCommunityIcons
                 name="text-box-outline"
-                size={24}
-                color="#FFF"
+                size={16}
+                color="rgba(255,255,255,0.6)"
               />
-              <Text style={styles.secondaryBtnText}>Manual</Text>
+              <Text style={styles.manualEntryLinkText}>Manual Entry</Text>
             </Pressable>
           </View>
         )}
@@ -1651,7 +1867,7 @@ export default function ScanScreen() {
               ]}
             >
               <Ionicons name="camera" size={22} color="#FFF" />
-              <Text style={styles.actionBtnText}>Add More</Text>
+              <Text style={styles.actionBtnText}>Add Photo</Text>
             </Pressable>
             <Pressable
               onPress={handleFinishedReview}
@@ -3089,5 +3305,46 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 8,
+  },
+  cameraControlsWrap: {
+    alignItems: "center",
+    gap: 12,
+  },
+  captureBtnWrap: {
+    alignItems: "center",
+    position: "relative",
+  },
+  captureBtnLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.7)",
+    marginTop: 4,
+  },
+  photoBadge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: Colors.light.success,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  photoBadgeText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  manualEntryLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 6,
+  },
+  manualEntryLinkText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.6)",
   },
 });
