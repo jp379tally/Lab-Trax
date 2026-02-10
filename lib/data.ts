@@ -3,12 +3,7 @@ export type UserRole = "tech" | "admin";
 export type CaseStatus =
   | "INTAKE"
   | "DESIGN"
-  | "WAX"
-  | "INVEST"
-  | "CAST"
-  | "FINISH"
   | "PORCELAIN"
-  | "GLAZE"
   | "QC"
   | "SHIP"
   | "HOLD"
@@ -17,12 +12,7 @@ export type CaseStatus =
 export const STATIONS: { id: CaseStatus; label: string; color: string }[] = [
   { id: "INTAKE", label: "Intake", color: "#2563EB" },
   { id: "DESIGN", label: "Design", color: "#F59E0B" },
-  { id: "WAX", label: "Wax-Up", color: "#8B5CF6" },
-  { id: "INVEST", label: "Invest", color: "#EC4899" },
-  { id: "CAST", label: "Cast", color: "#EF4444" },
-  { id: "FINISH", label: "Finish", color: "#F97316" },
   { id: "PORCELAIN", label: "Porcelain", color: "#06B6D4" },
-  { id: "GLAZE", label: "Glaze", color: "#14B8A6" },
   { id: "QC", label: "Quality Check", color: "#10B981" },
   { id: "SHIP", label: "Shipping", color: "#6366F1" },
   { id: "HOLD", label: "On Hold", color: "#94A3B8" },
@@ -218,9 +208,6 @@ export const SAMPLE_CASES: LabCase[] = [
     routeHistory: [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 5 },
       { station: "DESIGN", timestamp: Date.now() - 86400000 * 4 },
-      { station: "WAX", timestamp: Date.now() - 86400000 * 3 },
-      { station: "INVEST", timestamp: Date.now() - 86400000 * 2 },
-      { station: "CAST", timestamp: Date.now() - 86400000 },
       { station: "PORCELAIN", timestamp: Date.now() - 7200000 },
     ],
     photos: [],
@@ -241,30 +228,9 @@ export const SAMPLE_CASES: LabCase[] = [
       },
       {
         id: generateId(),
-        type: "station_change",
-        timestamp: Date.now() - 86400000 * 3,
-        description: "Case moved to Wax-Up",
-        station: "WAX",
-      },
-      {
-        id: generateId(),
         type: "note",
         timestamp: Date.now() - 86400000 * 2.5,
         description: "RUSH - Patient traveling 02/12. Prioritize this case.",
-      },
-      {
-        id: generateId(),
-        type: "station_change",
-        timestamp: Date.now() - 86400000 * 2,
-        description: "Case moved to Invest",
-        station: "INVEST",
-      },
-      {
-        id: generateId(),
-        type: "station_change",
-        timestamp: Date.now() - 86400000,
-        description: "Case moved to Cast",
-        station: "CAST",
       },
       {
         id: generateId(),
@@ -299,10 +265,8 @@ export const SAMPLE_CASES: LabCase[] = [
     dueDate: "2026-02-13",
     routeHistory: [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 7 },
-      { station: "WAX", timestamp: Date.now() - 86400000 * 5 },
-      { station: "INVEST", timestamp: Date.now() - 86400000 * 4 },
-      { station: "CAST", timestamp: Date.now() - 86400000 * 3 },
-      { station: "FINISH", timestamp: Date.now() - 86400000 * 2 },
+      { station: "DESIGN", timestamp: Date.now() - 86400000 * 5 },
+      { station: "PORCELAIN", timestamp: Date.now() - 86400000 * 3 },
       { station: "QC", timestamp: Date.now() - 1800000 },
     ],
     photos: [],
@@ -318,29 +282,15 @@ export const SAMPLE_CASES: LabCase[] = [
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 5,
-        description: "Case moved to Wax-Up",
-        station: "WAX",
-      },
-      {
-        id: generateId(),
-        type: "station_change",
-        timestamp: Date.now() - 86400000 * 4,
-        description: "Case moved to Invest",
-        station: "INVEST",
+        description: "Case moved to Design",
+        station: "DESIGN",
       },
       {
         id: generateId(),
         type: "station_change",
         timestamp: Date.now() - 86400000 * 3,
-        description: "Case moved to Cast",
-        station: "CAST",
-      },
-      {
-        id: generateId(),
-        type: "station_change",
-        timestamp: Date.now() - 86400000 * 2,
-        description: "Case moved to Finish",
-        station: "FINISH",
+        description: "Case moved to Porcelain",
+        station: "PORCELAIN",
       },
       {
         id: generateId(),
@@ -360,7 +310,7 @@ export const SAMPLE_CASES: LabCase[] = [
     toothIndices: "#6, #7, #8, #9, #10, #11",
     shade: "BL2",
     material: "E.max",
-    status: "WAX",
+    status: "DESIGN",
     isRush: true,
     notes: "RUSH - Full anterior veneers. Minimal prep.",
     createdAt: Date.now() - 86400000 * 3,
@@ -369,8 +319,7 @@ export const SAMPLE_CASES: LabCase[] = [
     dueDate: "2026-02-09",
     routeHistory: [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 3 },
-      { station: "DESIGN", timestamp: Date.now() - 86400000 * 2 },
-      { station: "WAX", timestamp: Date.now() - 14400000 },
+      { station: "DESIGN", timestamp: Date.now() - 14400000 },
     ],
     photos: [],
     activityLog: [
@@ -384,16 +333,9 @@ export const SAMPLE_CASES: LabCase[] = [
       {
         id: generateId(),
         type: "station_change",
-        timestamp: Date.now() - 86400000 * 2,
+        timestamp: Date.now() - 14400000,
         description: "Case moved to Design",
         station: "DESIGN",
-      },
-      {
-        id: generateId(),
-        type: "station_change",
-        timestamp: Date.now() - 14400000,
-        description: "Case moved to Wax-Up",
-        station: "WAX",
       },
     ],
   },
@@ -416,10 +358,7 @@ export const SAMPLE_CASES: LabCase[] = [
     routeHistory: [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 10 },
       { station: "DESIGN", timestamp: Date.now() - 86400000 * 8 },
-      { station: "WAX", timestamp: Date.now() - 86400000 * 6 },
-      { station: "INVEST", timestamp: Date.now() - 86400000 * 5 },
-      { station: "CAST", timestamp: Date.now() - 86400000 * 4 },
-      { station: "FINISH", timestamp: Date.now() - 86400000 * 3 },
+      { station: "PORCELAIN", timestamp: Date.now() - 86400000 * 5 },
       { station: "QC", timestamp: Date.now() - 86400000 * 2 },
       { station: "SHIP", timestamp: Date.now() - 900000 },
     ],
@@ -442,30 +381,9 @@ export const SAMPLE_CASES: LabCase[] = [
       {
         id: generateId(),
         type: "station_change",
-        timestamp: Date.now() - 86400000 * 6,
-        description: "Case moved to Wax-Up",
-        station: "WAX",
-      },
-      {
-        id: generateId(),
-        type: "station_change",
         timestamp: Date.now() - 86400000 * 5,
-        description: "Case moved to Invest",
-        station: "INVEST",
-      },
-      {
-        id: generateId(),
-        type: "station_change",
-        timestamp: Date.now() - 86400000 * 4,
-        description: "Case moved to Cast",
-        station: "CAST",
-      },
-      {
-        id: generateId(),
-        type: "station_change",
-        timestamp: Date.now() - 86400000 * 3,
-        description: "Case moved to Finish",
-        station: "FINISH",
+        description: "Case moved to Porcelain",
+        station: "PORCELAIN",
       },
       {
         id: generateId(),
