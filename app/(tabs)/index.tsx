@@ -32,7 +32,7 @@ import Animated, {
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, Client, LabUser, Invoice, ChatMessage, Conversation } from "@/lib/data";
+import { getStationInfo, Client, LabUser, Invoice, ChatMessage, Conversation, DEFAULT_TIER_ITEMS } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
@@ -1356,6 +1356,7 @@ type AdminView =
   | "add-client"
   | "edit-client"
   | "edit-price-list"
+  | "edit-tier-pricing"
   | "add-user"
   | "edit-user"
   | "invoices"
@@ -1364,7 +1365,7 @@ type AdminView =
   | "shipping";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount } = useApp();
+  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier } = useApp();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const [adminView, setAdminView] = useState<AdminView>("hub");
@@ -1377,7 +1378,7 @@ function AdminDashboard() {
   const [newClientPhone, setNewClientPhone] = useState("");
   const [newClientEmail, setNewClientEmail] = useState("");
   const [newClientAddress, setNewClientAddress] = useState("");
-  const [newClientTier, setNewClientTier] = useState<"Standard" | "Premium" | "Elite">("Standard");
+  const [newClientTier, setNewClientTier] = useState<string>("Standard");
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
 
   const [newUserName, setNewUserName] = useState("");
@@ -1520,6 +1521,7 @@ function AdminDashboard() {
     }, 0);
 
     const menuItems: { icon: string; iconSet: "ion" | "mci" | "feather"; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
+      { icon: "layers", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Edit Tier Pricing", sub: `${pricingTiers.length} pricing tiers`, view: "edit-tier-pricing" as AdminView },
       { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · $${totalOpenBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} open`, view: "clients" },
       { icon: "pricetag", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Edit Client Price List", sub: "Update service pricing", view: "edit-price-list" },
       { icon: "person-add", iconSet: "ion", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
@@ -1635,9 +1637,9 @@ function AdminDashboard() {
           <View style={adm.field}>
             <Text style={adm.fieldLabel}>Client Tier</Text>
             <View style={adm.chipRow}>
-              {(["Standard", "Premium", "Elite"] as const).map((t) => (
-                <Pressable key={t} onPress={() => setNewClientTier(t)} style={[adm.chip, newClientTier === t && adm.chipActive]}>
-                  <Text style={[adm.chipText, newClientTier === t && adm.chipTextActive]}>{t}</Text>
+              {pricingTiers.map((t) => (
+                <Pressable key={t.id} onPress={() => setNewClientTier(t.name)} style={[adm.chip, newClientTier === t.name && adm.chipActive]}>
+                  <Text style={[adm.chipText, newClientTier === t.name && adm.chipTextActive]}>{t.name}</Text>
                 </Pressable>
               ))}
             </View>
@@ -1690,13 +1692,13 @@ function AdminDashboard() {
             <View style={adm.field}>
               <Text style={adm.fieldLabel}>Client Tier</Text>
               <View style={adm.chipRow}>
-                {(["Standard", "Premium", "Elite"] as const).map((t) => (
+                {pricingTiers.map((t) => (
                   <Pressable
-                    key={t}
-                    onPress={() => setEditingClient({ ...editingClient, tier: t, discountRate: t === "Elite" ? 15 : t === "Premium" ? 10 : 0 })}
-                    style={[adm.chip, editingClient.tier === t && adm.chipActive]}
+                    key={t.id}
+                    onPress={() => setEditingClient({ ...editingClient, tier: t.name })}
+                    style={[adm.chip, editingClient.tier === t.name && adm.chipActive]}
                   >
-                    <Text style={[adm.chipText, editingClient.tier === t && adm.chipTextActive]}>{t}</Text>
+                    <Text style={[adm.chipText, editingClient.tier === t.name && adm.chipTextActive]}>{t.name}</Text>
                   </Pressable>
                 ))}
               </View>
@@ -1732,7 +1734,7 @@ function AdminDashboard() {
                 </View>
                 <View>
                   <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                  <Text style={adm.listItemSub}>ID: {c.clientNumber} · {c.leadDoctor}</Text>
+                  <Text style={adm.listItemSub}>{c.accountNumber} · {c.leadDoctor}</Text>
                 </View>
               </View>
               <View style={adm.tierBadge}>
@@ -2107,7 +2109,7 @@ function AdminDashboard() {
                   </View>
                   <View>
                     <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                    <Text style={adm.listItemSub}>ID: {c.clientNumber} · {clientCases.length} cases · ${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                    <Text style={adm.listItemSub}>{c.accountNumber} · {clientCases.length} cases · ${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
                   </View>
                 </View>
                 <Ionicons name="download-outline" size={20} color={Colors.light.tint} />
@@ -2151,7 +2153,7 @@ function AdminDashboard() {
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
               <View style={{ flex: 1, marginRight: 12 }}>
                 <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{c.practiceName}</Text>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 3 }}>Dr. {c.leadDoctor}</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 3 }}>{c.accountNumber} · Dr. {c.leadDoctor}</Text>
               </View>
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: c.openBalance > 0 ? Colors.light.warning : Colors.light.success }}>
@@ -2221,6 +2223,10 @@ function AdminDashboard() {
               <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text, marginLeft: 10, flex: 1 }}>{selectedClient.address}</Text>
             </View>
           ) : null}
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+            <Ionicons name="id-card" size={18} color={Colors.light.tint} />
+            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginLeft: 10 }}>Account: {selectedClient.accountNumber}</Text>
+          </View>
           <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
             <Ionicons name="call" size={18} color={Colors.light.tint} />
             <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text, marginLeft: 10 }}>{selectedClient.phone || "No phone"}</Text>
@@ -2312,10 +2318,168 @@ function AdminDashboard() {
     );
   }
 
+  function renderEditTierPricing() {
+    const [expandedTier, setExpandedTier] = useState<string | null>(null);
+    const [tierPrices, setTierPrices] = useState<Record<string, Record<string, string>>>(() => {
+      const initial: Record<string, Record<string, string>> = {};
+      pricingTiers.forEach(t => {
+        initial[t.id] = {};
+        DEFAULT_TIER_ITEMS.forEach(item => {
+          initial[t.id][item.key] = t.prices[item.key]?.toString() || "0";
+        });
+      });
+      return initial;
+    });
+    const [showAddTier, setShowAddTier] = useState(false);
+    const [newTierName, setNewTierName] = useState("");
+
+    function handleSaveTier(tierId: string) {
+      const prices: Record<string, number> = {};
+      DEFAULT_TIER_ITEMS.forEach(item => {
+        prices[item.key] = parseFloat(tierPrices[tierId]?.[item.key] || "0") || 0;
+      });
+      updateTierPricing(tierId, prices);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Saved", "Tier pricing has been updated.");
+    }
+
+    function handleAddNewTier() {
+      if (!newTierName.trim()) {
+        Alert.alert("Required", "Please enter a tier name.");
+        return;
+      }
+      addPricingTier(newTierName.trim());
+      setNewTierName("");
+      setShowAddTier(false);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Tier Added", `${newTierName.trim()} pricing tier has been created.`);
+    }
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Edit Tier Pricing")}
+        <View style={adm.formArea}>
+          <Text style={adm.formDesc}>Manage pricing tiers and set item prices for each tier.</Text>
+
+          {pricingTiers.map(tier => (
+            <View key={tier.id} style={{ backgroundColor: "#fff", borderRadius: 14, marginBottom: 12, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, overflow: "hidden" }}>
+              <Pressable
+                onPress={() => setExpandedTier(expandedTier === tier.id ? null : tier.id)}
+                style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, backgroundColor: expandedTier === tier.id ? "#F8FAFC" : "#fff" }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                  <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: "#FEF3C7", justifyContent: "center", alignItems: "center" }}>
+                    <Ionicons name="layers" size={18} color="#F59E0B" />
+                  </View>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{tier.name}</Text>
+                </View>
+                <Ionicons name={expandedTier === tier.id ? "chevron-up" : "chevron-down"} size={20} color={Colors.light.subText} />
+              </Pressable>
+
+              {expandedTier === tier.id && (
+                <View style={{ padding: 16, paddingTop: 0 }}>
+                  {DEFAULT_TIER_ITEMS.map(item => (
+                    <View key={item.key} style={{ flexDirection: "row", alignItems: "center", marginBottom: 10, backgroundColor: Colors.light.surfaceAlt, borderRadius: 10, padding: 12 }}>
+                      <View style={{ flex: 1, marginRight: 12 }}>
+                        <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{item.label}</Text>
+                      </View>
+                      <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#fff", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, minWidth: 100, borderWidth: 1, borderColor: Colors.light.border }}>
+                        <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.subText, marginRight: 4 }}>$</Text>
+                        <TextInput
+                          style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text, flex: 1, padding: 0 }}
+                          value={tierPrices[tier.id]?.[item.key] || ""}
+                          onChangeText={(v) => {
+                            const cleaned = v.replace(/[^0-9.]/g, "");
+                            setTierPrices(prev => ({ ...prev, [tier.id]: { ...prev[tier.id], [item.key]: cleaned } }));
+                          }}
+                          placeholder="0.00"
+                          placeholderTextColor={Colors.light.textTertiary}
+                          keyboardType="decimal-pad"
+                        />
+                      </View>
+                    </View>
+                  ))}
+                  <Pressable
+                    style={({ pressed }) => [adm.submitBtn, pressed && { opacity: 0.85 }, { marginTop: 4 }]}
+                    onPress={() => handleSaveTier(tier.id)}
+                  >
+                    <Ionicons name="checkmark" size={20} color="#FFF" />
+                    <Text style={adm.submitBtnText}>Save {tier.name} Prices</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
+          ))}
+
+          {showAddTier ? (
+            <View style={{ backgroundColor: "#fff", borderRadius: 14, padding: 16, marginTop: 8, borderWidth: 1, borderColor: Colors.light.border, borderStyle: "dashed" }}>
+              <TextInput
+                style={adm.input}
+                placeholder="New tier name"
+                placeholderTextColor={Colors.light.textTertiary}
+                value={newTierName}
+                onChangeText={setNewTierName}
+              />
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                <Pressable
+                  style={({ pressed }) => [adm.submitBtn, { flex: 1 }, pressed && { opacity: 0.85 }]}
+                  onPress={handleAddNewTier}
+                >
+                  <Ionicons name="add" size={20} color="#FFF" />
+                  <Text style={adm.submitBtnText}>Add</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => ({ flex: 1, backgroundColor: Colors.light.surfaceAlt, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const, flexDirection: "row" as const, gap: 6, opacity: pressed ? 0.85 : 1 })}
+                  onPress={() => { setShowAddTier(false); setNewTierName(""); }}
+                >
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Cancel</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <Pressable
+              style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 16, marginTop: 8, borderRadius: 14, borderWidth: 1.5, borderColor: Colors.light.border, borderStyle: "dashed", opacity: pressed ? 0.7 : 1 })}
+              onPress={() => setShowAddTier(true)}
+            >
+              <Ionicons name="add-circle" size={22} color={Colors.light.subText} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>Add New Tier</Text>
+            </Pressable>
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
   function renderEditPriceList() {
+    const [selectedPriceClient, setSelectedPriceClient] = useState<Client | null>(null);
+    const [showClientPicker, setShowClientPicker] = useState(false);
+    const [selectedTierForClient, setSelectedTierForClient] = useState<string>("");
+
     function handleUpdatePrice(key: string, value: string) {
       const cleaned = value.replace(/[^0-9.]/g, "");
       setPriceList((prev) => ({ ...prev, [key]: cleaned }));
+    }
+
+    function handleSelectTierForClient(tierName: string) {
+      setSelectedTierForClient(tierName);
+      const tier = pricingTiers.find(t => t.name === tierName);
+      if (tier) {
+        const newPrices: Record<string, string> = {};
+        PRICE_LIST_ITEMS.forEach(item => {
+          newPrices[item.key] = tier.prices[item.key]?.toString() || "";
+        });
+        setPriceList(newPrices);
+      }
+      if (selectedPriceClient) {
+        updateClient(selectedPriceClient.id, { tier: tierName });
+      }
     }
 
     function handleConfirmYes() {
@@ -2342,7 +2506,35 @@ function AdminDashboard() {
         >
           {renderBackHeader("Edit Client Price List")}
           <View style={adm.formArea}>
-            <Text style={adm.formDesc}>Set the price for each service item.</Text>
+            <Text style={adm.formDesc}>Select a client and assign a pricing tier, then customize prices.</Text>
+
+            <Pressable
+              onPress={() => setShowClientPicker(true)}
+              style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 12, shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 1 }, elevation: 1, borderWidth: 1, borderColor: Colors.light.border }}
+            >
+              <Ionicons name="business-outline" size={20} color={Colors.light.tint} style={{ marginRight: 10 }} />
+              <Text style={{ flex: 1, fontSize: 15, fontFamily: "Inter_500Medium", color: selectedPriceClient ? Colors.light.text : Colors.light.textTertiary }}>
+                {selectedPriceClient ? `${selectedPriceClient.practiceName} (${selectedPriceClient.accountNumber})` : "Select Client..."}
+              </Text>
+              <Ionicons name="chevron-down" size={18} color={Colors.light.subText} />
+            </Pressable>
+
+            {selectedPriceClient && (
+              <View style={{ marginBottom: 16 }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginBottom: 8 }}>Assign Tier</Text>
+                <View style={adm.chipRow}>
+                  {pricingTiers.map((t) => (
+                    <Pressable
+                      key={t.id}
+                      onPress={() => handleSelectTierForClient(t.name)}
+                      style={[adm.chip, selectedTierForClient === t.name && adm.chipActive]}
+                    >
+                      <Text style={[adm.chipText, selectedTierForClient === t.name && adm.chipTextActive]}>{t.name}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            )}
 
             {PRICE_LIST_ITEMS.map((item) => (
               <View key={item.key} style={{ flexDirection: "row", alignItems: "center", marginBottom: 12, backgroundColor: "#fff", borderRadius: 12, padding: 14, shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 1 }, elevation: 1 }}>
@@ -2374,6 +2566,35 @@ function AdminDashboard() {
             </Pressable>
           </View>
         </ScrollView>
+
+        <Modal visible={showClientPicker} transparent animationType="fade" onRequestClose={() => setShowClientPicker(false)}>
+          <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }} onPress={() => setShowClientPicker(false)}>
+            <View style={{ backgroundColor: "#fff", borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "60%", paddingTop: 16, paddingBottom: 34 }}>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text, textAlign: "center", marginBottom: 12 }}>Select Client</Text>
+              <ScrollView>
+                {clients.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    onPress={() => {
+                      setSelectedPriceClient(c);
+                      setSelectedTierForClient(c.tier || "");
+                      setShowClientPicker(false);
+                    }}
+                    style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.light.border, opacity: pressed ? 0.7 : 1 })}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{c.practiceName}</Text>
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>{c.accountNumber} · {c.leadDoctor}</Text>
+                    </View>
+                    <View style={{ backgroundColor: "#F0F0F0", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>{c.tier}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          </Pressable>
+        </Modal>
 
         <Modal visible={priceConfirmVisible} transparent animationType="fade" onRequestClose={() => setPriceConfirmVisible(false)}>
           <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 24 }}>
@@ -2613,6 +2834,7 @@ function AdminDashboard() {
     case "add-client": return renderAddClient();
     case "edit-client": return renderEditClient();
     case "edit-price-list": return renderEditPriceList();
+    case "edit-tier-pricing": return renderEditTierPricing();
     case "add-user": return renderAddUser();
     case "edit-user": return renderEditUser();
     case "invoices": return renderInvoices();

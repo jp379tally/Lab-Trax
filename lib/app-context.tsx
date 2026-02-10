@@ -32,6 +32,8 @@ import {
   SAMPLE_INVOICES,
   SAMPLE_CONVERSATIONS,
   SAMPLE_CHAT_MESSAGES,
+  PricingTier,
+  DEFAULT_PRICING_TIERS,
 } from "./data";
 
 interface AppContextValue {
@@ -53,8 +55,11 @@ interface AppContextValue {
   rushCaseCount: number;
   isLoading: boolean;
   clients: Client[];
-  addClient: (c: Omit<Client, "id" | "clientNumber" | "createdAt">) => void;
+  addClient: (c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) => void;
   updateClient: (id: string, c: Partial<Client>) => void;
+  pricingTiers: PricingTier[];
+  updateTierPricing: (tierId: string, prices: Record<string, number>) => void;
+  addPricingTier: (name: string) => void;
   users: LabUser[];
   addUser: (u: Omit<LabUser, "id" | "createdAt">) => void;
   updateUser: (id: string, u: Partial<LabUser>) => void;
@@ -83,6 +88,7 @@ const INVOICES_KEY = "@drivesync_invoices";
 const SHIPPING_KEY = "@drivesync_shipping";
 const CONVERSATIONS_KEY = "@drivesync_conversations";
 const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
+const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRoleState] = useState<UserRole>("tech");
@@ -95,6 +101,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [shippingAccounts, setShippingAccounts] = useState<ShippingAccount[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [pricingTiers, setPricingTiers] = useState<PricingTier[]>(DEFAULT_PRICING_TIERS);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -103,7 +110,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function loadData() {
     try {
-      const [savedCases, savedRole, savedNotifs, savedClients, savedUsers, savedInvoices, savedShipping, savedConversations, savedChatMessages] = await Promise.all([
+      const [savedCases, savedRole, savedNotifs, savedClients, savedUsers, savedInvoices, savedShipping, savedConversations, savedChatMessages, savedPricingTiers] = await Promise.all([
         AsyncStorage.getItem(CASES_KEY),
         AsyncStorage.getItem(ROLE_KEY),
         AsyncStorage.getItem(NOTIFS_KEY),
@@ -113,6 +120,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         AsyncStorage.getItem(SHIPPING_KEY),
         AsyncStorage.getItem(CONVERSATIONS_KEY),
         AsyncStorage.getItem(CHAT_MESSAGES_KEY),
+        AsyncStorage.getItem(PRICING_TIERS_KEY),
       ]);
 
       if (savedCases) {
@@ -170,6 +178,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       } else {
         setChatMessages(SAMPLE_CHAT_MESSAGES);
         await AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(SAMPLE_CHAT_MESSAGES));
+      }
+
+      if (savedPricingTiers) {
+        setPricingTiers(JSON.parse(savedPricingTiers));
+      } else {
+        setPricingTiers(DEFAULT_PRICING_TIERS);
+        await AsyncStorage.setItem(PRICING_TIERS_KEY, JSON.stringify(DEFAULT_PRICING_TIERS));
       }
     } catch (e) {
       setCases(SAMPLE_CASES);
@@ -412,9 +427,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
   }
 
-  function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt">) {
+  function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) {
     const maxNum = clients.reduce((max, cl) => Math.max(max, cl.clientNumber || 0), 0);
-    const newClient: Client = { ...c, id: generateId(), clientNumber: maxNum + 1, createdAt: Date.now() };
+    const newClient: Client = { ...c, id: generateId(), clientNumber: maxNum + 1, accountNumber: "DS-" + Date.now().toString().slice(-6), createdAt: Date.now() };
     const updated = [newClient, ...clients];
     setClients(updated);
     AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updated));
@@ -476,6 +491,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setShippingAccounts(prev => {
       const updated = prev.filter(a => a.id !== id);
       AsyncStorage.setItem(SHIPPING_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function updateTierPricing(tierId: string, prices: Record<string, number>) {
+    setPricingTiers(prev => {
+      const updated = prev.map(t => t.id === tierId ? { ...t, prices } : t);
+      AsyncStorage.setItem(PRICING_TIERS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function addPricingTier(name: string) {
+    const newTier: PricingTier = {
+      id: name.toLowerCase().replace(/\s+/g, '_') + '_' + Date.now().toString().slice(-4),
+      name,
+      prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    };
+    setPricingTiers(prev => {
+      const updated = [...prev, newTier];
+      AsyncStorage.setItem(PRICING_TIERS_KEY, JSON.stringify(updated));
       return updated;
     });
   }
@@ -574,6 +610,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clients,
       addClient,
       updateClient,
+      pricingTiers,
+      updateTierPricing,
+      addPricingTier,
       users,
       addUser,
       updateUser,
@@ -590,7 +629,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       markConversationRead,
       totalUnreadMessages,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

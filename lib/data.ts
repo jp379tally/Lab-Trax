@@ -406,12 +406,13 @@ export const SAMPLE_CASES: LabCase[] = [
 export interface Client {
   id: string;
   clientNumber: number;
+  accountNumber: string;
   practiceName: string;
   leadDoctor: string;
   phone: string;
   email: string;
   address: string;
-  tier: "Standard" | "Premium" | "Elite";
+  tier: string;
   discountRate: number;
   createdAt: number;
 }
@@ -442,6 +443,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   {
     id: generateId(),
     clientNumber: 1,
+    accountNumber: "DS-100001",
     practiceName: "Elite Dental Group",
     leadDoctor: "Dr. Aris",
     phone: "(555) 100-2000",
@@ -454,6 +456,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   {
     id: generateId(),
     clientNumber: 2,
+    accountNumber: "DS-100002",
     practiceName: "City Smiles",
     leadDoctor: "Dr. Bloom",
     phone: "(555) 200-3000",
@@ -466,6 +469,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   {
     id: generateId(),
     clientNumber: 3,
+    accountNumber: "DS-100003",
     practiceName: "North Lab Dentistry",
     leadDoctor: "Dr. Chen",
     phone: "(555) 300-4000",
@@ -478,6 +482,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   {
     id: generateId(),
     clientNumber: 4,
+    accountNumber: "DS-100004",
     practiceName: "Pacific Dental Care",
     leadDoctor: "Dr. Patel",
     phone: "(555) 400-5000",
@@ -490,6 +495,7 @@ export const SAMPLE_CLIENTS: Client[] = [
   {
     id: generateId(),
     clientNumber: 5,
+    accountNumber: "DS-100005",
     practiceName: "Sunrise Family Dental",
     leadDoctor: "Dr. Martinez",
     phone: "(555) 500-6000",
@@ -805,5 +811,43 @@ export const SAMPLE_NOTIFICATIONS: Notification[] = [
     caseId: SAMPLE_CASES[5].id,
     read: true,
     timestamp: Date.now() - 14400000,
+  },
+];
+
+export type PricingTier = {
+  id: string;
+  name: string;
+  prices: Record<string, number>;
+};
+
+export const DEFAULT_TIER_ITEMS = [
+  { key: "zirconia_crown", label: "Zirconia Crown" },
+  { key: "emax_crown", label: "E.max Crown" },
+  { key: "pfm_crown", label: "PFM Crown" },
+  { key: "denture", label: "Denture" },
+  { key: "partial", label: "Partial" },
+  { key: "implant", label: "Implant" },
+];
+
+export const DEFAULT_PRICING_TIERS: PricingTier[] = [
+  {
+    id: "corporate",
+    name: "Corporate",
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+  },
+  {
+    id: "economy",
+    name: "Economy",
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+  },
+  {
+    id: "standard",
+    name: "Standard",
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+  },
+  {
+    id: "premium",
+    name: "Premium",
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
   },
 ];
