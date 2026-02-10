@@ -467,6 +467,7 @@ export default function ScanScreen() {
             if (d.doctorName) setDoctorName(d.doctorName);
             if (d.patientName) setPatientName(d.patientName);
             else if (d.patientInitials) setPatientName(d.patientInitials);
+            if (d.caseType) setCaseType(d.caseType);
             if (d.toothIndices) {
               setToothIndices(d.toothIndices);
               const nums = d.toothIndices.match(/\d+/g);
@@ -474,6 +475,7 @@ export default function ScanScreen() {
             }
             if (d.shade) setShade(d.shade);
             if (d.material) setMaterial(d.material);
+            if (d.dueDate) setDueDate(d.dueDate);
             if (d.isRush !== undefined) setIsRush(d.isRush);
             if (d.notes) setNotes(d.notes);
             aiSuccess = true;

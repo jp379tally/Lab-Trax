@@ -32,7 +32,7 @@ function validatePassword(pw: string): { valid: boolean; errors: string[] } {
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const { login, register } = useAuth();
+  const { login, loginWithBiometric, register } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
   const [username, setUsername] = useState("");
@@ -131,9 +131,9 @@ export default function LoginScreen() {
         });
         if (result.success) {
           setIsLoggingIn(true);
-          const res = await login("admin", "123");
+          const res = await loginWithBiometric();
           setIsLoggingIn(false);
-          if (!res.success) setError(res.error || "Authentication failed.");
+          if (!res.success) setError(res.error || "Please sign in with your password first to enable Face ID.");
         }
       }
     } catch {
@@ -150,9 +150,9 @@ export default function LoginScreen() {
       });
       if (result.success) {
         setIsLoggingIn(true);
-        const res = await login("admin", "123");
+        const res = await loginWithBiometric();
         setIsLoggingIn(false);
-        if (!res.success) setError(res.error || "Authentication failed.");
+        if (!res.success) setError(res.error || "Please sign in with your password first to enable Face ID.");
       }
     } catch {
       setError("Biometric authentication failed.");

@@ -23,6 +23,7 @@ interface AuthContextValue {
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  loginWithBiometric: () => Promise<{ success: boolean; error?: string }>;
   register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   registeredUsers: StoredUser[];
@@ -33,6 +34,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 const AUTH_KEY = "@drivesync_auth";
 const USERS_STORE_KEY = "@drivesync_auth_users";
 const PROFILE_PIC_KEY = "@drivesync_profile_pic";
+const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
 
 const DEFAULT_USERS: StoredUser[] = [
   { username: "admin", password: "123" },
@@ -130,7 +132,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       AUTH_KEY,
       JSON.stringify({ loggedIn: true, username: found.username }),
     );
+    await AsyncStorage.setItem(
+      BIOMETRIC_USER_KEY,
+      JSON.stringify({ username: found.username, password: found.password }),
+    );
     return { success: true };
+  }
+
+  async function loginWithBiometric(): Promise<{ success: boolean; error?: string }> {
+    try {
+      const stored = await AsyncStorage.getItem(BIOMETRIC_USER_KEY);
+      if (!stored) {
+        return { success: false, error: "No saved credentials. Please sign in with your password first." };
+      }
+      const { username, password } = JSON.parse(stored);
+      return await login(username, password);
+    } catch {
+      return { success: false, error: "Could not retrieve saved credentials." };
+    }
   }
 
   async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean }): Promise<{ success: boolean; error?: string }> {
@@ -191,6 +210,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profilePicUri,
       setProfilePicUri,
       login,
+      loginWithBiometric,
       register,
       logout,
       registeredUsers,

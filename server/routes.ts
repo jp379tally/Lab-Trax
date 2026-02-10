@@ -124,38 +124,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
         : `data:image/jpeg;base64,${imageBase64}`;
 
       const response = await openai.chat.completions.create({
-        model: "gpt-5-nano",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: `You are a dental prescription document analyzer. Extract the following fields from the prescription image. Return ONLY valid JSON with these fields:
+            content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read handwritten or printed dental prescription forms and extract ALL information. Read every word on the document carefully.
+
+Return ONLY valid JSON with these fields:
 {
-  "doctorName": "full name including Dr. prefix",
-  "patientInitials": "first and last initials like J.S.",
-  "toothIndices": "tooth numbers like #8, #9, #10",
-  "shade": "dental shade like A2, B1, C2",
-  "material": "one of: Zirconia, E.max, PFM, Gold",
+  "doctorName": "full doctor/dentist name including Dr. prefix - look for fields labeled Doctor, Dentist, DDS, DMD, or the practice/office name",
+  "patientName": "full patient name - look for fields labeled Patient, Patient Name, Pt, or similar",
+  "caseType": "one of: Restorative, Removable, Appliance, Temporary - determine from the type of work described (crowns/bridges/veneers = Restorative, dentures/partials = Removable, retainers/guards = Appliance, temps/provisionals = Temporary)",
+  "toothIndices": "tooth numbers in format #8, #9, #10 - look for tooth numbers, tooth chart markings, or FDI notation and convert to American numbering 1-32",
+  "shade": "dental shade like A1, A2, A3, B1, B2, C1, etc. - look for shade, color, or Vita shade references",
+  "material": "one of: Zirconia, E.max, PFM, Gold - determine from material descriptions like zirconia, lithium disilicate, porcelain fused to metal, full gold, etc.",
+  "dueDate": "due date in MM/DD/YYYY format if visible - look for Due Date, Date Needed, Ship Date, Return By",
   "isRush": false,
-  "notes": "any additional notes from the prescription",
-  "description": "brief description of what the document shows"
+  "notes": "ALL other instructions, special notes, or comments written by the doctor including margin notes, preparation details, contact preferences, or any other text on the form",
+  "description": "brief summary of the prescription"
 }
-If a field cannot be determined, use an empty string. For material, default to "Zirconia" if unclear.`,
+
+IMPORTANT RULES:
+- Read ALL handwritten text carefully, even if partially legible
+- If a field cannot be determined, use an empty string ""
+- For material, default to "Zirconia" if unclear
+- For isRush, set to true if you see RUSH, ASAP, URGENT, or similar urgency indicators
+- Include ALL notes and instructions in the notes field, even if they seem minor
+- Patient name is CRITICAL - look everywhere on the form for it
+- Tooth numbers should use American dental numbering (1-32)`,
           },
           {
             role: "user",
             content: [
               {
                 type: "text",
-                text: "Analyze this dental prescription document. Extract all visible information including doctor name, patient info, tooth numbers, shade, material type, and any notes.",
+                text: "Analyze this dental prescription document thoroughly. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully.",
               },
               {
                 type: "image_url",
-                image_url: { url: dataUrl },
+                image_url: { url: dataUrl, detail: "high" },
               },
             ],
           },
         ],
-        max_tokens: 500,
+        max_tokens: 1000,
       });
 
       const content = response.choices[0]?.message?.content || "{}";
@@ -166,10 +178,12 @@ If a field cannot be determined, use an empty string. For material, default to "
       } catch {
         parsed = {
           doctorName: "",
-          patientInitials: "",
+          patientName: "",
+          caseType: "",
           toothIndices: "",
           shade: "",
           material: "Zirconia",
+          dueDate: "",
           isRush: false,
           notes: "",
           description: content,
@@ -180,10 +194,13 @@ If a field cannot be determined, use an empty string. For material, default to "
         success: true,
         data: {
           doctorName: parsed.doctorName || "",
+          patientName: parsed.patientName || "",
           patientInitials: parsed.patientInitials || "",
+          caseType: parsed.caseType || "",
           toothIndices: parsed.toothIndices || "",
           shade: parsed.shade || "",
           material: parsed.material || "Zirconia",
+          dueDate: parsed.dueDate || "",
           isRush: parsed.isRush || false,
           notes: parsed.notes || "",
           description: parsed.description || "Prescription analyzed",
