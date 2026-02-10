@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   StyleSheet,
   View,
@@ -6,17 +6,35 @@ import {
   ScrollView,
   Pressable,
   Platform,
+  Image,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 
+type WorkStatus = "working" | "break" | "left";
+
 export default function ProfileScreen() {
   const { role, setRole, adminUnlocked, setAdminUnlocked } = useApp();
-  const { logout, currentUser } = useAuth();
+  const { logout, currentUser, profilePicUri } = useAuth();
   const insets = useSafeAreaInsets();
+  const [workStatus, setWorkStatus] = useState<WorkStatus>("working");
+
+  function handleStatusChange(status: WorkStatus) {
+    setWorkStatus(status);
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  }
+
+  const statusConfig: { key: WorkStatus; label: string; icon: keyof typeof Ionicons.glyphMap; color: string; bg: string }[] = [
+    { key: "working", label: "Working", icon: "flash", color: Colors.light.success, bg: Colors.light.successLight },
+    { key: "break", label: "Taking a Break", icon: "cafe", color: Colors.light.warning, bg: Colors.light.warningLight },
+    { key: "left", label: "Left for the Day", icon: "moon", color: Colors.light.textSecondary, bg: Colors.light.surfaceSecondary },
+  ];
 
   return (
     <ScrollView
@@ -28,13 +46,44 @@ export default function ProfileScreen() {
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.profileCard}>
-        <View style={styles.avatar}>
-          <Ionicons name="person" size={32} color={Colors.light.tint} />
+        <View style={styles.avatarContainer}>
+          {profilePicUri ? (
+            <Image source={{ uri: profilePicUri }} style={styles.avatarImage} />
+          ) : (
+            <View style={styles.avatar}>
+              <Ionicons name="person" size={36} color={Colors.light.tint} />
+            </View>
+          )}
+          <View style={[styles.statusDot, { backgroundColor: workStatus === "working" ? Colors.light.success : workStatus === "break" ? Colors.light.warning : Colors.light.textTertiary }]} />
         </View>
         <Text style={styles.profileName}>
           {currentUser ? currentUser.charAt(0).toUpperCase() + currentUser.slice(1) : role === "tech" ? "Lab Technician" : "Lab Administrator"}
         </Text>
-        <Text style={styles.profileEmail}>{role === "tech" ? "Technician" : "Administrator"} · DriveSync Lab</Text>
+        <Text style={styles.profileRole}>{role === "tech" ? "Technician" : "Administrator"}</Text>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>STATUS</Text>
+        <View style={styles.statusGroup}>
+          {statusConfig.map((s) => (
+            <Pressable
+              key={s.key}
+              onPress={() => handleStatusChange(s.key)}
+              style={[
+                styles.statusBtn,
+                workStatus === s.key && { backgroundColor: s.bg, borderColor: s.color },
+              ]}
+            >
+              <View style={[styles.statusIconWrap, { backgroundColor: workStatus === s.key ? s.color : Colors.light.surfaceSecondary }]}>
+                <Ionicons name={s.icon} size={18} color={workStatus === s.key ? "#FFF" : Colors.light.textSecondary} />
+              </View>
+              <Text style={[styles.statusBtnText, workStatus === s.key && { color: s.color, fontFamily: "Inter_700Bold" }]}>{s.label}</Text>
+              {workStatus === s.key && (
+                <Ionicons name="checkmark-circle" size={20} color={s.color} style={{ marginLeft: "auto" }} />
+              )}
+            </Pressable>
+          ))}
+        </View>
       </View>
 
       <View style={styles.section}>
@@ -244,28 +293,73 @@ const styles = StyleSheet.create({
   },
   profileCard: {
     alignItems: "center",
-    paddingVertical: 24,
+    paddingVertical: 28,
     paddingHorizontal: 20,
   },
+  avatarContainer: {
+    position: "relative" as const,
+    marginBottom: 16,
+  },
   avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 28,
+    width: 96,
+    height: 96,
+    borderRadius: 48,
     backgroundColor: Colors.light.tintLight,
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 16,
+  },
+  avatarImage: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+  },
+  statusDot: {
+    position: "absolute" as const,
+    bottom: 4,
+    right: 4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 3,
+    borderColor: Colors.light.background,
   },
   profileName: {
-    fontSize: 22,
+    fontSize: 24,
     fontFamily: "Inter_700Bold",
     color: Colors.light.text,
     marginBottom: 4,
   },
-  profileEmail: {
+  profileRole: {
     fontSize: 14,
-    fontFamily: "Inter_400Regular",
+    fontFamily: "Inter_500Medium",
     color: Colors.light.textSecondary,
+    marginBottom: 4,
+  },
+  statusGroup: {
+    gap: 8,
+  },
+  statusBtn: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1.5,
+    borderColor: Colors.light.border,
+  },
+  statusIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    justifyContent: "center" as const,
+    alignItems: "center" as const,
+  },
+  statusBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
   },
   section: {
     paddingHorizontal: 20,
