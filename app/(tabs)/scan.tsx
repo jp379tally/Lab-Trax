@@ -880,7 +880,7 @@ export default function ScanScreen() {
                       ) : (
                         filteredPatients.map((name) => {
                           const patientCases = cases.filter(
-                            (c) => c.patientName.toLowerCase() === name.toLowerCase()
+                            (c) => (c.patientName || "").toLowerCase() === name.toLowerCase()
                           );
                           return (
                             <Pressable
