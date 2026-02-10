@@ -19,7 +19,7 @@ import { useAuth } from "@/lib/auth-context";
 import { getApiUrl } from "@/lib/query-client";
 import Colors from "@/constants/colors";
 
-type SignUpStep = "credentials" | "updates_opt_in" | "phone_entry" | "phone_verify" | "email_verify" | "complete";
+type SignUpStep = "credentials" | "user_type" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "hipaa_disclaimer" | "complete";
 
 function validatePassword(pw: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -62,6 +62,17 @@ export default function LoginScreen() {
   const [demoPhoneCode, setDemoPhoneCode] = useState<string | null>(null);
   const [demoEmailCode, setDemoEmailCode] = useState<string | null>(null);
 
+  const [userType, setUserType] = useState<"provider" | "lab" | null>(null);
+  const [licenseNumber, setLicenseNumber] = useState("");
+  const [practiceName, setPracticeName] = useState("");
+  const [doctorName, setDoctorName] = useState("");
+  const [practiceAddress, setPracticeAddress] = useState("");
+  const [practicePhone, setPracticePhone] = useState("");
+  const [phoneContactName, setPhoneContactName] = useState("");
+  const [selectedRole, setSelectedRole] = useState<"tech" | "admin" | null>(null);
+  const [hipaaAccepted, setHipaaAccepted] = useState(false);
+  const [accountNumber, setAccountNumber] = useState("");
+
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -100,6 +111,16 @@ export default function LoginScreen() {
     setPhoneCode("");
     setEmailCode("");
     setError(null);
+    setUserType(null);
+    setLicenseNumber("");
+    setPracticeName("");
+    setDoctorName("");
+    setPracticeAddress("");
+    setPracticePhone("");
+    setPhoneContactName("");
+    setSelectedRole(null);
+    setHipaaAccepted(false);
+    setAccountNumber("");
   }
 
   function switchToSignIn() {
@@ -219,7 +240,7 @@ export default function LoginScreen() {
     }
 
     setSignUpLoading(false);
-    setSignUpStep("updates_opt_in");
+    setSignUpStep("user_type");
   }
 
   function handleUpdatesChoice(wants: boolean) {
@@ -228,7 +249,7 @@ export default function LoginScreen() {
     if (wants) {
       setSignUpStep("phone_entry");
     } else {
-      sendEmailCode();
+      setSignUpStep("role_select");
     }
   }
 
@@ -280,7 +301,7 @@ export default function LoginScreen() {
       const data = await res.json();
       if (data.verified) {
         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        sendEmailCode();
+        setSignUpStep("phone_contact_name");
       } else {
         setSignUpError(data.error || "Incorrect code.");
       }
@@ -328,7 +349,7 @@ export default function LoginScreen() {
       const data = await res.json();
       if (data.verified) {
         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        await completeRegistration();
+        setSignUpStep("updates_opt_in");
       } else {
         setSignUpError(data.error || "Incorrect code.");
       }
@@ -342,6 +363,7 @@ export default function LoginScreen() {
     setSignUpLoading(true);
     try {
       const apiUrl = getApiUrl();
+      const acctNum = "DS-" + Date.now().toString().slice(-6);
       await fetch(new URL("/api/register", apiUrl).toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -354,6 +376,15 @@ export default function LoginScreen() {
         email: signUpEmail.trim(),
         phone: wantsUpdates ? signUpPhone.trim() : undefined,
         wantsUpdates,
+        userType: userType || "provider",
+        licenseNumber: licenseNumber.trim(),
+        practiceName: practiceName.trim(),
+        doctorName: doctorName.trim(),
+        practiceAddress: practiceAddress.trim(),
+        practicePhone: practicePhone.trim(),
+        phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
+        role: selectedRole || "tech",
+        accountNumber: acctNum,
       });
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");
@@ -392,24 +423,33 @@ export default function LoginScreen() {
           >
             <Pressable
               onPress={() => {
+                setSignUpError(null);
                 if (signUpStep === "credentials") {
                   switchToSignIn();
-                } else if (signUpStep === "updates_opt_in") {
+                } else if (signUpStep === "user_type") {
                   setSignUpStep("credentials");
-                  setSignUpError(null);
+                } else if (signUpStep === "license") {
+                  setSignUpStep("user_type");
+                } else if (signUpStep === "practice_info") {
+                  setSignUpStep("license");
+                } else if (signUpStep === "email_verify") {
+                  setSignUpStep("practice_info");
+                } else if (signUpStep === "updates_opt_in") {
+                  setSignUpStep("email_verify");
                 } else if (signUpStep === "phone_entry") {
                   setSignUpStep("updates_opt_in");
-                  setSignUpError(null);
                 } else if (signUpStep === "phone_verify") {
                   setSignUpStep("phone_entry");
-                  setSignUpError(null);
-                } else if (signUpStep === "email_verify") {
+                } else if (signUpStep === "phone_contact_name") {
+                  setSignUpStep("phone_verify");
+                } else if (signUpStep === "role_select") {
                   if (wantsUpdates) {
-                    setSignUpStep("phone_verify");
+                    setSignUpStep("phone_contact_name");
                   } else {
                     setSignUpStep("updates_opt_in");
                   }
-                  setSignUpError(null);
+                } else if (signUpStep === "hipaa_disclaimer") {
+                  setSignUpStep("role_select");
                 }
               }}
               style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.6 }]}
@@ -432,18 +472,30 @@ export default function LoginScreen() {
               <Text style={styles.appName}>Create Account</Text>
               <Text style={styles.appTagline}>
                 {signUpStep === "credentials" && "Enter your details to get started"}
+                {signUpStep === "user_type" && "What type of account?"}
+                {signUpStep === "license" && "Enter your license number"}
+                {signUpStep === "practice_info" && "Tell us about your practice"}
                 {signUpStep === "updates_opt_in" && "Stay connected with your lab"}
                 {signUpStep === "phone_entry" && "Enter your phone number"}
                 {signUpStep === "phone_verify" && "Verify your phone number"}
+                {signUpStep === "phone_contact_name" && "Who will receive text updates?"}
                 {signUpStep === "email_verify" && "Verify your email address"}
+                {signUpStep === "role_select" && "Select your role"}
+                {signUpStep === "hipaa_disclaimer" && "Review & Accept Terms"}
               </Text>
             </View>
 
             {signUpStep === "credentials" && renderCredentialsStep()}
+            {signUpStep === "user_type" && renderUserType()}
+            {signUpStep === "license" && renderLicense()}
+            {signUpStep === "practice_info" && renderPracticeInfo()}
+            {signUpStep === "email_verify" && renderEmailVerify()}
             {signUpStep === "updates_opt_in" && renderUpdatesOptIn()}
             {signUpStep === "phone_entry" && renderPhoneEntry()}
             {signUpStep === "phone_verify" && renderPhoneVerify()}
-            {signUpStep === "email_verify" && renderEmailVerify()}
+            {signUpStep === "phone_contact_name" && renderPhoneContactName()}
+            {signUpStep === "role_select" && renderRoleSelect()}
+            {signUpStep === "hipaa_disclaimer" && renderHipaaDisclaimer()}
 
             {signUpStep === "credentials" && (
               <View style={styles.bottomSection}>
@@ -457,24 +509,431 @@ export default function LoginScreen() {
             )}
 
             <View style={styles.stepIndicator}>
-              {["credentials", "updates_opt_in", "phone_verify", "email_verify"].map((s, i) => {
-                const steps = wantsUpdates
-                  ? ["credentials", "updates_opt_in", "phone_entry", "phone_verify", "email_verify"]
-                  : ["credentials", "updates_opt_in", "email_verify"];
-                const currentIdx = steps.indexOf(signUpStep);
-                const stepIdx = steps.indexOf(s as any);
-                const isActive = stepIdx <= currentIdx;
-                if (stepIdx === -1) return null;
-                return (
-                  <View
-                    key={s}
-                    style={[styles.stepDot, isActive && styles.stepDotActive]}
-                  />
-                );
-              })}
+              {(() => {
+                const allSteps: SignUpStep[] = wantsUpdates
+                  ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "hipaa_disclaimer"]
+                  : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
+                const currentIdx = allSteps.indexOf(signUpStep);
+                return allSteps.map((s) => {
+                  const stepIdx = allSteps.indexOf(s);
+                  const isActive = stepIdx <= currentIdx;
+                  return (
+                    <View
+                      key={s}
+                      style={[styles.stepDot, isActive && styles.stepDotActive]}
+                    />
+                  );
+                });
+              })()}
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
+      </View>
+    );
+  }
+
+  function renderUserType() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <Pressable
+          onPress={() => {
+            setUserType("provider");
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSignUpStep("license");
+          }}
+          style={({ pressed }) => [
+            styles.optionCard,
+            userType === "provider" && styles.optionCardSelected,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+          testID="user-type-provider"
+        >
+          <View style={styles.optionCardHeader}>
+            <LinearGradient
+              colors={[Colors.light.tint, "#3B82F6"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.optionCardIcon}
+            >
+              <Ionicons name="medkit" size={28} color="#FFF" />
+            </LinearGradient>
+            {userType === "provider" && (
+              <View style={styles.optionCheckBadge}>
+                <Ionicons name="checkmark-circle" size={24} color={Colors.light.tint} />
+              </View>
+            )}
+          </View>
+          <Text style={styles.optionCardTitle}>Dental Provider</Text>
+          <Text style={styles.optionCardDesc}>Dental office or practice managing cases and patients</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => {
+            setUserType("lab");
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSignUpStep("license");
+          }}
+          style={({ pressed }) => [
+            styles.optionCard,
+            userType === "lab" && styles.optionCardSelected,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+          testID="user-type-lab"
+        >
+          <View style={styles.optionCardHeader}>
+            <LinearGradient
+              colors={["#6366F1", "#8B5CF6"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.optionCardIcon}
+            >
+              <Ionicons name="flask" size={28} color="#FFF" />
+            </LinearGradient>
+            {userType === "lab" && (
+              <View style={styles.optionCheckBadge}>
+                <Ionicons name="checkmark-circle" size={24} color={Colors.light.tint} />
+              </View>
+            )}
+          </View>
+          <Text style={styles.optionCardTitle}>Dental Lab</Text>
+          <Text style={styles.optionCardDesc}>Laboratory processing and fulfilling dental cases</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderLicense() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <View style={styles.inputWrapper}>
+          <Ionicons name="document-text-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            value={licenseNumber}
+            onChangeText={(t) => { setLicenseNumber(t); setSignUpError(null); }}
+            placeholder="License Number"
+            placeholderTextColor="rgba(255,255,255,0.3)"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            testID="license-number"
+          />
+        </View>
+
+        <Pressable
+          onPress={() => {
+            if (!licenseNumber.trim()) {
+              setSignUpError("Please enter your license number.");
+              return;
+            }
+            setSignUpError(null);
+            setSignUpStep("practice_info");
+          }}
+          style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
+          testID="license-next-btn"
+        >
+          <Text style={styles.loginBtnText}>Continue</Text>
+          <Ionicons name="arrow-forward" size={20} color="#FFF" />
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderPracticeInfo() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <View style={styles.inputGroup}>
+          <View style={styles.inputWrapper}>
+            <Ionicons name="business-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              value={practiceName}
+              onChangeText={(t) => { setPracticeName(t); setSignUpError(null); }}
+              placeholder="Practice Name"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              autoCorrect={false}
+              testID="practice-name"
+            />
+          </View>
+
+          <View style={styles.inputWrapper}>
+            <Ionicons name="person-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              value={doctorName}
+              onChangeText={(t) => { setDoctorName(t); setSignUpError(null); }}
+              placeholder="Doctor Name"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              autoCorrect={false}
+              testID="doctor-name"
+            />
+          </View>
+
+          <View style={styles.inputWrapper}>
+            <Ionicons name="location-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              value={practiceAddress}
+              onChangeText={(t) => { setPracticeAddress(t); setSignUpError(null); }}
+              placeholder="Practice Address"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              autoCorrect={false}
+              testID="practice-address"
+            />
+          </View>
+
+          <View style={styles.inputWrapper}>
+            <Ionicons name="call-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              value={practicePhone}
+              onChangeText={(t) => { setPracticePhone(t); setSignUpError(null); }}
+              placeholder="Practice Phone"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              keyboardType="phone-pad"
+              testID="practice-phone"
+            />
+          </View>
+        </View>
+
+        <Pressable
+          onPress={() => {
+            if (!practiceName.trim() || !doctorName.trim() || !practiceAddress.trim() || !practicePhone.trim()) {
+              setSignUpError("All fields are required.");
+              return;
+            }
+            setSignUpError(null);
+            sendEmailCode();
+          }}
+          disabled={codeSending}
+          style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }, codeSending && { opacity: 0.6 }]}
+          testID="practice-info-next-btn"
+        >
+          {codeSending ? (
+            <ActivityIndicator size="small" color="#FFF" />
+          ) : (
+            <>
+              <Text style={styles.loginBtnText}>Continue</Text>
+              <Ionicons name="arrow-forward" size={20} color="#FFF" />
+            </>
+          )}
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderPhoneContactName() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <View style={styles.inputWrapper}>
+          <Ionicons name="person-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            value={phoneContactName}
+            onChangeText={(t) => { setPhoneContactName(t); setSignUpError(null); }}
+            placeholder="Full name of phone contact"
+            placeholderTextColor="rgba(255,255,255,0.3)"
+            autoCorrect={false}
+            testID="phone-contact-name"
+          />
+        </View>
+
+        <Text style={styles.helperText}>
+          Who should we text for case updates?
+        </Text>
+
+        <Pressable
+          onPress={() => {
+            if (!phoneContactName.trim()) {
+              setSignUpError("Please enter a contact name.");
+              return;
+            }
+            setSignUpError(null);
+            setSignUpStep("role_select");
+          }}
+          style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
+          testID="phone-contact-next-btn"
+        >
+          <Text style={styles.loginBtnText}>Continue</Text>
+          <Ionicons name="arrow-forward" size={20} color="#FFF" />
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderRoleSelect() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <Pressable
+          onPress={() => {
+            setSelectedRole("tech");
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSignUpStep("hipaa_disclaimer");
+          }}
+          style={({ pressed }) => [
+            styles.optionCard,
+            selectedRole === "tech" && styles.optionCardSelected,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+          testID="role-tech"
+        >
+          <View style={styles.optionCardHeader}>
+            <LinearGradient
+              colors={["#10B981", "#059669"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.optionCardIcon}
+            >
+              <Ionicons name="construct" size={28} color="#FFF" />
+            </LinearGradient>
+            {selectedRole === "tech" && (
+              <View style={styles.optionCheckBadge}>
+                <Ionicons name="checkmark-circle" size={24} color={Colors.light.tint} />
+              </View>
+            )}
+          </View>
+          <Text style={styles.optionCardTitle}>Technician</Text>
+          <Text style={styles.optionCardDesc}>Lab technician with access to case management</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => {
+            setSelectedRole("admin");
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setSignUpStep("hipaa_disclaimer");
+          }}
+          style={({ pressed }) => [
+            styles.optionCard,
+            selectedRole === "admin" && styles.optionCardSelected,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+          testID="role-admin"
+        >
+          <View style={styles.optionCardHeader}>
+            <LinearGradient
+              colors={["#F59E0B", "#D97706"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.optionCardIcon}
+            >
+              <Ionicons name="shield" size={28} color="#FFF" />
+            </LinearGradient>
+            {selectedRole === "admin" && (
+              <View style={styles.optionCheckBadge}>
+                <Ionicons name="checkmark-circle" size={24} color={Colors.light.tint} />
+              </View>
+            )}
+          </View>
+          <Text style={styles.optionCardTitle}>Administrator</Text>
+          <Text style={styles.optionCardDesc}>Full access including pricing and management</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  function renderHipaaDisclaimer() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <View style={styles.hipaaCard}>
+          <ScrollView style={styles.hipaaScroll} nestedScrollEnabled>
+            <Text style={styles.hipaaTitle}>HIPAA COMPLIANCE NOTICE</Text>
+            <Text style={styles.hipaaBody}>
+              All information within this application is considered HIPAA compliant and is handled in accordance with applicable privacy regulations.
+            </Text>
+
+            <Text style={styles.hipaaTitle}>AUTHORIZATION & LIABILITY</Text>
+            <Text style={styles.hipaaBody}>
+              By creating an account and using this application, you acknowledge that:
+            </Text>
+            <Text style={styles.hipaaBody}>
+              1. Any instruction provided through this application to the dental laboratory will be carried forth with the assumption that the user has full authority to make changes to any case.
+            </Text>
+            <Text style={styles.hipaaBody}>
+              2. The dental laboratory is relieved of all responsibilities and consequences for decisions made or changes made to cases from this application.
+            </Text>
+            <Text style={styles.hipaaBody}>
+              3. You are solely responsible for the accuracy of all information and instructions submitted through this application.
+            </Text>
+            <Text style={[styles.hipaaBody, { marginTop: 12 }]}>
+              By proceeding, you agree to these terms and conditions.
+            </Text>
+          </ScrollView>
+        </View>
+
+        <Pressable
+          onPress={() => {
+            setHipaaAccepted(!hipaaAccepted);
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }}
+          style={styles.hipaaCheckRow}
+          testID="hipaa-checkbox"
+        >
+          <View style={[styles.hipaaCheckbox, hipaaAccepted && styles.hipaaCheckboxChecked]}>
+            {hipaaAccepted && <Ionicons name="checkmark" size={16} color="#FFF" />}
+          </View>
+          <Text style={styles.hipaaCheckLabel}>I have read and agree to the terms above</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={completeRegistration}
+          disabled={!hipaaAccepted || signUpLoading}
+          style={({ pressed }) => [
+            styles.loginBtn,
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+            (!hipaaAccepted || signUpLoading) && { opacity: 0.6 },
+          ]}
+          testID="hipaa-accept-btn"
+        >
+          {signUpLoading ? (
+            <ActivityIndicator size="small" color="#FFF" />
+          ) : (
+            <>
+              <Ionicons name="shield-checkmark" size={20} color="#FFF" />
+              <Text style={styles.loginBtnText}>Accept & Create Account</Text>
+            </>
+          )}
+        </Pressable>
       </View>
     );
   }
@@ -842,7 +1301,7 @@ export default function LoginScreen() {
           ) : (
             <>
               <Ionicons name="checkmark-circle" size={20} color="#FFF" />
-              <Text style={styles.loginBtnText}>Verify & Create Account</Text>
+              <Text style={styles.loginBtnText}>Verify</Text>
             </>
           )}
         </Pressable>
@@ -1344,5 +1803,95 @@ const styles = StyleSheet.create({
   stepDotActive: {
     backgroundColor: Colors.light.tint,
     width: 24,
+  },
+  optionCard: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+    borderRadius: 20,
+    padding: 24,
+    gap: 8,
+  },
+  optionCardSelected: {
+    borderColor: Colors.light.tint,
+  },
+  optionCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  optionCardIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  optionCheckBadge: {
+    position: "absolute" as const,
+    right: 0,
+    top: 0,
+  },
+  optionCardTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  optionCardDesc: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.5)",
+    lineHeight: 18,
+  },
+  hipaaCard: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+    borderRadius: 20,
+    padding: 20,
+    maxHeight: 280,
+  },
+  hipaaScroll: {
+    flexGrow: 0,
+  },
+  hipaaTitle: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+    marginBottom: 8,
+    marginTop: 12,
+  },
+  hipaaBody: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.55)",
+    lineHeight: 18,
+    marginBottom: 6,
+  },
+  hipaaCheckRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 4,
+  },
+  hipaaCheckbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.3)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  hipaaCheckboxChecked: {
+    backgroundColor: Colors.light.tint,
+    borderColor: Colors.light.tint,
+  },
+  hipaaCheckLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.6)",
+    flex: 1,
   },
 });

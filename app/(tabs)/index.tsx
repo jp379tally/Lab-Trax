@@ -426,7 +426,7 @@ function formatRelativeTime(timestamp: number): string {
 }
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, role } = useApp();
   const { logout, profilePicUri, setProfilePicUri, currentUser } = useAuth();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -650,12 +650,12 @@ function TechDashboard() {
           </View>
         </Pressable>
         {currentUser && (
-          <Text style={styles.employeeName}>{currentUser}</Text>
+          <Text style={styles.employeeName}>{currentUser.split(" ")[0] || currentUser}</Text>
         )}
-        <Text style={styles.avatarName}>Lab Technician</Text>
+        <Text style={styles.avatarName}>{role === "admin" ? "Administrator" : "Technician"}</Text>
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
-          <Text style={styles.liveText}>Active</Text>
+          <Text style={styles.liveText}>Available</Text>
         </View>
 
         <View style={styles.headerQuickActions}>
@@ -949,6 +949,7 @@ function TechDashboard() {
       <View style={styles.caseList}>
         {recentCases.map((c) => {
           const stationInfo = getStationInfo(c.status);
+          const userInit = currentUser ? currentUser.split(" ").map((w: string) => w.charAt(0).toUpperCase()).join("").slice(0, 2) : "??";
           return (
             <Pressable
               key={c.id}
@@ -965,7 +966,12 @@ function TechDashboard() {
             >
               <View style={styles.caseCardTop}>
                 <View style={styles.caseInfo}>
-                  <Text style={styles.casePatient}>{c.patientName || c.patientInitials}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Text style={styles.casePatient}>{c.patientName || c.patientInitials}</Text>
+                    <View style={styles.userInitialsBadge}>
+                      <Text style={styles.userInitialsText}>{userInit}</Text>
+                    </View>
+                  </View>
                   <Text style={styles.caseDoctor}>{c.doctorName}</Text>
                   {c.isRush && (
                     <View style={styles.rushBadge}>
@@ -3073,6 +3079,18 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: Colors.light.error,
     letterSpacing: 0.5,
+  },
+  userInitialsBadge: {
+    backgroundColor: Colors.light.tint + "18",
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  userInitialsText: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+    letterSpacing: 0.3,
   },
   caseDoctor: {
     fontSize: 13,

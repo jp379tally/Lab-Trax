@@ -14,6 +14,15 @@ interface StoredUser {
   email?: string;
   phone?: string;
   wantsUpdates?: boolean;
+  userType?: "provider" | "lab";
+  licenseNumber?: string;
+  practiceName?: string;
+  doctorName?: string;
+  practiceAddress?: string;
+  practicePhone?: string;
+  phoneContactName?: string;
+  role?: "tech" | "admin";
+  accountNumber?: string;
 }
 
 interface AuthContextValue {
@@ -24,7 +33,7 @@ interface AuthContextValue {
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   loginWithBiometric: () => Promise<{ success: boolean; error?: string }>;
-  register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean }) => Promise<{ success: boolean; error?: string }>;
+  register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "tech" | "admin"; accountNumber?: string }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   registeredUsers: StoredUser[];
 }
@@ -152,7 +161,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean }): Promise<{ success: boolean; error?: string }> {
+  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "tech" | "admin"; accountNumber?: string }): Promise<{ success: boolean; error?: string }> {
     const savedRaw = await AsyncStorage.getItem(USERS_STORE_KEY);
     let allUsers = [...DEFAULT_USERS];
     if (savedRaw) {
@@ -182,6 +191,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: data.email,
       phone: data.phone,
       wantsUpdates: data.wantsUpdates,
+      userType: data.userType,
+      licenseNumber: data.licenseNumber,
+      practiceName: data.practiceName,
+      doctorName: data.doctorName,
+      practiceAddress: data.practiceAddress,
+      practicePhone: data.practicePhone,
+      phoneContactName: data.phoneContactName,
+      role: data.role,
+      accountNumber: data.accountNumber,
     };
     allUsers.push(newUser);
     setRegisteredUsers(allUsers);
