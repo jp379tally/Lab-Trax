@@ -237,7 +237,7 @@ export default function CaseDetailScreen() {
           <View style={styles.infoItem}>
             <Text style={styles.infoLabel}>Patient</Text>
             <Text style={styles.infoValue}>
-              {(caseItem as any).patientFullName || caseItem.patientInitials}
+              {(caseItem as any).patientName || caseItem.patientInitials}
             </Text>
           </View>
           <View style={styles.infoItem}>
