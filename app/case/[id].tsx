@@ -33,6 +33,11 @@ export default function CaseDetailScreen() {
   const [showPhotoPreview, setShowPhotoPreview] = useState(false);
   const [showCompleteInfo, setShowCompleteInfo] = useState(false);
 
+  const [showEntryPrompt, setShowEntryPrompt] = useState(true);
+  const [entryPhotoMode, setEntryPhotoMode] = useState(false);
+  const [entryPhotos, setEntryPhotos] = useState<string[]>([]);
+  const [entryNoteMode, setEntryNoteMode] = useState(false);
+  const [entryNoteText, setEntryNoteText] = useState("");
   const [showAddItemModal, setShowAddItemModal] = useState(false);
   const [addItemStep, setAddItemStep] = useState<"caseType" | "toothChart">("caseType");
   const [itemCaseType, setItemCaseType] = useState<CaseTypeValue>("");
@@ -344,6 +349,69 @@ export default function CaseDetailScreen() {
     }
     setNoteText("");
     setShowNoteModal(false);
+  }
+
+  async function handleEntryTakePhoto() {
+    if (Platform.OS === "web") {
+      try {
+        const uri = await webFilePickerForCamera();
+        if (uri) {
+          setEntryPhotos((prev) => [...prev, uri]);
+        }
+      } catch (e) {
+        Alert.alert("Camera Error", "Unable to open camera.");
+      }
+      return;
+    }
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Camera access is required to take photos.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+      allowsEditing: false,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setEntryPhotos((prev) => [...prev, result.assets[0].uri]);
+    }
+  }
+
+  function handleEntrySavePhotos() {
+    entryPhotos.forEach((uri) => addCasePhoto(caseItem!.id, uri));
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setEntryPhotos([]);
+    setEntryPhotoMode(false);
+    Alert.alert("Photos Added", `${entryPhotos.length} photo(s) added to this case.`, [
+      { text: "OK", onPress: () => promptForNotes() },
+    ]);
+  }
+
+  function handleEntrySkipPhotos() {
+    setEntryPhotoMode(false);
+    promptForNotes();
+  }
+
+  function promptForNotes() {
+    Alert.alert(
+      "Add Notes",
+      "Would you like to add any notes to this case?",
+      [
+        { text: "No", style: "cancel", onPress: () => setShowEntryPrompt(false) },
+        { text: "Yes", onPress: () => setEntryNoteMode(true) },
+      ]
+    );
+  }
+
+  function handleEntrySaveNote() {
+    if (entryNoteText.trim()) {
+      addCaseNote(caseItem!.id, entryNoteText.trim());
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    setEntryNoteText("");
+    setEntryNoteMode(false);
+    setShowEntryPrompt(false);
   }
 
   return (
@@ -1112,9 +1180,293 @@ export default function CaseDetailScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={showEntryPrompt && !entryPhotoMode && !entryNoteMode}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setShowEntryPrompt(false)}
+      >
+        <View style={ep.overlay}>
+          <View style={ep.card}>
+            <View style={ep.iconWrap}>
+              <Ionicons name="camera-outline" size={32} color={Colors.light.tint} />
+            </View>
+            <Text style={ep.title}>Take a Photo?</Text>
+            <Text style={ep.desc}>Would you like to add photos to this case?</Text>
+            <View style={ep.btnRow}>
+              <Pressable
+                style={({ pressed }) => [ep.btn, ep.btnNo, pressed && { opacity: 0.8 }]}
+                onPress={() => promptForNotes()}
+              >
+                <Text style={ep.btnNoText}>No</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [ep.btn, ep.btnYes, pressed && { opacity: 0.8 }]}
+                onPress={() => {
+                  setEntryPhotoMode(true);
+                  handleEntryTakePhoto();
+                }}
+              >
+                <Text style={ep.btnYesText}>Yes</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={entryPhotoMode}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={handleEntrySkipPhotos}
+      >
+        <View style={ep.overlay}>
+          <View style={ep.photoCard}>
+            <View style={ep.photoHeader}>
+              <Text style={ep.photoTitle}>Case Photos</Text>
+              <Pressable onPress={handleEntrySkipPhotos} hitSlop={12}>
+                <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={ep.photoSubtitle}>{entryPhotos.length} photo{entryPhotos.length !== 1 ? "s" : ""} captured</Text>
+
+            {entryPhotos.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={ep.photoScroll}>
+                {entryPhotos.map((uri, idx) => (
+                  <View key={idx} style={ep.thumbWrap}>
+                    <Image source={{ uri }} style={ep.thumb} />
+                    <Pressable
+                      style={ep.thumbRemove}
+                      onPress={() => setEntryPhotos((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      <Ionicons name="close-circle" size={20} color="#EF4444" />
+                    </Pressable>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+
+            <View style={ep.photoBtnRow}>
+              <Pressable
+                style={({ pressed }) => [ep.addMoreBtn, pressed && { opacity: 0.8 }]}
+                onPress={handleEntryTakePhoto}
+              >
+                <Ionicons name="camera" size={20} color={Colors.light.tint} />
+                <Text style={ep.addMoreText}>Take Another</Text>
+              </Pressable>
+            </View>
+
+            <View style={ep.btnRow}>
+              <Pressable
+                style={({ pressed }) => [ep.btn, ep.btnNo, pressed && { opacity: 0.8 }]}
+                onPress={handleEntrySkipPhotos}
+              >
+                <Text style={ep.btnNoText}>Skip</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [ep.btn, ep.btnYes, pressed && { opacity: 0.8 }, entryPhotos.length === 0 && { opacity: 0.5 }]}
+                onPress={entryPhotos.length > 0 ? handleEntrySavePhotos : undefined}
+                disabled={entryPhotos.length === 0}
+              >
+                <Text style={ep.btnYesText}>Save Photos</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={entryNoteMode}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => { setEntryNoteMode(false); setShowEntryPrompt(false); }}
+      >
+        <KeyboardAvoidingView
+          style={ep.overlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View style={ep.photoCard}>
+            <View style={ep.photoHeader}>
+              <Text style={ep.photoTitle}>Add Note</Text>
+              <Pressable onPress={() => { setEntryNoteMode(false); setShowEntryPrompt(false); }} hitSlop={12}>
+                <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+            <TextInput
+              style={ep.noteInput}
+              value={entryNoteText}
+              onChangeText={setEntryNoteText}
+              placeholder="Enter your notes here..."
+              placeholderTextColor={Colors.light.textTertiary}
+              multiline
+              autoFocus
+              textAlignVertical="top"
+            />
+            <View style={ep.btnRow}>
+              <Pressable
+                style={({ pressed }) => [ep.btn, ep.btnNo, pressed && { opacity: 0.8 }]}
+                onPress={() => { setEntryNoteMode(false); setShowEntryPrompt(false); }}
+              >
+                <Text style={ep.btnNoText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [ep.btn, ep.btnYes, pressed && { opacity: 0.8 }, !entryNoteText.trim() && { opacity: 0.5 }]}
+                onPress={entryNoteText.trim() ? handleEntrySaveNote : undefined}
+                disabled={!entryNoteText.trim()}
+              >
+                <Text style={ep.btnYesText}>Save Note</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
+
+const ep = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  card: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 28,
+    width: "100%",
+    maxWidth: 340,
+    alignItems: "center",
+  },
+  iconWrap: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  title: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    marginBottom: 6,
+  },
+  desc: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    textAlign: "center",
+    marginBottom: 24,
+  },
+  btnRow: {
+    flexDirection: "row",
+    gap: 12,
+    width: "100%",
+  },
+  btn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  btnNo: {
+    backgroundColor: Colors.light.surfaceSecondary,
+  },
+  btnNoText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+  btnYes: {
+    backgroundColor: Colors.light.tint,
+  },
+  btnYesText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  photoCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 20,
+    width: "100%",
+    maxWidth: 400,
+  },
+  photoHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  photoTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  photoSubtitle: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginBottom: 16,
+  },
+  photoScroll: {
+    marginBottom: 16,
+  },
+  thumbWrap: {
+    marginRight: 10,
+    position: "relative" as const,
+  },
+  thumb: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+  },
+  thumbRemove: {
+    position: "absolute" as const,
+    top: -6,
+    right: -6,
+    backgroundColor: "#FFF",
+    borderRadius: 10,
+  },
+  photoBtnRow: {
+    marginBottom: 16,
+  },
+  addMoreBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tintLight,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  addMoreText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  noteInput: {
+    backgroundColor: Colors.light.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+    padding: 14,
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    minHeight: 120,
+    marginBottom: 16,
+  },
+});
 
 const styles = StyleSheet.create({
   container: {
