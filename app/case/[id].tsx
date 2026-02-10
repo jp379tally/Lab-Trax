@@ -424,7 +424,11 @@ export default function CaseDetailScreen() {
           </View>
           <View style={styles.infoItem}>
             <Text style={styles.infoLabel}>Due</Text>
-            <Text style={styles.infoValue}>{caseItem.dueDate}</Text>
+            <Text style={styles.infoValue}>{(() => {
+              if (!caseItem.dueDate) return "—";
+              const d = new Date(caseItem.dueDate + "T00:00:00");
+              return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+            })()}</Text>
           </View>
           {showPrice && (
             <View style={styles.infoItem}>
