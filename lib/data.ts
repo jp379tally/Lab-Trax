@@ -55,12 +55,15 @@ export const MATERIAL_PRICES: Record<string, number> = {
   "Gold": 400,
 };
 
+export type CaseTypeValue = "Restorative" | "Removable" | "Appliance" | "Temporary" | "";
+
 export interface LabCase {
   id: string;
   caseNumber: string;
   doctorName: string;
   patientName: string;
   patientInitials: string;
+  caseType?: CaseTypeValue;
   toothIndices: string;
   shade: string;
   material: string;
