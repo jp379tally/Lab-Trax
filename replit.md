@@ -123,6 +123,18 @@ Preferred communication style: Simple, everyday language.
 - Under CREDENTIALS section in Profile tab, displays all groups the user belongs to
 - Shows group name with type badge (Provider/Lab) and colored dot indicator
 
+### Provider Account Numbers
+- Providers auto-assigned account numbers in YY-N format (e.g., 26-1, 26-2) on registration
+- Counter tracked in AsyncStorage (`@drivesync_provider_counter`) as `{ year, count }`
+- Year resets count to 1 when a new calendar year begins
+- Lab users still get `DS-XXXXXX` format account numbers
+- Newly registered providers auto-populate in lab's doctor dropdown as "Dr. [Name] ([YY-N])"
+- Pending client data saved to AsyncStorage (`@drivesync_pending_client`) before registration completes
+
+### Shade Selection
+- Shade field on new case form is a dropdown (not free text)
+- Options: A2, A3, A3.5, A4, B1, B2, B3, B4, C1, C2, C3, C4, D2, D3, D4, 0M1, 0M2, 0M3, BL1, BL2, BL3, Custom, Other
+
 ### Case Workflow
 Cases follow a production pipeline through stations: INTAKE → DESIGN → WAX → INVEST → CAST → FINISH → PORCELAIN → GLAZE → QC → SHIP → COMPLETE (with HOLD as a special status). Each station transition is recorded in a `routeHistory` array with timestamps.
 
