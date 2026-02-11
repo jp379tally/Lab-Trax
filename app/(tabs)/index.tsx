@@ -3524,6 +3524,262 @@ function AdminDashboard() {
     );
   }
 
+  function renderCreateGroupAdmin() {
+    function handleCreateGroup() {
+      if (!newGroupNameAdmin.trim()) {
+        Alert.alert("Required", "Group name is required.");
+        return;
+      }
+      if (!newGroupAddressAdmin.trim()) {
+        Alert.alert("Required", "Group address is required.");
+        return;
+      }
+      createGroup(newGroupNameAdmin.trim(), newGroupTypeAdmin, newGroupAddressAdmin.trim(), currentUser || "", "admin");
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Success", `Group "${newGroupNameAdmin.trim()}" created.`);
+      setNewGroupNameAdmin("");
+      setNewGroupAddressAdmin("");
+      setNewGroupTypeAdmin("lab");
+    }
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Create Group")}
+
+        <View style={{ paddingHorizontal: 20 }}>
+          <View style={{ backgroundColor: "#ECFDF5", borderRadius: 16, padding: 20, marginBottom: 20, alignItems: "center" }}>
+            <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: "#059669", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
+              <Ionicons name="people" size={28} color="#fff" />
+            </View>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#065F46", textAlign: "center" }}>Create a New Group</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#047857", textAlign: "center", marginTop: 4 }}>Groups help organize users by practice or location</Text>
+          </View>
+
+          <Text style={adm.fieldLabel}>Group Name</Text>
+          <TextInput
+            style={adm.textInput}
+            placeholder="e.g. Downtown Dental Lab"
+            value={newGroupNameAdmin}
+            onChangeText={setNewGroupNameAdmin}
+            placeholderTextColor="#9CA3AF"
+          />
+
+          <Text style={[adm.fieldLabel, { marginTop: 16 }]}>Address</Text>
+          <TextInput
+            style={adm.textInput}
+            placeholder="e.g. 123 Main St, City, ST 12345"
+            value={newGroupAddressAdmin}
+            onChangeText={setNewGroupAddressAdmin}
+            placeholderTextColor="#9CA3AF"
+          />
+
+          <Text style={[adm.fieldLabel, { marginTop: 16 }]}>Group Type</Text>
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+            <Pressable
+              onPress={() => setNewGroupTypeAdmin("lab")}
+              style={[
+                {
+                  flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: "center",
+                  borderWidth: 2, borderColor: newGroupTypeAdmin === "lab" ? Colors.light.tint : "#E5E7EB",
+                  backgroundColor: newGroupTypeAdmin === "lab" ? Colors.light.tintLight : "#F9FAFB",
+                },
+              ]}
+            >
+              <Ionicons name="flask" size={22} color={newGroupTypeAdmin === "lab" ? Colors.light.tint : "#6B7280"} />
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 14, color: newGroupTypeAdmin === "lab" ? Colors.light.tint : "#6B7280", marginTop: 4 }}>Lab</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setNewGroupTypeAdmin("provider")}
+              style={[
+                {
+                  flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: "center",
+                  borderWidth: 2, borderColor: newGroupTypeAdmin === "provider" ? "#7C3AED" : "#E5E7EB",
+                  backgroundColor: newGroupTypeAdmin === "provider" ? "#F3E8FF" : "#F9FAFB",
+                },
+              ]}
+            >
+              <Ionicons name="medkit" size={22} color={newGroupTypeAdmin === "provider" ? "#7C3AED" : "#6B7280"} />
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 14, color: newGroupTypeAdmin === "provider" ? "#7C3AED" : "#6B7280", marginTop: 4 }}>Provider</Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={handleCreateGroup}
+            style={({ pressed }) => [
+              {
+                backgroundColor: "#059669", borderRadius: 14, paddingVertical: 16, alignItems: "center",
+                marginTop: 28, opacity: pressed ? 0.9 : 1,
+              },
+            ]}
+          >
+            <Text style={{ color: "#fff", fontFamily: "Inter_700Bold", fontSize: 16 }}>Create Group</Text>
+          </Pressable>
+
+          {groups.length > 0 && (
+            <View style={{ marginTop: 28 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 12 }}>Existing Groups ({groups.length})</Text>
+              {groups.map(g => (
+                <View key={g.id} style={{ backgroundColor: "#F9FAFB", borderRadius: 12, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: "#E5E7EB" }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 15, color: Colors.light.text }}>{g.name}</Text>
+                      <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: Colors.light.subText, marginTop: 2 }}>{g.address}</Text>
+                    </View>
+                    <View style={{ backgroundColor: g.type === "lab" ? Colors.light.tintLight : "#F3E8FF", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 }}>
+                      <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 11, color: g.type === "lab" ? Colors.light.tint : "#7C3AED" }}>{g.type.toUpperCase()}</Text>
+                    </View>
+                  </View>
+                  <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: Colors.light.subText, marginTop: 6 }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderLabUsers() {
+    const filteredLabUsers = labUserSearchQuery.trim()
+      ? labPortalUsers.filter(u => u.username.toLowerCase().includes(labUserSearchQuery.toLowerCase()) || (u.email && u.email.toLowerCase().includes(labUserSearchQuery.toLowerCase())))
+      : labPortalUsers;
+
+    function handleAddUserToGroup(username: string, groupId: string) {
+      const user = registeredUsers.find(u => u.username === username);
+      const role = user?.role || "user";
+      addUserToGroup(groupId, username, role as "admin" | "user");
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Added", `${username} has been added to the group.`);
+      setSelectedLabGroup(null);
+    }
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Lab Users")}
+
+        <View style={{ paddingHorizontal: 20 }}>
+          <View style={{ backgroundColor: "#F3E8FF", borderRadius: 16, padding: 20, marginBottom: 20, alignItems: "center" }}>
+            <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: "#7C3AED", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
+              <Ionicons name="people" size={28} color="#fff" />
+            </View>
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: "#5B21B6" }}>{labPortalUsers.length}</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#7C3AED", marginTop: 2 }}>Lab Portal Users</Text>
+          </View>
+
+          <View style={{ marginBottom: 16 }}>
+            <View style={[adm.textInput, { flexDirection: "row", alignItems: "center", paddingHorizontal: 12 }]}>
+              <Ionicons name="search" size={18} color="#9CA3AF" style={{ marginRight: 8 }} />
+              <TextInput
+                style={{ flex: 1, fontFamily: "Inter_400Regular", fontSize: 14, color: Colors.light.text, paddingVertical: 0 }}
+                placeholder="Search users..."
+                value={labUserSearchQuery}
+                onChangeText={setLabUserSearchQuery}
+                placeholderTextColor="#9CA3AF"
+              />
+              {labUserSearchQuery.length > 0 && (
+                <Pressable onPress={() => setLabUserSearchQuery("")}>
+                  <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+                </Pressable>
+              )}
+            </View>
+          </View>
+
+          {filteredLabUsers.length === 0 ? (
+            <View style={{ alignItems: "center", paddingVertical: 40 }}>
+              <Ionicons name="person-outline" size={48} color="#D1D5DB" />
+              <Text style={{ fontFamily: "Inter_500Medium", fontSize: 15, color: Colors.light.subText, marginTop: 12 }}>No lab users found</Text>
+            </View>
+          ) : (
+            filteredLabUsers.map(user => {
+              const userGroups = getUserGroups(user.username);
+              return (
+                <View key={user.username} style={{ backgroundColor: "#fff", borderRadius: 14, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: "#E5E7EB", shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+                    <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "#EDE9FE", alignItems: "center", justifyContent: "center", marginRight: 12 }}>
+                      <Text style={{ fontFamily: "Inter_700Bold", fontSize: 16, color: "#7C3AED" }}>{user.username.charAt(0).toUpperCase()}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 15, color: Colors.light.text }}>{user.username}</Text>
+                      {user.email ? <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: Colors.light.subText }}>{user.email}</Text> : null}
+                    </View>
+                    <View style={{ backgroundColor: user.role === "admin" ? "#FEF3C7" : "#F3F4F6", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 }}>
+                      <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 11, color: user.role === "admin" ? "#92400E" : "#6B7280" }}>{(user.role || "user").toUpperCase()}</Text>
+                    </View>
+                  </View>
+
+                  {userGroups.length > 0 && (
+                    <View style={{ marginBottom: 10 }}>
+                      <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: Colors.light.subText, marginBottom: 4 }}>Groups:</Text>
+                      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                        {userGroups.map(g => (
+                          <View key={g.id} style={{ backgroundColor: g.type === "lab" ? Colors.light.tintLight : "#F3E8FF", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 }}>
+                            <Text style={{ fontFamily: "Inter_500Medium", fontSize: 11, color: g.type === "lab" ? Colors.light.tint : "#7C3AED" }}>{g.name}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  )}
+
+                  <Pressable
+                    onPress={() => {
+                      if (groups.length === 0) {
+                        Alert.alert("No Groups", "Create a group first before adding users.");
+                        return;
+                      }
+                      setSelectedLabGroup(null);
+                      Alert.alert(
+                        "Add to Group",
+                        `Select a group for ${user.username}:`,
+                        [
+                          ...groups.map(g => ({
+                            text: `${g.name} (${g.type})`,
+                            onPress: () => {
+                              const alreadyMember = g.members.some(m => m.username === user.username);
+                              if (alreadyMember) {
+                                Alert.alert("Already a Member", `${user.username} is already in ${g.name}.`);
+                              } else {
+                                handleAddUserToGroup(user.username, g.id);
+                              }
+                            },
+                          })),
+                          { text: "Cancel", style: "cancel" },
+                        ]
+                      );
+                    }}
+                    style={({ pressed }) => [
+                      {
+                        backgroundColor: pressed ? "#EDE9FE" : "#F3E8FF",
+                        borderRadius: 10, paddingVertical: 10, alignItems: "center",
+                        flexDirection: "row", justifyContent: "center", gap: 6,
+                      },
+                    ]}
+                  >
+                    <Ionicons name="add-circle-outline" size={18} color="#7C3AED" />
+                    <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 13, color: "#7C3AED" }}>Add to Group</Text>
+                  </Pressable>
+                </View>
+              );
+            })
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
   switch (adminView) {
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();
@@ -3541,6 +3797,8 @@ function AdminDashboard() {
     case "sales": return renderSales();
     case "shipping": return renderShipping();
     case "inventory": return renderInventory();
+    case "create-group": return renderCreateGroupAdmin();
+    case "lab-users": return renderLabUsers();
     default: return renderHub();
   }
 }
