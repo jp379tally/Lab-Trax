@@ -32,7 +32,7 @@ import { ChatButton } from "@/components/ChatButton";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus } from "@/lib/data";
+import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
@@ -44,6 +44,7 @@ function SideDrawer({
   onProfile,
   onSignOut,
   onShipping,
+  showAdmin = true,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -51,6 +52,7 @@ function SideDrawer({
   onProfile: () => void;
   onSignOut: () => void;
   onShipping: () => void;
+  showAdmin?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const translateX = useSharedValue(-DRAWER_WIDTH);
@@ -91,12 +93,13 @@ function SideDrawer({
     opacity: overlayOpacity.value,
   }));
 
-  const menuItems = [
-    { key: "admin", icon: "shield-checkmark" as const, label: "Admin", color: Colors.light.tint, bg: Colors.light.tintLight, onPress: onAdmin },
+  const allMenuItems = [
+    ...(showAdmin ? [{ key: "admin", icon: "shield-checkmark" as const, label: "Admin", color: Colors.light.tint, bg: Colors.light.tintLight, onPress: onAdmin }] : []),
     { key: "shipping", icon: "airplane" as const, label: "Shipping Label", color: "#6366F1", bg: "#E0E7FF", onPress: onShipping },
     { key: "settings", icon: "settings" as const, label: "Settings", color: "#8B5CF6", bg: "#EDE9FE", onPress: () => { closeDrawer(); router.push("/(tabs)/profile"); } },
     { key: "profile", icon: "person" as const, label: "Profile", color: Colors.light.accent, bg: Colors.light.accentLight, onPress: () => { closeDrawer(); router.push("/(tabs)/profile"); } },
   ];
+  const menuItems = allMenuItems;
 
   if (!modalVisible) return null;
 
@@ -264,7 +267,7 @@ const drawerStyles = StyleSheet.create({
 
 function TechDashboard() {
   const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus } = useApp();
-  const { logout, profilePicUri, setProfilePicUri, currentUser } = useAuth();
+  const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
@@ -278,6 +281,8 @@ function TechDashboard() {
   const [batchScanning, setBatchScanning] = useState(true);
   const [batchLocationSelect, setBatchLocationSelect] = useState(false);
   const [camPermission, requestCamPermission] = useCameraPermissions();
+  const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+  const isLabAdmin = currentUserData?.role === "admin";
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
     .slice(0, 5);
@@ -983,6 +988,7 @@ function TechDashboard() {
       onProfile={handleProfileFromDrawer}
       onSignOut={handleSignOut}
       onShipping={handleShippingFromDrawer}
+      showAdmin={isLabAdmin}
     />
 
     <Modal
@@ -4022,6 +4028,386 @@ const provStyles = StyleSheet.create({
   },
 });
 
+type MasterView = "hub" | "groups" | "group-detail" | "all-users" | "lab-portal" | "provider-portal" | "create-group";
+
+function MasterAdminDashboard() {
+  const { cases, clients, users, groups, invoices, createGroup, removeUserFromGroup, registeredUsers: appUsers } = useApp();
+  const { currentUser, registeredUsers, logout } = useAuth();
+  const insets = useSafeAreaInsets();
+
+  const [masterView, setMasterView] = useState<MasterView>("hub");
+  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
+  const [groupSearch, setGroupSearch] = useState("");
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupAddress, setNewGroupAddress] = useState("");
+  const [newGroupType, setNewGroupType] = useState<"provider" | "lab">("lab");
+
+  const filteredGroups = groups.filter(g =>
+    g.name.toLowerCase().includes(groupSearch.toLowerCase()) ||
+    (g.address || "").toLowerCase().includes(groupSearch.toLowerCase())
+  );
+
+  const totalUsers = registeredUsers.length;
+  const totalGroups = groups.length;
+  const totalCases = cases.length;
+
+  function renderBackHeader(title: string, backTo: MasterView = "hub") {
+    return (
+      <View style={{ paddingHorizontal: 20, flexDirection: "row", alignItems: "center", marginBottom: 16 }}>
+        <Pressable onPress={() => { setMasterView(backTo); if (backTo === "hub" || backTo === "groups") { setSelectedGroup(null); setGroupSearch(""); } }} style={{ marginRight: 12 }}>
+          <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+        </Pressable>
+        <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text, flex: 1 }}>{title}</Text>
+      </View>
+    );
+  }
+
+  function renderMasterHub() {
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.headerRow}>
+          <View>
+            <Text style={styles.greeting}>Master Admin</Text>
+            <Text style={styles.headerTitle}>Control Center</Text>
+          </View>
+          <Pressable onPress={logout} style={adm.exitBtn}>
+            <Ionicons name="log-out-outline" size={20} color={Colors.light.textSecondary} />
+          </Pressable>
+        </View>
+
+        <LinearGradient
+          colors={["#1a1a2e", "#16213e", "#0f3460"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.heroCard}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+            <Ionicons name="shield-checkmark" size={24} color="#FFD700" style={{ marginRight: 8 }} />
+            <Text style={[styles.heroLabel, { opacity: 0.7, color: "#FFD700" }]}>MASTER ADMIN</Text>
+          </View>
+          <Text style={[styles.heroCount, { fontSize: 22 }]}>JP Phillips</Text>
+          <View style={adm.heroBadgeRow}>
+            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,215,0,0.2)" }]}>
+              <Text style={[adm.heroBadgeText, { color: "#FFD700" }]}>{totalGroups} Groups</Text>
+            </View>
+            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,215,0,0.2)" }]}>
+              <Text style={[adm.heroBadgeText, { color: "#FFD700" }]}>{totalUsers} Users</Text>
+            </View>
+            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,215,0,0.2)" }]}>
+              <Text style={[adm.heroBadgeText, { color: "#FFD700" }]}>{totalCases} Cases</Text>
+            </View>
+          </View>
+        </LinearGradient>
+
+        <View style={adm.menuSection}>
+          {[
+            { icon: "search" as const, color: "#D97706", bg: "#FEF3C7", title: "Search Groups", sub: `${totalGroups} active groups`, view: "groups" as MasterView },
+            { icon: "people" as const, color: "#8B5CF6", bg: "#EDE9FE", title: "All Users", sub: `${totalUsers} registered users`, view: "all-users" as MasterView },
+            { icon: "add-circle" as const, color: "#10B981", bg: "#D1FAE5", title: "Create Group", sub: "Add new lab or provider group", view: "create-group" as MasterView },
+            { icon: "flask" as const, color: "#0EA5E9", bg: "#E0F2FE", title: "Lab Portal", sub: `${cases.length} cases · ${clients.length} clients`, view: "lab-portal" as MasterView },
+            { icon: "medical" as const, color: "#3B82F6", bg: "#DBEAFE", title: "Provider Portal", sub: "View provider accounts", view: "provider-portal" as MasterView },
+          ].map((item) => (
+            <Pressable
+              key={item.view}
+              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => setMasterView(item.view)}
+            >
+              <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
+                <Ionicons name={item.icon} size={20} color={item.color} />
+              </View>
+              <View style={adm.menuInfo}>
+                <Text style={adm.menuTitle}>{item.title}</Text>
+                <Text style={adm.menuSub}>{item.sub}</Text>
+              </View>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+          ))}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderGroups() {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        {renderBackHeader("Search Groups")}
+        <View style={{ marginHorizontal: 20, marginBottom: 16, backgroundColor: Colors.light.surface, borderRadius: 12, flexDirection: "row", alignItems: "center", paddingHorizontal: 12, borderWidth: 1, borderColor: Colors.light.border }}>
+          <Ionicons name="search" size={18} color={Colors.light.textTertiary} />
+          <TextInput
+            style={{ flex: 1, paddingVertical: 12, paddingHorizontal: 8, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+            placeholder="Search groups..."
+            placeholderTextColor={Colors.light.textTertiary}
+            value={groupSearch}
+            onChangeText={setGroupSearch}
+          />
+          {groupSearch.length > 0 && (
+            <Pressable onPress={() => setGroupSearch("")}>
+              <Ionicons name="close-circle" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+          )}
+        </View>
+        {filteredGroups.length === 0 ? (
+          <View style={{ alignItems: "center", padding: 40 }}>
+            <Ionicons name="people-outline" size={48} color={Colors.light.textTertiary} />
+            <Text style={{ color: Colors.light.textTertiary, fontSize: 15, fontFamily: "Inter_500Medium", marginTop: 12 }}>No groups found</Text>
+          </View>
+        ) : (
+          filteredGroups.map((g) => (
+            <Pressable
+              key={g.id}
+              onPress={() => { setSelectedGroup(g); setMasterView("group-detail"); }}
+              style={({ pressed }) => [adm.menuItem, { marginHorizontal: 20 }, pressed && { opacity: 0.7 }]}
+            >
+              <View style={[adm.menuIcon, { backgroundColor: g.type === "lab" ? "#E0F2FE" : "#DBEAFE" }]}>
+                <Ionicons name={g.type === "lab" ? "flask" : "medical"} size={20} color={g.type === "lab" ? "#0EA5E9" : "#3B82F6"} />
+              </View>
+              <View style={adm.menuInfo}>
+                <Text style={adm.menuTitle}>{g.name}</Text>
+                <Text style={adm.menuSub}>{g.type === "lab" ? "Lab" : "Provider"} · {g.members?.length || 0} members{g.address ? ` · ${g.address}` : ""}</Text>
+              </View>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+          ))
+        )}
+      </ScrollView>
+    );
+  }
+
+  function renderGroupDetail() {
+    if (!selectedGroup) return renderGroups();
+    const currentGroupData = groups.find(g => g.id === selectedGroup.id) || selectedGroup;
+    const members = currentGroupData.members || [];
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        <View style={{ paddingHorizontal: 20, flexDirection: "row", alignItems: "center", marginBottom: 16 }}>
+          <Pressable onPress={() => { setMasterView("groups"); setSelectedGroup(null); }} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{currentGroupData.name}</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{currentGroupData.type === "lab" ? "Lab Group" : "Provider Group"}{currentGroupData.address ? ` · ${currentGroupData.address}` : ""}</Text>
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 20, marginBottom: 16, backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+          <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 12 }}>MEMBERS ({members.length})</Text>
+          {members.length === 0 ? (
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", padding: 20 }}>No members in this group</Text>
+          ) : (
+            members.map((m, idx) => (
+              <View key={m.userId || idx.toString()} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 10, borderTopWidth: idx > 0 ? 1 : 0, borderTopColor: Colors.light.border }}>
+                <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: m.role === "admin" ? Colors.light.tintLight : Colors.light.successLight, justifyContent: "center", alignItems: "center", marginRight: 12 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: m.role === "admin" ? Colors.light.tint : Colors.light.success }}>{(m.username || "?").charAt(0).toUpperCase()}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{m.username}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{m.role === "admin" ? "Admin" : "User"}</Text>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    Alert.alert("Remove User", `Remove "${m.username}" from this group?`, [
+                      { text: "Cancel", style: "cancel" },
+                      { text: "Remove", style: "destructive", onPress: () => {
+                        removeUserFromGroup(currentGroupData.id, m.userId);
+                      }},
+                    ]);
+                  }}
+                  style={{ padding: 6 }}
+                >
+                  <Ionicons name="remove-circle-outline" size={20} color={Colors.light.error} />
+                </Pressable>
+              </View>
+            ))
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderAllUsers() {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        {renderBackHeader("All Users")}
+        {registeredUsers.filter(u => u.username !== "JPPhillips").map((u, idx) => {
+          const userGroups = groups.filter(g => g.members?.some(m => m.username.toLowerCase() === u.username.toLowerCase()));
+          return (
+            <View key={u.username + idx} style={[adm.menuItem, { marginHorizontal: 20 }]}>
+              <View style={[adm.menuIcon, { backgroundColor: u.userType === "provider" ? "#DBEAFE" : u.userType === "master_admin" ? "#FEF3C7" : "#E0F2FE" }]}>
+                <Ionicons name={u.userType === "provider" ? "medical" : u.userType === "master_admin" ? "shield-checkmark" : "person"} size={20} color={u.userType === "provider" ? "#3B82F6" : u.userType === "master_admin" ? "#D97706" : "#0EA5E9"} />
+              </View>
+              <View style={[adm.menuInfo, { flex: 1 }]}>
+                <Text style={adm.menuTitle}>{u.username}{u.doctorName ? ` (Dr. ${u.doctorName})` : ""}</Text>
+                <Text style={adm.menuSub}>
+                  {u.userType === "provider" ? "Provider" : u.userType === "master_admin" ? "Master Admin" : "Lab"} · {u.role === "admin" ? "Admin" : "User"}
+                  {u.accountNumber ? ` · ${u.accountNumber}` : ""}
+                  {userGroups.length > 0 ? ` · ${userGroups.map(g => g.name).join(", ")}` : ""}
+                </Text>
+              </View>
+            </View>
+          );
+        })}
+      </ScrollView>
+    );
+  }
+
+  function renderCreateGroup() {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        {renderBackHeader("Create Group")}
+        <View style={{ marginHorizontal: 20 }}>
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>GROUP NAME</Text>
+          <TextInput
+            style={{ backgroundColor: Colors.light.surface, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, borderWidth: 1, borderColor: Colors.light.border, marginBottom: 16 }}
+            value={newGroupName}
+            onChangeText={setNewGroupName}
+            placeholder="Enter group name..."
+            placeholderTextColor={Colors.light.textTertiary}
+          />
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>ADDRESS</Text>
+          <TextInput
+            style={{ backgroundColor: Colors.light.surface, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, borderWidth: 1, borderColor: Colors.light.border, marginBottom: 16 }}
+            value={newGroupAddress}
+            onChangeText={setNewGroupAddress}
+            placeholder="Enter address..."
+            placeholderTextColor={Colors.light.textTertiary}
+          />
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>TYPE</Text>
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 24 }}>
+            <Pressable
+              onPress={() => setNewGroupType("lab")}
+              style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: newGroupType === "lab" ? Colors.light.tint : Colors.light.surface, borderWidth: 1, borderColor: newGroupType === "lab" ? Colors.light.tint : Colors.light.border, alignItems: "center" }}
+            >
+              <Ionicons name="flask" size={20} color={newGroupType === "lab" ? "#FFF" : Colors.light.textSecondary} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: newGroupType === "lab" ? "#FFF" : Colors.light.text, marginTop: 4 }}>Lab</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setNewGroupType("provider")}
+              style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: newGroupType === "provider" ? "#3B82F6" : Colors.light.surface, borderWidth: 1, borderColor: newGroupType === "provider" ? "#3B82F6" : Colors.light.border, alignItems: "center" }}
+            >
+              <Ionicons name="medical" size={20} color={newGroupType === "provider" ? "#FFF" : Colors.light.textSecondary} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: newGroupType === "provider" ? "#FFF" : Colors.light.text, marginTop: 4 }}>Provider</Text>
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={() => {
+              if (!newGroupName.trim()) { Alert.alert("Error", "Please enter a group name."); return; }
+              createGroup(newGroupName.trim(), newGroupType, newGroupAddress.trim(), currentUser || "JPPhillips", "admin");
+              setNewGroupName("");
+              setNewGroupAddress("");
+              setNewGroupType("lab");
+              Alert.alert("Success", "Group created successfully.");
+              setMasterView("groups");
+            }}
+            style={({ pressed }) => [{ backgroundColor: Colors.light.tint, borderRadius: 14, padding: 16, alignItems: "center" }, pressed && { opacity: 0.85 }]}
+          >
+            <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Create Group</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderLabPortal() {
+    const totalRevenue = cases.reduce((sum, c) => sum + c.price, 0);
+    const labUsers = registeredUsers.filter(u => u.userType === "lab" || (!u.userType && u.username !== "JPPhillips"));
+    const openInvoiceCount = invoices.filter(i => i.status === "open" || i.status === "overdue").length;
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        {renderBackHeader("Lab Portal Overview")}
+        <View style={{ marginHorizontal: 20, gap: 12 }}>
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 8 }}>LAB STATS</Text>
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              {[
+                { val: cases.length, label: "Cases" },
+                { val: clients.length, label: "Clients" },
+                { val: labUsers.length, label: "Users" },
+                { val: openInvoiceCount, label: "Open Inv." },
+              ].map((s) => (
+                <View key={s.label} style={{ alignItems: "center" }}>
+                  <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{s.val}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{s.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 8 }}>REVENUE</Text>
+            <Text style={{ fontSize: 24, fontFamily: "Inter_700Bold", color: Colors.light.text }}>${totalRevenue.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+          </View>
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 8 }}>LAB USERS</Text>
+            {labUsers.map((u, i) => (
+              <View key={u.username + i} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 8, borderTopWidth: i > 0 ? 1 : 0, borderTopColor: Colors.light.border }}>
+                <View style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: u.role === "admin" ? Colors.light.tintLight : Colors.light.successLight, justifyContent: "center", alignItems: "center", marginRight: 10 }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: u.role === "admin" ? Colors.light.tint : Colors.light.success }}>{u.username.charAt(0).toUpperCase()}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{u.username}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{u.role === "admin" ? "Admin" : "User"}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderProviderPortal() {
+    const providers = registeredUsers.filter(u => u.userType === "provider");
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        {renderBackHeader("Provider Portal Overview")}
+        <View style={{ marginHorizontal: 20, gap: 12 }}>
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 8 }}>PROVIDERS ({providers.length})</Text>
+            {providers.length === 0 ? (
+              <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", padding: 20 }}>No providers registered yet</Text>
+            ) : (
+              providers.map((p, i) => {
+                const provCases = cases.filter(c => c.doctorName.toLowerCase().includes((p.doctorName || p.username || "").toLowerCase()));
+                const provGroups = groups.filter(g => g.members?.some(m => m.username.toLowerCase() === p.username.toLowerCase()));
+                return (
+                  <View key={p.username + i} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 10, borderTopWidth: i > 0 ? 1 : 0, borderTopColor: Colors.light.border }}>
+                    <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center", marginRight: 12 }}>
+                      <Ionicons name="medical" size={18} color="#3B82F6" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{p.doctorName ? `Dr. ${p.doctorName}` : p.username}</Text>
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>
+                        {p.accountNumber || "N/A"} · {provCases.length} cases · {p.role === "admin" ? "Admin" : "User"}
+                        {provGroups.length > 0 ? ` · ${provGroups[0].name}` : ""}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </View>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  switch (masterView) {
+    case "groups": return renderGroups();
+    case "group-detail": return renderGroupDetail();
+    case "all-users": return renderAllUsers();
+    case "create-group": return renderCreateGroup();
+    case "lab-portal": return renderLabPortal();
+    case "provider-portal": return renderProviderPortal();
+    default: return renderMasterHub();
+  }
+}
+
 export default function DashboardScreen() {
   const { role, adminUnlocked, isLoading } = useApp();
   const { userType } = useAuth();
@@ -4032,6 +4418,10 @@ export default function DashboardScreen() {
         <ActivityIndicator size="large" color={Colors.light.tint} />
       </View>
     );
+  }
+
+  if (userType === "master_admin") {
+    return <MasterAdminDashboard />;
   }
 
   if (userType === "provider") {
