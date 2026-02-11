@@ -681,7 +681,10 @@ export default function LoginScreen() {
               onChangeText={(t) => { setPracticeName(t); setSignUpError(null); }}
               placeholder="Practice Name"
               placeholderTextColor="rgba(255,255,255,0.3)"
-              autoCorrect={false}
+              autoCorrect={true}
+              spellCheck={true}
+              autoComplete="organization"
+              textContentType="organizationName"
               testID="practice-name"
             />
           </View>
@@ -694,7 +697,10 @@ export default function LoginScreen() {
               onChangeText={(t) => { setDoctorName(t); setSignUpError(null); }}
               placeholder="Doctor Name"
               placeholderTextColor="rgba(255,255,255,0.3)"
-              autoCorrect={false}
+              autoCorrect={true}
+              spellCheck={true}
+              autoComplete="name"
+              textContentType="name"
               testID="doctor-name"
             />
           </View>
@@ -707,7 +713,10 @@ export default function LoginScreen() {
               onChangeText={(t) => { setPracticeAddress(t); setSignUpError(null); }}
               placeholder="Practice Address"
               placeholderTextColor="rgba(255,255,255,0.3)"
-              autoCorrect={false}
+              autoCorrect={true}
+              spellCheck={true}
+              autoComplete="street-address"
+              textContentType="fullStreetAddress"
               testID="practice-address"
             />
           </View>
@@ -721,6 +730,8 @@ export default function LoginScreen() {
               placeholder="Practice Phone"
               placeholderTextColor="rgba(255,255,255,0.3)"
               keyboardType="phone-pad"
+              autoComplete="tel"
+              textContentType="telephoneNumber"
               testID="practice-phone"
             />
           </View>
@@ -985,6 +996,8 @@ export default function LoginScreen() {
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="email-address"
+              autoComplete="email"
+              textContentType="emailAddress"
               editable={!signUpLoading}
               testID="signup-email"
             />
@@ -1124,6 +1137,8 @@ export default function LoginScreen() {
             placeholder="Phone Number"
             placeholderTextColor="rgba(255,255,255,0.3)"
             keyboardType="phone-pad"
+            autoComplete="tel"
+            textContentType="telephoneNumber"
             editable={!codeSending}
             testID="signup-phone"
           />
