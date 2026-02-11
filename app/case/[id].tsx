@@ -553,8 +553,8 @@ export default function CaseDetailScreen() {
         </View>
         <View style={styles.timeline}>
           {(caseItem.activityLog && caseItem.activityLog.length > 0
-            ? [...caseItem.activityLog].sort((a, b) => a.timestamp - b.timestamp)
-            : caseItem.routeHistory.map((rh) => ({
+            ? [...caseItem.activityLog].sort((a, b) => b.timestamp - a.timestamp)
+            : [...caseItem.routeHistory].sort((a, b) => b.timestamp - a.timestamp).map((rh) => ({
                 id: String(rh.timestamp),
                 type: "station_change" as const,
                 timestamp: rh.timestamp,
@@ -563,6 +563,7 @@ export default function CaseDetailScreen() {
               }))
           ).map((entry, idx, arr) => {
             const isLast = idx === arr.length - 1;
+            const isFirst = idx === 0;
             const isStation = entry.type === "station_change" || entry.type === "created" || entry.type === "scan";
             const isNote = entry.type === "note";
             const isPhoto = entry.type === "photo";
@@ -571,7 +572,7 @@ export default function CaseDetailScreen() {
             let dotColor = Colors.light.textTertiary;
 
             if (isStation && stationInfo) {
-              dotColor = isLast ? stationInfo.color : Colors.light.textTertiary;
+              dotColor = isFirst ? stationInfo.color : Colors.light.textTertiary;
             } else if (isNote) {
               dotColor = "#F59E0B";
             } else if (isPhoto) {
@@ -608,7 +609,7 @@ export default function CaseDetailScreen() {
                       <Text
                         style={[
                           styles.timelineStation,
-                          isLast && { color: stationInfo.color, fontFamily: "Inter_700Bold" },
+                          isFirst && { color: stationInfo.color, fontFamily: "Inter_700Bold" },
                         ]}
                       >
                         {stationInfo.label}
