@@ -27,6 +27,8 @@ import {
   getStationInfo,
   CourtesyTextRequest,
   CourtesyTextResponse,
+  InventoryItem,
+  sampleInventory,
   SAMPLE_CASES,
   SAMPLE_NOTIFICATIONS,
   SAMPLE_CLIENTS,
@@ -97,6 +99,10 @@ interface AppContextValue {
   respondToCourtesyText: (caseId: string, courtesyTextId: string, wantsUpdatedDate: boolean, respondedBy: string) => void;
   proposeDeliveryDate: (caseId: string, courtesyTextId: string, proposedDate: string, proposedTime: string, proposedBy: string) => void;
   respondToProposedDate: (caseId: string, courtesyTextId: string, accept: boolean, respondedBy: string, note?: string) => void;
+  inventory: InventoryItem[];
+  addInventoryItem: (item: Omit<InventoryItem, "id">) => void;
+  updateInventoryItem: (id: string, updates: Partial<InventoryItem>) => void;
+  removeInventoryItem: (id: string) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -128,6 +134,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [pricingTiers, setPricingTiers] = useState<PricingTier[]>(DEFAULT_PRICING_TIERS);
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupInvitations, setGroupInvitations] = useState<GroupInvitation[]>([]);
+  const [inventory, setInventory] = useState<InventoryItem[]>(sampleInventory);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -1026,6 +1033,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return createGroup(name, type, address, username, role);
   }
 
+  function addInventoryItem(item: Omit<InventoryItem, "id">) {
+    const newItem: InventoryItem = { ...item, id: Date.now().toString() + Math.random().toString(36).substr(2, 9) };
+    setInventory(prev => [...prev, newItem]);
+  }
+
+  function updateInventoryItem(id: string, updates: Partial<InventoryItem>) {
+    setInventory(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+  }
+
+  function removeInventoryItem(id: string) {
+    setInventory(prev => prev.filter(item => item.id !== id));
+  }
+
   function markConversationRead(conversationId: string) {
     setChatMessages(prev => {
       const updated = prev.map(m => {
@@ -1127,8 +1147,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       respondToCourtesyText,
       proposeDeliveryDate,
       respondToProposedDate,
+      inventory,
+      addInventoryItem,
+      updateInventoryItem,
+      removeInventoryItem,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, inventory],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

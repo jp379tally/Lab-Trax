@@ -31,7 +31,7 @@ import { useApp } from "@/lib/app-context";
 import { ChatButton } from "@/components/ChatButton";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS } from "@/lib/data";
+import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
@@ -1096,10 +1096,11 @@ type AdminView =
   | "invoice-detail"
   | "statements"
   | "sales"
-  | "shipping";
+  | "shipping"
+  | "inventory";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups } = useApp();
+  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem } = useApp();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const [adminView, setAdminView] = useState<AdminView>("hub");
@@ -1168,6 +1169,16 @@ function AdminDashboard() {
   const [showRemoveFromGroupConfirm, setShowRemoveFromGroupConfirm] = useState(false);
   const [selectedGroupForAction, setSelectedGroupForAction] = useState<string>("");
   const [selectedMemberForRemoval, setSelectedMemberForRemoval] = useState<string>("");
+
+  const [invCategory, setInvCategory] = useState("All");
+  const [showAddInv, setShowAddInv] = useState(false);
+  const [newInvName, setNewInvName] = useState("");
+  const [newInvCategory, setNewInvCategory] = useState("Materials");
+  const [newInvQty, setNewInvQty] = useState("");
+  const [newInvMinQty, setNewInvMinQty] = useState("");
+  const [newInvUnit, setNewInvUnit] = useState("pcs");
+  const [editingInvItem, setEditingInvItem] = useState<InventoryItem | null>(null);
+  const [editInvQty, setEditInvQty] = useState("");
 
   function resetClientForm() {
     setNewClientName("");
@@ -1285,6 +1296,7 @@ function AdminDashboard() {
       { icon: "receipt-outline", iconSet: "ion", color: "#06B6D4", bg: "#CFFAFE", title: "Generate Statements", sub: "Create billing statements", view: "statements" },
       { icon: "trending-up", iconSet: "ion", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
       { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
+      { icon: "cube", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items tracked`, view: "inventory" as AdminView },
     ];
 
     return (
@@ -3043,6 +3055,313 @@ function AdminDashboard() {
     );
   }
 
+  function renderInventory() {
+    const categories = [...new Set(inventory.map(i => i.category))];
+    const filteredItems = invCategory === "All" ? inventory : inventory.filter(i => i.category === invCategory);
+    const lowStockCount = inventory.filter(i => i.quantity <= i.minQuantity).length;
+
+    function handleAddInvItem() {
+      if (!newInvName.trim()) {
+        Alert.alert("Required", "Item name is required.");
+        return;
+      }
+      const qty = parseInt(newInvQty) || 0;
+      const minQty = parseInt(newInvMinQty) || 0;
+      addInventoryItem({
+        name: newInvName.trim(),
+        category: newInvCategory,
+        quantity: qty,
+        minQuantity: minQty,
+        unit: newInvUnit.trim() || "pcs",
+      });
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setNewInvName("");
+      setNewInvQty("");
+      setNewInvMinQty("");
+      setNewInvUnit("pcs");
+      setNewInvCategory("Materials");
+      setShowAddInv(false);
+    }
+
+    function getStockColor(item: InventoryItem) {
+      if (item.quantity < item.minQuantity) return "#EF4444";
+      if (item.quantity === item.minQuantity) return "#F59E0B";
+      return "#10B981";
+    }
+
+    function getStockBg(item: InventoryItem) {
+      if (item.quantity < item.minQuantity) return "#FEF2F2";
+      if (item.quantity === item.minQuantity) return "#FFFBEB";
+      return "#F0FDF4";
+    }
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Inventory")}
+
+        <View style={{ paddingHorizontal: 20, marginBottom: 16 }}>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <View style={[invStyles.summaryCard, { flex: 1, backgroundColor: "#F0FDF4" }]}>
+              <Ionicons name="cube" size={22} color="#10B981" />
+              <Text style={[invStyles.summaryNum, { color: "#10B981" }]}>{inventory.length}</Text>
+              <Text style={invStyles.summaryLabel}>Total Items</Text>
+            </View>
+            <View style={[invStyles.summaryCard, { flex: 1, backgroundColor: lowStockCount > 0 ? "#FEF2F2" : "#F0FDF4" }]}>
+              <Ionicons name="warning" size={22} color={lowStockCount > 0 ? "#EF4444" : "#10B981"} />
+              <Text style={[invStyles.summaryNum, { color: lowStockCount > 0 ? "#EF4444" : "#10B981" }]}>{lowStockCount}</Text>
+              <Text style={invStyles.summaryLabel}>Low Stock</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={{ paddingHorizontal: 20, marginBottom: 16 }}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+            {["All", ...categories].map(cat => (
+              <Pressable
+                key={cat}
+                onPress={() => setInvCategory(cat)}
+                style={[adm.chip, invCategory === cat && adm.chipActive]}
+              >
+                <Text style={[adm.chipText, invCategory === cat && adm.chipTextActive]}>{cat}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+
+        <View style={adm.listArea}>
+          {filteredItems.map(item => (
+            <Pressable
+              key={item.id}
+              style={({ pressed }) => [adm.listItem, pressed && { opacity: 0.7 }]}
+              onPress={() => {
+                setEditingInvItem(item);
+                setEditInvQty(item.quantity.toString());
+              }}
+            >
+              <View style={adm.listItemLeft}>
+                <View style={[adm.listAvatar, { backgroundColor: getStockBg(item) }]}>
+                  <Ionicons name="cube-outline" size={20} color={getStockColor(item)} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={adm.listItemTitle}>{item.name}</Text>
+                  <Text style={adm.listItemSub}>{item.category} · Min: {item.minQuantity} {item.unit}</Text>
+                </View>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation?.();
+                    if (item.quantity > 0) {
+                      updateInventoryItem(item.id, { quantity: item.quantity - 1 });
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }
+                  }}
+                  style={invStyles.qtyBtn}
+                >
+                  <Ionicons name="remove" size={16} color={Colors.light.textSecondary} />
+                </Pressable>
+                <View style={[invStyles.qtyBadge, { backgroundColor: getStockBg(item) }]}>
+                  <Text style={[invStyles.qtyText, { color: getStockColor(item) }]}>{item.quantity}</Text>
+                </View>
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation?.();
+                    updateInventoryItem(item.id, { quantity: item.quantity + 1 });
+                    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                  style={invStyles.qtyBtn}
+                >
+                  <Ionicons name="add" size={16} color={Colors.light.textSecondary} />
+                </Pressable>
+              </View>
+            </Pressable>
+          ))}
+
+          {filteredItems.length === 0 && (
+            <View style={{ alignItems: "center", paddingVertical: 40 }}>
+              <Ionicons name="cube-outline" size={36} color={Colors.light.textTertiary} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>No items in this category</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={{ paddingHorizontal: 20, marginTop: 16 }}>
+          <Pressable
+            onPress={() => setShowAddInv(true)}
+            style={({ pressed }) => [adm.submitBtn, pressed && { opacity: 0.8 }]}
+          >
+            <Ionicons name="add" size={20} color="#FFF" />
+            <Text style={adm.submitBtnText}>Add Item</Text>
+          </Pressable>
+        </View>
+
+        <Modal
+          transparent
+          visible={showAddInv}
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setShowAddInv(false)}
+        >
+          <Pressable style={styles.picModalOverlay} onPress={() => setShowAddInv(false)}>
+            <Pressable style={invStyles.modalContent} onPress={(e) => e.stopPropagation?.()}>
+              <View style={styles.picModalHandle} />
+              <Text style={[styles.picModalTitle, { marginBottom: 16 }]}>Add Inventory Item</Text>
+
+              <View style={adm.field}>
+                <Text style={adm.fieldLabel}>Name</Text>
+                <TextInput
+                  style={adm.input}
+                  value={newInvName}
+                  onChangeText={setNewInvName}
+                  placeholder="Item name"
+                  placeholderTextColor={Colors.light.textTertiary}
+                />
+              </View>
+
+              <View style={adm.field}>
+                <Text style={adm.fieldLabel}>Category</Text>
+                <View style={adm.chipRow}>
+                  {["Materials", "Supplies", "Tools"].map(cat => (
+                    <Pressable
+                      key={cat}
+                      onPress={() => setNewInvCategory(cat)}
+                      style={[adm.chip, newInvCategory === cat && adm.chipActive]}
+                    >
+                      <Text style={[adm.chipText, newInvCategory === cat && adm.chipTextActive]}>{cat}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              <View style={adm.fieldRow}>
+                <View style={[adm.field, { flex: 1 }]}>
+                  <Text style={adm.fieldLabel}>Quantity</Text>
+                  <TextInput
+                    style={adm.input}
+                    value={newInvQty}
+                    onChangeText={setNewInvQty}
+                    placeholder="0"
+                    placeholderTextColor={Colors.light.textTertiary}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={[adm.field, { flex: 1 }]}>
+                  <Text style={adm.fieldLabel}>Min Qty</Text>
+                  <TextInput
+                    style={adm.input}
+                    value={newInvMinQty}
+                    onChangeText={setNewInvMinQty}
+                    placeholder="0"
+                    placeholderTextColor={Colors.light.textTertiary}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
+              <View style={adm.field}>
+                <Text style={adm.fieldLabel}>Unit</Text>
+                <TextInput
+                  style={adm.input}
+                  value={newInvUnit}
+                  onChangeText={setNewInvUnit}
+                  placeholder="pcs"
+                  placeholderTextColor={Colors.light.textTertiary}
+                />
+              </View>
+
+              <Pressable
+                onPress={handleAddInvItem}
+                style={({ pressed }) => [adm.submitBtn, pressed && { opacity: 0.8 }]}
+              >
+                <Ionicons name="checkmark" size={20} color="#FFF" />
+                <Text style={adm.submitBtnText}>Add Item</Text>
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        <Modal
+          transparent
+          visible={editingInvItem !== null}
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setEditingInvItem(null)}
+        >
+          <Pressable style={styles.picModalOverlay} onPress={() => setEditingInvItem(null)}>
+            <Pressable style={invStyles.modalContent} onPress={(e) => e.stopPropagation?.()}>
+              <View style={styles.picModalHandle} />
+              <Text style={[styles.picModalTitle, { marginBottom: 4 }]}>{editingInvItem?.name}</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 16 }}>
+                {editingInvItem?.category} · {editingInvItem?.unit}
+              </Text>
+
+              <View style={adm.field}>
+                <Text style={adm.fieldLabel}>Quantity</Text>
+                <TextInput
+                  style={adm.input}
+                  value={editInvQty}
+                  onChangeText={setEditInvQty}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  placeholderTextColor={Colors.light.textTertiary}
+                />
+              </View>
+
+              <View style={{ flexDirection: "row", gap: 10, marginBottom: 12 }}>
+                <Pressable
+                  onPress={() => {
+                    if (editingInvItem) {
+                      const newQty = parseInt(editInvQty) || 0;
+                      updateInventoryItem(editingInvItem.id, { quantity: newQty });
+                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setEditingInvItem(null);
+                    }
+                  }}
+                  style={({ pressed }) => [adm.submitBtn, { flex: 1 }, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="checkmark" size={20} color="#FFF" />
+                  <Text style={adm.submitBtnText}>Update</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    if (editingInvItem) {
+                      Alert.alert(
+                        "Remove Item",
+                        `Remove ${editingInvItem.name} from inventory?`,
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Remove",
+                            style: "destructive",
+                            onPress: () => {
+                              removeInventoryItem(editingInvItem.id);
+                              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                              setEditingInvItem(null);
+                            },
+                          },
+                        ],
+                      );
+                    }
+                  }}
+                  style={({ pressed }) => [invStyles.deleteBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="trash-outline" size={20} color="#EF4444" />
+                </Pressable>
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </ScrollView>
+    );
+  }
+
   switch (adminView) {
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();
@@ -3059,6 +3378,7 @@ function AdminDashboard() {
     case "statements": return renderStatements();
     case "sales": return renderSales();
     case "shipping": return renderShipping();
+    case "inventory": return renderInventory();
     default: return renderHub();
   }
 }
@@ -4109,6 +4429,59 @@ const adm = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_700Bold",
     color: Colors.light.text,
+  },
+});
+
+const invStyles = StyleSheet.create({
+  summaryCard: {
+    borderRadius: 16,
+    padding: 16,
+    alignItems: "center",
+    gap: 4,
+  },
+  summaryNum: {
+    fontSize: 24,
+    fontFamily: "Inter_700Bold",
+  },
+  summaryLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+  },
+  qtyBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: Colors.light.surfaceSecondary,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  qtyBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    minWidth: 40,
+    alignItems: "center",
+  },
+  qtyText: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+  },
+  modalContent: {
+    backgroundColor: "#FFF",
+    borderRadius: 24,
+    padding: 24,
+    marginHorizontal: 20,
+    maxHeight: "80%",
+  },
+  deleteBtn: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    backgroundColor: "#FEF2F2",
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 8,
   },
 });
 

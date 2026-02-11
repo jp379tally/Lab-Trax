@@ -1007,6 +1007,31 @@ export const DEFAULT_TIER_ITEMS = [
   { key: "implant", label: "Implant" },
 ];
 
+export interface InventoryItem {
+  id: string;
+  name: string;
+  category: string;
+  quantity: number;
+  minQuantity: number;
+  unit: string;
+  supplier?: string;
+  lastOrdered?: number;
+  notes?: string;
+}
+
+export const sampleInventory: InventoryItem[] = [
+  { id: generateId(), name: "Porcelain Powder - A2", category: "Materials", quantity: 45, minQuantity: 10, unit: "bottles" },
+  { id: generateId(), name: "Zirconia Discs - 98mm", category: "Materials", quantity: 12, minQuantity: 5, unit: "discs" },
+  { id: generateId(), name: "Impression Trays - Medium", category: "Supplies", quantity: 200, minQuantity: 50, unit: "pcs" },
+  { id: generateId(), name: "Diamond Burs - Fine", category: "Tools", quantity: 8, minQuantity: 15, unit: "pcs" },
+  { id: generateId(), name: "Casting Alloy - Noble", category: "Materials", quantity: 3, minQuantity: 2, unit: "oz" },
+  { id: generateId(), name: "Wax Sheets - Blue", category: "Materials", quantity: 30, minQuantity: 10, unit: "sheets" },
+  { id: generateId(), name: "Articulating Paper", category: "Supplies", quantity: 150, minQuantity: 50, unit: "strips" },
+  { id: generateId(), name: "Plaster - Type IV", category: "Materials", quantity: 5, minQuantity: 3, unit: "bags" },
+  { id: generateId(), name: "Disposable Gloves - M", category: "Supplies", quantity: 500, minQuantity: 100, unit: "pcs" },
+  { id: generateId(), name: "Polishing Wheels", category: "Tools", quantity: 22, minQuantity: 10, unit: "pcs" },
+];
+
 export const DEFAULT_PRICING_TIERS: PricingTier[] = [
   {
     id: "corporate",
