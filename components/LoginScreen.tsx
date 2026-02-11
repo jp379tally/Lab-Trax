@@ -667,9 +667,14 @@ export default function LoginScreen() {
   async function fetchLocationAddress() {
     try {
       setFetchingLocation(true);
+      setSignUpError(null);
       if (Platform.OS === "web") {
+        if (!navigator?.geolocation) {
+          setSignUpError("Location not supported on this browser. Please type your address.");
+          return;
+        }
         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 });
+          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 });
         });
         const lat = pos.coords.latitude;
         const lon = pos.coords.longitude;
@@ -680,25 +685,33 @@ export default function LoginScreen() {
         if (data?.display_name) {
           setPracticeAddress(data.display_name);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } else {
+          setSignUpError("Could not determine address. Please type it manually.");
         }
       } else {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") {
-          setSignUpError("Location permission is needed to auto-fill address.");
-          setFetchingLocation(false);
+          setSignUpError("Location permission denied. Please type your address manually.");
           return;
         }
         const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
         const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
         if (geocode && geocode.length > 0) {
           const g = geocode[0];
-          const parts = [g.streetNumber, g.street, g.city, g.region, g.postalCode, g.country].filter(Boolean);
-          setPracticeAddress(parts.join(", "));
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          const parts = [g.streetNumber, g.street, g.city, g.region, g.postalCode].filter(Boolean);
+          const address = parts.join(" ");
+          if (address.trim()) {
+            setPracticeAddress(address);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          } else {
+            setSignUpError("Could not determine address. Please type it manually.");
+          }
+        } else {
+          setSignUpError("Could not determine address. Please type it manually.");
         }
       }
     } catch (e: any) {
-      setSignUpError("Could not get location. Please enter address manually.");
+      setSignUpError("Location unavailable. Please type your address manually.");
     } finally {
       setFetchingLocation(false);
     }
@@ -723,9 +736,7 @@ export default function LoginScreen() {
               onChangeText={(t) => { setPracticeName(t); setSignUpError(null); }}
               placeholder="Practice Name"
               placeholderTextColor="rgba(255,255,255,0.3)"
-              autoCorrect={true}
-              spellCheck={true}
-              textContentType="none"
+              autoCapitalize="words"
               testID="practice-name"
             />
           </View>
@@ -738,38 +749,34 @@ export default function LoginScreen() {
               onChangeText={(t) => { setDoctorName(t); setSignUpError(null); }}
               placeholder="Doctor Name"
               placeholderTextColor="rgba(255,255,255,0.3)"
-              autoCorrect={true}
-              spellCheck={true}
-              textContentType="none"
+              autoCapitalize="words"
               testID="doctor-name"
             />
           </View>
 
           <View style={styles.inputWrapper}>
-            <Pressable
-              onPress={fetchLocationAddress}
-              disabled={fetchingLocation}
-              hitSlop={8}
-              testID="location-btn"
-            >
-              {fetchingLocation ? (
-                <ActivityIndicator size={16} color="rgba(255,255,255,0.6)" style={styles.inputIcon} />
-              ) : (
-                <Ionicons name="location" size={18} color="#4A90D9" style={styles.inputIcon} />
-              )}
-            </Pressable>
+            <Ionicons name="location-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
             <TextInput
               style={styles.input}
               value={practiceAddress}
               onChangeText={(t) => { setPracticeAddress(t); setSignUpError(null); }}
               placeholder="Practice Address"
               placeholderTextColor="rgba(255,255,255,0.3)"
-              keyboardType="default"
-              autoCorrect={true}
-              spellCheck={true}
-              textContentType="none"
+              autoCapitalize="words"
               testID="practice-address"
             />
+            <Pressable
+              onPress={fetchLocationAddress}
+              disabled={fetchingLocation}
+              style={{ padding: 6, marginLeft: 4 }}
+              testID="location-btn"
+            >
+              {fetchingLocation ? (
+                <ActivityIndicator size={16} color="rgba(255,255,255,0.6)" />
+              ) : (
+                <Ionicons name="navigate" size={18} color="#4A90D9" />
+              )}
+            </Pressable>
           </View>
 
           <View style={styles.inputWrapper}>
@@ -781,7 +788,6 @@ export default function LoginScreen() {
               placeholder="Practice Phone"
               placeholderTextColor="rgba(255,255,255,0.3)"
               keyboardType="phone-pad"
-              textContentType="none"
               testID="practice-phone"
             />
           </View>
@@ -1046,7 +1052,6 @@ export default function LoginScreen() {
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="email-address"
-              textContentType="none"
               editable={!signUpLoading}
               testID="signup-email"
             />
@@ -1186,7 +1191,6 @@ export default function LoginScreen() {
             placeholder="Phone Number"
             placeholderTextColor="rgba(255,255,255,0.3)"
             keyboardType="phone-pad"
-            textContentType="none"
             editable={!codeSending}
             testID="signup-phone"
           />
