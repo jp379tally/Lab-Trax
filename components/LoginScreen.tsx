@@ -1056,6 +1056,8 @@ export default function LoginScreen() {
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="email-address"
+              textContentType="oneTimeCode"
+              autoComplete="off"
               editable={!signUpLoading}
               testID="signup-email"
             />
@@ -1071,6 +1073,8 @@ export default function LoginScreen() {
               placeholderTextColor="rgba(255,255,255,0.3)"
               secureTextEntry={!showSignUpPassword}
               autoCapitalize="none"
+              textContentType="oneTimeCode"
+              autoComplete="off"
               editable={!signUpLoading}
               testID="signup-password"
             />
@@ -1109,6 +1113,8 @@ export default function LoginScreen() {
               placeholderTextColor="rgba(255,255,255,0.3)"
               secureTextEntry={!showSignUpPassword}
               autoCapitalize="none"
+              textContentType="oneTimeCode"
+              autoComplete="off"
               editable={!signUpLoading}
               testID="signup-confirm-password"
             />
