@@ -61,13 +61,25 @@ Preferred communication style: Simple, everyday language.
 
 ### Provider Portal Dashboard
 - Users who sign up as "provider" type see a separate Provider Portal dashboard
-- Shows their cases with Active/Completed breakdown, blue-themed hero card
+- Shows only cases matching the provider's doctor name (filtered by `doctorName` from registration data)
+- Active/Completed breakdown, blue-themed hero card
 - `userType` stored in auth context ("provider" | "lab"), determines which dashboard renders
+- **Settings menu** (gear icon): Change profile picture, change password, sign out
+- **Admin section** in settings: Users list (view all users + their groups), Create Group (name, address, type)
+- **ChatButton** displayed on Provider Portal header
 
 ### Barcode Reader
 - Available on Scan tab via "Scan Barcode" button
 - Uses expo-camera's CameraView with barcode scanning (QR, Code128, Code39, EAN13, EAN8, UPC-A)
 - Scanned barcode data is matched against case IDs/numbers, navigates to case detail if found
+
+### Barcode Assignment System
+- `assignedBarcode` field on LabCase model tracks which physical barcode is attached to a case
+- After printing a label in scan.tsx, user is prompted to scan a barcode to attach to the case
+- Barcode stays assigned until case status reaches COMPLETE, then auto-unassigns
+- Context functions: `assignBarcodeToCase`, `unassignBarcode`, `findCaseByBarcode`, `batchLocateCases`
+- **Locate by Barcode** (Cases tab): "Use Barcode to Locate Case" button below search box opens scanner, finds case by assigned barcode
+- **Batch Locate** (Dashboard): Quick action button scans multiple barcodes, builds list of cases, then user selects a station to batch-move all scanned cases
 
 ### Remake Detection Flow
 - After duplicate case detected and label printed: "Is this a remake?" → reason selection (Doesn't Fit, Open Margins, Open Contacts, Wrong Shade, Other) → recharge yes/no
