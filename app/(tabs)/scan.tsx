@@ -731,16 +731,19 @@ export default function ScanScreen() {
       ? `${notes.trim()}\n(REMAKE - No Charge)`
       : "(REMAKE - No Charge)";
 
+    const savedPatient = patientName.trim();
+
     addCase({
       caseNumber,
       doctorName: doctorName.trim(),
-      patientName: patientName.trim(),
-      patientInitials: patientName.trim().split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
+      patientName: savedPatient,
+      patientInitials: savedPatient.split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
       toothIndices: toothIndices.trim(),
       shade: shade.trim(),
       material,
       status: "INTAKE",
       isRush,
+      isRemake: true,
       notes: remakeNotes,
       price: 0,
       dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
@@ -759,7 +762,7 @@ export default function ScanScreen() {
     const savedLabel: LabelData = {
       caseNumber,
       doctorName: doctorName.trim(),
-      patientName: patientName.trim(),
+      patientName: savedPatient,
       caseType: caseType || "",
       toothIndices: toothIndices.trim(),
       shade: shade.trim(),
@@ -777,6 +780,7 @@ export default function ScanScreen() {
       `Case ${caseNumber} has been created as a remake (No Charge).`,
       [
         { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
+        { text: "Chart History", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(savedPatient)}`) },
         { text: "Done", onPress: () => router.push("/(tabs)") },
       ],
     );
@@ -822,6 +826,7 @@ export default function ScanScreen() {
         `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
         [
           { text: "Cancel", style: "cancel" },
+          { text: "View Chart", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`) },
           { text: "Add Case", onPress: () => createCase() },
         ]
       );
