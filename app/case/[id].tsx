@@ -524,6 +524,31 @@ export default function CaseDetailScreen() {
           )}
         </View>
 
+        {(() => {
+          const patientCaseCount = cases.filter(
+            (c) => (c.patientName || "").toLowerCase() === (caseItem.patientName || "").toLowerCase()
+          ).length;
+          if (patientCaseCount > 1 || caseItem.isRemake) {
+            return (
+              <Pressable
+                onPress={() => router.push(`/chart-history?patient=${encodeURIComponent(caseItem.patientName)}`)}
+                style={({ pressed }) => [
+                  styles.chartHistoryBtn,
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="play-circle" size={22} color="#3B82F6" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.chartHistoryBtnTitle}>Entire Chart History</Text>
+                  <Text style={styles.chartHistoryBtnSub}>{patientCaseCount} case{patientCaseCount !== 1 ? "s" : ""} on file</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+              </Pressable>
+            );
+          }
+          return null;
+        })()}
+
         {caseItem.notes ? (
           <View style={styles.notesCard}>
             <Text style={styles.notesLabel}>Notes</Text>
@@ -1845,6 +1870,28 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
     color: Colors.light.text,
+  },
+  chartHistoryBtn: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 12,
+    backgroundColor: "#EFF6FF",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+  },
+  chartHistoryBtnTitle: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#3B82F6",
+  },
+  chartHistoryBtnSub: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: "#60A5FA",
+    marginTop: 1,
   },
   notesCard: {
     backgroundColor: Colors.light.warningLight,

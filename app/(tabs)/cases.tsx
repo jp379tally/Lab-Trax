@@ -45,6 +45,10 @@ export default function CasesScreen() {
 
   function renderCaseItem({ item }: { item: LabCase }) {
     const stationInfo = getStationInfo(item.status);
+    const patientCaseCount = cases.filter(
+      (c) => (c.patientName || "").toLowerCase() === (item.patientName || "").toLowerCase()
+    ).length;
+    const showChartBtn = patientCaseCount > 1 || item.isRemake;
     return (
       <Pressable
         style={({ pressed }) => [
@@ -62,6 +66,11 @@ export default function CasesScreen() {
           <View style={styles.caseLeft}>
             <View style={styles.caseHeader}>
               <Text style={styles.casePatient}>{item.patientName}</Text>
+              {item.isRemake && (
+                <View style={styles.remakeBadge}>
+                  <Ionicons name="refresh" size={8} color="#FFF" />
+                </View>
+              )}
               {item.isRush && (
                 <View style={styles.rushBadge}>
                   <Ionicons name="flash" size={10} color="#EF4444" />
@@ -92,6 +101,19 @@ export default function CasesScreen() {
         </View>
         <View style={styles.caseBottom}>
           <Text style={styles.caseDue}>{item.caseNumber} · Due: {item.dueDate}</Text>
+          {showChartBtn && (
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation();
+                router.push(`/chart-history?patient=${encodeURIComponent(item.patientName)}`);
+              }}
+              style={styles.chartHistoryChip}
+              hitSlop={8}
+            >
+              <Ionicons name="play-circle" size={14} color="#3B82F6" />
+              <Text style={styles.chartHistoryChipText}>{patientCaseCount}</Text>
+            </Pressable>
+          )}
           <Feather
             name="chevron-right"
             size={16}
@@ -346,6 +368,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: "Inter_400Regular",
     color: Colors.light.textTertiary,
+  },
+  remakeBadge: {
+    backgroundColor: "#EF4444",
+    borderRadius: 8,
+    width: 16,
+    height: 16,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  chartHistoryChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#EFF6FF",
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: "auto",
+    marginRight: 6,
+  },
+  chartHistoryChipText: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: "#3B82F6",
   },
   emptyState: {
     alignItems: "center",
