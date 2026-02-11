@@ -82,14 +82,14 @@ interface AppContextValue {
   totalUnreadMessages: number;
   groups: Group[];
   groupInvitations: GroupInvitation[];
-  createGroup: (name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "tech") => Group;
-  addUserToGroup: (groupId: string, username: string, role: "admin" | "tech") => void;
+  createGroup: (name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "user") => Group;
+  addUserToGroup: (groupId: string, username: string, role: "admin" | "user") => void;
   removeUserFromGroup: (groupId: string, userId: string) => void;
   sendGroupInvitation: (groupId: string, invitedUsername: string, invitedBy: string) => void;
-  respondToGroupInvitation: (invitationId: string, accept: boolean, userRole?: "admin" | "tech") => void;
+  respondToGroupInvitation: (invitationId: string, accept: boolean, userRole?: "admin" | "user") => void;
   getUserGroups: (username: string) => Group[];
   getGroupByNameAndAddress: (name: string, address: string) => Group | undefined;
-  findOrCreateGroup: (name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "tech") => Group;
+  findOrCreateGroup: (name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "user") => Group;
   updateCase: (caseId: string, updates: Partial<LabCase>) => void;
   removeInvoice: (invoiceId: string) => void;
   attachCaseToInvoice: (caseId: string, invoiceId: string) => void;
@@ -115,7 +115,7 @@ const GROUPS_KEY = "@drivesync_groups";
 const GROUP_INVITATIONS_KEY = "@drivesync_group_invitations";
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [role, setRoleState] = useState<UserRole>("tech");
+  const [role, setRoleState] = useState<UserRole>("user");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [cases, setCases] = useState<LabCase[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -517,7 +517,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             type: "note",
             description: `Item added: ${caseType} - ${toothDisplay} (${mat})`,
             timestamp: Date.now(),
-            user: "tech",
+            user: "user",
           };
 
           return {
@@ -918,7 +918,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function createGroup(name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "tech"): Group {
+  function createGroup(name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "user"): Group {
     const now = Date.now();
     const newGroup: Group = {
       id: generateId(),
@@ -941,7 +941,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return newGroup;
   }
 
-  function addUserToGroup(groupId: string, username: string, role: "admin" | "tech") {
+  function addUserToGroup(groupId: string, username: string, role: "admin" | "user") {
     const now = Date.now();
     const newMember: GroupMember = {
       userId: generateId(),
@@ -988,7 +988,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(GROUP_INVITATIONS_KEY, JSON.stringify(updated));
   }
 
-  function respondToGroupInvitation(invitationId: string, accept: boolean, userRole?: "admin" | "tech") {
+  function respondToGroupInvitation(invitationId: string, accept: boolean, userRole?: "admin" | "user") {
     const invitation = groupInvitations.find(inv => inv.id === invitationId);
     if (!invitation) return;
 
@@ -1002,7 +1002,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(GROUP_INVITATIONS_KEY, JSON.stringify(updatedInvitations));
 
     if (accept) {
-      addUserToGroup(invitation.groupId, invitation.invitedUsername, userRole || "tech");
+      addUserToGroup(invitation.groupId, invitation.invitedUsername, userRole || "user");
     }
   }
 
@@ -1014,7 +1014,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return groups.find(g => g.name === name && g.address === address);
   }
 
-  function findOrCreateGroup(name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "tech"): Group {
+  function findOrCreateGroup(name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "user"): Group {
     const existing = getGroupByNameAndAddress(name, address);
     if (existing) {
       const alreadyMember = existing.members.some(m => m.username === username);

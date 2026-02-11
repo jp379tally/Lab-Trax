@@ -477,7 +477,7 @@ function TechDashboard() {
         {currentUser && (
           <Text style={styles.employeeName}>{currentUser.split(" ")[0] || currentUser}</Text>
         )}
-        <Text style={styles.avatarName}>{role === "admin" ? "Administrator" : "Technician"}</Text>
+        <Text style={styles.avatarName}>{role === "admin" ? "Administrator" : "User"}</Text>
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
           <Text style={styles.liveText}>Available</Text>
@@ -1118,7 +1118,7 @@ function AdminDashboard() {
 
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
-  const [newUserRole, setNewUserRole] = useState<"tech" | "admin">("tech");
+  const [newUserRole, setNewUserRole] = useState<"user" | "admin">("user");
   const [newUserStation, setNewUserStation] = useState("Design");
 
   const [editingClient, setEditingClient] = useState<Client | null>(null);
@@ -1181,7 +1181,7 @@ function AdminDashboard() {
   function resetUserForm() {
     setNewUserName("");
     setNewUserEmail("");
-    setNewUserRole("tech");
+    setNewUserRole("user");
     setNewUserStation("Design");
   }
 
@@ -1301,7 +1301,7 @@ function AdminDashboard() {
             <Text style={styles.greeting}>Admin</Text>
             <Text style={styles.headerTitle}>Master Hub</Text>
           </View>
-          <Pressable onPress={() => setRole("tech")} style={adm.exitBtn}>
+          <Pressable onPress={() => setRole("user")} style={adm.exitBtn}>
             <Ionicons name="close" size={20} color={Colors.light.textSecondary} />
           </Pressable>
         </View>
@@ -1624,9 +1624,9 @@ function AdminDashboard() {
           <View style={adm.field}>
             <Text style={adm.fieldLabel}>Role</Text>
             <View style={adm.chipRow}>
-              {(["tech", "admin"] as const).map((r) => (
+              {(["user", "admin"] as const).map((r) => (
                 <Pressable key={r} onPress={() => setNewUserRole(r)} style={[adm.chip, newUserRole === r && adm.chipActive]}>
-                  <Text style={[adm.chipText, newUserRole === r && adm.chipTextActive]}>{r === "tech" ? "Technician" : "Admin"}</Text>
+                  <Text style={[adm.chipText, newUserRole === r && adm.chipTextActive]}>{r === "user" ? "User" : "Admin"}</Text>
                 </Pressable>
               ))}
             </View>
@@ -1675,9 +1675,9 @@ function AdminDashboard() {
             <View style={adm.field}>
               <Text style={adm.fieldLabel}>Role</Text>
               <View style={adm.chipRow}>
-                {(["tech", "admin"] as const).map((r) => (
+                {(["user", "admin"] as const).map((r) => (
                   <Pressable key={r} onPress={() => setEditingUser({ ...editingUser, role: r })} style={[adm.chip, editingUser.role === r && adm.chipActive]}>
-                    <Text style={[adm.chipText, editingUser.role === r && adm.chipTextActive]}>{r === "tech" ? "Technician" : "Admin"}</Text>
+                    <Text style={[adm.chipText, editingUser.role === r && adm.chipTextActive]}>{r === "user" ? "User" : "Admin"}</Text>
                   </Pressable>
                 ))}
               </View>
@@ -1938,7 +1938,7 @@ function AdminDashboard() {
                 </View>
                 <View>
                   <Text style={adm.listItemTitle}>{u.name}</Text>
-                  <Text style={adm.listItemSub}>{u.role === "admin" ? "Admin" : "Technician"} · {u.station}</Text>
+                  <Text style={adm.listItemSub}>{u.role === "admin" ? "Admin" : "User"} · {u.station}</Text>
                 </View>
               </View>
               <View style={[adm.statusDot, { backgroundColor: u.active ? Colors.light.success : Colors.light.textTertiary }]} />

@@ -7,6 +7,8 @@ import {
   Pressable,
   Platform,
   Image,
+  Modal,
+  TextInput,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -20,15 +22,56 @@ type WorkStatus = "available" | "break" | "out_of_office";
 
 export default function ProfileScreen() {
   const { role, setRole, adminUnlocked, setAdminUnlocked, getUserGroups } = useApp();
-  const { logout, currentUser, profilePicUri } = useAuth();
+  const { logout, currentUser, profilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
   const [workStatus, setWorkStatus] = useState<WorkStatus>("available");
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
 
   function handleStatusChange(status: WorkStatus) {
     setWorkStatus(status);
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
+  }
+
+  function handleChangePassword() {
+    setPasswordError(null);
+    if (!currentPasswordInput.trim()) {
+      setPasswordError("Please enter your current password.");
+      return;
+    }
+    if (newPassword.length < 8) {
+      setPasswordError("New password must be at least 8 characters.");
+      return;
+    }
+    if (!/[A-Z]/.test(newPassword)) {
+      setPasswordError("New password must contain an uppercase letter.");
+      return;
+    }
+    if (!/[a-z]/.test(newPassword)) {
+      setPasswordError("New password must contain a lowercase letter.");
+      return;
+    }
+    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(newPassword)) {
+      setPasswordError("New password must contain a special character.");
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError("New passwords do not match.");
+      return;
+    }
+    const result = changePassword(currentPasswordInput, newPassword);
+    if (!result.success) {
+      setPasswordError(result.error || "Failed to change password.");
+      return;
+    }
+    setPasswordSuccess(true);
+    setTimeout(() => setShowChangePassword(false), 1500);
   }
 
   const statusConfig: { key: WorkStatus; label: string; icon: keyof typeof Ionicons.glyphMap; color: string; bg: string }[] = [
@@ -61,9 +104,9 @@ export default function ProfileScreen() {
           <View style={[styles.statusDot, { backgroundColor: workStatus === "available" ? Colors.light.success : workStatus === "break" ? Colors.light.warning : Colors.light.textSecondary }]} />
         </View>
         <Text style={styles.profileName}>
-          {currentUser ? currentUser.charAt(0).toUpperCase() + currentUser.slice(1) : role === "tech" ? "Lab Technician" : "Lab Administrator"}
+          {currentUser ? currentUser.charAt(0).toUpperCase() + currentUser.slice(1) : role === "user" ? "User" : "Administrator"}
         </Text>
-        <Text style={styles.profileRole}>{role === "tech" ? "Technician" : "Administrator"}</Text>
+        <Text style={styles.profileRole}>{role === "user" ? "User" : "Administrator"}</Text>
       </View>
 
       <View style={styles.section}>
@@ -109,7 +152,7 @@ export default function ProfileScreen() {
             </View>
             <View style={styles.menuInfo}>
               <Text style={styles.menuTitle}>Role</Text>
-              <Text style={styles.menuSub}>{role === "tech" ? "Technician" : "Administrator"}</Text>
+              <Text style={styles.menuSub}>{role === "user" ? "User" : "Administrator"}</Text>
             </View>
           </View>
           <View style={styles.menuDivider} />
@@ -122,6 +165,27 @@ export default function ProfileScreen() {
               <Text style={styles.menuSub}>Face ID Enabled</Text>
             </View>
           </View>
+          <View style={styles.menuDivider} />
+          <Pressable
+            style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+            onPress={() => {
+              setShowChangePassword(true);
+              setCurrentPasswordInput("");
+              setNewPassword("");
+              setConfirmNewPassword("");
+              setPasswordError(null);
+              setPasswordSuccess(false);
+            }}
+          >
+            <View style={[styles.menuIcon, { backgroundColor: "#FEF3C7" }]}>
+              <Ionicons name="key" size={18} color="#D97706" />
+            </View>
+            <View style={styles.menuInfo}>
+              <Text style={styles.menuTitle}>Change Password</Text>
+              <Text style={styles.menuSub}>Update your account password</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+          </Pressable>
           {currentUser && getUserGroups(currentUser).length > 0 && (
             <>
               <View style={styles.menuDivider} />
@@ -157,6 +221,82 @@ export default function ProfileScreen() {
           <Text style={styles.logoutText}>Sign Out</Text>
         </Pressable>
       </View>
+      <Modal
+        visible={showChangePassword}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowChangePassword(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Change Password</Text>
+              <Pressable onPress={() => setShowChangePassword(false)} hitSlop={12}>
+                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+
+            {passwordSuccess ? (
+              <View style={{ alignItems: "center", paddingVertical: 32 }}>
+                <Ionicons name="checkmark-circle" size={56} color={Colors.light.success} />
+                <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold" as const, color: Colors.light.success, marginTop: 12 }}>
+                  Password updated successfully!
+                </Text>
+              </View>
+            ) : (
+              <>
+                <Text style={styles.modalInputLabel}>Current Password</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  secureTextEntry
+                  value={currentPasswordInput}
+                  onChangeText={setCurrentPasswordInput}
+                  placeholder="Enter current password"
+                  placeholderTextColor={Colors.light.textTertiary}
+                  autoCapitalize="none"
+                />
+
+                <Text style={styles.modalInputLabel}>New Password</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  secureTextEntry
+                  value={newPassword}
+                  onChangeText={setNewPassword}
+                  placeholder="Enter new password"
+                  placeholderTextColor={Colors.light.textTertiary}
+                  autoCapitalize="none"
+                />
+
+                <Text style={styles.modalInputLabel}>Confirm New Password</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  secureTextEntry
+                  value={confirmNewPassword}
+                  onChangeText={setConfirmNewPassword}
+                  placeholder="Confirm new password"
+                  placeholderTextColor={Colors.light.textTertiary}
+                  autoCapitalize="none"
+                />
+
+                {passwordError && (
+                  <View style={styles.modalError}>
+                    <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+                    <Text style={styles.modalErrorText}>{passwordError}</Text>
+                  </View>
+                )}
+
+                <Pressable
+                  style={({ pressed }) => [styles.modalButton, pressed && { opacity: 0.8 }]}
+                  onPress={handleChangePassword}
+                >
+                  <Ionicons name="lock-closed" size={18} color="#FFF" />
+                  <Text style={styles.modalButtonText}>Update Password</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -301,5 +441,84 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_700Bold",
     color: Colors.light.error,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: Colors.light.surface,
+    borderRadius: 20,
+    padding: 24,
+    width: "100%",
+    maxWidth: 400,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  modalInputLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+    marginBottom: 6,
+    marginTop: 12,
+  },
+  modalInput: {
+    backgroundColor: Colors.light.background,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+  },
+  modalError: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 14,
+    backgroundColor: Colors.light.errorLight,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  modalErrorText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.error,
+    flex: 1,
+  },
+  modalButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 14,
+    borderRadius: 14,
+    marginTop: 20,
+  },
+  modalButtonText: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
   },
 });

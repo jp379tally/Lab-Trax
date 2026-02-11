@@ -72,7 +72,7 @@ export default function LoginScreen() {
   const [fetchingLocation, setFetchingLocation] = useState(false);
   const [practicePhone, setPracticePhone] = useState("");
   const [phoneContactName, setPhoneContactName] = useState("");
-  const [selectedRole, setSelectedRole] = useState<"tech" | "admin" | null>(null);
+  const [selectedRole, setSelectedRole] = useState<"user" | "admin" | null>(null);
   const [hipaaAccepted, setHipaaAccepted] = useState(false);
   const [accountNumber, setAccountNumber] = useState("");
 
@@ -80,7 +80,7 @@ export default function LoginScreen() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    checkBiometricsAndPrompt();
+    checkBiometricAvailability();
   }, []);
 
   useEffect(() => {
@@ -134,7 +134,7 @@ export default function LoginScreen() {
     setSignUpError(null);
   }
 
-  async function checkBiometricsAndPrompt() {
+  async function checkBiometricAvailability() {
     if (Platform.OS === "web") return;
     try {
       const hasHardware = await LocalAuthentication.hasHardwareAsync();
@@ -146,18 +146,6 @@ export default function LoginScreen() {
           setBiometricType("Face ID");
         } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
           setBiometricType("Fingerprint");
-        }
-        await new Promise((r) => setTimeout(r, 600));
-        const result = await LocalAuthentication.authenticateAsync({
-          promptMessage: "Sign in to DriveSync Lab",
-          fallbackLabel: "Use password",
-          disableDeviceFallback: false,
-        });
-        if (result.success) {
-          setIsLoggingIn(true);
-          const res = await loginWithBiometric();
-          setIsLoggingIn(false);
-          if (!res.success) setError(res.error || "Please sign in with your password first to enable Face ID.");
         }
       }
     } catch {
@@ -386,7 +374,7 @@ export default function LoginScreen() {
         practiceAddress: practiceAddress.trim(),
         practicePhone: practicePhone.trim(),
         phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
-        role: selectedRole || "tech",
+        role: selectedRole || "user",
         accountNumber: acctNum,
       });
       if (result.success && practiceName.trim() && practiceAddress.trim()) {
@@ -395,7 +383,7 @@ export default function LoginScreen() {
           type: (userType || "provider") === "lab" ? "lab" : "provider",
           address: practiceAddress.trim(),
           username: signUpUsername.trim(),
-          role: selectedRole || "tech",
+          role: selectedRole || "user",
         }));
       }
       if (!result.success) {
@@ -881,16 +869,16 @@ export default function LoginScreen() {
 
         <Pressable
           onPress={() => {
-            setSelectedRole("tech");
+            setSelectedRole("user");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             setSignUpStep("hipaa_disclaimer");
           }}
           style={({ pressed }) => [
             styles.optionCard,
-            selectedRole === "tech" && styles.optionCardSelected,
+            selectedRole === "user" && styles.optionCardSelected,
             pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
           ]}
-          testID="role-tech"
+          testID="role-user"
         >
           <View style={styles.optionCardHeader}>
             <LinearGradient
@@ -899,16 +887,16 @@ export default function LoginScreen() {
               end={{ x: 1, y: 1 }}
               style={styles.optionCardIcon}
             >
-              <Ionicons name="construct" size={28} color="#FFF" />
+              <Ionicons name="person" size={28} color="#FFF" />
             </LinearGradient>
-            {selectedRole === "tech" && (
+            {selectedRole === "user" && (
               <View style={styles.optionCheckBadge}>
                 <Ionicons name="checkmark-circle" size={24} color={Colors.light.tint} />
               </View>
             )}
           </View>
-          <Text style={styles.optionCardTitle}>Technician</Text>
-          <Text style={styles.optionCardDesc}>Lab technician with access to case management</Text>
+          <Text style={styles.optionCardTitle}>User</Text>
+          <Text style={styles.optionCardDesc}>Standard user with access to case management</Text>
         </Pressable>
 
         <Pressable

@@ -91,7 +91,7 @@ function ClassicTabLayout() {
         listeners={{
           tabPress: () => {
             if (role === "admin") {
-              setRole("tech");
+              setRole("user");
               setAdminUnlocked(false);
             }
           },

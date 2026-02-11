@@ -25,7 +25,7 @@ interface StoredUser {
   practiceAddress?: string;
   practicePhone?: string;
   phoneContactName?: string;
-  role?: "tech" | "admin";
+  role?: "user" | "admin";
   accountNumber?: string;
 }
 
@@ -37,12 +37,13 @@ interface AuthContextValue {
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   loginWithBiometric: () => Promise<{ success: boolean; error?: string }>;
-  register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "tech" | "admin"; accountNumber?: string }) => Promise<{ success: boolean; error?: string }>;
+  register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   registeredUsers: StoredUser[];
   isLocked: boolean;
   unlockWithBiometric: () => Promise<{ success: boolean; error?: string }>;
   unlockWithPassword: (password: string) => { success: boolean; error?: string };
+  changePassword: (currentPassword: string, newPassword: string) => { success: boolean; error?: string };
   resetInactivityTimer: () => void;
 }
 
@@ -207,7 +208,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "tech" | "admin"; accountNumber?: string }): Promise<{ success: boolean; error?: string }> {
+  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }): Promise<{ success: boolean; error?: string }> {
     const savedRaw = await AsyncStorage.getItem(USERS_STORE_KEY);
     let allUsers = [...DEFAULT_USERS];
     if (savedRaw) {
@@ -289,6 +290,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function changePassword(currentPassword: string, newPassword: string): { success: boolean; error?: string } {
+    if (!currentUser) return { success: false, error: "Not logged in" };
+    const user = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
+    if (!user) return { success: false, error: "User not found." };
+    if (user.password !== currentPassword) {
+      return { success: false, error: "Current password is incorrect" };
+    }
+    user.password = newPassword;
+    const updated = registeredUsers.map(u =>
+      u.username.toLowerCase() === currentUser.toLowerCase() ? { ...u, password: newPassword } : u
+    );
+    setRegisteredUsers(updated);
+    AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(updated));
+    AsyncStorage.setItem(
+      BIOMETRIC_USER_KEY,
+      JSON.stringify({ username: currentUser, password: newPassword }),
+    );
+    return { success: true };
+  }
+
   function unlockWithPassword(password: string): { success: boolean; error?: string } {
     if (!currentUser) return { success: false, error: "No user session found." };
     const user = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
@@ -314,6 +335,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLocked,
       unlockWithBiometric,
       unlockWithPassword,
+      changePassword,
       resetInactivityTimer,
     }),
     [isAuthenticated, isAuthLoading, currentUser, registeredUsers, profilePicUri, isLocked, resetInactivityTimer],

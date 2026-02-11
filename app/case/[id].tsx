@@ -609,7 +609,7 @@ export default function CaseDetailScreen() {
               : "";
             const userInitials = entryUserName
               ? entryUserName.split(" ").map((w: string) => w.charAt(0).toUpperCase()).join("").slice(0, 2)
-              : (isStation ? "" : (role === "admin" ? "A" : "T"));
+              : (isStation ? "" : (role === "admin" ? "A" : "U"));
 
             return (
               <View key={entry.id || idx} style={styles.timelineItem}>

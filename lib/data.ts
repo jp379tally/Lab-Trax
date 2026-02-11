@@ -1,4 +1,4 @@
-export type UserRole = "tech" | "admin";
+export type UserRole = "user" | "admin";
 
 export type CaseStatus =
   | "INTAKE"
@@ -149,7 +149,7 @@ export interface Group {
 export interface GroupMember {
   userId: string;
   username: string;
-  role: "admin" | "tech";
+  role: "admin" | "user";
   joinedAt: number;
 }
 
@@ -525,7 +525,7 @@ export interface LabUser {
   id: string;
   name: string;
   email: string;
-  role: "tech" | "admin";
+  role: "user" | "admin";
   station: string;
   active: boolean;
   createdAt: number;
@@ -641,7 +641,7 @@ export const SAMPLE_USERS: LabUser[] = [
     id: generateId(),
     name: "Jordan Lee",
     email: "jordan@drivesynclab.com",
-    role: "tech",
+    role: "user",
     station: "Design",
     active: true,
     createdAt: Date.now() - 86400000 * 180,
@@ -650,7 +650,7 @@ export const SAMPLE_USERS: LabUser[] = [
     id: generateId(),
     name: "Sam Torres",
     email: "sam@drivesynclab.com",
-    role: "tech",
+    role: "user",
     station: "Porcelain",
     active: true,
     createdAt: Date.now() - 86400000 * 90,
@@ -659,7 +659,7 @@ export const SAMPLE_USERS: LabUser[] = [
     id: generateId(),
     name: "Maya Chen",
     email: "maya@drivesynclab.com",
-    role: "tech",
+    role: "user",
     station: "Wax-Up",
     active: false,
     createdAt: Date.now() - 86400000 * 60,
