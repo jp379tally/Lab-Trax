@@ -41,11 +41,31 @@ Preferred communication style: Simple, everyday language.
 - **Production Build**: Custom build script (`scripts/build.js`) that bundles the Expo web app, then `esbuild` bundles the server. The production server serves the static Expo build.
 - **Database Migrations**: `drizzle-kit push` command configured for schema synchronization
 
+### 3-Portal Architecture
+The app has three portals in a hierarchy: Master Admin → Lab Portal / Provider Portal
+
+1. **Master Admin Portal** (userType: `master_admin`)
+   - Default user: JPPhillips (password: Master1!, email: john.phillips3@yahoo.com, phone: 850-363-3336)
+   - "Control Center" dashboard with gold-themed hero card
+   - Full access: Search Groups, All Users, Create Group, Lab Portal Overview, Provider Portal Overview
+   - Can add/remove users from groups, create/delete groups
+   - Sign out button in header
+
+2. **Lab Portal** (userType: `lab` or default)
+   - Admin role: Full access to Admin Master Hub (clients, users, invoices, sales, inventory, shipping, pricing)
+   - User role: TechDashboard only, NO admin drawer option, no sales access
+   - Admin unlock requires biometric/Face ID authentication
+
+3. **Provider Portal** (userType: `provider`)
+   - Admin role: Settings with user management and group creation
+   - User role: View own cases, settings menu
+
 ### Role-Based Access
 - Two roles: `user` (standard user) and `admin` (administrator)
-- Admin role requires an additional unlock step (`adminUnlocked` flag)
+- Admin role requires an additional unlock step (`adminUnlocked` flag) in Lab Portal
 - Price information is only visible when role is admin AND admin is unlocked
-- Role switching is available in the Profile tab
+- Lab users (non-admin role) cannot see the Admin option in the side drawer
+- Role switching is available in the Profile tab (Lab Portal only)
 
 ### Admin Master Hub Navigation
 - Hub → "Clients" group → client-hub (Add Client, Edit Client, Client List, Edit Pricing, Edit Tier Pricing)
