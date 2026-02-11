@@ -103,14 +103,13 @@ export default function CasesScreen() {
           <Text style={styles.caseDue}>{item.caseNumber} · Due: {item.dueDate}</Text>
           {showChartBtn && (
             <Pressable
-              onPress={(e) => {
-                e.stopPropagation();
+              onPress={() => {
                 router.push(`/chart-history?patient=${encodeURIComponent(item.patientName)}`);
               }}
               style={styles.chartHistoryChip}
-              hitSlop={8}
+              testID={`chart-history-${item.id}`}
             >
-              <Ionicons name="play-circle" size={14} color="#3B82F6" />
+              <Ionicons name="play-circle" size={16} color="#3B82F6" />
               <Text style={styles.chartHistoryChipText}>{patientCaseCount}</Text>
             </Pressable>
           )}
