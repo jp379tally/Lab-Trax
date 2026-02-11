@@ -1246,10 +1246,13 @@ type AdminView =
   | "statements"
   | "sales"
   | "shipping"
-  | "inventory";
+  | "inventory"
+  | "create-group"
+  | "lab-users";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem } = useApp();
+  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup } = useApp();
+  const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const [adminView, setAdminView] = useState<AdminView>("hub");
@@ -1328,6 +1331,14 @@ function AdminDashboard() {
   const [newInvUnit, setNewInvUnit] = useState("pcs");
   const [editingInvItem, setEditingInvItem] = useState<InventoryItem | null>(null);
   const [editInvQty, setEditInvQty] = useState("");
+
+  const [newGroupNameAdmin, setNewGroupNameAdmin] = useState("");
+  const [newGroupAddressAdmin, setNewGroupAddressAdmin] = useState("");
+  const [newGroupTypeAdmin, setNewGroupTypeAdmin] = useState<"provider" | "lab">("lab");
+  const [selectedLabGroup, setSelectedLabGroup] = useState<Group | null>(null);
+  const [labUserSearchQuery, setLabUserSearchQuery] = useState("");
+
+  const labPortalUsers = registeredUsers.filter(u => (u.userType === "lab" || (!u.userType && u.username !== "JPPhillips")) && u.username !== "JPPhillips");
 
   function resetClientForm() {
     setNewClientName("");
@@ -1446,6 +1457,8 @@ function AdminDashboard() {
       { icon: "trending-up", iconSet: "ion", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
       { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
       { icon: "cube", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items tracked`, view: "inventory" as AdminView },
+      { icon: "add-circle", iconSet: "ion", color: "#059669", bg: "#ECFDF5", title: "Create Group", sub: "Create a new user group", view: "create-group" as AdminView },
+      { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Add Users", sub: `${labPortalUsers.length} lab users · Assign to groups`, view: "lab-users" as AdminView },
     ];
 
     return (
