@@ -2,7 +2,7 @@
 
 ## Overview
 
-DriveSync Lab is a dental laboratory case management application built with Expo (React Native) for the frontend and Express.js for the backend. It allows dental lab technicians and administrators to track lab cases through various production stations (intake, design, wax-up, casting, finishing, etc.), manage clients, handle invoicing, and receive notifications. The app supports two user roles: **tech** (lab technician) and **admin** (lab administrator), with role-based access to pricing and administrative features.
+DriveSync Lab is a dental laboratory case management application built with Expo (React Native) for the frontend and Express.js for the backend. It allows dental lab users and administrators to track lab cases through various production stations (intake, design, porcelain, QC, shipping, etc.), manage clients, handle invoicing, and receive notifications. The app supports two user roles: **user** (standard user) and **admin** (administrator), with role-based access to pricing, inventory, and administrative features. Provider-type users get a separate Provider Portal dashboard.
 
 ## User Preferences
 
@@ -42,7 +42,7 @@ Preferred communication style: Simple, everyday language.
 - **Database Migrations**: `drizzle-kit push` command configured for schema synchronization
 
 ### Role-Based Access
-- Two roles: `tech` (technician) and `admin` (administrator)
+- Two roles: `user` (standard user) and `admin` (administrator)
 - Admin role requires an additional unlock step (`adminUnlocked` flag)
 - Price information is only visible when role is admin AND admin is unlocked
 - Role switching is available in the Profile tab
@@ -50,7 +50,30 @@ Preferred communication style: Simple, everyday language.
 ### Admin Master Hub Navigation
 - Hub → "Clients" group → client-hub (Add Client, Edit Client, Client List, Edit Pricing, Edit Tier Pricing)
 - Hub → "Users" group → user-hub (Add User, Edit User with group management)
-- Hub → Invoices, Statements, Shipping, Sales (direct navigation)
+- Hub → Invoices, Statements, Shipping, Sales, Inventory (direct navigation)
+
+### Inventory Tracking (Admin Only)
+- Accessible from Admin Master Hub → Inventory
+- Data model: `InventoryItem` (id, name, category, quantity, minQuantity, unit, supplier, lastOrdered, notes)
+- Categories: Materials, Supplies, Tools
+- Features: Add/edit/remove items, quick +/- quantity adjustment, low stock alerts, category filtering
+- Context functions: `addInventoryItem`, `updateInventoryItem`, `removeInventoryItem`
+
+### Provider Portal Dashboard
+- Users who sign up as "provider" type see a separate Provider Portal dashboard
+- Shows their cases with Active/Completed breakdown, blue-themed hero card
+- `userType` stored in auth context ("provider" | "lab"), determines which dashboard renders
+
+### Barcode Reader
+- Available on Scan tab via "Scan Barcode" button
+- Uses expo-camera's CameraView with barcode scanning (QR, Code128, Code39, EAN13, EAN8, UPC-A)
+- Scanned barcode data is matched against case IDs/numbers, navigates to case detail if found
+
+### Remake Detection Flow
+- After duplicate case detected and label printed: "Is this a remake?" → reason selection (Doesn't Fit, Open Margins, Open Contacts, Wrong Shade, Other) → recharge yes/no
+- No recharge: case marked isRemake=true, price=0, remakeReason set, auto-invoice removed, case attached to existing invoice
+- Recharge: case keeps its own invoice, navigates to chart history
+- Context functions: `updateCase`, `removeInvoice`, `attachCaseToInvoice`
 
 ### Group-Based Permission System
 - Groups identified by practice/lab name + address
@@ -67,6 +90,8 @@ Preferred communication style: Simple, everyday language.
 - **Unlock Methods**: Biometric authentication (Face ID / Fingerprint) or password entry
 - **Touch Detection**: `PanResponder` in root layout (`app/_layout.tsx`) resets inactivity timer on any user interaction
 - **AppState Monitoring**: Timer adjusts when app goes to background/foreground
+- **Optional Face ID**: Face ID is NOT auto-prompted on login; users manually tap a biometric button to authenticate
+- **Change Password**: Available in Profile → Credentials section, validates current password, enforces password complexity (8+ chars, uppercase, lowercase, special char)
 
 ### Global Chat System
 - **ChatButton component** (`components/ChatButton.tsx`): Shared component displayed on Dashboard, Cases, Notifications, Profile, and Case Detail pages
