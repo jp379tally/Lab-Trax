@@ -118,6 +118,8 @@ export default function ScanScreen() {
   const [newPatientInput, setNewPatientInput] = useState("");
   const [addingNewDoctor, setAddingNewDoctor] = useState(false);
   const [newDoctorInput, setNewDoctorInput] = useState("");
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [barcodeScanned, setBarcodeScanned] = useState(false);
 
   const filteredClients = clients.filter((c) => {
     const q = doctorSearch.toLowerCase();
@@ -576,6 +578,40 @@ export default function ScanScreen() {
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
+  }
+
+  function handleBarcodeScanned({ data }: { data: string }) {
+    if (barcodeScanned) return;
+    setBarcodeScanned(true);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    const foundCase = cases.find(c => c.id === data || c.caseNumber === data);
+    if (foundCase) {
+      setShowBarcodeScanner(false);
+      setBarcodeScanned(false);
+      router.push(`/case/${foundCase.id}`);
+    } else {
+      Alert.alert("Case Not Found", `No case found with ID: ${data}`, [
+        { text: "Scan Again", onPress: () => setBarcodeScanned(false) },
+        { text: "Close", onPress: () => { setShowBarcodeScanner(false); setBarcodeScanned(false); } },
+      ]);
+    }
+  }
+
+  async function openBarcodeScanner() {
+    if (Platform.OS === "web") {
+      setShowBarcodeScanner(true);
+      return;
+    }
+    if (!permission?.granted) {
+      const result = await requestPermission();
+      if (!result.granted) {
+        Alert.alert("Camera Permission", "Camera access is needed to scan barcodes.");
+        return;
+      }
+    }
+    setShowBarcodeScanner(true);
+    setBarcodeScanned(false);
   }
 
   async function handleAddMorePhotos() {
@@ -1903,6 +1939,13 @@ export default function ScanScreen() {
               />
               <Text style={styles.manualEntryLinkText}>Manual Entry</Text>
             </Pressable>
+            <Pressable
+              onPress={openBarcodeScanner}
+              style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="barcode-outline" size={22} color="#FFF" />
+              <Text style={styles.barcodeBtnText}>Scan Barcode</Text>
+            </Pressable>
           </View>
         )}
         {phase === "scanning" && (
@@ -1937,6 +1980,33 @@ export default function ScanScreen() {
           </View>
         )}
       </View>
+
+      <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
+        <View style={{ flex: 1, backgroundColor: "#000" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
+            <Pressable onPress={() => setShowBarcodeScanner(false)}>
+              <Ionicons name="close" size={28} color="#FFF" />
+            </Pressable>
+          </View>
+          {Platform.OS !== "web" ? (
+            <CameraView
+              style={{ flex: 1 }}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
+              onBarcodeScanned={barcodeScanned ? undefined : handleBarcodeScanned}
+            />
+          ) : (
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+              <Ionicons name="barcode-outline" size={64} color="#666" />
+              <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium" }}>Barcode scanning requires a mobile device</Text>
+            </View>
+          )}
+          <View style={{ padding: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>
+            <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={labelModalVisible}
@@ -3436,6 +3506,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_500Medium",
     color: "rgba(255,255,255,0.6)",
+  },
+  barcodeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#6366F1",
+    borderRadius: 14,
+    paddingVertical: 14,
+    marginTop: 8,
+  },
+  barcodeBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
   },
   adaChartContainer: {
     paddingVertical: 8,

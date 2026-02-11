@@ -33,6 +33,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isAuthLoading: boolean;
   currentUser: string | null;
+  userType: "provider" | "lab" | null;
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
@@ -65,6 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [userType, setUserType] = useState<"provider" | "lab" | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<StoredUser[]>([]);
   const [profilePicUri, setProfilePicUriState] = useState<string | null>(null);
   const [isLocked, setIsLocked] = useState(false);
@@ -140,6 +142,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (auth.loggedIn && auth.username) {
           setIsAuthenticated(true);
           setCurrentUser(auth.username);
+          const matchedUser = mergedUsers.find(
+            (u) => u.username.toLowerCase() === auth.username.toLowerCase(),
+          );
+          setUserType(matchedUser?.userType || "lab");
         }
       }
     } catch (e) {
@@ -184,6 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setIsAuthenticated(true);
     setCurrentUser(found.username);
+    setUserType(found.userType || "lab");
     await AsyncStorage.setItem(
       AUTH_KEY,
       JSON.stringify({ loggedIn: true, username: found.username }),
@@ -254,6 +261,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setIsAuthenticated(true);
     setCurrentUser(data.username);
+    setUserType(data.userType || "lab");
     await AsyncStorage.setItem(
       AUTH_KEY,
       JSON.stringify({ loggedIn: true, username: data.username }),
@@ -264,6 +272,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function logout() {
     setIsAuthenticated(false);
     setCurrentUser(null);
+    setUserType(null);
     setIsLocked(false);
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     AsyncStorage.removeItem(AUTH_KEY);
@@ -325,6 +334,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated,
       isAuthLoading,
       currentUser,
+      userType,
       profilePicUri,
       setProfilePicUri,
       login,
@@ -338,7 +348,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       changePassword,
       resetInactivityTimer,
     }),
-    [isAuthenticated, isAuthLoading, currentUser, registeredUsers, profilePicUri, isLocked, resetInactivityTimer],
+    [isAuthenticated, isAuthLoading, currentUser, userType, registeredUsers, profilePicUri, isLocked, resetInactivityTimer],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

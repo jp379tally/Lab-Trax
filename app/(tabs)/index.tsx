@@ -3383,8 +3383,147 @@ function AdminDashboard() {
   }
 }
 
+function ProviderDashboard() {
+  const { cases } = useApp();
+  const { currentUser } = useAuth();
+  const insets = useSafeAreaInsets();
+
+  const myCases = cases;
+  const activeCases = myCases.filter(c => c.status !== "COMPLETE" && c.status !== "HOLD");
+  const completedCases = myCases.filter(c => c.status === "COMPLETE");
+  const inProgressCount = activeCases.length;
+  const completedCount = completedCases.length;
+
+  return (
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{
+        paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+        paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
+      }}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.greeting}>Provider Portal</Text>
+          <Text style={styles.headerTitle}>
+            {currentUser ? `Dr. ${currentUser.charAt(0).toUpperCase() + currentUser.slice(1)}` : "Provider"}
+          </Text>
+        </View>
+      </View>
+
+      <LinearGradient
+        colors={["#1E40AF", "#3B82F6"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.heroCard}
+      >
+        <Text style={[styles.heroLabel, { opacity: 0.7 }]}>YOUR CASES</Text>
+        <Text style={styles.heroCount}>{myCases.length}</Text>
+        <View style={{ flexDirection: "row", gap: 12, marginTop: 8 }}>
+          <View style={{ backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
+            <Text style={{ color: "#FFF", fontSize: 12, fontFamily: "Inter_500Medium" }}>{inProgressCount} Active</Text>
+          </View>
+          <View style={{ backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
+            <Text style={{ color: "#FFF", fontSize: 12, fontFamily: "Inter_500Medium" }}>{completedCount} Completed</Text>
+          </View>
+        </View>
+      </LinearGradient>
+
+      <View style={{ paddingHorizontal: 20, marginTop: 20 }}>
+        <Text style={[styles.sectionTitle, { marginBottom: 12 }]}>Active Cases</Text>
+        {activeCases.length === 0 ? (
+          <View style={{ padding: 24, alignItems: "center" }}>
+            <Ionicons name="document-text-outline" size={40} color={Colors.light.textTertiary} />
+            <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 8 }}>No active cases</Text>
+          </View>
+        ) : (
+          activeCases.slice(0, 10).map(c => (
+            <Pressable
+              key={c.id}
+              style={({ pressed }) => [provStyles.caseCard, pressed && { opacity: 0.8 }]}
+              onPress={() => router.push(`/case/${c.id}`)}
+            >
+              <View style={[provStyles.statusDot, { backgroundColor: getStationInfo(c.status).color }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={provStyles.caseName}>{c.patientName}</Text>
+                <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+              </View>
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={[provStyles.caseStatus, { color: getStationInfo(c.status).color }]}>{getStationInfo(c.status).label}</Text>
+                {c.dueDate && <Text style={provStyles.caseDue}>Due: {c.dueDate}</Text>}
+              </View>
+            </Pressable>
+          ))
+        )}
+      </View>
+
+      {completedCases.length > 0 && (
+        <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
+          <Text style={[styles.sectionTitle, { marginBottom: 12 }]}>Recently Completed</Text>
+          {completedCases.slice(0, 5).map(c => (
+            <Pressable
+              key={c.id}
+              style={({ pressed }) => [provStyles.caseCard, pressed && { opacity: 0.8 }]}
+              onPress={() => router.push(`/case/${c.id}`)}
+            >
+              <View style={[provStyles.statusDot, { backgroundColor: Colors.light.success }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={provStyles.caseName}>{c.patientName}</Text>
+                <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+              </View>
+              <Ionicons name="checkmark-circle" size={20} color={Colors.light.success} />
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </ScrollView>
+  );
+}
+
+const provStyles = StyleSheet.create({
+  caseCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  caseName: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  caseSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
+  caseStatus: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+  },
+  caseDue: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
+});
+
 export default function DashboardScreen() {
   const { role, adminUnlocked, isLoading } = useApp();
+  const { userType } = useAuth();
 
   if (isLoading) {
     return (
@@ -3392,6 +3531,10 @@ export default function DashboardScreen() {
         <ActivityIndicator size="large" color={Colors.light.tint} />
       </View>
     );
+  }
+
+  if (userType === "provider") {
+    return <ProviderDashboard />;
   }
 
   if (role === "admin" && !adminUnlocked) {
