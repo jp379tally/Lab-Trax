@@ -18,7 +18,7 @@ interface StoredUser {
   email?: string;
   phone?: string;
   wantsUpdates?: boolean;
-  userType?: "provider" | "lab";
+  userType?: "provider" | "lab" | "master_admin";
   licenseNumber?: string;
   practiceName?: string;
   doctorName?: string;
@@ -33,7 +33,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isAuthLoading: boolean;
   currentUser: string | null;
-  userType: "provider" | "lab" | null;
+  userType: "provider" | "lab" | "master_admin" | null;
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
@@ -58,6 +58,7 @@ const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
 const DEFAULT_USERS: StoredUser[] = [
   { username: "admin", password: "123" },
   { username: "tech", password: "tech123" },
+  { username: "JPPhillips", password: "Master1!", email: "john.phillips3@yahoo.com", phone: "850-363-3336", userType: "master_admin", role: "admin", accountNumber: "MA-001" },
 ];
 
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
@@ -66,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
-  const [userType, setUserType] = useState<"provider" | "lab" | null>(null);
+  const [userType, setUserType] = useState<"provider" | "lab" | "master_admin" | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<StoredUser[]>([]);
   const [profilePicUri, setProfilePicUriState] = useState<string | null>(null);
   const [isLocked, setIsLocked] = useState(false);
@@ -215,7 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }): Promise<{ success: boolean; error?: string }> {
+  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }): Promise<{ success: boolean; error?: string }> {
     const savedRaw = await AsyncStorage.getItem(USERS_STORE_KEY);
     let allUsers = [...DEFAULT_USERS];
     if (savedRaw) {
