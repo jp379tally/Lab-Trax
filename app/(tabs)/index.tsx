@@ -3527,100 +3527,458 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases } = useApp();
-  const { currentUser } = useAuth();
+  const { cases, role, adminUnlocked, createGroup, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups } = useApp();
+  const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
 
-  const myCases = cases;
+  const [showSettings, setShowSettings] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
+  const [showUsersAdmin, setShowUsersAdmin] = useState(false);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupAddress, setNewGroupAddress] = useState("");
+  const [newGroupType, setNewGroupType] = useState<"provider" | "lab">("provider");
+
+  const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+  const myDoctorName = currentUserData?.doctorName || currentUser || "";
+  const myCases = cases.filter(c =>
+    c.doctorName.toLowerCase() === myDoctorName.toLowerCase() ||
+    c.doctorName.toLowerCase().includes((currentUser || "").toLowerCase())
+  );
   const activeCases = myCases.filter(c => c.status !== "COMPLETE" && c.status !== "HOLD");
   const completedCases = myCases.filter(c => c.status === "COMPLETE");
   const inProgressCount = activeCases.length;
   const completedCount = completedCases.length;
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{
-        paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-        paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
-      }}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.headerRow}>
-        <View>
-          <Text style={styles.greeting}>Provider Portal</Text>
-          <Text style={styles.headerTitle}>
-            {currentUser ? `Dr. ${currentUser.charAt(0).toUpperCase() + currentUser.slice(1)}` : "Provider"}
-          </Text>
-        </View>
-      </View>
-
-      <LinearGradient
-        colors={["#1E40AF", "#3B82F6"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.heroCard}
+    <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
+        }}
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={[styles.heroLabel, { opacity: 0.7 }]}>YOUR CASES</Text>
-        <Text style={styles.heroCount}>{myCases.length}</Text>
-        <View style={{ flexDirection: "row", gap: 12, marginTop: 8 }}>
-          <View style={{ backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
-            <Text style={{ color: "#FFF", fontSize: 12, fontFamily: "Inter_500Medium" }}>{inProgressCount} Active</Text>
+        <View style={styles.headerRow}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            {profilePicUri ? (
+              <Image source={{ uri: profilePicUri }} style={{ width: 48, height: 48, borderRadius: 24 }} />
+            ) : (
+              <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: "#1E40AF", justifyContent: "center", alignItems: "center" }}>
+                <Text style={{ color: "#FFF", fontSize: 20, fontFamily: "Inter_700Bold" }}>{(currentUser || "P").charAt(0).toUpperCase()}</Text>
+              </View>
+            )}
+            <View>
+              <Text style={styles.greeting}>Provider Portal</Text>
+              <Text style={styles.headerTitle}>
+                {currentUser ? `Dr. ${currentUser.charAt(0).toUpperCase() + currentUser.slice(1)}` : "Provider"}
+              </Text>
+            </View>
           </View>
-          <View style={{ backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
-            <Text style={{ color: "#FFF", fontSize: 12, fontFamily: "Inter_500Medium" }}>{completedCount} Completed</Text>
+          <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
+            <ChatButton />
+            <Pressable onPress={() => setShowSettings(true)}>
+              <Ionicons name="settings-outline" size={24} color={Colors.light.text} />
+            </Pressable>
           </View>
         </View>
-      </LinearGradient>
 
-      <View style={{ paddingHorizontal: 20, marginTop: 20 }}>
-        <Text style={[styles.sectionTitle, { marginBottom: 12 }]}>Active Cases</Text>
-        {activeCases.length === 0 ? (
-          <View style={{ padding: 24, alignItems: "center" }}>
-            <Ionicons name="document-text-outline" size={40} color={Colors.light.textTertiary} />
-            <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 8 }}>No active cases</Text>
+        <LinearGradient
+          colors={["#1E40AF", "#3B82F6"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.heroCard}
+        >
+          <Text style={[styles.heroLabel, { opacity: 0.7 }]}>YOUR CASES</Text>
+          <Text style={styles.heroCount}>{myCases.length}</Text>
+          <View style={{ flexDirection: "row", gap: 12, marginTop: 8 }}>
+            <View style={{ backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
+              <Text style={{ color: "#FFF", fontSize: 12, fontFamily: "Inter_500Medium" }}>{inProgressCount} Active</Text>
+            </View>
+            <View style={{ backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
+              <Text style={{ color: "#FFF", fontSize: 12, fontFamily: "Inter_500Medium" }}>{completedCount} Completed</Text>
+            </View>
           </View>
-        ) : (
-          activeCases.slice(0, 10).map(c => (
-            <Pressable
-              key={c.id}
-              style={({ pressed }) => [provStyles.caseCard, pressed && { opacity: 0.8 }]}
-              onPress={() => router.push(`/case/${c.id}`)}
-            >
-              <View style={[provStyles.statusDot, { backgroundColor: getStationInfo(c.status).color }]} />
-              <View style={{ flex: 1 }}>
-                <Text style={provStyles.caseName}>{c.patientName}</Text>
-                <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
-              </View>
-              <View style={{ alignItems: "flex-end" }}>
-                <Text style={[provStyles.caseStatus, { color: getStationInfo(c.status).color }]}>{getStationInfo(c.status).label}</Text>
-                {c.dueDate && <Text style={provStyles.caseDue}>Due: {c.dueDate}</Text>}
-              </View>
-            </Pressable>
-          ))
+        </LinearGradient>
+
+        <View style={{ paddingHorizontal: 20, marginTop: 20 }}>
+          <Text style={[styles.sectionTitle, { marginBottom: 12 }]}>Active Cases</Text>
+          {activeCases.length === 0 ? (
+            <View style={{ padding: 24, alignItems: "center" }}>
+              <Ionicons name="document-text-outline" size={40} color={Colors.light.textTertiary} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 8 }}>No active cases</Text>
+            </View>
+          ) : (
+            activeCases.slice(0, 10).map(c => (
+              <Pressable
+                key={c.id}
+                style={({ pressed }) => [provStyles.caseCard, pressed && { opacity: 0.8 }]}
+                onPress={() => router.push(`/case/${c.id}`)}
+              >
+                <View style={[provStyles.statusDot, { backgroundColor: getStationInfo(c.status).color }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={provStyles.caseName}>{c.patientName}</Text>
+                  <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+                </View>
+                <View style={{ alignItems: "flex-end" }}>
+                  <Text style={[provStyles.caseStatus, { color: getStationInfo(c.status).color }]}>{getStationInfo(c.status).label}</Text>
+                  {c.dueDate && <Text style={provStyles.caseDue}>Due: {c.dueDate}</Text>}
+                </View>
+              </Pressable>
+            ))
+          )}
+        </View>
+
+        {completedCases.length > 0 && (
+          <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
+            <Text style={[styles.sectionTitle, { marginBottom: 12 }]}>Recently Completed</Text>
+            {completedCases.slice(0, 5).map(c => (
+              <Pressable
+                key={c.id}
+                style={({ pressed }) => [provStyles.caseCard, pressed && { opacity: 0.8 }]}
+                onPress={() => router.push(`/case/${c.id}`)}
+              >
+                <View style={[provStyles.statusDot, { backgroundColor: Colors.light.success }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={provStyles.caseName}>{c.patientName}</Text>
+                  <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+                </View>
+                <Ionicons name="checkmark-circle" size={20} color={Colors.light.success} />
+              </Pressable>
+            ))}
+          </View>
         )}
-      </View>
+      </ScrollView>
 
-      {completedCases.length > 0 && (
-        <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
-          <Text style={[styles.sectionTitle, { marginBottom: 12 }]}>Recently Completed</Text>
-          {completedCases.slice(0, 5).map(c => (
-            <Pressable
-              key={c.id}
-              style={({ pressed }) => [provStyles.caseCard, pressed && { opacity: 0.8 }]}
-              onPress={() => router.push(`/case/${c.id}`)}
-            >
-              <View style={[provStyles.statusDot, { backgroundColor: Colors.light.success }]} />
-              <View style={{ flex: 1 }}>
-                <Text style={provStyles.caseName}>{c.patientName}</Text>
-                <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
-              </View>
-              <Ionicons name="checkmark-circle" size={20} color={Colors.light.success} />
+      <Modal
+        transparent
+        visible={showSettings}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setShowSettings(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Settings</Text>
+            <Pressable onPress={() => setShowSettings(false)}>
+              <Ionicons name="close" size={28} color={Colors.light.text} />
             </Pressable>
-          ))}
+          </View>
+          <ScrollView style={{ flex: 1, padding: 20 }}>
+            <View style={{ alignItems: "center", marginBottom: 24 }}>
+              <Pressable onPress={async () => {
+                const result = await ImagePicker.launchImageLibraryAsync({
+                  mediaTypes: "images",
+                  allowsEditing: true,
+                  aspect: [1, 1],
+                  quality: 0.8,
+                });
+                if (!result.canceled && result.assets[0]) {
+                  setProfilePicUri(result.assets[0].uri);
+                }
+              }}>
+                {profilePicUri ? (
+                  <Image source={{ uri: profilePicUri }} style={{ width: 80, height: 80, borderRadius: 40 }} />
+                ) : (
+                  <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: "#1E40AF", justifyContent: "center", alignItems: "center" }}>
+                    <Text style={{ color: "#FFF", fontSize: 28, fontFamily: "Inter_700Bold" }}>{(currentUser || "P").charAt(0).toUpperCase()}</Text>
+                  </View>
+                )}
+                <View style={{ position: "absolute", bottom: 0, right: 0, backgroundColor: Colors.light.tint, width: 28, height: 28, borderRadius: 14, justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: "#FFF" }}>
+                  <Ionicons name="camera" size={14} color="#FFF" />
+                </View>
+              </Pressable>
+              <Text style={{ marginTop: 8, fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{currentUser || "Provider"}</Text>
+            </View>
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 8, letterSpacing: 0.5 }}>ACCOUNT</Text>
+            <Pressable
+              style={({ pressed }) => ({
+                flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface,
+                borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border,
+                opacity: pressed ? 0.7 : 1,
+              })}
+              onPress={() => { setShowChangePassword(true); setPasswordError(null); setPasswordSuccess(false); setCurrentPasswordInput(""); setNewPassword(""); setConfirmNewPassword(""); }}
+            >
+              <Ionicons name="lock-closed-outline" size={20} color={Colors.light.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>Change Password</Text>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginTop: 24, marginBottom: 8, letterSpacing: 0.5 }}>ADMINISTRATION</Text>
+            <Pressable
+              style={({ pressed }) => ({
+                flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface,
+                borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border,
+                opacity: pressed ? 0.7 : 1,
+              })}
+              onPress={() => { setShowSettings(false); setShowUsersAdmin(true); }}
+            >
+              <Ionicons name="people-outline" size={20} color={Colors.light.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>Users</Text>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => ({
+                flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface,
+                borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border,
+                opacity: pressed ? 0.7 : 1,
+              })}
+              onPress={() => { setShowSettings(false); setShowCreateGroup(true); }}
+            >
+              <MaterialCommunityIcons name="account-group-outline" size={20} color={Colors.light.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>Create Group</Text>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => ({
+                flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                backgroundColor: "#FEE2E2", borderRadius: 14, padding: 16, marginTop: 24,
+                opacity: pressed ? 0.7 : 1,
+              })}
+              onPress={() => {
+                Alert.alert("Sign Out", "Are you sure you want to sign out?", [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Sign Out", style: "destructive", onPress: () => { setShowSettings(false); logout(); } },
+                ]);
+              }}
+            >
+              <Ionicons name="log-out-outline" size={20} color="#DC2626" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#DC2626" }}>Sign Out</Text>
+            </Pressable>
+          </ScrollView>
         </View>
-      )}
-    </ScrollView>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={showChangePassword}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setShowChangePassword(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+          <View style={{ backgroundColor: "#FFF", borderRadius: 20, width: "100%", maxWidth: 400, padding: 24 }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 20 }}>Change Password</Text>
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>Current Password</Text>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: Colors.light.border, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 16 }}
+              secureTextEntry
+              value={currentPasswordInput}
+              onChangeText={setCurrentPasswordInput}
+              placeholder="Enter current password"
+            />
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>New Password</Text>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: Colors.light.border, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 16 }}
+              secureTextEntry
+              value={newPassword}
+              onChangeText={setNewPassword}
+              placeholder="Enter new password"
+            />
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>Confirm New Password</Text>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: Colors.light.border, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 16 }}
+              secureTextEntry
+              value={confirmNewPassword}
+              onChangeText={setConfirmNewPassword}
+              placeholder="Confirm new password"
+            />
+
+            {passwordError && <Text style={{ color: "#DC2626", fontSize: 13, fontFamily: "Inter_500Medium", marginBottom: 12 }}>{passwordError}</Text>}
+            {passwordSuccess && <Text style={{ color: "#16A34A", fontSize: 13, fontFamily: "Inter_500Medium", marginBottom: 12 }}>Password changed successfully!</Text>}
+
+            <View style={{ flexDirection: "row", gap: 12 }}>
+              <Pressable
+                style={({ pressed }) => ({ flex: 1, alignItems: "center" as const, paddingVertical: 14, borderRadius: 12, backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => setShowChangePassword(false)}
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => ({ flex: 1, alignItems: "center" as const, paddingVertical: 14, borderRadius: 12, backgroundColor: Colors.light.tint, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => {
+                  setPasswordError(null);
+                  setPasswordSuccess(false);
+                  if (!currentPasswordInput.trim()) {
+                    setPasswordError("Please enter your current password.");
+                    return;
+                  }
+                  if (newPassword.length < 8) {
+                    setPasswordError("New password must be at least 8 characters.");
+                    return;
+                  }
+                  if (!/[A-Z]/.test(newPassword)) {
+                    setPasswordError("Must contain an uppercase letter.");
+                    return;
+                  }
+                  if (!/[a-z]/.test(newPassword)) {
+                    setPasswordError("Must contain a lowercase letter.");
+                    return;
+                  }
+                  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(newPassword)) {
+                    setPasswordError("Must contain a special character.");
+                    return;
+                  }
+                  if (newPassword !== confirmNewPassword) {
+                    setPasswordError("Passwords do not match.");
+                    return;
+                  }
+                  const result = changePassword(currentPasswordInput, newPassword);
+                  if (result.success) {
+                    setPasswordSuccess(true);
+                    setCurrentPasswordInput("");
+                    setNewPassword("");
+                    setConfirmNewPassword("");
+                    setTimeout(() => setShowChangePassword(false), 1500);
+                  } else {
+                    setPasswordError(result.error || "Failed to change password.");
+                  }
+                }}
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={showUsersAdmin}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setShowUsersAdmin(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Users</Text>
+            <Pressable onPress={() => setShowUsersAdmin(false)}>
+              <Ionicons name="close" size={28} color={Colors.light.text} />
+            </Pressable>
+          </View>
+          <ScrollView style={{ flex: 1, padding: 20 }}>
+            {users.length === 0 ? (
+              <View style={{ padding: 40, alignItems: "center" }}>
+                <Ionicons name="people-outline" size={48} color={Colors.light.textTertiary} />
+                <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 12 }}>No users found</Text>
+              </View>
+            ) : (
+              users.map(u => {
+                const userGroups = getUserGroups(u.name);
+                return (
+                  <View key={u.id} style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                      <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.light.tint, justifyContent: "center", alignItems: "center" }}>
+                        <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_700Bold" }}>{u.name.charAt(0).toUpperCase()}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{u.name}</Text>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{u.role} · {u.email || "No email"}</Text>
+                      </View>
+                    </View>
+                    {userGroups.length > 0 && (
+                      <View style={{ marginTop: 8, flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                        {userGroups.map(g => (
+                          <View key={g.id} style={{ backgroundColor: Colors.light.tintLight, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.tint }}>{g.name}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                );
+              })
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={showCreateGroup}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setShowCreateGroup(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+          <View style={{ backgroundColor: "#FFF", borderRadius: 20, width: "100%", maxWidth: 400, padding: 24 }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 20 }}>Create Group</Text>
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>Group Name</Text>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: Colors.light.border, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 16 }}
+              value={newGroupName}
+              onChangeText={setNewGroupName}
+              placeholder="Practice / Lab Name"
+            />
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>Address</Text>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: Colors.light.border, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 16 }}
+              value={newGroupAddress}
+              onChangeText={setNewGroupAddress}
+              placeholder="123 Main St, City, State"
+            />
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>Type</Text>
+            <View style={{ flexDirection: "row", gap: 12, marginBottom: 20 }}>
+              <Pressable
+                style={{ flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: "center", backgroundColor: newGroupType === "provider" ? Colors.light.tint : Colors.light.surface, borderWidth: 1, borderColor: newGroupType === "provider" ? Colors.light.tint : Colors.light.border }}
+                onPress={() => setNewGroupType("provider")}
+              >
+                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: newGroupType === "provider" ? "#FFF" : Colors.light.text }}>Provider</Text>
+              </Pressable>
+              <Pressable
+                style={{ flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: "center", backgroundColor: newGroupType === "lab" ? Colors.light.tint : Colors.light.surface, borderWidth: 1, borderColor: newGroupType === "lab" ? Colors.light.tint : Colors.light.border }}
+                onPress={() => setNewGroupType("lab")}
+              >
+                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: newGroupType === "lab" ? "#FFF" : Colors.light.text }}>Lab</Text>
+              </Pressable>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 12 }}>
+              <Pressable
+                style={({ pressed }) => ({ flex: 1, alignItems: "center" as const, paddingVertical: 14, borderRadius: 12, backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => { setShowCreateGroup(false); setNewGroupName(""); setNewGroupAddress(""); }}
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => ({ flex: 1, alignItems: "center" as const, paddingVertical: 14, borderRadius: 12, backgroundColor: Colors.light.tint, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => {
+                  if (!newGroupName.trim()) {
+                    Alert.alert("Required", "Group name is required.");
+                    return;
+                  }
+                  if (!newGroupAddress.trim()) {
+                    Alert.alert("Required", "Address is required.");
+                    return;
+                  }
+                  createGroup(newGroupName.trim(), newGroupType, newGroupAddress.trim(), currentUser || "", "admin");
+                  Alert.alert("Group Created", `"${newGroupName.trim()}" has been created.`);
+                  setShowCreateGroup(false);
+                  setNewGroupName("");
+                  setNewGroupAddress("");
+                }}
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Create</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </View>
   );
 }
 
