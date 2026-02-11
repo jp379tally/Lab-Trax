@@ -760,9 +760,11 @@ export default function LoginScreen() {
               style={styles.input}
               value={practiceAddress}
               onChangeText={(t) => { setPracticeAddress(t); setSignUpError(null); }}
-              placeholder="Practice Address"
+              placeholder="Office Location"
               placeholderTextColor="rgba(255,255,255,0.3)"
               autoCapitalize="words"
+              textContentType="oneTimeCode"
+              autoComplete="off"
               testID="practice-address"
             />
             <Pressable
@@ -785,9 +787,11 @@ export default function LoginScreen() {
               style={styles.input}
               value={practicePhone}
               onChangeText={(t) => { setPracticePhone(t); setSignUpError(null); }}
-              placeholder="Practice Phone"
+              placeholder="Office Number"
               placeholderTextColor="rgba(255,255,255,0.3)"
               keyboardType="phone-pad"
+              textContentType="oneTimeCode"
+              autoComplete="off"
               testID="practice-phone"
             />
           </View>
