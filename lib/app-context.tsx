@@ -90,6 +90,9 @@ interface AppContextValue {
   getUserGroups: (username: string) => Group[];
   getGroupByNameAndAddress: (name: string, address: string) => Group | undefined;
   findOrCreateGroup: (name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "tech") => Group;
+  updateCase: (caseId: string, updates: Partial<LabCase>) => void;
+  removeInvoice: (invoiceId: string) => void;
+  attachCaseToInvoice: (caseId: string, invoiceId: string) => void;
   sendCourtesyText: (caseId: string, message: string, sentBy: string) => void;
   respondToCourtesyText: (caseId: string, courtesyTextId: string, wantsUpdatedDate: boolean, respondedBy: string) => void;
   proposeDeliveryDate: (caseId: string, courtesyTextId: string, proposedDate: string, proposedTime: string, proposedBy: string) => void;
@@ -531,6 +534,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return c;
       });
       AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function updateCase(caseId: string, updates: Partial<LabCase>) {
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          return { ...c, ...updates, updatedAt: Date.now() };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function removeInvoice(invoiceId: string) {
+    setInvoices((prev) => {
+      const updated = prev.filter((inv) => inv.id !== invoiceId);
+      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function attachCaseToInvoice(caseId: string, invoiceId: string) {
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          return { ...c, invoiceId, updatedAt: Date.now() };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+    setInvoices((prev) => {
+      const updated = prev.map((inv) => {
+        if (inv.id === invoiceId) {
+          const caseIds = inv.caseIds.includes(caseId) ? inv.caseIds : [...inv.caseIds, caseId];
+          return { ...inv, caseIds };
+        }
+        return inv;
+      });
+      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
       return updated;
     });
   }
@@ -1072,6 +1120,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       getUserGroups,
       getGroupByNameAndAddress,
       findOrCreateGroup,
+      updateCase,
+      removeInvoice,
+      attachCaseToInvoice,
       sendCourtesyText,
       respondToCourtesyText,
       proposeDeliveryDate,

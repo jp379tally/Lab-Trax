@@ -97,6 +97,7 @@ export interface LabCase {
   toothMap?: ToothEntry[];
   courtesyTexts?: CourtesyTextRequest[];
   invoiceId?: string;
+  remakeReason?: string;
 }
 
 export interface Notification {
@@ -235,8 +236,8 @@ export const SAMPLE_CASES: LabCase[] = [
     routeHistory: [
       { station: "INTAKE", timestamp: Date.now() - 86400000 * 10 },
       { station: "DESIGN", timestamp: Date.now() - 86400000 * 8 },
-      { station: "WAX", timestamp: Date.now() - 86400000 * 6 },
-      { station: "FINISH", timestamp: Date.now() - 86400000 * 4 },
+      { station: "PORCELAIN" as CaseStatus, timestamp: Date.now() - 86400000 * 6 },
+      { station: "PORCELAIN" as CaseStatus, timestamp: Date.now() - 86400000 * 4 },
       { station: "QC", timestamp: Date.now() - 86400000 * 3 },
     ],
     photos: [],

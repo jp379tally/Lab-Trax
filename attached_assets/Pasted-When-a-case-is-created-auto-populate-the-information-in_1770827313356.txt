@@ -1,0 +1,22 @@
+When a case is created auto populate the information in the invoice and attach the invoice as an attachment to the case
+
+The case history needs to be in chronological order with the most recent entry at the top
+
+for remake cases and cases with matching patient name there needs to be play button on all cases that allows you to view entire chart history. So if the patient comes in for a crown one day and then comes in for a night guard several months later you should be able to see all of those individual cases in one spot that spot can be called entire chart history
+
+I've already given you the parameters for what dictates A remake case but I don't see it active when testing so please fix that
+
+I also wasn't redirected to the entire chart history section once a patients name was duplicated or remake was generated so please fix that so please fix that
+
+Add an inventory tracking system for admin users only
+Add a barcode reader 
+
+After a duplicate case has been identified and the label has been printed ask the user is this a remake yes or no if the answer is no take the user back to the main screen with no further action. If the answer is yes ask the user remake reason and give options that say doesn't fit open margins open contacts wrong shade and other. Then ask the user is this a recharge if the answer is no please attach all new case entries to the existing invoice and do not generate a new invoice.  if the answer is yes generate a new invoice and charge.
+
+When a new user signs up as a dental provider under the create account section that indicates to select your role the two options need to be administrator and user please remove the technician roll
+
+When a new user signs in as a dental provider we need to be directed to a different dashboard that only shows active and completed cases for that dental provider.  The system for dental lab is completely and should be completely different from the system for dental provider. A dental provider should not have access to a dental lab system.
+
+When opening the app please remove the automatic face ID detection and just give the user an option to use face ID to log in
+
+Under each users setting option please give the option to change password once this option is selected ask the user to enter a new password once they do please ask confirm do you wish to change the password yes or no if they select yes change the user's password and send them a text alert

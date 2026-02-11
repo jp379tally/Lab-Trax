@@ -72,12 +72,13 @@ interface LabelData {
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { addCase, cases, clients, role, adminUnlocked } = useApp();
+  const { addCase, cases, clients, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice } = useApp();
   const { currentUser } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const showPrice = role === "admin" && adminUnlocked;
   const [labelModalVisible, setLabelModalVisible] = useState(false);
   const [labelData, setLabelData] = useState<LabelData | null>(null);
+  const [pendingRemakeCheck, setPendingRemakeCheck] = useState<{caseId: string, patientName: string} | null>(null);
   const [phase, setPhase] = useState<ScanPhase>("camera");
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
@@ -642,7 +643,7 @@ export default function ScanScreen() {
     }
   }
 
-  function createCase() {
+  function createCase(isDuplicate?: boolean) {
     const currentYear = new Date().getFullYear();
     const yy = String(currentYear).slice(-2);
     const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
@@ -659,11 +660,13 @@ export default function ScanScreen() {
       type: (toothTypes[num] || "normal") as ToothType,
     }));
 
-    addCase({
+    const savedPatientName = patientName.trim();
+
+    const newCase = addCase({
       caseNumber,
       doctorName: doctorName.trim(),
-      patientName: patientName.trim(),
-      patientInitials: patientName.trim().split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
+      patientName: savedPatientName,
+      patientInitials: savedPatientName.split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
       toothIndices: toothIndices.trim(),
       shade: shade.trim(),
       material,
@@ -687,7 +690,7 @@ export default function ScanScreen() {
     const savedLabel: LabelData = {
       caseNumber,
       doctorName: doctorName.trim(),
-      patientName: patientName.trim(),
+      patientName: savedPatientName,
       caseType: caseType || "",
       toothIndices: toothIndices.trim(),
       shade: shade.trim(),
@@ -698,6 +701,10 @@ export default function ScanScreen() {
       price: calculatedPrice,
       createdAt: createdStr,
     };
+
+    if (isDuplicate) {
+      setPendingRemakeCheck({ caseId: newCase.id, patientName: savedPatientName });
+    }
 
     resetForm();
     Alert.alert(
@@ -705,85 +712,59 @@ export default function ScanScreen() {
       `Case ${caseNumber} has been created and is now in Intake.`,
       [
         { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
-        { text: "Done", onPress: () => router.push("/(tabs)") },
+        { text: "Done", onPress: () => {
+          if (isDuplicate) {
+            startRemakeCheck(newCase.id, savedPatientName);
+          } else {
+            router.push("/(tabs)");
+          }
+        }},
       ],
     );
   }
 
-  function createCaseAsRemake() {
-    const currentYear = new Date().getFullYear();
-    const yy = String(currentYear).slice(-2);
-    const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
-    const maxN = yearCases.reduce((max, c) => {
-      const parts = c.caseNumber.split("-");
-      const n = parseInt(parts[1]) || 0;
-      return n > max ? n : max;
-    }, 0);
-    const nextN = maxN + 1;
-    const caseNumber = `${yy}-${nextN}`;
+  function startRemakeCheck(caseId: string, pName: string) {
+    setPendingRemakeCheck(null);
+    Alert.alert("Is this a remake?", "Was this case created to replace a previous case?", [
+      { text: "No", onPress: () => router.push("/(tabs)") },
+      { text: "Yes", onPress: () => askRemakeReason(caseId, pName) },
+    ]);
+  }
 
-    const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
-      num,
-      type: (toothTypes[num] || "normal") as ToothType,
-    }));
+  function askRemakeReason(caseId: string, pName: string) {
+    Alert.alert("Remake Reason", "Select the reason for the remake:", [
+      { text: "Doesn't Fit", onPress: () => askRecharge(caseId, pName, "Doesn't Fit") },
+      { text: "Open Margins", onPress: () => askRecharge(caseId, pName, "Open Margins") },
+      { text: "Open Contacts", onPress: () => askRecharge(caseId, pName, "Open Contacts") },
+      { text: "Wrong Shade", onPress: () => askRecharge(caseId, pName, "Wrong Shade") },
+      { text: "Other", onPress: () => askRecharge(caseId, pName, "Other") },
+    ]);
+  }
 
-    const remakeNotes = notes.trim()
-      ? `${notes.trim()}\n(REMAKE - No Charge)`
-      : "(REMAKE - No Charge)";
+  function askRecharge(caseId: string, pName: string, reason: string) {
+    Alert.alert("Recharge?", "Will this remake be recharged to the client?", [
+      { text: "No", onPress: () => handleNoRecharge(caseId, pName, reason) },
+      { text: "Yes", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(pName)}`) },
+    ]);
+  }
 
-    const savedPatient = patientName.trim();
-
-    addCase({
-      caseNumber,
-      doctorName: doctorName.trim(),
-      patientName: savedPatient,
-      patientInitials: savedPatient.split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
-      toothIndices: toothIndices.trim(),
-      shade: shade.trim(),
-      material,
-      status: "INTAKE",
-      isRush,
+  function handleNoRecharge(caseId: string, pName: string, reason: string) {
+    updateCase(caseId, {
       isRemake: true,
-      notes: remakeNotes,
       price: 0,
-      dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
-      photos: casePhotos,
-      activityLog: activityEntries,
-      toothMap: toothMapEntries,
+      remakeReason: reason,
+      notes: `Remake - ${reason}\n(REMAKE - No Charge)`,
     });
-
-    if (Platform.OS !== "web") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
-
-    const now = new Date();
-    const createdStr = `${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getDate().toString().padStart(2, "0")}/${now.getFullYear()}`;
-
-    const savedLabel: LabelData = {
-      caseNumber,
-      doctorName: doctorName.trim(),
-      patientName: savedPatient,
-      caseType: caseType || "",
-      toothIndices: toothIndices.trim(),
-      shade: shade.trim(),
-      material,
-      isRush,
-      dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
-      notes: remakeNotes,
-      price: 0,
-      createdAt: createdStr,
-    };
-
-    resetForm();
-    Alert.alert(
-      "Remake Case Added",
-      `Case ${caseNumber} has been created as a remake (No Charge).`,
-      [
-        { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
-        { text: "Chart History", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(savedPatient)}`) },
-        { text: "Done", onPress: () => router.push("/(tabs)") },
-      ],
+    const existingInvoice = invoices.find(inv =>
+      inv.patientName?.toLowerCase() === pName.toLowerCase() &&
+      inv.id !== cases.find(c => c.id === caseId)?.invoiceId
     );
+    if (existingInvoice) {
+      const autoInvoiceId = cases.find(c => c.id === caseId)?.invoiceId;
+      if (autoInvoiceId) removeInvoice(autoInvoiceId);
+      attachCaseToInvoice(caseId, existingInvoice.id);
+    }
+    router.push(`/chart-history?patient=${encodeURIComponent(pName)}`);
   }
 
   function handleSubmit() {
@@ -793,25 +774,6 @@ export default function ScanScreen() {
     }
     if (!patientName.trim()) {
       Alert.alert("Required", "Patient name is required");
-      return;
-    }
-
-    const remakeCandidates = cases.filter(c =>
-      (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase() &&
-      (c.toothIndices || "") === toothIndices.trim() &&
-      (caseType && c.caseType && c.caseType === caseType)
-    );
-
-    if (remakeCandidates.length > 0) {
-      Alert.alert(
-        "Possible Remake Detected",
-        `This appears to be a remake of case ${remakeCandidates[0].caseNumber}. Same tooth/case type found.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Remake (No Charge)", onPress: () => createCaseAsRemake() },
-          { text: "New Case (Charge)", onPress: () => createCase() },
-        ]
-      );
       return;
     }
 
@@ -827,11 +789,11 @@ export default function ScanScreen() {
         [
           { text: "Cancel", style: "cancel" },
           { text: "View Chart", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`) },
-          { text: "Add Case", onPress: () => createCase() },
+          { text: "Add Case", onPress: () => createCase(true) },
         ]
       );
     } else {
-      createCase();
+      createCase(false);
     }
   }
 
@@ -1981,13 +1943,31 @@ export default function ScanScreen() {
         transparent
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={() => { setLabelModalVisible(false); router.push("/(tabs)/cases"); }}
+        onRequestClose={() => {
+          setLabelModalVisible(false);
+          if (pendingRemakeCheck) {
+            const { caseId, patientName: pName } = pendingRemakeCheck;
+            setPendingRemakeCheck(null);
+            startRemakeCheck(caseId, pName);
+          } else {
+            router.push("/(tabs)/cases");
+          }
+        }}
       >
         <View style={labelStyles.overlay}>
           <View style={labelStyles.container}>
             <View style={labelStyles.header}>
               <Text style={labelStyles.headerTitle}>Case Label</Text>
-              <Pressable onPress={() => { setLabelModalVisible(false); router.push("/(tabs)/cases"); }} hitSlop={12}>
+              <Pressable onPress={() => {
+                setLabelModalVisible(false);
+                if (pendingRemakeCheck) {
+                  const { caseId, patientName: pName } = pendingRemakeCheck;
+                  setPendingRemakeCheck(null);
+                  startRemakeCheck(caseId, pName);
+                } else {
+                  router.push("/(tabs)/cases");
+                }
+              }} hitSlop={12}>
                 <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
               </Pressable>
             </View>
@@ -2081,7 +2061,16 @@ export default function ScanScreen() {
                 onPress={() => {
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Print", "Label sent to printer.", [
-                    { text: "OK", onPress: () => { setLabelModalVisible(false); router.push("/(tabs)/cases"); } },
+                    { text: "OK", onPress: () => {
+                      setLabelModalVisible(false);
+                      if (pendingRemakeCheck) {
+                        const { caseId, patientName: pName } = pendingRemakeCheck;
+                        setPendingRemakeCheck(null);
+                        startRemakeCheck(caseId, pName);
+                      } else {
+                        router.push("/(tabs)/cases");
+                      }
+                    }},
                   ]);
                 }}
               >
@@ -2090,7 +2079,16 @@ export default function ScanScreen() {
               </Pressable>
               <Pressable
                 style={({ pressed }) => [labelStyles.doneBtn, pressed && { opacity: 0.8 }]}
-                onPress={() => { setLabelModalVisible(false); router.push("/(tabs)/cases"); }}
+                onPress={() => {
+                  setLabelModalVisible(false);
+                  if (pendingRemakeCheck) {
+                    const { caseId, patientName: pName } = pendingRemakeCheck;
+                    setPendingRemakeCheck(null);
+                    startRemakeCheck(caseId, pName);
+                  } else {
+                    router.push("/(tabs)/cases");
+                  }
+                }}
               >
                 <Text style={labelStyles.doneBtnText}>Done</Text>
               </Pressable>
