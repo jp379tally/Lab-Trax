@@ -354,7 +354,26 @@ export default function LoginScreen() {
     setSignUpLoading(true);
     try {
       const apiUrl = getApiUrl();
-      const acctNum = "DS-" + Date.now().toString().slice(-6);
+
+      let acctNum: string;
+      if (userType === "provider") {
+        const yy = new Date().getFullYear() % 100;
+        let count = 1;
+        try {
+          const raw = await AsyncStorage.getItem("@drivesync_provider_counter");
+          if (raw) {
+            const counter = JSON.parse(raw);
+            if (counter.year === yy) {
+              count = (counter.count || 0) + 1;
+            }
+          }
+        } catch {}
+        acctNum = `${yy}-${count}`;
+        await AsyncStorage.setItem("@drivesync_provider_counter", JSON.stringify({ year: yy, count }));
+      } else {
+        acctNum = "DS-" + Date.now().toString().slice(-6);
+      }
+
       await fetch(new URL("/api/register", apiUrl).toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -385,6 +404,18 @@ export default function LoginScreen() {
           username: signUpUsername.trim(),
           role: selectedRole || "user",
         }));
+      }
+      if (result.success && userType === "provider") {
+        const pendingClient = {
+          practiceName: practiceName.trim() || doctorName.trim(),
+          leadDoctor: doctorName.trim() ? `Dr. ${doctorName.trim()} (${acctNum})` : signUpUsername.trim(),
+          phone: practicePhone.trim(),
+          email: signUpEmail.trim(),
+          address: practiceAddress.trim(),
+          tier: "Standard",
+          discountRate: 0,
+        };
+        await AsyncStorage.setItem("@drivesync_pending_client", JSON.stringify(pendingClient));
       }
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");

@@ -122,6 +122,9 @@ export default function ScanScreen() {
   const [barcodeScanned, setBarcodeScanned] = useState(false);
   const [barcodeScanForCase, setBarcodeScanForCase] = useState<string | null>(null);
   const [barcodeAttachScanned, setBarcodeAttachScanned] = useState(false);
+  const [shadeOpen, setShadeOpen] = useState(false);
+
+  const SHADE_OPTIONS = ["A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
 
   const filteredClients = clients.filter((c) => {
     const q = doctorSearch.toLowerCase();
@@ -617,8 +620,10 @@ export default function ScanScreen() {
       assignBarcodeToCase(barcodeScanForCase, data);
       setBarcodeScanForCase(null);
       setLabelModalVisible(false);
+      setPendingRemakeCheck(null);
+      resetForm();
       Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
-        { text: "OK", onPress: proceedAfterLabel },
+        { text: "OK" },
       ]);
     }
   }
@@ -1688,16 +1693,50 @@ export default function ScanScreen() {
             )}
           </View>
 
-          <View style={styles.formRow}>
-            <View style={[styles.formGroup, { flex: 1 }]}>
+          <View style={[styles.formRow, { zIndex: 5 }]}>
+            <View style={[styles.formGroup, { flex: 1, zIndex: 5 }]}>
               <Text style={styles.formLabel}>Shade</Text>
-              <TextInput
-                style={styles.formInput}
-                value={shade}
-                onChangeText={setShade}
-                placeholder="A2"
-                placeholderTextColor={Colors.light.textTertiary}
-              />
+              <Pressable
+                onPress={() => setShadeOpen(!shadeOpen)}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !shade && { color: Colors.light.textTertiary }]}>
+                  {shade || "Select Shade"}
+                </Text>
+                <Ionicons
+                  name={shadeOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {shadeOpen && (
+                <View style={[styles.dropdownPanel, { maxHeight: 200 }]}>
+                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {SHADE_OPTIONS.map((s) => (
+                      <Pressable
+                        key={s}
+                        onPress={() => {
+                          setShade(s);
+                          setShadeOpen(false);
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [
+                          styles.dropdownItem,
+                          shade === s && styles.dropdownItemSelected,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Text style={[styles.dropdownItemName, shade === s && { color: Colors.light.tint }]}>
+                          {s}
+                        </Text>
+                        {shade === s && (
+                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
             </View>
             <View style={[styles.formGroup, { flex: 1 }]}>
               <Text style={styles.formLabel}>Material</Text>
@@ -2040,9 +2079,20 @@ export default function ScanScreen() {
               onBarcodeScanned={barcodeScanned ? undefined : handleBarcodeScanned}
             />
           ) : (
-            <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
               <Ionicons name="barcode-outline" size={64} color="#666" />
-              <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium" }}>Barcode scanning requires a mobile device</Text>
+              <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Barcode scanning requires a device camera</Text>
+              <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
+              <TextInput
+                style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
+                placeholder="Enter barcode..."
+                placeholderTextColor="#666"
+                onSubmitEditing={(e) => {
+                  const val = e.nativeEvent.text.trim();
+                  if (val) handleBarcodeScanned({ data: val });
+                }}
+                autoFocus
+              />
             </View>
           )}
           <View style={{ padding: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>

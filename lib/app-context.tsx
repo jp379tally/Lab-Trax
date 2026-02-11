@@ -266,6 +266,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } catch {}
         AsyncStorage.removeItem("@drivesync_pending_group");
       }
+
+      const pendingClientRaw = await AsyncStorage.getItem("@drivesync_pending_client");
+      if (pendingClientRaw) {
+        try {
+          const pc = JSON.parse(pendingClientRaw);
+          const loadedClients: Client[] = savedClients ? JSON.parse(savedClients) : SAMPLE_CLIENTS;
+          const alreadyExists = loadedClients.some(
+            (c) => c.leadDoctor?.toLowerCase() === pc.leadDoctor?.toLowerCase() && c.practiceName?.toLowerCase() === pc.practiceName?.toLowerCase()
+          );
+          if (!alreadyExists) {
+            const maxClientNum = loadedClients.reduce((max, c) => Math.max(max, c.clientNumber || 0), 0);
+            const newClient: Client = {
+              id: generateId(),
+              clientNumber: maxClientNum + 1,
+              accountNumber: `DS-${(maxClientNum + 1).toString().padStart(6, "0")}`,
+              practiceName: pc.practiceName || "",
+              leadDoctor: pc.leadDoctor || "",
+              phone: pc.phone || "",
+              email: pc.email || "",
+              address: pc.address || "",
+              tier: pc.tier || "Standard",
+              discountRate: pc.discountRate || 0,
+              createdAt: Date.now(),
+            };
+            const updatedClients = [...loadedClients, newClient];
+            setClients(updatedClients);
+            await AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updatedClients));
+          }
+        } catch {}
+        AsyncStorage.removeItem("@drivesync_pending_client");
+      }
     } catch (e) {
       setCases(SAMPLE_CASES);
       setNotifications(SAMPLE_NOTIFICATIONS);
