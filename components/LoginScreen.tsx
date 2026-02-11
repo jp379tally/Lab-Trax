@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as LocalAuthentication from "expo-local-authentication";
+import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/lib/auth-context";
@@ -68,6 +69,7 @@ export default function LoginScreen() {
   const [practiceName, setPracticeName] = useState("");
   const [doctorName, setDoctorName] = useState("");
   const [practiceAddress, setPracticeAddress] = useState("");
+  const [fetchingLocation, setFetchingLocation] = useState(false);
   const [practicePhone, setPracticePhone] = useState("");
   const [phoneContactName, setPhoneContactName] = useState("");
   const [selectedRole, setSelectedRole] = useState<"tech" | "admin" | null>(null);
@@ -662,6 +664,46 @@ export default function LoginScreen() {
     );
   }
 
+  async function fetchLocationAddress() {
+    try {
+      setFetchingLocation(true);
+      if (Platform.OS === "web") {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 });
+        });
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        const resp = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1`, {
+          headers: { "User-Agent": "DriveSync-Lab/1.0" },
+        });
+        const data = await resp.json();
+        if (data?.display_name) {
+          setPracticeAddress(data.display_name);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      } else {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") {
+          setSignUpError("Location permission is needed to auto-fill address.");
+          setFetchingLocation(false);
+          return;
+        }
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+        if (geocode && geocode.length > 0) {
+          const g = geocode[0];
+          const parts = [g.streetNumber, g.street, g.city, g.region, g.postalCode, g.country].filter(Boolean);
+          setPracticeAddress(parts.join(", "));
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      }
+    } catch (e: any) {
+      setSignUpError("Could not get location. Please enter address manually.");
+    } finally {
+      setFetchingLocation(false);
+    }
+  }
+
   function renderPracticeInfo() {
     return (
       <View style={styles.formSection}>
@@ -706,7 +748,18 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.inputWrapper}>
-            <Ionicons name="location-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+            <Pressable
+              onPress={fetchLocationAddress}
+              disabled={fetchingLocation}
+              hitSlop={8}
+              testID="location-btn"
+            >
+              {fetchingLocation ? (
+                <ActivityIndicator size={16} color="rgba(255,255,255,0.6)" style={styles.inputIcon} />
+              ) : (
+                <Ionicons name="location" size={18} color="#4A90D9" style={styles.inputIcon} />
+              )}
+            </Pressable>
             <TextInput
               style={styles.input}
               value={practiceAddress}
