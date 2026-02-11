@@ -271,7 +271,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (pendingClientRaw) {
         try {
           const pc = JSON.parse(pendingClientRaw);
-          const loadedClients: Client[] = savedClients ? JSON.parse(savedClients) : SAMPLE_CLIENTS;
+          const freshClients = await AsyncStorage.getItem(CLIENTS_KEY);
+          const loadedClients: Client[] = freshClients ? JSON.parse(freshClients) : SAMPLE_CLIENTS;
           const alreadyExists = loadedClients.some(
             (c) => c.leadDoctor?.toLowerCase() === pc.leadDoctor?.toLowerCase() && c.practiceName?.toLowerCase() === pc.practiceName?.toLowerCase()
           );

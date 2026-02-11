@@ -380,6 +380,28 @@ export default function LoginScreen() {
         body: JSON.stringify({ username: signUpUsername.trim() }),
       });
 
+      if (practiceName.trim() && practiceAddress.trim()) {
+        await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
+          name: practiceName.trim(),
+          type: (userType || "provider") === "lab" ? "lab" : "provider",
+          address: practiceAddress.trim(),
+          username: signUpUsername.trim(),
+          role: selectedRole || "user",
+        }));
+      }
+      if (userType === "provider") {
+        const pendingClient = {
+          practiceName: practiceName.trim() || doctorName.trim(),
+          leadDoctor: doctorName.trim() ? `Dr. ${doctorName.trim()} (${acctNum})` : signUpUsername.trim(),
+          phone: practicePhone.trim(),
+          email: signUpEmail.trim(),
+          address: practiceAddress.trim(),
+          tier: "Standard",
+          discountRate: 0,
+        };
+        await AsyncStorage.setItem("@drivesync_pending_client", JSON.stringify(pendingClient));
+      }
+
       const result = await register({
         username: signUpUsername.trim(),
         password: signUpPassword,
@@ -396,27 +418,6 @@ export default function LoginScreen() {
         role: selectedRole || "user",
         accountNumber: acctNum,
       });
-      if (result.success && practiceName.trim() && practiceAddress.trim()) {
-        await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
-          name: practiceName.trim(),
-          type: (userType || "provider") === "lab" ? "lab" : "provider",
-          address: practiceAddress.trim(),
-          username: signUpUsername.trim(),
-          role: selectedRole || "user",
-        }));
-      }
-      if (result.success && userType === "provider") {
-        const pendingClient = {
-          practiceName: practiceName.trim() || doctorName.trim(),
-          leadDoctor: doctorName.trim() ? `Dr. ${doctorName.trim()} (${acctNum})` : signUpUsername.trim(),
-          phone: practicePhone.trim(),
-          email: signUpEmail.trim(),
-          address: practiceAddress.trim(),
-          tier: "Standard",
-          discountRate: 0,
-        };
-        await AsyncStorage.setItem("@drivesync_pending_client", JSON.stringify(pendingClient));
-      }
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");
       }
