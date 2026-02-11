@@ -7,20 +7,53 @@ import {
   Pressable,
   TextInput,
   Platform,
+  Modal,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather } from "@expo/vector-icons";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import { useApp } from "@/lib/app-context";
+import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, LabCase } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode } = useApp();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<CaseStatus | "ALL">("ALL");
+  const [showBarcodeLocate, setShowBarcodeLocate] = useState(false);
+  const [barcodeLocateScanned, setBarcodeLocateScanned] = useState(false);
+  const [permission, requestPermission] = useCameraPermissions();
+
+  function handleBarcodeLocateScanned({ data }: { data: string }) {
+    if (barcodeLocateScanned) return;
+    setBarcodeLocateScanned(true);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    const found = findCaseByBarcode(data);
+    if (found) {
+      setShowBarcodeLocate(false);
+      setBarcodeLocateScanned(false);
+      router.push({ pathname: "/case/[id]", params: { id: found.id } });
+    } else {
+      const foundDirect = cases.find(c => c.id === data || c.caseNumber === data);
+      if (foundDirect) {
+        setShowBarcodeLocate(false);
+        setBarcodeLocateScanned(false);
+        router.push({ pathname: "/case/[id]", params: { id: foundDirect.id } });
+      } else {
+        Alert.alert("Case Not Found", `No case found with barcode: ${data}`, [
+          { text: "Scan Again", onPress: () => setBarcodeLocateScanned(false) },
+          { text: "Close", onPress: () => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); } },
+        ]);
+      }
+    }
+  }
 
   const filteredCases = useMemo(() => {
     let result = cases;
@@ -169,6 +202,23 @@ export default function CasesScreen() {
               </Pressable>
             )}
           </View>
+          <Pressable
+            style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
+            onPress={async () => {
+              if (Platform.OS !== "web" && !permission?.granted) {
+                const result = await requestPermission();
+                if (!result.granted) {
+                  Alert.alert("Camera Permission", "Camera access is needed to scan barcodes.");
+                  return;
+                }
+              }
+              setShowBarcodeLocate(true);
+              setBarcodeLocateScanned(false);
+            }}
+          >
+            <Ionicons name="barcode-outline" size={18} color={Colors.light.tint} />
+            <Text style={styles.barcodeLocateBtnText}>Use Barcode to Locate Case</Text>
+          </Pressable>
         </View>
         <FlatList
           horizontal
@@ -217,6 +267,44 @@ export default function CasesScreen() {
           </View>
         }
       />
+
+      <Modal
+        transparent
+        visible={showBarcodeLocate}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }}
+      >
+        <View style={{ flex: 1, backgroundColor: "#000" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan to Locate Case</Text>
+            <Pressable onPress={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }}>
+              <Ionicons name="close" size={28} color="#FFF" />
+            </Pressable>
+          </View>
+          {Platform.OS === "web" ? (
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+              <Ionicons name="barcode-outline" size={60} color="#FFF" />
+              <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
+              <Pressable onPress={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }} style={{ marginTop: 20, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}>
+                <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Close</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <CameraView
+              style={{ flex: 1 }}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
+              onBarcodeScanned={handleBarcodeLocateScanned}
+            >
+              <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+                <View style={{ width: 260, height: 160, borderWidth: 2, borderColor: "rgba(255,255,255,0.5)", borderRadius: 16, borderStyle: "dashed" }} />
+                <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 16 }}>Point camera at barcode</Text>
+              </View>
+            </CameraView>
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -402,5 +490,20 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_500Medium",
     color: Colors.light.textTertiary,
+  },
+  barcodeLocateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tintLight,
+    borderRadius: 12,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  barcodeLocateBtnText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
   },
 });

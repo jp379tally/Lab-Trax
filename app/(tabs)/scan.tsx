@@ -72,7 +72,7 @@ interface LabelData {
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { addCase, cases, clients, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice } = useApp();
+  const { addCase, cases, clients, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode } = useApp();
   const { currentUser } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const showPrice = role === "admin" && adminUnlocked;
@@ -120,6 +120,8 @@ export default function ScanScreen() {
   const [newDoctorInput, setNewDoctorInput] = useState("");
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [barcodeScanned, setBarcodeScanned] = useState(false);
+  const [barcodeScanForCase, setBarcodeScanForCase] = useState<string | null>(null);
+  const [barcodeAttachScanned, setBarcodeAttachScanned] = useState(false);
 
   const filteredClients = clients.filter((c) => {
     const q = doctorSearch.toLowerCase();
@@ -577,6 +579,47 @@ export default function ScanScreen() {
     }]);
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+  }
+
+  function promptAttachBarcode() {
+    const latestCase = cases[0];
+    if (!latestCase) {
+      proceedAfterLabel();
+      return;
+    }
+    Alert.alert("Attach Barcode", "Scan a barcode to attach to this case for tracking.", [
+      { text: "Skip", onPress: proceedAfterLabel },
+      { text: "Scan Barcode", onPress: () => {
+        setBarcodeScanForCase(latestCase.id);
+        setBarcodeAttachScanned(false);
+      }},
+    ]);
+  }
+
+  function proceedAfterLabel() {
+    setLabelModalVisible(false);
+    if (pendingRemakeCheck) {
+      const { caseId, patientName: pName } = pendingRemakeCheck;
+      setPendingRemakeCheck(null);
+      startRemakeCheck(caseId, pName);
+    } else {
+      router.push("/(tabs)/cases");
+    }
+  }
+
+  function handleBarcodeAttachScanned({ data }: { data: string }) {
+    if (barcodeAttachScanned) return;
+    setBarcodeAttachScanned(true);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    if (barcodeScanForCase) {
+      assignBarcodeToCase(barcodeScanForCase, data);
+      setBarcodeScanForCase(null);
+      setLabelModalVisible(false);
+      Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
+        { text: "OK", onPress: proceedAfterLabel },
+      ]);
     }
   }
 
@@ -2132,14 +2175,7 @@ export default function ScanScreen() {
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Print", "Label sent to printer.", [
                     { text: "OK", onPress: () => {
-                      setLabelModalVisible(false);
-                      if (pendingRemakeCheck) {
-                        const { caseId, patientName: pName } = pendingRemakeCheck;
-                        setPendingRemakeCheck(null);
-                        startRemakeCheck(caseId, pName);
-                      } else {
-                        router.push("/(tabs)/cases");
-                      }
+                      promptAttachBarcode();
                     }},
                   ]);
                 }}
@@ -2164,6 +2200,44 @@ export default function ScanScreen() {
               </Pressable>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={!!barcodeScanForCase}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
+      >
+        <View style={{ flex: 1, backgroundColor: "#000" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode to Attach</Text>
+            <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}>
+              <Ionicons name="close" size={28} color="#FFF" />
+            </Pressable>
+          </View>
+          {Platform.OS === "web" ? (
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+              <Ionicons name="barcode-outline" size={60} color="#FFF" />
+              <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
+              <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }} style={{ marginTop: 20, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}>
+                <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <CameraView
+              style={{ flex: 1 }}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
+              onBarcodeScanned={handleBarcodeAttachScanned}
+            >
+              <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+                <View style={{ width: 260, height: 160, borderWidth: 2, borderColor: "rgba(255,255,255,0.5)", borderRadius: 16, borderStyle: "dashed" }} />
+                <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 16 }}>Point camera at barcode</Text>
+              </View>
+            </CameraView>
+          )}
         </View>
       </Modal>
     </View>

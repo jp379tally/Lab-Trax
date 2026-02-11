@@ -98,6 +98,7 @@ export interface LabCase {
   courtesyTexts?: CourtesyTextRequest[];
   invoiceId?: string;
   remakeReason?: string;
+  assignedBarcode?: string;
 }
 
 export interface Notification {

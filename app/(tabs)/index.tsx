@@ -31,7 +31,8 @@ import { useApp } from "@/lib/app-context";
 import { ChatButton } from "@/components/ChatButton";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem } from "@/lib/data";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
@@ -262,7 +263,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus } = useApp();
   const { logout, profilePicUri, setProfilePicUri, currentUser } = useAuth();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -272,6 +273,11 @@ function TechDashboard() {
   const [shippingCaseId, setShippingCaseId] = useState("");
   const [shippingAddress, setShippingAddress] = useState("");
   const [activeFilter, setActiveFilter] = useState<"intake" | "progress" | "shipped" | null>(null);
+  const [batchLocateOpen, setBatchLocateOpen] = useState(false);
+  const [batchScannedCases, setBatchScannedCases] = useState<{id: string, caseNumber: string, patientName: string}[]>([]);
+  const [batchScanning, setBatchScanning] = useState(true);
+  const [batchLocationSelect, setBatchLocationSelect] = useState(false);
+  const [camPermission, requestCamPermission] = useCameraPermissions();
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
     .slice(0, 5);
@@ -297,6 +303,24 @@ function TechDashboard() {
   function handleShippingFromDrawer() {
     setDrawerOpen(false);
     setTimeout(() => setShippingModalVisible(true), 300);
+  }
+
+  function handleBatchBarcodeScan({ data }: { data: string }) {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const found = findCaseByBarcode(data) || cases.find(c => c.id === data || c.caseNumber === data);
+    if (found && !batchScannedCases.find(bc => bc.id === found.id)) {
+      setBatchScannedCases(prev => [...prev, { id: found.id, caseNumber: found.caseNumber, patientName: found.patientName }]);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+  }
+
+  function handleBatchLocationSelect(station: CaseStatus) {
+    batchLocateCases(batchScannedCases.map(c => c.id), station);
+    setBatchLocateOpen(false);
+    setBatchScannedCases([]);
+    setBatchScanning(true);
+    setBatchLocationSelect(false);
+    Alert.alert("Cases Located", `${batchScannedCases.length} case(s) moved to ${getStationInfo(station).label}.`);
   }
 
   function handleSignOut() {
@@ -507,6 +531,18 @@ function TechDashboard() {
               <Feather name="search" size={22} color={Colors.light.accent} />
             </View>
             <Text style={styles.quickLabel}>Search Cases</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              styles.headerQuickBtn,
+              pressed && styles.quickBtnPressed,
+            ]}
+            onPress={() => setBatchLocateOpen(true)}
+          >
+            <View style={[styles.quickIcon, { backgroundColor: "#FEF3C7" }]}>
+              <MaterialCommunityIcons name="barcode-scan" size={22} color="#D97706" />
+            </View>
+            <Text style={styles.quickLabel}>Batch Locate</Text>
           </Pressable>
         </View>
       </View>
@@ -832,6 +868,113 @@ function TechDashboard() {
         <Ionicons name="chevron-forward" size={20} color={Colors.light.textTertiary} />
       </Pressable>
     </ScrollView>
+
+    <Modal
+      transparent
+      visible={batchLocateOpen}
+      animationType="slide"
+      statusBarTranslucent
+      onRequestClose={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); }}
+    >
+      <View style={{ flex: 1, backgroundColor: batchLocationSelect ? Colors.light.background : "#000" }}>
+        <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: batchLocationSelect ? Colors.light.surface : "rgba(0,0,0,0.8)" }}>
+          <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: batchLocationSelect ? Colors.light.text : "#FFF" }}>
+            {batchLocationSelect ? "Select Location" : "Batch Scan"}
+          </Text>
+          <Pressable onPress={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); }}>
+            <Ionicons name="close" size={28} color={batchLocationSelect ? Colors.light.text : "#FFF"} />
+          </Pressable>
+        </View>
+
+        {batchLocationSelect ? (
+          <ScrollView style={{ flex: 1, padding: 20 }}>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginBottom: 4 }}>
+              Where would you like to locate these cases?
+            </Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 16 }}>
+              {batchScannedCases.length} case(s) scanned
+            </Text>
+            {(["DESIGN", "WAX", "INVEST", "CAST", "FINISH", "PORCELAIN", "GLAZE", "QC", "SHIP", "COMPLETE", "HOLD"] as CaseStatus[]).map(station => {
+              const info = getStationInfo(station);
+              return (
+                <Pressable
+                  key={station}
+                  style={({ pressed }) => ({
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 12,
+                    backgroundColor: Colors.light.surface,
+                    borderRadius: 14,
+                    padding: 16,
+                    marginBottom: 8,
+                    borderWidth: 1,
+                    borderColor: Colors.light.border,
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                  onPress={() => handleBatchLocationSelect(station)}
+                >
+                  <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: info.color }} />
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text, flex: 1 }}>{info.label}</Text>
+                  <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ) : (
+          <>
+            {Platform.OS === "web" ? (
+              <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+                <Ionicons name="barcode-outline" size={60} color="#FFF" />
+                <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
+              </View>
+            ) : (
+              <CameraView
+                style={{ flex: 1 }}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
+                onBarcodeScanned={handleBatchBarcodeScan}
+              >
+                <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+                  <View style={{ width: 260, height: 160, borderWidth: 2, borderColor: "rgba(255,255,255,0.5)", borderRadius: 16, borderStyle: "dashed" }} />
+                </View>
+              </CameraView>
+            )}
+            <View style={{ backgroundColor: "rgba(0,0,0,0.85)", paddingHorizontal: 20, paddingVertical: 16, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }}>
+              <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_600SemiBold", marginBottom: 8 }}>
+                {batchScannedCases.length} case(s) scanned
+              </Text>
+              {batchScannedCases.map(c => (
+                <View key={c.id} style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <Ionicons name="checkmark-circle" size={16} color="#22C55E" />
+                  <Text style={{ color: "#FFF", fontSize: 13, fontFamily: "Inter_400Regular" }}>{c.caseNumber} - {c.patientName}</Text>
+                </View>
+              ))}
+              <Pressable
+                style={({ pressed }) => ({
+                  backgroundColor: batchScannedCases.length > 0 ? Colors.light.tint : "#555",
+                  borderRadius: 12,
+                  paddingVertical: 14,
+                  alignItems: "center",
+                  marginTop: 12,
+                  opacity: pressed ? 0.8 : 1,
+                })}
+                onPress={() => {
+                  if (batchScannedCases.length === 0) {
+                    Alert.alert("No Cases", "Scan at least one barcode before finishing.");
+                    return;
+                  }
+                  setBatchScanning(false);
+                  setBatchLocationSelect(true);
+                }}
+                disabled={batchScannedCases.length === 0}
+              >
+                <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Finish Scanning</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
+      </View>
+    </Modal>
 
     <SideDrawer
       visible={drawerOpen}

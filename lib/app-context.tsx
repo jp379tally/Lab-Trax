@@ -103,6 +103,10 @@ interface AppContextValue {
   addInventoryItem: (item: Omit<InventoryItem, "id">) => void;
   updateInventoryItem: (id: string, updates: Partial<InventoryItem>) => void;
   removeInventoryItem: (id: string) => void;
+  assignBarcodeToCase: (caseId: string, barcode: string) => void;
+  unassignBarcode: (caseId: string) => void;
+  findCaseByBarcode: (barcode: string) => LabCase | undefined;
+  batchLocateCases: (caseIds: string[], newStatus: CaseStatus) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -119,6 +123,7 @@ const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
 const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
 const GROUPS_KEY = "@drivesync_groups";
 const GROUP_INVITATIONS_KEY = "@drivesync_group_invitations";
+const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRoleState] = useState<UserRole>("user");
@@ -387,6 +392,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ...c,
             status: newStatus,
             updatedAt: now,
+            assignedBarcode: newStatus === "COMPLETE" ? undefined : c.assignedBarcode,
             routeHistory: [
               ...c.routeHistory,
               { station: newStatus, timestamp: now },
@@ -1046,6 +1052,67 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setInventory(prev => prev.filter(item => item.id !== id));
   }
 
+  function assignBarcodeToCase(caseId: string, barcode: string) {
+    setCases((prev) => {
+      const updated = prev.map((c) => {
+        if (c.assignedBarcode === barcode && c.id !== caseId) {
+          return { ...c, assignedBarcode: undefined, updatedAt: Date.now() };
+        }
+        if (c.id === caseId) {
+          return { ...c, assignedBarcode: barcode, updatedAt: Date.now() };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function unassignBarcode(caseId: string) {
+    setCases((prev) => {
+      const updated = prev.map((c) => {
+        if (c.id === caseId) {
+          return { ...c, assignedBarcode: undefined, updatedAt: Date.now() };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function findCaseByBarcode(barcode: string): LabCase | undefined {
+    return cases.find((c) => c.assignedBarcode === barcode && c.status !== "COMPLETE");
+  }
+
+  function batchLocateCases(caseIds: string[], newStatus: CaseStatus) {
+    const now = Date.now();
+    const stationLabel = getStationInfo(newStatus).label;
+    setCases((prev) => {
+      const updated = prev.map((c) => {
+        if (caseIds.includes(c.id)) {
+          const stationEntry: ActivityEntry = {
+            id: generateId(),
+            type: "station_change",
+            timestamp: now,
+            description: `Case batch-moved to ${stationLabel}`,
+            station: newStatus,
+          };
+          return {
+            ...c,
+            status: newStatus,
+            updatedAt: now,
+            routeHistory: [...c.routeHistory, { station: newStatus, timestamp: now }],
+            activityLog: [...(c.activityLog || []), stationEntry],
+          };
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   function markConversationRead(conversationId: string) {
     setChatMessages(prev => {
       const updated = prev.map(m => {
@@ -1151,6 +1218,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addInventoryItem,
       updateInventoryItem,
       removeInventoryItem,
+      assignBarcodeToCase,
+      unassignBarcode,
+      findCaseByBarcode,
+      batchLocateCases,
     }),
     [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, inventory],
   );
