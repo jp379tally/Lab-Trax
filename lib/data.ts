@@ -84,6 +84,7 @@ export interface LabCase {
   material: string;
   status: CaseStatus;
   isRush: boolean;
+  isRemake?: boolean;
   notes: string;
   createdAt: number;
   updatedAt: number;
@@ -95,6 +96,7 @@ export interface LabCase {
   trackingNumbers?: string[];
   toothMap?: ToothEntry[];
   courtesyTexts?: CourtesyTextRequest[];
+  invoiceId?: string;
 }
 
 export interface Notification {

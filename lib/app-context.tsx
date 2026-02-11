@@ -47,7 +47,7 @@ interface AppContextValue {
   adminUnlocked: boolean;
   setAdminUnlocked: (v: boolean) => void;
   cases: LabCase[];
-  addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => void;
+  addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => LabCase;
   updateCaseStatus: (caseId: string, newStatus: CaseStatus, user?: string) => void;
   addCasePhoto: (caseId: string, photoUri: string, user?: string) => void;
   addCaseNote: (caseId: string, note: string, user?: string) => void;
@@ -272,7 +272,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   function addCase(
     c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">,
-  ) {
+  ): LabCase {
     const now = Date.now();
     const createdEntry: import("@/lib/data").ActivityEntry = {
       id: generateId(),
@@ -281,15 +281,64 @@ export function AppProvider({ children }: { children: ReactNode }) {
       description: "Case created and scanned in at Intake",
       station: c.status,
     };
+    const caseId = generateId();
     const newCase: LabCase = {
       ...c,
-      id: generateId(),
+      id: caseId,
       createdAt: now,
       updatedAt: now,
       routeHistory: [{ station: c.status, timestamp: now }],
       photos: c.photos || [],
       activityLog: [...(c.activityLog || []), createdEntry],
     };
+
+    const clientMatch = clients.find(
+      (cl) => cl.leadDoctor?.toLowerCase() === c.doctorName.toLowerCase() || cl.practiceName?.toLowerCase() === c.doctorName.toLowerCase()
+    );
+
+    const toothStr = c.toothIndices || "";
+    const materialStr = c.material || "";
+    const lineItems: import("@/lib/data").InvoiceLineItem[] = [];
+    if (materialStr) {
+      const unitPrice = c.price || (MATERIAL_PRICES[materialStr] ?? 0);
+      lineItems.push({
+        qty: 1,
+        item: materialStr,
+        description: `${c.caseType || "Restorative"} - ${toothStr || "N/A"}`,
+        rate: unitPrice,
+        amount: unitPrice,
+      });
+    }
+
+    const invoiceNum = `INV-${c.caseNumber}`;
+    const dueAt = now + 30 * 24 * 60 * 60 * 1000;
+
+    const newInvoice: Invoice = {
+      id: generateId(),
+      invoiceNumber: invoiceNum,
+      clientId: clientMatch?.id || "",
+      clientName: clientMatch?.practiceName || c.doctorName,
+      caseIds: [caseId],
+      amount: c.isRemake ? 0 : (c.price || lineItems.reduce((sum, li) => sum + li.amount, 0)),
+      credits: 0,
+      status: "open",
+      issuedAt: now,
+      dueAt,
+      billTo: clientMatch?.address || "",
+      patientName: c.patientName,
+      caseType: c.caseType || "",
+      teeth: toothStr,
+      shade: c.shade || "",
+      caseNotes: c.notes || "",
+      lineItems,
+    };
+
+    newCase.invoiceId = newInvoice.id;
+
+    const updatedInvoices = [newInvoice, ...invoices];
+    setInvoices(updatedInvoices);
+    AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updatedInvoices));
+
     const updated = [newCase, ...cases];
     setCases(updated);
     AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
@@ -306,6 +355,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const updatedNotifs = [newNotif, ...notifications];
     setNotifications(updatedNotifs);
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updatedNotifs));
+
+    return newCase;
   }
 
   function updateCaseStatus(caseId: string, newStatus: CaseStatus, user?: string) {
