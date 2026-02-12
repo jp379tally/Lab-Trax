@@ -21,12 +21,13 @@ import * as DocumentPicker from "expo-document-picker";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
+import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate } = useApp();
   const { currentUser } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
@@ -57,6 +58,7 @@ export default function CaseDetailScreen() {
   const [activeCourtesyId, setActiveCourtesyId] = useState("");
   const [declineNote, setDeclineNote] = useState("");
   const [showDeclineModal, setShowDeclineModal] = useState(false);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
 
   const caseItem = cases.find((c) => c.id === id);
   const isAdmin = role === "admin" && adminUnlocked;
@@ -74,6 +76,47 @@ export default function CaseDetailScreen() {
   }
 
   const stationInfo = getStationInfo(caseItem.status);
+
+  const caseInvoice: Invoice = (() => {
+    if (caseItem.invoiceId) {
+      const found = invoices.find((inv) => inv.id === caseItem.invoiceId);
+      if (found) return found;
+    }
+    const matchedInv = invoices.find(
+      (inv) => inv.caseIds.includes(caseItem.id) ||
+        (inv.patientName.toLowerCase() === (caseItem.patientName || "").toLowerCase() && inv.clientName.toLowerCase().includes(caseItem.doctorName.split(" ").pop()?.toLowerCase() || ""))
+    );
+    if (matchedInv) return matchedInv;
+    const toothCount = caseItem.toothMap?.length || caseItem.toothIndices.split(",").filter(Boolean).length || 1;
+    const rate = MATERIAL_PRICES[caseItem.material] || 250;
+    const lineItems = [
+      { qty: toothCount, item: `${caseItem.material} ${caseItem.caseType || "Restoration"}`, description: `${caseItem.material} restoration - teeth ${caseItem.toothIndices}`, rate, amount: toothCount * rate },
+    ];
+    if (caseItem.isRush) {
+      lineItems.push({ qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500, amount: 500 });
+    }
+    const total = lineItems.reduce((s, li) => s + li.amount, 0);
+    const invNum = `INV-${new Date(caseItem.createdAt).getFullYear()}-${caseItem.caseNumber.replace(/[^0-9]/g, "").padStart(3, "0")}`;
+    return {
+      id: caseItem.id + "-inv",
+      invoiceNumber: invNum,
+      clientId: "",
+      clientName: caseItem.doctorName,
+      caseIds: [caseItem.id],
+      amount: total,
+      credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
+      status: caseItem.status === "COMPLETE" ? "paid" as const : "open" as const,
+      issuedAt: caseItem.createdAt,
+      dueAt: caseItem.dueDate ? new Date(caseItem.dueDate + "T00:00:00").getTime() : caseItem.createdAt + 30 * 86400000,
+      billTo: caseItem.doctorName,
+      patientName: caseItem.patientName || caseItem.patientInitials,
+      caseType: caseItem.caseType || "Restoration",
+      teeth: caseItem.toothIndices,
+      shade: caseItem.shade,
+      caseNotes: caseItem.notes || "",
+      lineItems,
+    };
+  })();
 
   function handleRoute(newStatus: CaseStatus) {
     updateCaseStatus(caseItem!.id, newStatus, userInitials);
@@ -523,6 +566,30 @@ export default function CaseDetailScreen() {
             </View>
           )}
         </View>
+
+        <Pressable
+          onPress={() => {
+            setShowInvoiceModal(true);
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }}
+          style={({ pressed }) => [
+            {
+              flexDirection: "row" as const,
+              alignItems: "center" as const,
+              justifyContent: "center" as const,
+              gap: 8,
+              marginHorizontal: 16,
+              marginBottom: 16,
+              paddingVertical: 14,
+              borderRadius: 12,
+              backgroundColor: "#2563EB",
+            },
+            pressed && { opacity: 0.85 },
+          ]}
+        >
+          <Ionicons name="document-text" size={18} color="#FFF" />
+          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>View Invoice</Text>
+        </Pressable>
 
         {(() => {
           const patientCaseCount = cases.filter(
@@ -1602,6 +1669,12 @@ export default function CaseDetailScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <InvoicePDFViewer
+        visible={showInvoiceModal}
+        onClose={() => setShowInvoiceModal(false)}
+        invoice={caseInvoice}
+      />
 
     </View>
   );
