@@ -627,8 +627,11 @@ export default function ScanScreen() {
     Alert.alert("Attach Barcode", "Scan a barcode to attach to this case for tracking.", [
       { text: "Skip", onPress: proceedAfterLabel },
       { text: "Scan Barcode", onPress: () => {
-        setBarcodeScanForCase(latestCase.id);
-        setBarcodeAttachScanned(false);
+        setLabelModalVisible(false);
+        setTimeout(() => {
+          setBarcodeAttachScanned(false);
+          setBarcodeScanForCase(latestCase.id);
+        }, 400);
       }},
     ]);
   }
@@ -656,7 +659,7 @@ export default function ScanScreen() {
       setPendingRemakeCheck(null);
       resetForm();
       Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
-        { text: "OK" },
+        { text: "OK", onPress: () => router.push("/(tabs)/cases") },
       ]);
     }
   }
@@ -2360,16 +2363,15 @@ export default function ScanScreen() {
       </Modal>
 
       <Modal
-        transparent
         visible={!!barcodeScanForCase}
         animationType="slide"
         statusBarTranslucent
-        onRequestClose={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
+        onRequestClose={() => { setBarcodeScanForCase(null); router.push("/(tabs)/cases"); }}
       >
         <View style={{ flex: 1, backgroundColor: "#000" }}>
           <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode to Attach</Text>
-            <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}>
+            <Pressable onPress={() => { setBarcodeScanForCase(null); router.push("/(tabs)/cases"); }}>
               <Ionicons name="close" size={28} color="#FFF" />
             </Pressable>
           </View>
@@ -2388,7 +2390,7 @@ export default function ScanScreen() {
                   if (val) handleBarcodeAttachScanned({ data: val });
                 }}
               />
-              <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }} style={{ marginTop: 20, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}>
+              <Pressable onPress={() => { setBarcodeScanForCase(null); router.push("/(tabs)/cases"); }} style={{ marginTop: 20, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}>
                 <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip</Text>
               </Pressable>
             </View>
