@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import {
   StyleSheet,
   View,
@@ -12,21 +12,19 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import Colors from "@/constants/colors";
+import { useTheme } from "@/lib/theme-context";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const [darkMode, setDarkMode] = useState(false);
-  const [notifications, setNotifications] = useState(true);
-  const [hapticFeedback, setHapticFeedback] = useState(true);
+  const { mode, setMode, colors, isDark } = useTheme();
 
   return (
-    <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12, backgroundColor: colors.surface, borderBottomColor: colors.borderLight }]}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
-          <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          <Ionicons name="arrow-back" size={24} color={colors.text} />
         </Pressable>
-        <Text style={styles.headerTitle}>Settings</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Settings</Text>
         <View style={{ width: 24 }} />
       </View>
 
@@ -35,79 +33,61 @@ export default function SettingsScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>APPEARANCE</Text>
-          <View style={styles.menuGroup}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>APPEARANCE</Text>
+          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.menuItem}>
-              <View style={[styles.menuIcon, { backgroundColor: "#1E293B" }]}>
-                <Ionicons name="moon" size={18} color="#FFF" />
+              <View style={[styles.menuIcon, { backgroundColor: isDark ? "#334155" : "#1E293B" }]}>
+                <Ionicons name="moon" size={18} color={isDark ? "#FBBF24" : "#FFF"} />
               </View>
               <View style={styles.menuInfo}>
-                <Text style={styles.menuTitle}>Dark Mode</Text>
-                <Text style={styles.menuSub}>Switch to dark theme</Text>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Night Mode</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>
+                  {isDark ? "Dark background enabled" : "Switch to dark background"}
+                </Text>
               </View>
               <Switch
-                value={darkMode}
+                value={isDark}
                 onValueChange={(val) => {
-                  setDarkMode(val);
-                  Alert.alert("Coming Soon", "Dark mode will be available in the next update.");
-                  setDarkMode(false);
+                  setMode(val ? "dark" : "light");
                 }}
-                trackColor={{ false: Colors.light.border, true: Colors.light.tint }}
+                trackColor={{ false: colors.border, true: colors.tint }}
                 thumbColor="#FFF"
               />
             </View>
 
-            <View style={styles.menuDivider} />
+            <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
 
             <Pressable
               style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
               onPress={() => Alert.alert("Company Logo", "Upload your company logo to customize the app background and branding. This feature is coming soon.")}
             >
-              <View style={[styles.menuIcon, { backgroundColor: Colors.light.accentLight }]}>
-                <MaterialCommunityIcons name="image-edit" size={18} color={Colors.light.accent} />
+              <View style={[styles.menuIcon, { backgroundColor: colors.accentLight }]}>
+                <MaterialCommunityIcons name="image-edit" size={18} color={colors.accent} />
               </View>
               <View style={styles.menuInfo}>
-                <Text style={styles.menuTitle}>Company Logo</Text>
-                <Text style={styles.menuSub}>Customize app branding</Text>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Company Logo</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Customize app branding</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+              <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
             </Pressable>
           </View>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>NOTIFICATIONS</Text>
-          <View style={styles.menuGroup}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>NOTIFICATIONS</Text>
+          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.menuItem}>
-              <View style={[styles.menuIcon, { backgroundColor: Colors.light.errorLight }]}>
-                <Ionicons name="notifications" size={18} color={Colors.light.error} />
+              <View style={[styles.menuIcon, { backgroundColor: colors.errorLight }]}>
+                <Ionicons name="notifications" size={18} color={colors.error} />
               </View>
               <View style={styles.menuInfo}>
-                <Text style={styles.menuTitle}>Push Notifications</Text>
-                <Text style={styles.menuSub}>Receive case updates</Text>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Push Notifications</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Receive case updates</Text>
               </View>
               <Switch
-                value={notifications}
-                onValueChange={setNotifications}
-                trackColor={{ false: Colors.light.border, true: Colors.light.tint }}
-                thumbColor="#FFF"
-              />
-            </View>
-
-            <View style={styles.menuDivider} />
-
-            <View style={styles.menuItem}>
-              <View style={[styles.menuIcon, { backgroundColor: Colors.light.warningLight }]}>
-                <Ionicons name="phone-portrait" size={18} color={Colors.light.warning} />
-              </View>
-              <View style={styles.menuInfo}>
-                <Text style={styles.menuTitle}>Haptic Feedback</Text>
-                <Text style={styles.menuSub}>Vibration on interactions</Text>
-              </View>
-              <Switch
-                value={hapticFeedback}
-                onValueChange={setHapticFeedback}
-                trackColor={{ false: Colors.light.border, true: Colors.light.tint }}
+                value={true}
+                onValueChange={() => {}}
+                trackColor={{ false: colors.border, true: colors.tint }}
                 thumbColor="#FFF"
               />
             </View>
@@ -115,43 +95,43 @@ export default function SettingsScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>DATA</Text>
-          <View style={styles.menuGroup}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>DATA</Text>
+          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <Pressable
               style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
               onPress={() => Alert.alert("Export Data", "Your case data export will be prepared. This feature is coming soon.")}
             >
-              <View style={[styles.menuIcon, { backgroundColor: Colors.light.successLight }]}>
-                <Ionicons name="download" size={18} color={Colors.light.success} />
+              <View style={[styles.menuIcon, { backgroundColor: colors.successLight }]}>
+                <Ionicons name="download" size={18} color={colors.success} />
               </View>
               <View style={styles.menuInfo}>
-                <Text style={styles.menuTitle}>Export Cases</Text>
-                <Text style={styles.menuSub}>Download case data as CSV</Text>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Export Cases</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Download case data as CSV</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+              <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
             </Pressable>
 
-            <View style={styles.menuDivider} />
+            <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
 
             <View style={styles.menuItem}>
-              <View style={[styles.menuIcon, { backgroundColor: Colors.light.tintLight }]}>
-                <Ionicons name="shield-checkmark" size={18} color={Colors.light.tint} />
+              <View style={[styles.menuIcon, { backgroundColor: colors.tintLight }]}>
+                <Ionicons name="shield-checkmark" size={18} color={colors.tint} />
               </View>
               <View style={styles.menuInfo}>
-                <Text style={styles.menuTitle}>Security</Text>
-                <Text style={styles.menuSub}>HIPAA Compliant - AES-256</Text>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Security</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>HIPAA Compliant - AES-256</Text>
               </View>
             </View>
 
-            <View style={styles.menuDivider} />
+            <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
 
             <View style={styles.menuItem}>
-              <View style={[styles.menuIcon, { backgroundColor: Colors.light.surfaceSecondary }]}>
-                <Ionicons name="information-circle" size={18} color={Colors.light.textSecondary} />
+              <View style={[styles.menuIcon, { backgroundColor: colors.surfaceSecondary }]}>
+                <Ionicons name="information-circle" size={18} color={colors.textSecondary} />
               </View>
               <View style={styles.menuInfo}>
-                <Text style={styles.menuTitle}>Version</Text>
-                <Text style={styles.menuSub}>v2.1 (2026 Ready)</Text>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Version</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>v2.1 (2026 Ready)</Text>
               </View>
             </View>
           </View>
@@ -164,7 +144,6 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.light.background,
   },
   header: {
     flexDirection: "row",
@@ -173,13 +152,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: Colors.light.borderLight,
-    backgroundColor: Colors.light.surface,
   },
   headerTitle: {
     fontSize: 17,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
   },
   section: {
     paddingHorizontal: 20,
@@ -188,15 +164,12 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    color: Colors.light.textTertiary,
     letterSpacing: 1.5,
     marginBottom: 12,
   },
   menuGroup: {
-    backgroundColor: Colors.light.surface,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: Colors.light.border,
     overflow: "hidden",
   },
   menuItem: {
@@ -218,17 +191,14 @@ const styles = StyleSheet.create({
   menuTitle: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
   },
   menuSub: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
     marginTop: 2,
   },
   menuDivider: {
     height: 1,
-    backgroundColor: Colors.light.borderLight,
     marginLeft: 68,
   },
 });

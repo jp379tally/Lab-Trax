@@ -1908,12 +1908,71 @@ export default function ScanScreen() {
             <Text style={styles.permissionBtnText}>Enable Camera</Text>
           </Pressable>
           <Pressable
+            onPress={openBarcodeScanner}
+            style={({ pressed }) => [
+              {
+                flexDirection: "row" as const,
+                alignItems: "center" as const,
+                gap: 8,
+                marginTop: 16,
+                paddingVertical: 14,
+                paddingHorizontal: 24,
+                borderRadius: 14,
+                backgroundColor: Colors.light.surfaceSecondary,
+                borderWidth: 1,
+                borderColor: Colors.light.border,
+              },
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Ionicons name="barcode-outline" size={20} color={Colors.light.tint} />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Scan Barcode</Text>
+          </Pressable>
+          <Pressable
             onPress={handleManualEntry}
             style={({ pressed }) => [styles.permissionSkipBtn, pressed && { opacity: 0.6 }]}
           >
             <Text style={styles.permissionSkipText}>Enter manually instead</Text>
           </Pressable>
         </View>
+
+        <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
+          <View style={{ flex: 1, backgroundColor: "#000" }}>
+            <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
+              <Pressable onPress={() => setShowBarcodeScanner(false)}>
+                <Ionicons name="close" size={28} color="#FFF" />
+              </Pressable>
+            </View>
+            {Platform.OS !== "web" ? (
+              <CameraView
+                style={{ flex: 1 }}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
+                onBarcodeScanned={barcodeScanned ? undefined : handleBarcodeScanned}
+              />
+            ) : (
+              <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+                <Ionicons name="barcode-outline" size={64} color="#666" />
+                <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Barcode scanning requires a device camera</Text>
+                <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
+                <TextInput
+                  style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
+                  placeholder="Enter barcode..."
+                  placeholderTextColor="#666"
+                  onSubmitEditing={(e) => {
+                    const val = e.nativeEvent.text.trim();
+                    if (val) handleBarcodeScanned({ data: val });
+                  }}
+                  autoFocus
+                />
+              </View>
+            )}
+            <View style={{ padding: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>
+              <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   }

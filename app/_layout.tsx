@@ -16,6 +16,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { queryClient } from "@/lib/query-client";
 import { AppProvider } from "@/lib/app-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { ThemeProvider } from "@/lib/theme-context";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
 import Colors from "@/constants/colors";
@@ -28,6 +29,10 @@ function RootLayoutNav() {
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen
         name="case/[id]"
+        options={{ headerShown: false, presentation: "card" }}
+      />
+      <Stack.Screen
+        name="settings"
         options={{ headerShown: false, presentation: "card" }}
       />
     </Stack>
@@ -76,11 +81,13 @@ function AuthGate() {
   }
 
   return (
-    <AppProvider>
-      <InactivityWrapper>
-        <RootLayoutNav />
-      </InactivityWrapper>
-    </AppProvider>
+    <ThemeProvider>
+      <AppProvider>
+        <InactivityWrapper>
+          <RootLayoutNav />
+        </InactivityWrapper>
+      </AppProvider>
+    </ThemeProvider>
   );
 }
 

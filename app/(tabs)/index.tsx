@@ -30,6 +30,7 @@ import Animated, {
 import { useApp } from "@/lib/app-context";
 import { ChatButton } from "@/components/ChatButton";
 import { useAuth } from "@/lib/auth-context";
+import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group } from "@/lib/data";
@@ -96,7 +97,7 @@ function SideDrawer({
   const allMenuItems = [
     ...(showAdmin ? [{ key: "admin", icon: "shield-checkmark" as const, label: "Admin", color: Colors.light.tint, bg: Colors.light.tintLight, onPress: onAdmin }] : []),
     { key: "shipping", icon: "airplane" as const, label: "Shipping Label", color: "#6366F1", bg: "#E0E7FF", onPress: onShipping },
-    { key: "settings", icon: "settings" as const, label: "Settings", color: "#8B5CF6", bg: "#EDE9FE", onPress: () => { closeDrawer(); setTimeout(() => onProfile(), 300); } },
+    { key: "settings", icon: "settings" as const, label: "Settings", color: "#8B5CF6", bg: "#EDE9FE", onPress: () => { closeDrawer(); setTimeout(() => router.push("/settings"), 300); } },
     { key: "profile", icon: "person" as const, label: "Profile", color: Colors.light.accent, bg: Colors.light.accentLight, onPress: () => { closeDrawer(); setTimeout(() => onProfile(), 300); } },
   ];
   const menuItems = allMenuItems;
@@ -268,6 +269,7 @@ const drawerStyles = StyleSheet.create({
 function TechDashboard() {
   const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus } = useApp();
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
+  const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
@@ -453,7 +455,7 @@ function TechDashboard() {
   return (
     <>
     <ScrollView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: themeColors.background }]}
       contentContainerStyle={{
         paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
         paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
@@ -466,7 +468,7 @@ function TechDashboard() {
           style={({ pressed }) => [styles.hamburgerBtn, pressed && { opacity: 0.6 }]}
           testID="hamburger-menu"
         >
-          <Ionicons name="menu" size={26} color={Colors.light.text} />
+          <Ionicons name="menu" size={26} color={themeColors.text} />
         </Pressable>
         <ChatButton />
       </View>
@@ -504,9 +506,9 @@ function TechDashboard() {
           </View>
         </Pressable>
         {currentUser && (
-          <Text style={styles.employeeName}>{currentUser.split(" ")[0] || currentUser}</Text>
+          <Text style={[styles.employeeName, { color: themeColors.text }]}>{currentUser.split(" ")[0] || currentUser}</Text>
         )}
-        <Text style={styles.avatarName}>{role === "admin" ? "Administrator" : "User"}</Text>
+        <Text style={[styles.avatarName, { color: themeColors.textSecondary }]}>{role === "admin" ? "Administrator" : "User"}</Text>
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
           <Text style={styles.liveText}>Available</Text>
@@ -535,7 +537,7 @@ function TechDashboard() {
             <View style={[styles.quickIcon, { backgroundColor: Colors.light.accentLight }]}>
               <Feather name="search" size={22} color={Colors.light.accent} />
             </View>
-            <Text style={styles.quickLabel}>Search Cases</Text>
+            <Text style={[styles.quickLabel, { color: themeColors.text }]}>Search Cases</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [
@@ -547,7 +549,7 @@ function TechDashboard() {
             <View style={[styles.quickIcon, { backgroundColor: "#FEF3C7" }]}>
               <MaterialCommunityIcons name="barcode-scan" size={22} color="#D97706" />
             </View>
-            <Text style={styles.quickLabel}>Batch Locate</Text>
+            <Text style={[styles.quickLabel, { color: themeColors.text }]}>Batch Locate</Text>
           </Pressable>
         </View>
       </View>
@@ -621,8 +623,8 @@ function TechDashboard() {
 
       <View style={styles.headerRow}>
         <View>
-          <Text style={styles.greeting}>Lab Floor</Text>
-          <Text style={styles.headerTitle}>Production Dashboard</Text>
+          <Text style={[styles.greeting, { color: themeColors.textSecondary }]}>Lab Floor</Text>
+          <Text style={[styles.headerTitle, { color: themeColors.text }]}>Production Dashboard</Text>
         </View>
       </View>
 
@@ -738,7 +740,7 @@ function TechDashboard() {
         return (
           <>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Due Today</Text>
+              <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Due Today</Text>
               <View style={styles.dueTodayBadge}>
                 <Text style={styles.dueTodayBadgeText}>{dueTodayCases.length}</Text>
               </View>
@@ -791,7 +793,7 @@ function TechDashboard() {
       })()}
 
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Recent Cases</Text>
+        <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Recent Cases</Text>
         <Pressable onPress={() => router.push("/(tabs)/cases")}>
           <Text style={styles.seeAll}>See all</Text>
         </Pressable>
@@ -806,6 +808,7 @@ function TechDashboard() {
               key={c.id}
               style={({ pressed }) => [
                 styles.caseCard,
+                { backgroundColor: themeColors.surface, borderColor: themeColors.border },
                 pressed && { opacity: 0.7 },
               ]}
               onPress={() =>
@@ -818,12 +821,12 @@ function TechDashboard() {
               <View style={styles.caseCardTop}>
                 <View style={styles.caseInfo}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                    <Text style={styles.casePatient}>{c.patientName || c.patientInitials}</Text>
+                    <Text style={[styles.casePatient, { color: themeColors.text }]}>{c.patientName || c.patientInitials}</Text>
                     <View style={styles.userInitialsBadge}>
                       <Text style={styles.userInitialsText}>{userInit}</Text>
                     </View>
                   </View>
-                  <Text style={styles.caseDoctor}>{c.doctorName}</Text>
+                  <Text style={[styles.caseDoctor, { color: themeColors.textSecondary }]}>{c.doctorName}</Text>
                   {c.isRush && (
                     <View style={styles.rushBadge}>
                       <Ionicons name="flash" size={10} color="#EF4444" />
