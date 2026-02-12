@@ -359,19 +359,6 @@ export default function ScanScreen() {
   }, [phase]);
 
   async function handleTakePhoto() {
-    if (Platform.OS === "web") {
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        quality: 0.8,
-      });
-      if (!result.canceled && result.assets[0]) {
-        setCapturedUri(result.assets[0].uri);
-        setPhase("scanning");
-        return;
-      }
-      return;
-    }
-
     if (cameraRef.current) {
       try {
         if (!cameraReady) {
@@ -381,7 +368,7 @@ export default function ScanScreen() {
         if (photo?.uri) {
           setCapturedUri(photo.uri);
           setPhase("scanning");
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           return;
         }
       } catch {}
@@ -399,15 +386,7 @@ export default function ScanScreen() {
   async function handleTakeRegularPhoto() {
     let photoUri: string | null = null;
 
-    if (Platform.OS === "web") {
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        quality: 0.8,
-      });
-      if (!result.canceled && result.assets[0]) {
-        photoUri = result.assets[0].uri;
-      }
-    } else if (cameraRef.current) {
+    if (cameraRef.current) {
       try {
         if (!cameraReady) {
           await new Promise(resolve => setTimeout(resolve, 500));
