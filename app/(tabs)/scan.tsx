@@ -124,7 +124,9 @@ export default function ScanScreen() {
   const [barcodeAttachScanned, setBarcodeAttachScanned] = useState(false);
   const [shadeOpen, setShadeOpen] = useState(false);
 
-  const SHADE_OPTIONS = ["A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
+  const SHADE_OPTIONS = ["A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
+  const [customShadePhotos, setCustomShadePhotos] = useState<string[]>([]);
+  const [customShadeVideos, setCustomShadeVideos] = useState<string[]>([]);
 
   const filteredClients = clients.filter((c) => {
     const q = doctorSearch.toLowerCase();
@@ -319,9 +321,7 @@ export default function ScanScreen() {
         setPhase("camera");
         setCapturedUri(null);
       }
-      return () => {
-        setCameraReady(false);
-      };
+      return () => {};
     }, [])
   );
 
@@ -369,37 +369,30 @@ export default function ScanScreen() {
         setPhase("scanning");
         return;
       }
+      return;
     }
 
-    if (cameraRef.current && cameraReady) {
+    if (cameraRef.current) {
       try {
+        if (!cameraReady) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
         const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
         if (photo?.uri) {
           setCapturedUri(photo.uri);
           setPhase("scanning");
-          if (Platform.OS !== "web") {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          }
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          return;
         }
-      } catch {
-        const result = await ImagePicker.launchCameraAsync({
-          mediaTypes: ["images"],
-          quality: 0.8,
-        });
-        if (!result.canceled && result.assets[0]) {
-          setCapturedUri(result.assets[0].uri);
-          setPhase("scanning");
-        }
-      }
-    } else {
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        quality: 0.8,
-      });
-      if (!result.canceled && result.assets[0]) {
-        setCapturedUri(result.assets[0].uri);
-        setPhase("scanning");
-      }
+      } catch {}
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setCapturedUri(result.assets[0].uri);
+      setPhase("scanning");
     }
   }
 
@@ -414,8 +407,11 @@ export default function ScanScreen() {
       if (!result.canceled && result.assets[0]) {
         photoUri = result.assets[0].uri;
       }
-    } else if (cameraRef.current && cameraReady) {
+    } else if (cameraRef.current) {
       try {
+        if (!cameraReady) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
         const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
         if (photo?.uri) {
           photoUri = photo.uri;
@@ -454,6 +450,43 @@ export default function ScanScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
       Alert.alert("Photo Added", `${casePhotos.length + 1} photo(s) attached to this case.`);
+    }
+  }
+
+  async function handleCustomShadeCapture() {
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images", "videos"],
+      quality: 0.8,
+      videoMaxDuration: 30,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const asset = result.assets[0];
+      const isVideo = asset.type === "video";
+      if (isVideo) {
+        setCustomShadeVideos(prev => [...prev, asset.uri]);
+      } else {
+        setCustomShadePhotos(prev => [...prev, asset.uri]);
+      }
+      setCasePhotos(prev => [...prev, asset.uri]);
+      const entry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: Date.now(),
+        description: `Custom shading ${isVideo ? "video" : "photo"} captured`,
+        imageUri: asset.uri,
+        user: userInitials,
+      };
+      setActivityEntries(prev => [...prev, entry]);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      Alert.alert(
+        "Media Added",
+        `Custom shade ${isVideo ? "video" : "photo"} added. Would you like to add more?`,
+        [
+          { text: "Done", style: "cancel" },
+          { text: "Add More", onPress: () => handleCustomShadeCapture() },
+        ]
+      );
     }
   }
 
@@ -899,6 +932,8 @@ export default function ScanScreen() {
     setToothTypes({});
     setToothChartOpen(false);
     setShade("");
+    setCustomShadePhotos([]);
+    setCustomShadeVideos([]);
     setMaterial("Zirconia");
     setIsRush(false);
     setNotes("");
@@ -1719,6 +1754,18 @@ export default function ScanScreen() {
                           setShade(s);
                           setShadeOpen(false);
                           if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if (s === "Custom") {
+                            setTimeout(() => {
+                              Alert.alert(
+                                "Custom Shade",
+                                "Would you like to take photos and videos now for custom shading?",
+                                [
+                                  { text: "No", style: "cancel" },
+                                  { text: "Yes", onPress: () => handleCustomShadeCapture() },
+                                ]
+                              );
+                            }, 300);
+                          }
                         }}
                         style={({ pressed }) => [
                           styles.dropdownItem,
@@ -2271,6 +2318,17 @@ export default function ScanScreen() {
             <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
               <Ionicons name="barcode-outline" size={60} color="#FFF" />
               <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
+              <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
+              <TextInput
+                style={{ backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 10, paddingHorizontal: 16, paddingVertical: 12, color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", width: 260, marginTop: 12, textAlign: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}
+                placeholder="Enter barcode..."
+                placeholderTextColor="rgba(255,255,255,0.4)"
+                autoCapitalize="none"
+                onSubmitEditing={(e) => {
+                  const val = e.nativeEvent.text.trim();
+                  if (val) handleBarcodeAttachScanned({ data: val });
+                }}
+              />
               <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }} style={{ marginTop: 20, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}>
                 <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip</Text>
               </Pressable>
@@ -2280,7 +2338,7 @@ export default function ScanScreen() {
               style={{ flex: 1 }}
               facing="back"
               barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
-              onBarcodeScanned={handleBarcodeAttachScanned}
+              onBarcodeScanned={barcodeAttachScanned ? undefined : handleBarcodeAttachScanned}
             >
               <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
                 <View style={{ width: 260, height: 160, borderWidth: 2, borderColor: "rgba(255,255,255,0.5)", borderRadius: 16, borderStyle: "dashed" }} />

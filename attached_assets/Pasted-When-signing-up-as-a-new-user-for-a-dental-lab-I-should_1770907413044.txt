@@ -1,0 +1,14 @@
+When signing up as a new user for a dental lab. I shouldn't be prompted to enter a practice name, a doctor name, an office location, A license number or an office phone number. Please fix this.
+When creating a new case, the attach bar code  Button doesn't work. When you press. Scan barcode the camera should Generate And the barcode reader should be active.   This enables the user to scan the barcode and attach the case to a designated case pan.  Attaching a case to a particular case pan allows users to locate the physical case if needed. It also allows the users to locate multiple case pans to a location at once instead of going through each individual case and locating it.
+
+Once a case is located as complete the case pan it was assigned to during intake will be unassigned and the case pan barcode will remain unassigned until a new case is assigned to it through intake
+
+When you select batch scan button the scanner generates but doesn't scan bar codes also when you press finish scanning the button doesn't work .  please fix 
+
+the settings button doesn't work or go anywhere neither does the profile button these are located in the options menu with a three bar icon at the top left of the main page please fix 
+
+When attempting to scan a new case the camera opens up but doesn't take a picture or allow the user to forward.  Once I closed out of the app and restarted it it allowed the user to capture a photo in the new case section.   please fix
+
+Add A1 To the top of the drop down section under shade
+
+If the user selects custom shade please ask would you like to take photos and videos now for custom shading? Yes or no if they select no please allow them to continue with the new case entry if they select yes please open the camera to allow photos and videos.  Once the user has taken 1 video or picture give an option to add more photos and pictures.    Once they add photos and videos please add these photos and videos to the activity log labeled custom shading

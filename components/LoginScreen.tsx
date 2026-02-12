@@ -465,7 +465,7 @@ export default function LoginScreen() {
                 } else if (signUpStep === "practice_info") {
                   setSignUpStep("license");
                 } else if (signUpStep === "email_verify") {
-                  setSignUpStep("practice_info");
+                  setSignUpStep(userType === "lab" ? "user_type" : "practice_info");
                 } else if (signUpStep === "updates_opt_in") {
                   setSignUpStep("email_verify");
                 } else if (signUpStep === "phone_entry") {
@@ -542,9 +542,13 @@ export default function LoginScreen() {
 
             <View style={styles.stepIndicator}>
               {(() => {
-                const allSteps: SignUpStep[] = wantsUpdates
+                const labSteps: SignUpStep[] = wantsUpdates
+                  ? ["credentials", "user_type", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "hipaa_disclaimer"]
+                  : ["credentials", "user_type", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
+                const providerSteps: SignUpStep[] = wantsUpdates
                   ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "hipaa_disclaimer"]
                   : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
+                const allSteps = userType === "lab" ? labSteps : providerSteps;
                 const currentIdx = allSteps.indexOf(signUpStep);
                 return allSteps.map((s) => {
                   const stepIdx = allSteps.indexOf(s);
@@ -610,7 +614,7 @@ export default function LoginScreen() {
           onPress={() => {
             setUserType("lab");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep("license");
+            sendEmailCode();
           }}
           style={({ pressed }) => [
             styles.optionCard,

@@ -96,8 +96,8 @@ function SideDrawer({
   const allMenuItems = [
     ...(showAdmin ? [{ key: "admin", icon: "shield-checkmark" as const, label: "Admin", color: Colors.light.tint, bg: Colors.light.tintLight, onPress: onAdmin }] : []),
     { key: "shipping", icon: "airplane" as const, label: "Shipping Label", color: "#6366F1", bg: "#E0E7FF", onPress: onShipping },
-    { key: "settings", icon: "settings" as const, label: "Settings", color: "#8B5CF6", bg: "#EDE9FE", onPress: () => { closeDrawer(); router.push("/(tabs)/profile"); } },
-    { key: "profile", icon: "person" as const, label: "Profile", color: Colors.light.accent, bg: Colors.light.accentLight, onPress: () => { closeDrawer(); router.push("/(tabs)/profile"); } },
+    { key: "settings", icon: "settings" as const, label: "Settings", color: "#8B5CF6", bg: "#EDE9FE", onPress: () => { closeDrawer(); setTimeout(() => onProfile(), 300); } },
+    { key: "profile", icon: "person" as const, label: "Profile", color: Colors.light.accent, bg: Colors.light.accentLight, onPress: () => { closeDrawer(); setTimeout(() => onProfile(), 300); } },
   ];
   const menuItems = allMenuItems;
 
@@ -931,6 +931,17 @@ function TechDashboard() {
               <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
                 <Ionicons name="barcode-outline" size={60} color="#FFF" />
                 <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
+                <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
+                <TextInput
+                  style={{ backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 10, paddingHorizontal: 16, paddingVertical: 12, color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", width: 260, marginTop: 12, textAlign: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}
+                  placeholder="Enter barcode..."
+                  placeholderTextColor="rgba(255,255,255,0.4)"
+                  autoCapitalize="none"
+                  onSubmitEditing={(e) => {
+                    const val = e.nativeEvent.text.trim();
+                    if (val) handleBatchBarcodeScan({ data: val });
+                  }}
+                />
               </View>
             ) : (
               <CameraView
