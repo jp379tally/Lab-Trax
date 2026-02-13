@@ -1147,6 +1147,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return {
             ...c,
             status: newStatus,
+            assignedBarcode: newStatus === "COMPLETE" ? undefined : c.assignedBarcode,
             updatedAt: now,
             routeHistory: [...c.routeHistory, { station: newStatus, timestamp: now }],
             activityLog: [...(c.activityLog || []), stationEntry],

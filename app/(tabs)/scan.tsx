@@ -638,7 +638,7 @@ export default function ScanScreen() {
       setPendingRemakeCheck(null);
       resetForm();
       Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
-        { text: "OK", onPress: () => router.push("/(tabs)/cases") },
+        { text: "OK", onPress: () => router.push("/(tabs)") },
       ]);
     }
   }
