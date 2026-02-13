@@ -2326,6 +2326,7 @@ const styles = StyleSheet.create({
   },
   addItemToothScroll: {
     flex: 1,
+    minHeight: 420,
   },
   addItemSelectedType: {
     flexDirection: "row" as const,
