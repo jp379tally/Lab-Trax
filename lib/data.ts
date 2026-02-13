@@ -1000,6 +1000,8 @@ export type PricingTier = {
   prices: Record<string, number>;
 };
 
+export const SHADE_OPTIONS = ["A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
+
 export const DEFAULT_TIER_ITEMS = [
   { key: "zirconia_crown", label: "Zirconia Crown" },
   { key: "emax_crown", label: "E.max Crown" },

@@ -54,7 +54,7 @@ interface AppContextValue {
   addCasePhoto: (caseId: string, photoUri: string, user?: string) => void;
   addCaseNote: (caseId: string, note: string, user?: string) => void;
   addTrackingNumber: (caseId: string, tracking: string) => void;
-  addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string) => void;
+  addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
   unreadCount: number;
@@ -528,7 +528,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function addCaseItem(caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypesMap: Record<number, ToothType>, mat: string) {
+  function addCaseItem(caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypesMap: Record<number, ToothType>, mat: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
@@ -557,13 +557,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const unitPrice = MATERIAL_PRICES[mat] || 250;
           const price = unitPrice * Math.max(billable, 1);
 
+          let descParts = [`Item added: ${caseType}`];
+          if (extras?.subType) descParts.push(extras.subType);
+          if (extras?.applianceSubType) descParts.push(extras.applianceSubType);
+          if (extras?.nightGuardType) descParts.push(extras.nightGuardType);
+          if (toothDisplay) descParts.push(toothDisplay);
+          if (mat) descParts.push(`(${mat})`);
+          if (extras?.gingivaShade) descParts.push(`Gingiva: ${extras.gingivaShade}`);
+
           const newActivity: ActivityEntry = {
             id: generateId(),
             type: "note",
-            description: `Item added: ${caseType} - ${toothDisplay} (${mat})`,
+            description: descParts.join(" - "),
             timestamp: Date.now(),
             user: "user",
           };
+
+          let updatedNotes = c.notes;
+          if (extras?.customNotes) {
+            updatedNotes = updatedNotes ? `${updatedNotes}\n${extras.customNotes}` : extras.customNotes;
+          }
 
           return {
             ...c,
@@ -572,6 +585,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             toothMap: toothMapEntries.length > 0 ? toothMapEntries : c.toothMap,
             material: mat,
             price,
+            notes: updatedNotes,
             updatedAt: Date.now(),
             activityLog: [...c.activityLog, newActivity],
           };

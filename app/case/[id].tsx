@@ -21,13 +21,13 @@ import * as DocumentPicker from "expo-document-picker";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate } = useApp();
   const { currentUser } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
@@ -44,11 +44,20 @@ export default function CaseDetailScreen() {
   const [entryNoteMode, setEntryNoteMode] = useState(false);
   const [entryNoteText, setEntryNoteText] = useState("");
   const [showAddItemModal, setShowAddItemModal] = useState(false);
-  const [addItemStep, setAddItemStep] = useState<"caseType" | "toothChart">("caseType");
+  type AddItemStep = "caseType" | "toothChart" | "material" | "removableSubtype" | "removableMaterial" | "gingivaShade" | "applianceSubtype" | "applianceNightGuard" | "applianceEssexTeeth" | "applianceEssexShade" | "complete";
+  const [addItemStep, setAddItemStep] = useState<AddItemStep>("caseType");
   const [itemCaseType, setItemCaseType] = useState<CaseTypeValue>("");
   const [itemSelectedTeeth, setItemSelectedTeeth] = useState<number[]>([]);
   const [itemToothTypes, setItemToothTypes] = useState<Record<number, ToothType>>({});
   const [itemMaterial, setItemMaterial] = useState("Zirconia");
+  const [removableSubtype, setRemovableSubtype] = useState("");
+  const [removableMaterial, setRemovableMaterial] = useState("");
+  const [gingivaShade, setGingivaShade] = useState("");
+  const [gingivaCustomNote, setGingivaCustomNote] = useState("");
+  const [removableCustomMaterial, setRemovableCustomMaterial] = useState("");
+  const [applianceSubtype, setApplianceSubtype] = useState("");
+  const [nightGuardType, setNightGuardType] = useState("");
+  const [essexShade, setEssexShade] = useState("");
 
   const [showCourtesyModal, setShowCourtesyModal] = useState(false);
   const [courtesyMessage, setCourtesyMessage] = useState("");
@@ -309,6 +318,14 @@ export default function CaseDetailScreen() {
     setItemSelectedTeeth([]);
     setItemToothTypes({});
     setItemMaterial("Zirconia");
+    setRemovableSubtype("");
+    setRemovableMaterial("");
+    setGingivaShade("");
+    setGingivaCustomNote("");
+    setRemovableCustomMaterial("");
+    setApplianceSubtype("");
+    setNightGuardType("");
+    setEssexShade("");
     setShowAddItemModal(true);
   }
 
@@ -317,11 +334,46 @@ export default function CaseDetailScreen() {
       Alert.alert("Missing Info", "Please select a case type.");
       return;
     }
-    if (itemSelectedTeeth.length === 0) {
+    const skipToothValidation =
+      (itemCaseType === "Removable" && removableSubtype === "Denture") ||
+      (itemCaseType === "Appliance" && ["Snore Guard", "Ortho Retainer", "Other"].includes(applianceSubtype)) ||
+      (itemCaseType === "Appliance" && applianceSubtype === "Night Guard");
+
+    if (!skipToothValidation && itemSelectedTeeth.length === 0) {
       Alert.alert("Missing Info", "Please select at least one tooth.");
       return;
     }
-    addCaseItem(caseItem!.id, itemCaseType, itemSelectedTeeth, itemToothTypes, itemMaterial);
+
+    let extras: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string } | undefined;
+    let mat = itemMaterial;
+
+    if (itemCaseType === "Removable") {
+      const finalMat = removableMaterial === "Other" && removableCustomMaterial ? removableCustomMaterial : (removableMaterial || "Acrylic");
+      mat = finalMat;
+      extras = { subType: removableSubtype, gingivaShade: gingivaShade || undefined, customNotes: gingivaCustomNote || undefined };
+    } else if (itemCaseType === "Appliance") {
+      mat = applianceSubtype === "Essex" ? (essexShade || "Essex") : applianceSubtype;
+      extras = { applianceSubType: applianceSubtype, nightGuardType: nightGuardType || undefined };
+    }
+
+    addCaseItem(caseItem!.id, itemCaseType, itemSelectedTeeth, itemToothTypes, mat, extras);
+
+    const linkedInvoice = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
+    if (linkedInvoice) {
+      const unitPrice = MATERIAL_PRICES[mat] || 250;
+      const toothCount = Math.max(itemSelectedTeeth.length, 1);
+      const newLineItem = {
+        qty: toothCount,
+        item: `${mat} ${itemCaseType}`,
+        description: `${itemCaseType}${extras?.subType ? ` - ${extras.subType}` : ""}${extras?.applianceSubType ? ` - ${extras.applianceSubType}` : ""} - ${itemToothDisplay || "N/A"}`,
+        rate: unitPrice,
+        amount: unitPrice * toothCount,
+      };
+      const updatedLineItems = [...linkedInvoice.lineItems, newLineItem];
+      const updatedAmount = updatedLineItems.reduce((s, li) => s + li.amount, 0);
+      updateInvoice(linkedInvoice.id, { lineItems: updatedLineItems, amount: updatedAmount });
+    }
+
     if (Platform.OS !== "web") {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
@@ -1219,33 +1271,71 @@ export default function CaseDetailScreen() {
         transparent
         onRequestClose={() => setShowAddItemModal(false)}
       >
-        <View style={styles.addItemOverlay}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.addItemOverlay}
+        >
           <View style={[styles.addItemSheet, { paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }]}>
             <View style={styles.modalHandle} />
             <View style={styles.addItemHeader}>
               <Pressable onPress={() => {
-                if (addItemStep === "toothChart") {
-                  setAddItemStep("caseType");
-                } else {
+                if (addItemStep === "caseType") {
                   setShowAddItemModal(false);
+                } else if (addItemStep === "toothChart") {
+                  if (itemCaseType === "Removable") setAddItemStep("removableSubtype");
+                  else setAddItemStep("caseType");
+                } else if (addItemStep === "material") {
+                  setAddItemStep("toothChart");
+                } else if (addItemStep === "removableSubtype") {
+                  setAddItemStep("caseType");
+                } else if (addItemStep === "removableMaterial") {
+                  if (removableSubtype === "Denture") setAddItemStep("removableSubtype");
+                  else setAddItemStep("toothChart");
+                } else if (addItemStep === "gingivaShade") {
+                  setAddItemStep("removableMaterial");
+                } else if (addItemStep === "applianceSubtype") {
+                  setAddItemStep("caseType");
+                } else if (addItemStep === "applianceNightGuard") {
+                  setAddItemStep("applianceSubtype");
+                } else if (addItemStep === "applianceEssexTeeth") {
+                  setAddItemStep("applianceSubtype");
+                } else if (addItemStep === "applianceEssexShade") {
+                  setAddItemStep("applianceEssexTeeth");
+                } else {
+                  setAddItemStep("caseType");
                 }
               }}>
-                <Ionicons name={addItemStep === "toothChart" ? "arrow-back" : "close"} size={24} color={Colors.light.textSecondary} />
+                <Ionicons name={addItemStep === "caseType" ? "close" : "arrow-back"} size={24} color={Colors.light.textSecondary} />
               </Pressable>
               <Text style={styles.addItemTitle}>
-                {addItemStep === "caseType" ? "Select Case Type" : "Select Teeth"}
+                {addItemStep === "caseType" ? "Select Case Type" :
+                 addItemStep === "toothChart" ? "Select Teeth" :
+                 addItemStep === "material" ? "Select Material" :
+                 addItemStep === "removableSubtype" ? "Select Removable Type" :
+                 addItemStep === "removableMaterial" ? "Select Material" :
+                 addItemStep === "gingivaShade" ? "Select Gingiva Shade" :
+                 addItemStep === "applianceSubtype" ? "Select Appliance Type" :
+                 addItemStep === "applianceNightGuard" ? "Night Guard Type" :
+                 addItemStep === "applianceEssexTeeth" ? "Select Teeth" :
+                 addItemStep === "applianceEssexShade" ? "Select Shade" : "Add Item"}
               </Text>
               <View style={{ width: 24 }} />
             </View>
 
-            {addItemStep === "caseType" ? (
+            {addItemStep === "caseType" && (
               <View style={styles.addItemCaseTypeList}>
                 {(["Restorative", "Removable", "Appliance", "Temporary"] as CaseTypeValue[]).map((type) => (
                   <Pressable
                     key={type}
                     onPress={() => {
                       setItemCaseType(type);
-                      setAddItemStep("toothChart");
+                      if (type === "Restorative" || type === "Temporary") {
+                        setAddItemStep("toothChart");
+                      } else if (type === "Removable") {
+                        setAddItemStep("removableSubtype");
+                      } else if (type === "Appliance") {
+                        setAddItemStep("applianceSubtype");
+                      }
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                     style={({ pressed }) => [
@@ -1268,11 +1358,15 @@ export default function CaseDetailScreen() {
                   </Pressable>
                 ))}
               </View>
-            ) : (
+            )}
+
+            {(addItemStep === "toothChart" || addItemStep === "applianceEssexTeeth") && (
               <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
                 <View style={styles.addItemSelectedType}>
                   <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
-                  <Text style={styles.addItemSelectedTypeText}>{itemCaseType}</Text>
+                  <Text style={styles.addItemSelectedTypeText}>
+                    {itemCaseType}{removableSubtype ? ` - ${removableSubtype}` : ""}{applianceSubtype ? ` - ${applianceSubtype}` : ""}
+                  </Text>
                 </View>
 
                 <View style={styles.aiToothChartPanel}>
@@ -1471,6 +1565,46 @@ export default function CaseDetailScreen() {
                   )}
                 </View>
 
+                {(itemCaseType === "Restorative" || itemCaseType === "Temporary") && itemSelectedTeeth.length > 0 && showPrice && (
+                  <View style={styles.aiPricingRow}>
+                    <Text style={styles.aiPricingLabel}>
+                      {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${MATERIAL_PRICES[itemMaterial] || 250}/{itemMaterial}
+                    </Text>
+                    <Text style={styles.aiPricingTotal}>${itemCalculatedPrice.toLocaleString()}</Text>
+                  </View>
+                )}
+
+                <Pressable
+                  onPress={() => {
+                    if (addItemStep === "applianceEssexTeeth") {
+                      setAddItemStep("applianceEssexShade");
+                    } else if (itemCaseType === "Restorative" || itemCaseType === "Temporary") {
+                      setAddItemStep("material");
+                    } else if (itemCaseType === "Removable") {
+                      setAddItemStep("removableMaterial");
+                    }
+                  }}
+                  style={({ pressed }) => [
+                    styles.aiSaveItemBtn,
+                    { backgroundColor: Colors.light.tint },
+                    itemSelectedTeeth.length === 0 && { opacity: 0.5 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  disabled={itemSelectedTeeth.length === 0}
+                >
+                  <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                  <Text style={styles.aiSaveItemBtnText}>Next</Text>
+                </Pressable>
+              </ScrollView>
+            )}
+
+            {addItemStep === "material" && (
+              <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
+                <View style={styles.addItemSelectedType}>
+                  <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                  <Text style={styles.addItemSelectedTypeText}>{itemCaseType} - {itemToothDisplay}</Text>
+                </View>
+
                 <View style={styles.aiMaterialSection}>
                   <Text style={styles.aiMaterialLabel}>Material</Text>
                   <View style={styles.aiMaterialSelector}>
@@ -1505,18 +1639,326 @@ export default function CaseDetailScreen() {
                   onPress={handleSaveItem}
                   style={({ pressed }) => [
                     styles.aiSaveItemBtn,
-                    (!itemCaseType || itemSelectedTeeth.length === 0) && { opacity: 0.5 },
                     pressed && { opacity: 0.85 },
                   ]}
-                  disabled={!itemCaseType || itemSelectedTeeth.length === 0}
                 >
                   <Ionicons name="checkmark" size={20} color="#FFF" />
-                  <Text style={styles.aiSaveItemBtnText}>Save Item</Text>
+                  <Text style={styles.aiSaveItemBtnText}>Complete</Text>
+                </Pressable>
+              </ScrollView>
+            )}
+
+            {addItemStep === "removableSubtype" && (
+              <View style={styles.addItemCaseTypeList}>
+                {["Nesbit", "Partial", "Denture", "Flipper", "Other"].map((sub) => (
+                  <Pressable
+                    key={sub}
+                    onPress={() => {
+                      setRemovableSubtype(sub);
+                      if (sub === "Denture") {
+                        setAddItemStep("removableMaterial");
+                      } else {
+                        setAddItemStep("toothChart");
+                      }
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => [
+                      styles.addItemCaseTypeItem,
+                      removableSubtype === sub && styles.addItemCaseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={styles.addItemCaseTypeIcon}>
+                      <Ionicons
+                        name={sub === "Nesbit" ? "git-branch" : sub === "Partial" ? "pie-chart" : sub === "Denture" ? "apps" : sub === "Flipper" ? "swap-vertical" : "ellipsis-horizontal"}
+                        size={20}
+                        color={removableSubtype === sub ? Colors.light.tint : Colors.light.textSecondary}
+                      />
+                    </View>
+                    <Text style={[styles.addItemCaseTypeText, removableSubtype === sub && styles.addItemCaseTypeTextSelected]}>
+                      {sub}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {addItemStep === "removableMaterial" && (
+              <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
+                <View style={styles.addItemSelectedType}>
+                  <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                  <Text style={styles.addItemSelectedTypeText}>Removable - {removableSubtype}</Text>
+                </View>
+
+                <View style={styles.addItemCaseTypeList}>
+                  {["Acrylic", "Flexible", "Cast Metal", "Other"].map((mat) => (
+                    <Pressable
+                      key={mat}
+                      onPress={() => {
+                        setRemovableMaterial(mat);
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }}
+                      style={({ pressed }) => [
+                        styles.addItemCaseTypeItem,
+                        removableMaterial === mat && styles.addItemCaseTypeItemSelected,
+                        pressed && { opacity: 0.7 },
+                      ]}
+                    >
+                      <View style={styles.addItemCaseTypeIcon}>
+                        <Ionicons
+                          name={mat === "Acrylic" ? "color-palette" : mat === "Flexible" ? "water" : mat === "Cast Metal" ? "hammer" : "ellipsis-horizontal"}
+                          size={20}
+                          color={removableMaterial === mat ? Colors.light.tint : Colors.light.textSecondary}
+                        />
+                      </View>
+                      <Text style={[styles.addItemCaseTypeText, removableMaterial === mat && styles.addItemCaseTypeTextSelected]}>
+                        {mat}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                {removableMaterial === "Other" && (
+                  <TextInput
+                    style={{ borderWidth: 1, borderColor: "#E0E0E0", borderRadius: 8, padding: 12, marginTop: 12, fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+                    placeholder="Describe custom material..."
+                    placeholderTextColor={Colors.light.textTertiary}
+                    value={removableCustomMaterial}
+                    onChangeText={setRemovableCustomMaterial}
+                  />
+                )}
+
+                <Pressable
+                  onPress={() => setAddItemStep("gingivaShade")}
+                  style={({ pressed }) => [
+                    styles.aiSaveItemBtn,
+                    { backgroundColor: Colors.light.tint, marginTop: 16 },
+                    !removableMaterial && { opacity: 0.5 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  disabled={!removableMaterial}
+                >
+                  <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                  <Text style={styles.aiSaveItemBtnText}>Next</Text>
+                </Pressable>
+              </ScrollView>
+            )}
+
+            {addItemStep === "gingivaShade" && (
+              <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
+                <View style={styles.addItemSelectedType}>
+                  <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                  <Text style={styles.addItemSelectedTypeText}>Removable - {removableSubtype} - {removableMaterial === "Other" && removableCustomMaterial ? removableCustomMaterial : removableMaterial}</Text>
+                </View>
+
+                <View style={styles.addItemCaseTypeList}>
+                  {["Standard Pink Light", "Light Meharry", "Dark Meharry", "Other"].map((shade) => (
+                    <Pressable
+                      key={shade}
+                      onPress={() => {
+                        setGingivaShade(shade);
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }}
+                      style={({ pressed }) => [
+                        styles.addItemCaseTypeItem,
+                        gingivaShade === shade && styles.addItemCaseTypeItemSelected,
+                        pressed && { opacity: 0.7 },
+                      ]}
+                    >
+                      <View style={styles.addItemCaseTypeIcon}>
+                        <Ionicons
+                          name={shade === "Other" ? "ellipsis-horizontal" : "color-fill"}
+                          size={20}
+                          color={gingivaShade === shade ? Colors.light.tint : Colors.light.textSecondary}
+                        />
+                      </View>
+                      <Text style={[styles.addItemCaseTypeText, gingivaShade === shade && styles.addItemCaseTypeTextSelected]}>
+                        {shade}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                {gingivaShade === "Other" && (
+                  <TextInput
+                    style={{ borderWidth: 1, borderColor: "#E0E0E0", borderRadius: 8, padding: 12, marginTop: 12, fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+                    placeholder="Describe custom gingiva shade..."
+                    placeholderTextColor={Colors.light.textTertiary}
+                    value={gingivaCustomNote}
+                    onChangeText={setGingivaCustomNote}
+                  />
+                )}
+
+                {gingivaShade === "Other" && gingivaCustomNote.trim().length > 0 && (
+                  <Pressable
+                    onPress={() => {
+                      if (gingivaCustomNote.trim()) {
+                        setGingivaShade(gingivaCustomNote.trim());
+                      }
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => [
+                      styles.aiSaveItemBtn,
+                      { backgroundColor: "#F5A623", marginTop: 12 },
+                      pressed && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Ionicons name="document-text" size={18} color="#FFF" />
+                    <Text style={styles.aiSaveItemBtnText}>Add to Case Notes</Text>
+                  </Pressable>
+                )}
+
+                <Pressable
+                  onPress={handleSaveItem}
+                  style={({ pressed }) => [
+                    styles.aiSaveItemBtn,
+                    { marginTop: 16 },
+                    !gingivaShade && { opacity: 0.5 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  disabled={!gingivaShade}
+                >
+                  <Ionicons name="checkmark" size={20} color="#FFF" />
+                  <Text style={styles.aiSaveItemBtnText}>Complete</Text>
+                </Pressable>
+              </ScrollView>
+            )}
+
+            {addItemStep === "applianceSubtype" && (
+              <View style={styles.addItemCaseTypeList}>
+                {["Night Guard", "Snore Guard", "Essex", "Ortho Retainer", "Other"].map((sub) => (
+                  <Pressable
+                    key={sub}
+                    onPress={() => {
+                      setApplianceSubtype(sub);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      if (sub === "Night Guard") {
+                        setAddItemStep("applianceNightGuard");
+                      } else if (sub === "Essex") {
+                        setAddItemStep("applianceEssexTeeth");
+                      } else {
+                        const mat = sub;
+                        addCaseItem(caseItem!.id, itemCaseType, [], {}, mat, { applianceSubType: sub });
+                        const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
+                        if (linkedInv) {
+                          const unitPrice = MATERIAL_PRICES[mat] || 250;
+                          const newLi = { qty: 1, item: `${mat} Appliance`, description: `Appliance - ${sub}`, rate: unitPrice, amount: unitPrice };
+                          const updLi = [...linkedInv.lineItems, newLi];
+                          updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
+                        }
+                        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                        setShowAddItemModal(false);
+                      }
+                    }}
+                    style={({ pressed }) => [
+                      styles.addItemCaseTypeItem,
+                      applianceSubtype === sub && styles.addItemCaseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={styles.addItemCaseTypeIcon}>
+                      <Ionicons
+                        name={sub === "Night Guard" ? "moon" : sub === "Snore Guard" ? "bed" : sub === "Essex" ? "layers" : sub === "Ortho Retainer" ? "fitness" : "ellipsis-horizontal"}
+                        size={20}
+                        color={applianceSubtype === sub ? Colors.light.tint : Colors.light.textSecondary}
+                      />
+                    </View>
+                    <Text style={[styles.addItemCaseTypeText, applianceSubtype === sub && styles.addItemCaseTypeTextSelected]}>
+                      {sub}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {addItemStep === "applianceNightGuard" && (
+              <View style={styles.addItemCaseTypeList}>
+                {["Hard Night Guard", "Hard/Soft Night Guard"].map((ng) => (
+                  <Pressable
+                    key={ng}
+                    onPress={() => {
+                      setNightGuardType(ng);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      addCaseItem(caseItem!.id, itemCaseType, [], {}, applianceSubtype, { applianceSubType: applianceSubtype, nightGuardType: ng });
+                      const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
+                      if (linkedInv) {
+                        const unitPrice = MATERIAL_PRICES[applianceSubtype] || 250;
+                        const newLi = { qty: 1, item: `${ng} Appliance`, description: `Appliance - ${ng}`, rate: unitPrice, amount: unitPrice };
+                        const updLi = [...linkedInv.lineItems, newLi];
+                        updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
+                      }
+                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setShowAddItemModal(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.addItemCaseTypeItem,
+                      nightGuardType === ng && styles.addItemCaseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={styles.addItemCaseTypeIcon}>
+                      <Ionicons
+                        name={ng === "Hard Night Guard" ? "shield" : "shield-half"}
+                        size={20}
+                        color={nightGuardType === ng ? Colors.light.tint : Colors.light.textSecondary}
+                      />
+                    </View>
+                    <Text style={[styles.addItemCaseTypeText, nightGuardType === ng && styles.addItemCaseTypeTextSelected]}>
+                      {ng}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {addItemStep === "applianceEssexShade" && (
+              <ScrollView showsVerticalScrollIndicator={false} style={styles.addItemToothScroll}>
+                <View style={styles.addItemSelectedType}>
+                  <Ionicons name="pricetag" size={14} color={Colors.light.tint} />
+                  <Text style={styles.addItemSelectedTypeText}>Appliance - Essex - {itemToothDisplay}</Text>
+                </View>
+
+                <View style={{ flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8 }}>
+                  {SHADE_OPTIONS.map((shade) => (
+                    <Pressable
+                      key={shade}
+                      onPress={() => {
+                        setEssexShade(shade);
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }}
+                      style={[
+                        styles.aiMaterialChip,
+                        { flex: undefined, paddingHorizontal: 14, minWidth: 60 },
+                        essexShade === shade && styles.aiMaterialChipActive,
+                      ]}
+                    >
+                      <Text style={[
+                        styles.aiMaterialText,
+                        essexShade === shade && styles.aiMaterialTextActive,
+                      ]}>{shade}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <Pressable
+                  onPress={handleSaveItem}
+                  style={({ pressed }) => [
+                    styles.aiSaveItemBtn,
+                    { marginTop: 16 },
+                    !essexShade && { opacity: 0.5 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  disabled={!essexShade}
+                >
+                  <Ionicons name="checkmark" size={20} color="#FFF" />
+                  <Text style={styles.aiSaveItemBtnText}>Complete</Text>
                 </Pressable>
               </ScrollView>
             )}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
