@@ -1474,7 +1474,7 @@ export default function CaseDetailScreen() {
                 <View style={styles.aiMaterialSection}>
                   <Text style={styles.aiMaterialLabel}>Material</Text>
                   <View style={styles.aiMaterialSelector}>
-                    {["Zirconia", "E.max", "PFM", "Gold"].map((m) => (
+                    {["Zirconia", "E.max", "PFM", "Gold", "Other"].map((m) => (
                       <Pressable
                         key={m}
                         onPress={() => setItemMaterial(m)}

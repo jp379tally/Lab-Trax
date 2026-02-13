@@ -68,6 +68,7 @@ export const MATERIAL_PRICES: Record<string, number> = {
   "E.max": 300,
   "PFM": 200,
   "Gold": 400,
+  "Other": 250,
 };
 
 export type CaseTypeValue = "Restorative" | "Removable" | "Appliance" | "Temporary" | "";
