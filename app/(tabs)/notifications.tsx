@@ -16,7 +16,7 @@ import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { Notification, GroupInvitation } from "@/lib/data";
+import { Notification, GroupInvitation, GroupJoinRequest } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 
 function getNotifIcon(type: Notification["type"]) {
@@ -44,13 +44,18 @@ function formatTime(ts: number) {
 }
 
 export default function NotificationsScreen() {
-  const { notifications, markNotificationRead, groupInvitations, respondToGroupInvitation } = useApp();
+  const { notifications, markNotificationRead, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
   const { currentUser } = useAuth();
   const insets = useSafeAreaInsets();
   const [confirmInvite, setConfirmInvite] = useState<{ invitation: GroupInvitation; accept: boolean } | null>(null);
+  const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean } | null>(null);
 
   const pendingInvitations = groupInvitations.filter(
     inv => inv.invitedUsername.toLowerCase() === (currentUser || "").toLowerCase() && inv.status === "pending"
+  );
+
+  const pendingJoinRequests = groupJoinRequests.filter(
+    r => r.targetAdminUsername.toLowerCase() === (currentUser || "").toLowerCase() && r.status === "pending"
   );
 
   function handleInvitationResponse(invitation: GroupInvitation, accept: boolean) {
@@ -89,6 +94,39 @@ export default function NotificationsScreen() {
             <Pressable
               style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
               onPress={() => handleInvitationResponse(invitation, false)}
+            >
+              <Ionicons name="close" size={16} color={Colors.light.error} />
+              <Text style={styles.declineText}>Decline</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  function renderJoinRequestCard(request: GroupJoinRequest) {
+    return (
+      <View key={request.id} style={styles.inviteCard}>
+        <View style={[styles.notifIcon, { backgroundColor: "#FEF3C7" }]}>
+          <Ionicons name="person-add" size={20} color="#D97706" />
+        </View>
+        <View style={styles.notifContent}>
+          <Text style={styles.notifTitle}>Group Join Request</Text>
+          <Text style={styles.notifMessage}>
+            <Text style={{ fontFamily: "Inter_600SemiBold" }}>{request.requestingUsername}</Text>
+            {" "}wants to join your group
+          </Text>
+          <View style={styles.inviteBtns}>
+            <Pressable
+              style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
+              onPress={() => setConfirmJoinRequest({ request, accept: true })}
+            >
+              <Ionicons name="checkmark" size={16} color="#FFF" />
+              <Text style={styles.acceptText}>Accept</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
+              onPress={() => setConfirmJoinRequest({ request, accept: false })}
             >
               <Ionicons name="close" size={16} color={Colors.light.error} />
               <Text style={styles.declineText}>Decline</Text>
@@ -158,15 +196,16 @@ export default function NotificationsScreen() {
         ]}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
-          pendingInvitations.length > 0 ? (
+          (pendingInvitations.length > 0 || pendingJoinRequests.length > 0) ? (
             <View style={styles.inviteSection}>
               <Text style={styles.sectionLabel}>Pending Invitations</Text>
               {pendingInvitations.map(inv => renderInvitationCard(inv))}
+              {pendingJoinRequests.map(req => renderJoinRequestCard(req))}
             </View>
           ) : null
         }
         ListEmptyComponent={
-          pendingInvitations.length === 0 ? (
+          pendingInvitations.length === 0 && pendingJoinRequests.length === 0 ? (
             <View style={styles.emptyState}>
               <Ionicons
                 name="notifications-off-outline"
@@ -209,6 +248,51 @@ export default function NotificationsScreen() {
                 onPress={() => setConfirmInvite(null)}
               >
                 <Text style={styles.confirmNoText}>No</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!confirmJoinRequest} transparent animationType="fade" onRequestClose={() => setConfirmJoinRequest(null)}>
+        <View style={styles.confirmOverlay}>
+          <View style={styles.confirmCard}>
+            <View style={[styles.confirmIconWrap, { backgroundColor: confirmJoinRequest?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
+              <Ionicons
+                name={confirmJoinRequest?.accept ? "person-add" : "close-circle"}
+                size={32}
+                color={confirmJoinRequest?.accept ? "#16A34A" : "#EF4444"}
+              />
+            </View>
+            <Text style={styles.confirmTitle}>
+              {confirmJoinRequest?.accept ? "Accept Request?" : "Decline Request?"}
+            </Text>
+            <Text style={styles.confirmDesc}>
+              {confirmJoinRequest?.accept
+                ? `${confirmJoinRequest?.request.requestingUsername} will be added to your group.`
+                : `${confirmJoinRequest?.request.requestingUsername}'s request will be declined.`}
+            </Text>
+            <View style={styles.confirmBtns}>
+              <Pressable
+                style={({ pressed }) => [styles.confirmYesBtn, !confirmJoinRequest?.accept && { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
+                onPress={() => {
+                  if (!confirmJoinRequest) return;
+                  respondToGroupJoinRequest(confirmJoinRequest.request.id, confirmJoinRequest.accept);
+                  if (Platform.OS !== "web") {
+                    Haptics.notificationAsync(confirmJoinRequest.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                  }
+                  setConfirmJoinRequest(null);
+                }}
+              >
+                <Text style={styles.confirmYesText}>
+                  {confirmJoinRequest?.accept ? "Accept" : "Decline"}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.confirmNoBtn, pressed && { opacity: 0.85 }]}
+                onPress={() => setConfirmJoinRequest(null)}
+              >
+                <Text style={styles.confirmNoText}>Cancel</Text>
               </Pressable>
             </View>
           </View>

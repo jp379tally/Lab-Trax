@@ -41,6 +41,7 @@ import {
   Group,
   GroupMember,
   GroupInvitation,
+  GroupJoinRequest,
 } from "./data";
 
 interface AppContextValue {
@@ -107,6 +108,9 @@ interface AppContextValue {
   unassignBarcode: (caseId: string) => void;
   findCaseByBarcode: (barcode: string) => LabCase | undefined;
   batchLocateCases: (caseIds: string[], newStatus: CaseStatus) => void;
+  groupJoinRequests: GroupJoinRequest[];
+  sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => { success: boolean; error?: string };
+  respondToGroupJoinRequest: (requestId: string, accept: boolean) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -123,6 +127,7 @@ const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
 const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
 const GROUPS_KEY = "@drivesync_groups";
 const GROUP_INVITATIONS_KEY = "@drivesync_group_invitations";
+const GROUP_JOIN_REQUESTS_KEY = "@drivesync_group_join_requests";
 const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -139,6 +144,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [pricingTiers, setPricingTiers] = useState<PricingTier[]>(DEFAULT_PRICING_TIERS);
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupInvitations, setGroupInvitations] = useState<GroupInvitation[]>([]);
+  const [groupJoinRequests, setGroupJoinRequests] = useState<GroupJoinRequest[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>(sampleInventory);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -236,6 +242,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       if (savedGroupInvitations) {
         setGroupInvitations(JSON.parse(savedGroupInvitations));
+      }
+
+      const savedGroupJoinRequests = await AsyncStorage.getItem(GROUP_JOIN_REQUESTS_KEY);
+      if (savedGroupJoinRequests) {
+        setGroupJoinRequests(JSON.parse(savedGroupJoinRequests));
       }
       const pendingGroupRaw = await AsyncStorage.getItem("@drivesync_pending_group");
       if (pendingGroupRaw) {
@@ -1047,6 +1058,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(GROUP_INVITATIONS_KEY, JSON.stringify(updated));
   }
 
+  function sendGroupJoinRequest(targetAdminUsername: string, requestingUsername: string, message?: string): { success: boolean; error?: string } {
+    const existing = groupJoinRequests.find(
+      r => r.requestingUsername.toLowerCase() === requestingUsername.toLowerCase()
+        && r.targetAdminUsername.toLowerCase() === targetAdminUsername.toLowerCase()
+        && r.status === "pending"
+    );
+    if (existing) {
+      return { success: false, error: "You already have a pending request to this admin." };
+    }
+
+    const request: GroupJoinRequest = {
+      id: generateId(),
+      requestingUsername,
+      targetAdminUsername,
+      message: message || `${requestingUsername} would like to join your group.`,
+      status: "pending",
+      createdAt: Date.now(),
+    };
+    const updated = [...groupJoinRequests, request];
+    setGroupJoinRequests(updated);
+    AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
+    return { success: true };
+  }
+
+  function respondToGroupJoinRequest(requestId: string, accept: boolean) {
+    const request = groupJoinRequests.find(r => r.id === requestId);
+    if (!request) return;
+
+    const updated = groupJoinRequests.map(r => {
+      if (r.id === requestId) {
+        return { ...r, status: accept ? "accepted" as const : "declined" as const };
+      }
+      return r;
+    });
+    setGroupJoinRequests(updated);
+    AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
+
+    if (accept) {
+      const adminGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === request.targetAdminUsername.toLowerCase() && m.role === "admin"));
+      if (adminGroups.length > 0) {
+        addUserToGroup(adminGroups[0].id, request.requestingUsername, "user");
+      }
+    }
+  }
+
   function respondToGroupInvitation(invitationId: string, accept: boolean, userRole?: "admin" | "user") {
     const invitation = groupInvitations.find(inv => inv.id === invitationId);
     if (!invitation) return;
@@ -1269,8 +1325,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unassignBarcode,
       findCaseByBarcode,
       batchLocateCases,
+      groupJoinRequests,
+      sendGroupJoinRequest,
+      respondToGroupJoinRequest,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, inventory],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, groupJoinRequests, inventory],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

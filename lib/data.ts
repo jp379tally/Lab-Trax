@@ -165,6 +165,15 @@ export interface GroupInvitation {
   createdAt: number;
 }
 
+export interface GroupJoinRequest {
+  id: string;
+  requestingUsername: string;
+  targetAdminUsername: string;
+  message: string;
+  status: "pending" | "accepted" | "declined";
+  createdAt: number;
+}
+
 export function getStationInfo(status: CaseStatus) {
   return STATIONS.find((s) => s.id === status) || STATIONS[0];
 }
