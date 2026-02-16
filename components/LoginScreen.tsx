@@ -35,7 +35,7 @@ function validatePassword(pw: string): { valid: boolean; errors: string[] } {
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const { login, loginWithBiometric, register } = useAuth();
+  const { login, loginWithBiometric, register, registeredUsers } = useAuth();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
   const [username, setUsername] = useState("");
@@ -213,6 +213,15 @@ export default function LoginScreen() {
     }
 
     setSignUpError(null);
+
+    const localMatch = registeredUsers.some(
+      u => u.username.toLowerCase() === signUpUsername.trim().toLowerCase()
+    );
+    if (localMatch) {
+      setSignUpError("This username is already in use. Please select another username.");
+      return;
+    }
+
     setSignUpLoading(true);
 
     try {

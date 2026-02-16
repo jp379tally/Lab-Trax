@@ -45,7 +45,7 @@ function formatTime(ts: number) {
 
 export default function NotificationsScreen() {
   const { notifications, markNotificationRead, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
-  const { currentUser } = useAuth();
+  const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [confirmInvite, setConfirmInvite] = useState<{ invitation: GroupInvitation; accept: boolean } | null>(null);
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
@@ -105,42 +105,66 @@ export default function NotificationsScreen() {
   }
 
   function renderJoinRequestCard(request: GroupJoinRequest) {
+    const reqUserData = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
+    const isProvider = reqUserData?.userType === "provider";
+
     return (
       <View key={request.id} style={styles.inviteCard}>
-        <View style={[styles.notifIcon, { backgroundColor: "#FEF3C7" }]}>
-          <Ionicons name="person-add" size={20} color="#D97706" />
+        <View style={[styles.notifIcon, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
+          <Ionicons name={isProvider ? "medical" : "person-add"} size={20} color={isProvider ? "#2563EB" : "#D97706"} />
         </View>
         <View style={styles.notifContent}>
-          <Text style={styles.notifTitle}>Group Join Request</Text>
+          <Text style={styles.notifTitle}>{isProvider ? "Provider Join Request" : "Group Join Request"}</Text>
           <Text style={styles.notifMessage}>
             <Text style={{ fontFamily: "Inter_600SemiBold" }}>{request.requestingUsername}</Text>
-            {" "}wants to join your group
+            {isProvider ? " (Provider) wants to join your group" : " wants to join your group"}
           </Text>
           <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4, marginBottom: 8 }}>
-            Add user to group?
+            {isProvider ? "Accept this provider into your group?" : "Add user to group?"}
           </Text>
           <View style={styles.inviteBtns}>
-            <Pressable
-              style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
-              onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
-            >
-              <Ionicons name="checkmark" size={16} color="#FFF" />
-              <Text style={styles.acceptText}>Yes, as User</Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.acceptBtn, { backgroundColor: "#F59E0B" }, pressed && { opacity: 0.8 }]}
-              onPress={() => setConfirmJoinRequest({ request, accept: true, role: "admin" })}
-            >
-              <Ionicons name="shield-checkmark" size={16} color="#FFF" />
-              <Text style={styles.acceptText}>Yes, as Admin</Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
-              onPress={() => setConfirmJoinRequest({ request, accept: false })}
-            >
-              <Ionicons name="close" size={16} color={Colors.light.error} />
-              <Text style={styles.declineText}>No</Text>
-            </Pressable>
+            {isProvider ? (
+              <>
+                <Pressable
+                  style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
+                >
+                  <Ionicons name="checkmark" size={16} color="#FFF" />
+                  <Text style={styles.acceptText}>Accept</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: false })}
+                >
+                  <Ionicons name="close" size={16} color={Colors.light.error} />
+                  <Text style={styles.declineText}>Decline</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
+                >
+                  <Ionicons name="checkmark" size={16} color="#FFF" />
+                  <Text style={styles.acceptText}>Yes, as User</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.acceptBtn, { backgroundColor: "#F59E0B" }, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "admin" })}
+                >
+                  <Ionicons name="shield-checkmark" size={16} color="#FFF" />
+                  <Text style={styles.acceptText}>Yes, as Admin</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: false })}
+                >
+                  <Ionicons name="close" size={16} color={Colors.light.error} />
+                  <Text style={styles.declineText}>No</Text>
+                </Pressable>
+              </>
+            )}
           </View>
         </View>
       </View>
@@ -276,12 +300,20 @@ export default function NotificationsScreen() {
             </View>
             <Text style={styles.confirmTitle}>
               {confirmJoinRequest?.accept
-                ? `Accept as ${confirmJoinRequest?.role === "admin" ? "Admin" : "User"}?`
+                ? (() => {
+                    const reqUser = registeredUsers.find(u => u.username.toLowerCase() === confirmJoinRequest?.request.requestingUsername.toLowerCase());
+                    if (reqUser?.userType === "provider") return "Accept Provider?";
+                    return `Accept as ${confirmJoinRequest?.role === "admin" ? "Admin" : "User"}?`;
+                  })()
                 : "Decline Request?"}
             </Text>
             <Text style={styles.confirmDesc}>
               {confirmJoinRequest?.accept
-                ? `${confirmJoinRequest?.request.requestingUsername} will be added to your group as ${confirmJoinRequest?.role === "admin" ? "an administrator" : "a standard user"}.`
+                ? (() => {
+                    const reqUser = registeredUsers.find(u => u.username.toLowerCase() === confirmJoinRequest?.request.requestingUsername.toLowerCase());
+                    if (reqUser?.userType === "provider") return `${confirmJoinRequest?.request.requestingUsername} will be added to your group as a provider.`;
+                    return `${confirmJoinRequest?.request.requestingUsername} will be added to your group as ${confirmJoinRequest?.role === "admin" ? "an administrator" : "a standard user"}.`;
+                  })()
                 : `${confirmJoinRequest?.request.requestingUsername}'s request will be declined.`}
             </Text>
             <View style={styles.confirmBtns}>
