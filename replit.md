@@ -156,7 +156,7 @@ The app has three portals in a hierarchy: Master Admin → Lab Portal / Provider
 - Options: A2, A3, A3.5, A4, B1, B2, B3, B4, C1, C2, C3, C4, D2, D3, D4, 0M1, 0M2, 0M3, BL1, BL2, BL3, Custom, Other
 
 ### Case Workflow
-Cases follow a production pipeline through stations: INTAKE → DESIGN → WAX → INVEST → CAST → FINISH → PORCELAIN → GLAZE → QC → SHIP → COMPLETE (with HOLD as a special status). Each station transition is recorded in a `routeHistory` array with timestamps.
+Cases follow a production pipeline through stations: INTAKE → DESIGN → SCAN → MILL → POST_MILL → SINTERING_FURNACE → MODEL_ROOM → PORCELAIN → QC → COMPLETE → SHIP (with HOLD as a special status). Each station transition is recorded in a `routeHistory` array with timestamps. Case numbers and invoice numbers are identical, using YY-N chronological format (e.g., 26-1, 26-2) that resets annually on January 1st.
 
 ## External Dependencies
 
