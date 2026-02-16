@@ -1139,6 +1139,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (adminGroups.length > 0) {
         addUserToGroup(adminGroups[0].id, request.requestingUsername, role || "user");
       }
+      if (role === "user") {
+        AsyncStorage.getItem("@drivesync_auth_users").then(raw => {
+          if (!raw) return;
+          try {
+            const allUsers = JSON.parse(raw);
+            const updatedUsers = allUsers.map((u: any) => {
+              if (u.username.toLowerCase() === request.requestingUsername.toLowerCase()) {
+                return { ...u, role: "user" };
+              }
+              return u;
+            });
+            AsyncStorage.setItem("@drivesync_auth_users", JSON.stringify(updatedUsers));
+          } catch {}
+        });
+      }
     }
   }
 

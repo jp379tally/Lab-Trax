@@ -24,9 +24,12 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
   const { sendGroupJoinRequest } = useApp();
-  const { currentUser } = useAuth();
+  const { currentUser, userType, registeredUsers } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
+
+  const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+  const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -103,6 +106,30 @@ export default function SettingsScreen() {
             </View>
           </View>
         </View>
+
+        {isProviderAdmin && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>ADMIN</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Pressable
+                style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                onPress={() => {
+                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  router.push("/(tabs)");
+                }}
+              >
+                <View style={[styles.menuIcon, { backgroundColor: "#FEF3C7" }]}>
+                  <Ionicons name="key" size={18} color="#D97706" />
+                </View>
+                <View style={styles.menuInfo}>
+                  <Text style={[styles.menuTitle, { color: colors.text }]}>Admin Vault</Text>
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Manage users, groups, and settings</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+              </Pressable>
+            </View>
+          </View>
+        )}
 
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>GROUP</Text>

@@ -225,7 +225,7 @@ export default function LoginScreen() {
       const data = await res.json();
 
       if (!data.available) {
-        setSignUpError("Username taken");
+        setSignUpError("This username is already in use. Please select another username.");
         setSignUpLoading(false);
         return;
       }
@@ -242,10 +242,15 @@ export default function LoginScreen() {
   function handleUpdatesChoice(wants: boolean) {
     setWantsUpdates(wants);
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (wants) {
+    if (wants && userType !== "lab") {
       setSignUpStep("phone_entry");
     } else {
-      setSignUpStep("role_select");
+      if (userType === "provider") {
+        setSelectedRole("admin");
+        setSignUpStep("join_group");
+      } else {
+        setSignUpStep("role_select");
+      }
     }
   }
 
@@ -516,7 +521,15 @@ export default function LoginScreen() {
                 } else if (signUpStep === "hipaa_disclaimer") {
                   setSignUpStep("join_group");
                 } else if (signUpStep === "join_group") {
-                  setSignUpStep("role_select");
+                  if (userType === "provider") {
+                    if (wantsUpdates) {
+                      setSignUpStep("phone_contact_name");
+                    } else {
+                      setSignUpStep("updates_opt_in");
+                    }
+                  } else {
+                    setSignUpStep("role_select");
+                  }
                 }
               }}
               style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.6 }]}
@@ -579,12 +592,10 @@ export default function LoginScreen() {
 
             <View style={styles.stepIndicator}>
               {(() => {
-                const labSteps: SignUpStep[] = wantsUpdates
-                  ? ["credentials", "user_type", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "join_group", "hipaa_disclaimer"]
-                  : ["credentials", "user_type", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
+                const labSteps: SignUpStep[] = ["credentials", "user_type", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
                 const providerSteps: SignUpStep[] = wantsUpdates
-                  ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "join_group", "hipaa_disclaimer"]
-                  : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
+                  ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"]
+                  : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"];
                 const allSteps = userType === "lab" ? labSteps : providerSteps;
                 const currentIdx = allSteps.indexOf(signUpStep);
                 return allSteps.map((s) => {
@@ -918,7 +929,12 @@ export default function LoginScreen() {
               return;
             }
             setSignUpError(null);
-            setSignUpStep("role_select");
+            if (userType === "provider") {
+              setSelectedRole("admin");
+              setSignUpStep("join_group");
+            } else {
+              setSignUpStep("role_select");
+            }
           }}
           style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
           testID="phone-contact-next-btn"

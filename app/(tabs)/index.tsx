@@ -4104,11 +4104,13 @@ function ProviderDashboard() {
   const [newGroupType, setNewGroupType] = useState<"provider" | "lab">("provider");
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+  const myGroups = getUserGroups(currentUser || "");
+  const isGroupMember = myGroups.length > 0;
   const myDoctorName = currentUserData?.doctorName || currentUser || "";
-  const myCases = cases.filter(c =>
+  const myCases = isGroupMember ? cases.filter(c =>
     c.doctorName.toLowerCase() === myDoctorName.toLowerCase() ||
     c.doctorName.toLowerCase().includes((currentUser || "").toLowerCase())
-  );
+  ) : [];
   const activeCases = myCases.filter(c => c.status !== "COMPLETE" && c.status !== "HOLD");
   const completedCases = myCases.filter(c => c.status === "COMPLETE");
   const inProgressCount = activeCases.length;
