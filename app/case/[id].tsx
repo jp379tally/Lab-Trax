@@ -28,7 +28,7 @@ import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate } = useApp();
-  const { currentUser } = useAuth();
+  const { currentUser, userType } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
   const [showRouting, setShowRouting] = useState(false);
@@ -536,7 +536,10 @@ export default function CaseDetailScreen() {
         <Pressable onPress={() => router.back()} style={styles.headerBtn}>
           <Ionicons name="arrow-back" size={22} color={Colors.light.text} />
         </Pressable>
-        <Text style={styles.headerTitle}>{caseItem.caseNumber}</Text>
+        <View>
+          <Text style={styles.headerTitle}>{caseItem.caseNumber}</Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, textAlign: "center" }}>Case & Invoice #{caseItem.caseNumber}</Text>
+        </View>
         <ChatButton />
       </View>
 
@@ -949,6 +952,7 @@ export default function CaseDetailScreen() {
             <Text style={styles.actionBtnText}>Add Item</Text>
           </Pressable>
 
+          {userType !== "provider" && (
           <Pressable
             onPress={() => {
               const stationInfo = getStationInfo(caseItem.status);
@@ -965,6 +969,7 @@ export default function CaseDetailScreen() {
             <Ionicons name="time" size={20} color="#FFF" />
             <Text style={styles.actionBtnText}>Courtesy Text</Text>
           </Pressable>
+          )}
 
           {(caseItem.courtesyTexts || []).length > 0 && (
             <View style={ctStyles.courtesySection}>

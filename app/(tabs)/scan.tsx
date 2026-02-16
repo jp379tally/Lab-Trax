@@ -684,42 +684,54 @@ export default function ScanScreen() {
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     if (barcodeScanForCase) {
-      const existingCase = findCaseByBarcode(data);
-      if (existingCase && existingCase.id !== barcodeScanForCase) {
-        Alert.alert(
-          "Barcode Already Assigned",
-          `This barcode is already assigned to case ${existingCase.caseNumber || existingCase.id}. Do you wish to add another case to this barcode?`,
-          [
-            {
-              text: "Yes",
-              onPress: () => {
+      Alert.alert(
+        "Confirm Barcode",
+        `Detected barcode: "${data}". Assign this barcode to the case?`,
+        [
+          {
+            text: "Yes",
+            onPress: () => {
+              const existingCase = findCaseByBarcode(data);
+              if (existingCase && existingCase.id !== barcodeScanForCase) {
+                Alert.alert(
+                  "Barcode Already Assigned",
+                  `This barcode is already assigned to case ${existingCase.caseNumber || existingCase.id}. Do you wish to add another case to this barcode?`,
+                  [
+                    {
+                      text: "Yes",
+                      onPress: () => {
+                        assignBarcodeToCase(barcodeScanForCase, data);
+                        setBarcodeScanForCase(null);
+                        setLabelModalVisible(false);
+                        setPendingRemakeCheck(null);
+                        resetForm();
+                        Alert.alert("Barcode Shared", `Barcode "${data}" is now assigned to both cases.`, [
+                          { text: "OK", onPress: () => router.push("/(tabs)") },
+                        ]);
+                      },
+                    },
+                    { text: "No", style: "cancel", onPress: () => setBarcodeAttachScanned(false) },
+                  ]
+                );
+              } else {
                 assignBarcodeToCase(barcodeScanForCase, data);
                 setBarcodeScanForCase(null);
                 setLabelModalVisible(false);
                 setPendingRemakeCheck(null);
                 resetForm();
-                Alert.alert("Barcode Shared", `Barcode "${data}" is now assigned to both cases.`, [
+                Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
                   { text: "OK", onPress: () => router.push("/(tabs)") },
                 ]);
-              },
+              }
             },
-            {
-              text: "No",
-              style: "cancel",
-              onPress: () => setBarcodeAttachScanned(false),
-            },
-          ]
-        );
-      } else {
-        assignBarcodeToCase(barcodeScanForCase, data);
-        setBarcodeScanForCase(null);
-        setLabelModalVisible(false);
-        setPendingRemakeCheck(null);
-        resetForm();
-        Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
-          { text: "OK", onPress: () => router.push("/(tabs)") },
-        ]);
-      }
+          },
+          {
+            text: "No",
+            style: "cancel",
+            onPress: () => setBarcodeAttachScanned(false),
+          },
+        ]
+      );
     }
   }
 
@@ -2205,6 +2217,22 @@ export default function ScanScreen() {
         )}
         {phase === "review" && (
           <View style={styles.detectedActions}>
+            <Pressable
+              onPress={() => {
+                setCasePhotos(prev => prev.slice(0, -1));
+                setCapturedUri(null);
+                setPhase("camera");
+                scanAnim.setValue(0);
+              }}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(239,68,68,0.2)", borderWidth: 1, borderColor: "rgba(239,68,68,0.5)" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons name="refresh" size={22} color="#EF4444" />
+              <Text style={[styles.actionBtnText, { color: "#EF4444" }]}>Retake</Text>
+            </Pressable>
             <Pressable
               onPress={handleAddMoreFromReview}
               style={({ pressed }) => [

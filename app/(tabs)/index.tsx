@@ -33,7 +33,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { getStationInfo, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group } from "@/lib/data";
+import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
@@ -907,7 +907,7 @@ function TechDashboard() {
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 16 }}>
               {batchScannedCases.length} case(s) scanned
             </Text>
-            {(["DESIGN", "WAX", "INVEST", "CAST", "FINISH", "PORCELAIN", "GLAZE", "QC", "SHIP", "COMPLETE", "HOLD"] as CaseStatus[]).map(station => {
+            {STATIONS.map(({ id: station }) => {
               const info = getStationInfo(station);
               return (
                 <Pressable
@@ -928,7 +928,6 @@ function TechDashboard() {
                 >
                   <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: info.color }} />
                   <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text, flex: 1 }}>{info.label}</Text>
-                  <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
                 </Pressable>
               );
             })}
@@ -1298,7 +1297,7 @@ type AdminView =
   | "lab-users";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup } = useApp();
+  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -2546,6 +2545,11 @@ function AdminDashboard() {
                     }).join("\n\n");
                     const emailBody = `Billing Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${cs.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
                     sendStatementEmail(cs.clientName, cs.email, `Billing Statement - ${cs.clientName}`, emailBody);
+                    addNotification({
+                      title: "Statement Generated",
+                      message: `A billing statement has been generated for ${cs.clientName}. Total due: $${cs.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+                      type: "update",
+                    });
                   });
                   const totalAll = statementPreview.reduce((s, cs) => s + cs.totalDue, 0);
                   Alert.alert(

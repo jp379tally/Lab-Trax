@@ -3,6 +3,11 @@ export type UserRole = "user" | "admin";
 export type CaseStatus =
   | "INTAKE"
   | "DESIGN"
+  | "SCAN"
+  | "MILL"
+  | "POST_MILL"
+  | "SINTERING_FURNACE"
+  | "MODEL_ROOM"
   | "PORCELAIN"
   | "QC"
   | "SHIP"
@@ -12,11 +17,16 @@ export type CaseStatus =
 export const STATIONS: { id: CaseStatus; label: string; color: string }[] = [
   { id: "INTAKE", label: "Intake", color: "#2563EB" },
   { id: "DESIGN", label: "Design", color: "#F59E0B" },
+  { id: "SCAN", label: "Scan", color: "#8B5CF6" },
+  { id: "MILL", label: "Mill", color: "#EC4899" },
+  { id: "POST_MILL", label: "Post Mill", color: "#D946EF" },
+  { id: "SINTERING_FURNACE", label: "Sintering Furnace", color: "#F97316" },
+  { id: "MODEL_ROOM", label: "Model Room", color: "#14B8A6" },
   { id: "PORCELAIN", label: "Porcelain", color: "#06B6D4" },
   { id: "QC", label: "Quality Check", color: "#10B981" },
+  { id: "COMPLETE", label: "Complete", color: "#22C55E" },
   { id: "SHIP", label: "Shipping", color: "#6366F1" },
   { id: "HOLD", label: "On Hold", color: "#94A3B8" },
-  { id: "COMPLETE", label: "Complete", color: "#22C55E" },
 ];
 
 export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created" | "courtesy_text";

@@ -112,6 +112,8 @@ interface AppContextValue {
   groupJoinRequests: GroupJoinRequest[];
   sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => { success: boolean; error?: string };
   respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => void;
+  addConversation: (conv: Conversation) => void;
+  addNotification: (notif: Omit<Notification, "id" | "read" | "timestamp">) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -1300,6 +1302,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function addConversation(conv: Conversation) {
+    setConversations(prev => {
+      const updated = [conv, ...prev];
+      AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function addNotification(notif: Omit<Notification, "id" | "read" | "timestamp">) {
+    const newNotif: Notification = {
+      id: generateId(),
+      ...notif,
+      read: false,
+      timestamp: Date.now(),
+    };
+    setNotifications(prev => {
+      const updated = [newNotif, ...prev];
+      AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   function markConversationRead(conversationId: string) {
     setChatMessages(prev => {
       const updated = prev.map(m => {
@@ -1413,6 +1437,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       groupJoinRequests,
       sendGroupJoinRequest,
       respondToGroupJoinRequest,
+      addConversation,
+      addNotification,
     }),
     [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, groupJoinRequests, inventory],
   );

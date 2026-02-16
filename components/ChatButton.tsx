@@ -10,6 +10,7 @@ import {
   FlatList,
   Modal,
   KeyboardAvoidingView,
+  ScrollView,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -192,13 +193,14 @@ function ChatThreadModal({
 }
 
 export function ChatButton() {
-  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, getUserGroups, groups, clients } = useApp();
+  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, getUserGroups, groups, clients, addConversation } = useApp();
   const { currentUser } = useAuth();
   const insets = useSafeAreaInsets();
   const [showConversations, setShowConversations] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [chatImageUri, setChatImageUri] = useState<string | null>(null);
+  const [showNewConvo, setShowNewConvo] = useState(false);
 
   const myGroups = getUserGroups(currentUser || "");
   const filteredConversations = myGroups.length === 0 ? [] : conversations.filter(conv => {
@@ -210,6 +212,29 @@ export function ChatButton() {
   });
 
   const filteredUnreadCount = filteredConversations.reduce((sum, c) => sum + c.unreadCount, 0);
+
+  function startNewConversation(group: { id: string; name: string }) {
+    const existingConv = filteredConversations.find(c =>
+      c.clientName.toLowerCase() === group.name.toLowerCase()
+    );
+    if (existingConv) {
+      setActiveConversationId(existingConv.id);
+      markConversationRead(existingConv.id);
+    } else {
+      const newId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+      const newConv: Conversation = {
+        id: newId,
+        clientId: newId,
+        clientName: group.name,
+        lastMessage: "",
+        lastMessageTime: Date.now(),
+        unreadCount: 0,
+      };
+      addConversation(newConv);
+      setActiveConversationId(newId);
+    }
+    setShowNewConvo(false);
+  }
 
   return (
     <>
@@ -242,6 +267,50 @@ export function ChatButton() {
               <Ionicons name="close" size={22} color={Colors.light.text} />
             </Pressable>
           </View>
+          <Pressable
+            onPress={() => setShowNewConvo(!showNewConvo)}
+            style={({ pressed }) => [
+              {
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                backgroundColor: Colors.light.tint,
+                borderRadius: 12,
+                padding: 14,
+                marginHorizontal: 16,
+                marginBottom: 12,
+                marginTop: 12,
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}
+          >
+            <Ionicons name="add-circle" size={20} color="#FFF" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Start Conversation</Text>
+          </Pressable>
+
+          {showNewConvo && (
+            <View style={{ marginHorizontal: 16, marginBottom: 12, backgroundColor: Colors.light.surface, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.border, maxHeight: 200 }}>
+              <ScrollView>
+                {myGroups.length === 0 ? (
+                  <Text style={{ padding: 16, textAlign: "center", color: Colors.light.textSecondary, fontFamily: "Inter_400Regular" }}>No groups available</Text>
+                ) : (
+                  myGroups.map(group => (
+                    <Pressable
+                      key={group.id}
+                      onPress={() => startNewConversation(group)}
+                      style={({ pressed }) => [
+                        { padding: 14, borderBottomWidth: 1, borderBottomColor: Colors.light.border, opacity: pressed ? 0.7 : 1 },
+                      ]}
+                    >
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{group.name}</Text>
+                    </Pressable>
+                  ))
+                )}
+              </ScrollView>
+            </View>
+          )}
+
           <FlatList
             data={[...filteredConversations].sort((a, b) => b.lastMessageTime - a.lastMessageTime)}
             keyExtractor={(item) => item.id}
