@@ -23,6 +23,7 @@ import { ChatButton } from "@/components/ChatButton";
 
 export default function CasesScreen() {
   const { cases, role, adminUnlocked, findCaseByBarcode } = useApp();
+  const { userType } = useAuth();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<CaseStatus | "ALL">("ALL");
@@ -202,23 +203,25 @@ export default function CasesScreen() {
               </Pressable>
             )}
           </View>
-          <Pressable
-            style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
-            onPress={async () => {
-              if (Platform.OS !== "web" && !permission?.granted) {
-                const result = await requestPermission();
-                if (!result.granted) {
-                  Alert.alert("Camera Permission", "Camera access is needed to scan barcodes.");
-                  return;
+          {userType !== "provider" && (
+            <Pressable
+              style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
+              onPress={async () => {
+                if (Platform.OS !== "web" && !permission?.granted) {
+                  const result = await requestPermission();
+                  if (!result.granted) {
+                    Alert.alert("Camera Permission", "Camera access is needed to scan barcodes.");
+                    return;
+                  }
                 }
-              }
-              setShowBarcodeLocate(true);
-              setBarcodeLocateScanned(false);
-            }}
-          >
-            <Ionicons name="barcode-outline" size={18} color={Colors.light.tint} />
-            <Text style={styles.barcodeLocateBtnText}>Use Barcode to Locate Case</Text>
-          </Pressable>
+                setShowBarcodeLocate(true);
+                setBarcodeLocateScanned(false);
+              }}
+            >
+              <Ionicons name="barcode-outline" size={18} color={Colors.light.tint} />
+              <Text style={styles.barcodeLocateBtnText}>Use Barcode to Locate Case</Text>
+            </Pressable>
+          )}
         </View>
         <FlatList
           horizontal

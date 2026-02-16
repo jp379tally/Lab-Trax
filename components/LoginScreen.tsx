@@ -18,10 +18,11 @@ import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/lib/auth-context";
+import { useApp } from "@/lib/app-context";
 import { getApiUrl } from "@/lib/query-client";
 import Colors from "@/constants/colors";
 
-type SignUpStep = "credentials" | "user_type" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "hipaa_disclaimer" | "complete";
+type SignUpStep = "credentials" | "user_type" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
 
 function validatePassword(pw: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -35,6 +36,7 @@ function validatePassword(pw: string): { valid: boolean; errors: string[] } {
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const { login, loginWithBiometric, register } = useAuth();
+  const { sendGroupJoinRequest } = useApp();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
   const [username, setUsername] = useState("");
@@ -75,6 +77,8 @@ export default function LoginScreen() {
   const [selectedRole, setSelectedRole] = useState<"user" | "admin" | null>(null);
   const [hipaaAccepted, setHipaaAccepted] = useState(false);
   const [accountNumber, setAccountNumber] = useState("");
+  const [joinGroupAdminUsername, setJoinGroupAdminUsername] = useState("");
+  const [joinGroupSent, setJoinGroupSent] = useState(false);
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -124,6 +128,8 @@ export default function LoginScreen() {
     setSelectedRole(null);
     setHipaaAccepted(false);
     setAccountNumber("");
+    setJoinGroupAdminUsername("");
+    setJoinGroupSent(false);
   }
 
   function switchToSignIn() {
@@ -481,6 +487,8 @@ export default function LoginScreen() {
                     setSignUpStep("updates_opt_in");
                   }
                 } else if (signUpStep === "hipaa_disclaimer") {
+                  setSignUpStep("join_group");
+                } else if (signUpStep === "join_group") {
                   setSignUpStep("role_select");
                 }
               }}
@@ -513,6 +521,7 @@ export default function LoginScreen() {
                 {signUpStep === "phone_contact_name" && "Who will receive text updates?"}
                 {signUpStep === "email_verify" && "Verify your email address"}
                 {signUpStep === "role_select" && "Select your role"}
+                {signUpStep === "join_group" && "Join a Group"}
                 {signUpStep === "hipaa_disclaimer" && "Review & Accept Terms"}
               </Text>
             </View>
@@ -527,6 +536,7 @@ export default function LoginScreen() {
             {signUpStep === "phone_verify" && renderPhoneVerify()}
             {signUpStep === "phone_contact_name" && renderPhoneContactName()}
             {signUpStep === "role_select" && renderRoleSelect()}
+            {signUpStep === "join_group" && renderJoinGroup()}
             {signUpStep === "hipaa_disclaimer" && renderHipaaDisclaimer()}
 
             {signUpStep === "credentials" && (
@@ -543,11 +553,11 @@ export default function LoginScreen() {
             <View style={styles.stepIndicator}>
               {(() => {
                 const labSteps: SignUpStep[] = wantsUpdates
-                  ? ["credentials", "user_type", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "hipaa_disclaimer"]
-                  : ["credentials", "user_type", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
+                  ? ["credentials", "user_type", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "join_group", "hipaa_disclaimer"]
+                  : ["credentials", "user_type", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
                 const providerSteps: SignUpStep[] = wantsUpdates
-                  ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "hipaa_disclaimer"]
-                  : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "role_select", "hipaa_disclaimer"];
+                  ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "role_select", "join_group", "hipaa_disclaimer"]
+                  : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
                 const allSteps = userType === "lab" ? labSteps : providerSteps;
                 const currentIdx = allSteps.indexOf(signUpStep);
                 return allSteps.map((s) => {
@@ -907,7 +917,7 @@ export default function LoginScreen() {
           onPress={() => {
             setSelectedRole("user");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep("hipaa_disclaimer");
+            setSignUpStep("join_group");
           }}
           style={({ pressed }) => [
             styles.optionCard,
@@ -939,7 +949,7 @@ export default function LoginScreen() {
           onPress={() => {
             setSelectedRole("admin");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setSignUpStep("hipaa_disclaimer");
+            setSignUpStep("join_group");
           }}
           style={({ pressed }) => [
             styles.optionCard,
@@ -966,6 +976,94 @@ export default function LoginScreen() {
           <Text style={styles.optionCardTitle}>Administrator</Text>
           <Text style={styles.optionCardDesc}>Full access including pricing and management</Text>
         </Pressable>
+      </View>
+    );
+  }
+
+  function renderJoinGroup() {
+    return (
+      <View style={styles.formSection}>
+        <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", lineHeight: 20, marginBottom: 20 }}>
+          Enter an admin's username to request to join their group. The admin will receive a notification to approve your request. You can also skip this step.
+        </Text>
+
+        {!joinGroupSent ? (
+          <>
+            <View style={[styles.inputGroup, { marginBottom: 16 }]}>
+              <View style={styles.inputWrapper}>
+                <Ionicons name="person" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Admin's username"
+                  placeholderTextColor="rgba(255,255,255,0.35)"
+                  value={joinGroupAdminUsername}
+                  onChangeText={setJoinGroupAdminUsername}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+            </View>
+
+            <Pressable
+              onPress={() => {
+                if (!joinGroupAdminUsername.trim()) return;
+                const result = sendGroupJoinRequest(joinGroupAdminUsername.trim(), signUpUsername.trim());
+                if (result.success) {
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setJoinGroupSent(true);
+                } else {
+                  setSignUpError(result.error || "Could not send request.");
+                }
+              }}
+              style={({ pressed }) => [
+                styles.loginBtn,
+                !joinGroupAdminUsername.trim() && { opacity: 0.5 },
+                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+              ]}
+              disabled={!joinGroupAdminUsername.trim()}
+            >
+              <Text style={styles.loginBtnText}>Send Join Request</Text>
+            </Pressable>
+          </>
+        ) : (
+          <View style={{ alignItems: "center", paddingVertical: 20 }}>
+            <View style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: "rgba(16,185,129,0.2)", justifyContent: "center", alignItems: "center", marginBottom: 12 }}>
+              <Ionicons name="checkmark-circle" size={36} color="#10B981" />
+            </View>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF", marginBottom: 4 }}>Request Sent</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center" }}>
+              Your request has been sent to {joinGroupAdminUsername}. You'll be notified when they respond.
+            </Text>
+          </View>
+        )}
+
+        <Pressable
+          onPress={() => {
+            setSignUpStep("hipaa_disclaimer");
+          }}
+          style={({ pressed }) => [
+            {
+              marginTop: 16,
+              alignItems: "center",
+              paddingVertical: 14,
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.15)",
+            },
+            pressed && { opacity: 0.7 },
+          ]}
+        >
+          <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.7)" }}>
+            {joinGroupSent ? "Continue" : "Skip"}
+          </Text>
+        </Pressable>
+
+        {signUpError && (
+          <View style={[styles.errorBanner, { marginTop: 12 }]}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
       </View>
     );
   }

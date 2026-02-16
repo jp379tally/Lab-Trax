@@ -373,6 +373,24 @@ export default function ScanScreen() {
         }
       } catch {}
     }
+    if (Platform.OS === "web") {
+      try {
+        const videoEl = document.querySelector("video");
+        if (videoEl) {
+          const canvas = document.createElement("canvas");
+          canvas.width = videoEl.videoWidth || 640;
+          canvas.height = videoEl.videoHeight || 480;
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+            const dataUri = canvas.toDataURL("image/jpeg", 0.8);
+            setCapturedUri(dataUri);
+            setPhase("scanning");
+            return;
+          }
+        }
+      } catch {}
+    }
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ["images"],
       quality: 0.8,
@@ -396,6 +414,48 @@ export default function ScanScreen() {
           photoUri = photo.uri;
         }
       } catch {
+        if (Platform.OS === "web") {
+          try {
+            const videoEl = document.querySelector("video");
+            if (videoEl) {
+              const canvas = document.createElement("canvas");
+              canvas.width = videoEl.videoWidth || 640;
+              canvas.height = videoEl.videoHeight || 480;
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+                photoUri = canvas.toDataURL("image/jpeg", 0.8);
+              }
+            }
+          } catch {}
+        }
+        if (!photoUri) {
+          const result = await ImagePicker.launchCameraAsync({
+            mediaTypes: ["images"],
+            quality: 0.8,
+          });
+          if (!result.canceled && result.assets[0]) {
+            photoUri = result.assets[0].uri;
+          }
+        }
+      }
+    } else {
+      if (Platform.OS === "web") {
+        try {
+          const videoEl = document.querySelector("video");
+          if (videoEl) {
+            const canvas = document.createElement("canvas");
+            canvas.width = videoEl.videoWidth || 640;
+            canvas.height = videoEl.videoHeight || 480;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+              photoUri = canvas.toDataURL("image/jpeg", 0.8);
+            }
+          }
+        } catch {}
+      }
+      if (!photoUri) {
         const result = await ImagePicker.launchCameraAsync({
           mediaTypes: ["images"],
           quality: 0.8,
@@ -403,14 +463,6 @@ export default function ScanScreen() {
         if (!result.canceled && result.assets[0]) {
           photoUri = result.assets[0].uri;
         }
-      }
-    } else {
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        quality: 0.8,
-      });
-      if (!result.canceled && result.assets[0]) {
-        photoUri = result.assets[0].uri;
       }
     }
 
