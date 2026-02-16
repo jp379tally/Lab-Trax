@@ -619,6 +619,7 @@ export default function CaseDetailScreen() {
           )}
         </View>
 
+        {showPrice && (
         <Pressable
           onPress={() => {
             setShowInvoiceModal(true);
@@ -642,6 +643,7 @@ export default function CaseDetailScreen() {
           <Ionicons name="document-text" size={18} color="#FFF" />
           <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>View Invoice</Text>
         </Pressable>
+        )}
 
         {(() => {
           const patientCaseCount = cases.filter(
@@ -749,19 +751,26 @@ export default function CaseDetailScreen() {
                 </View>
                 <View style={[styles.timelineContent, isPhoto && entry.imageUri ? { paddingBottom: 20 } : {}]}>
                   {isStation && stationInfo ? (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                      <Text
-                        style={[
-                          styles.timelineStation,
-                          isFirst && { color: stationInfo.color, fontFamily: "Inter_700Bold" },
-                        ]}
-                      >
-                        {stationInfo.label}
-                      </Text>
-                      {entry.user && (
-                        <View style={styles.initialsChip}>
-                          <Text style={styles.initialsText}>{entry.user}</Text>
-                        </View>
+                    <View>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text
+                          style={[
+                            styles.timelineStation,
+                            isFirst && { color: stationInfo.color, fontFamily: "Inter_700Bold" },
+                          ]}
+                        >
+                          {stationInfo.label}
+                        </Text>
+                        {entry.user && (
+                          <View style={styles.initialsChip}>
+                            <Text style={styles.initialsText}>{entry.user}</Text>
+                          </View>
+                        )}
+                      </View>
+                      {entry.station === "INTAKE" && caseItem.assignedBarcode && (
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.tint, marginTop: 2 }}>
+                          Case Pan: {caseItem.assignedBarcode}
+                        </Text>
                       )}
                     </View>
                   ) : (
@@ -2112,11 +2121,13 @@ export default function CaseDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {showPrice && (
       <InvoicePDFViewer
         visible={showInvoiceModal}
         onClose={() => setShowInvoiceModal(false)}
         invoice={caseInvoice}
       />
+      )}
 
     </View>
   );

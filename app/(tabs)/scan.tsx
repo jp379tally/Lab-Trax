@@ -684,14 +684,42 @@ export default function ScanScreen() {
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     if (barcodeScanForCase) {
-      assignBarcodeToCase(barcodeScanForCase, data);
-      setBarcodeScanForCase(null);
-      setLabelModalVisible(false);
-      setPendingRemakeCheck(null);
-      resetForm();
-      Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
-        { text: "OK", onPress: () => router.push("/(tabs)") },
-      ]);
+      const existingCase = findCaseByBarcode(data);
+      if (existingCase && existingCase.id !== barcodeScanForCase) {
+        Alert.alert(
+          "Barcode Already Assigned",
+          `This barcode is already assigned to case ${existingCase.caseNumber || existingCase.id}. Do you wish to add another case to this barcode?`,
+          [
+            {
+              text: "Yes",
+              onPress: () => {
+                assignBarcodeToCase(barcodeScanForCase, data);
+                setBarcodeScanForCase(null);
+                setLabelModalVisible(false);
+                setPendingRemakeCheck(null);
+                resetForm();
+                Alert.alert("Barcode Shared", `Barcode "${data}" is now assigned to both cases.`, [
+                  { text: "OK", onPress: () => router.push("/(tabs)") },
+                ]);
+              },
+            },
+            {
+              text: "No",
+              style: "cancel",
+              onPress: () => setBarcodeAttachScanned(false),
+            },
+          ]
+        );
+      } else {
+        assignBarcodeToCase(barcodeScanForCase, data);
+        setBarcodeScanForCase(null);
+        setLabelModalVisible(false);
+        setPendingRemakeCheck(null);
+        resetForm();
+        Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
+          { text: "OK", onPress: () => router.push("/(tabs)") },
+        ]);
+      }
     }
   }
 

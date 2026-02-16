@@ -17,6 +17,7 @@ import { Ionicons, Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useApp } from "@/lib/app-context";
+import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import type { ChatMessage, Conversation } from "@/lib/data";
 
@@ -191,22 +192,34 @@ function ChatThreadModal({
 }
 
 export function ChatButton() {
-  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages } = useApp();
+  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, getUserGroups, groups, clients } = useApp();
+  const { currentUser } = useAuth();
   const insets = useSafeAreaInsets();
   const [showConversations, setShowConversations] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [chatImageUri, setChatImageUri] = useState<string | null>(null);
 
+  const myGroups = getUserGroups(currentUser || "");
+  const filteredConversations = myGroups.length === 0 ? [] : conversations.filter(conv => {
+    return myGroups.some(g => 
+      g.name.toLowerCase() === conv.clientName.toLowerCase() ||
+      conv.clientName.toLowerCase().includes(g.name.toLowerCase()) ||
+      g.name.toLowerCase().includes(conv.clientName.toLowerCase())
+    );
+  });
+
+  const filteredUnreadCount = filteredConversations.reduce((sum, c) => sum + c.unreadCount, 0);
+
   return (
     <>
       <Pressable onPress={() => setShowConversations(true)} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
         <View style={styles.chatIconWrap}>
           <Ionicons name="chatbubbles" size={24} color={Colors.light.tint} />
-          {totalUnreadMessages > 0 && (
+          {filteredUnreadCount > 0 && (
             <View style={styles.chatBadge}>
               <Text style={styles.chatBadgeText}>
-                {totalUnreadMessages > 9 ? "9+" : totalUnreadMessages}
+                {filteredUnreadCount > 9 ? "9+" : filteredUnreadCount}
               </Text>
             </View>
           )}
@@ -230,7 +243,7 @@ export function ChatButton() {
             </Pressable>
           </View>
           <FlatList
-            data={[...conversations].sort((a, b) => b.lastMessageTime - a.lastMessageTime)}
+            data={[...filteredConversations].sort((a, b) => b.lastMessageTime - a.lastMessageTime)}
             keyExtractor={(item) => item.id}
             contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
             renderItem={({ item }: { item: Conversation }) => {
@@ -280,7 +293,7 @@ export function ChatButton() {
       <ChatThreadModal
         visible={activeConversationId !== null}
         activeConversationId={activeConversationId}
-        conversations={conversations}
+        conversations={filteredConversations}
         chatMessages={chatMessages}
         sendChatMessage={sendChatMessage}
         chatInput={chatInput}

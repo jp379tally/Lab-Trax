@@ -107,6 +107,7 @@ interface AppContextValue {
   assignBarcodeToCase: (caseId: string, barcode: string) => void;
   unassignBarcode: (caseId: string) => void;
   findCaseByBarcode: (barcode: string) => LabCase | undefined;
+  findAllCasesByBarcode: (barcode: string) => LabCase[];
   batchLocateCases: (caseIds: string[], newStatus: CaseStatus) => void;
   groupJoinRequests: GroupJoinRequest[];
   sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => { success: boolean; error?: string };
@@ -435,7 +436,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ...c,
             status: newStatus,
             updatedAt: now,
-            assignedBarcode: newStatus === "COMPLETE" ? undefined : c.assignedBarcode,
+            assignedBarcode: c.assignedBarcode,
             routeHistory: [
               ...c.routeHistory,
               { station: newStatus, timestamp: now },
@@ -1239,9 +1240,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   function assignBarcodeToCase(caseId: string, barcode: string) {
     setCases((prev) => {
       const updated = prev.map((c) => {
-        if (c.assignedBarcode === barcode && c.id !== caseId) {
-          return { ...c, assignedBarcode: undefined, updatedAt: Date.now() };
-        }
         if (c.id === caseId) {
           return { ...c, assignedBarcode: barcode, updatedAt: Date.now() };
         }
@@ -1269,6 +1267,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return cases.find((c) => c.assignedBarcode === barcode && c.status !== "COMPLETE");
   }
 
+  function findAllCasesByBarcode(barcode: string): LabCase[] {
+    return cases.filter((c) => c.assignedBarcode === barcode);
+  }
+
   function batchLocateCases(caseIds: string[], newStatus: CaseStatus) {
     const now = Date.now();
     const stationLabel = getStationInfo(newStatus).label;
@@ -1285,7 +1287,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return {
             ...c,
             status: newStatus,
-            assignedBarcode: newStatus === "COMPLETE" ? undefined : c.assignedBarcode,
+            assignedBarcode: c.assignedBarcode,
             updatedAt: now,
             routeHistory: [...c.routeHistory, { station: newStatus, timestamp: now }],
             activityLog: [...(c.activityLog || []), stationEntry],
@@ -1406,6 +1408,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       assignBarcodeToCase,
       unassignBarcode,
       findCaseByBarcode,
+      findAllCasesByBarcode,
       batchLocateCases,
       groupJoinRequests,
       sendGroupJoinRequest,
