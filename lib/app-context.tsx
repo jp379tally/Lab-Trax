@@ -463,10 +463,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
           AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updatedNotifs));
           return updatedNotifs;
         });
+
+        if (newStatus === "INTAKE" || newStatus === "COMPLETE") {
+          sendProviderCaseUpdateText(caseInfo, newStatus);
+        }
       }
 
       return updated;
     });
+  }
+
+  async function sendProviderCaseUpdateText(caseInfo: LabCase, status: CaseStatus) {
+    try {
+      const usersRaw = await AsyncStorage.getItem("@drivesync_auth_users");
+      if (!usersRaw) return;
+      const allUsers = JSON.parse(usersRaw);
+      const providerUser = allUsers.find((u: any) =>
+        u.userType === "provider" &&
+        u.wantsUpdates === true &&
+        u.phone &&
+        caseInfo.doctorName.toLowerCase().includes(u.doctorName?.toLowerCase() || u.username?.toLowerCase())
+      );
+      if (!providerUser) return;
+
+      const statusLabel = status === "INTAKE" ? "received by the lab" : "completed";
+      const message = `DriveSync Lab: Hello Dr. ${providerUser.doctorName || providerUser.username}, your case ${caseInfo.caseNumber} for patient ${caseInfo.patientName} has been ${statusLabel}. Thank you for choosing DriveSync Lab.`;
+
+      const host = process.env.EXPO_PUBLIC_DOMAIN;
+      if (!host) return;
+      const apiUrl = `https://${host}`;
+
+      await fetch(new URL("/api/send-case-update-text", apiUrl).toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerName: providerUser.doctorName || providerUser.username,
+          providerPhone: providerUser.phone,
+          caseNumber: caseInfo.caseNumber,
+          patientName: caseInfo.patientName,
+          status,
+          message,
+        }),
+      });
+    } catch {}
   }
 
   function addCasePhoto(caseId: string, photoUri: string, user?: string) {

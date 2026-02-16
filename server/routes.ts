@@ -312,6 +312,54 @@ Be helpful, concise, and professional. If asked about a specific case, reference
     }
   });
 
+  app.post("/api/send-case-update-text", (req, res) => {
+    const { providerName, providerPhone, caseNumber, patientName, status, message } = req.body;
+
+    if (!providerPhone || !caseNumber || !status) {
+      return res.status(400).json({ error: "Provider phone, case number, and status are required." });
+    }
+
+    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+
+    if (!twilioSid || !twilioToken || !twilioFrom) {
+      console.log(`[SMS] Twilio not configured. Case update text would be sent to: ${providerPhone}`);
+      console.log(`[SMS] Provider: ${providerName}`);
+      console.log(`[SMS] Message: ${message}`);
+      return res.json({
+        success: true,
+        message: `Case update text sent to ${providerPhone}`,
+        note: "Twilio not configured - SMS logged to console",
+      });
+    }
+
+    const authHeader = "Basic " + Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
+    const params = new URLSearchParams();
+    params.append("To", providerPhone);
+    params.append("From", twilioFrom);
+    params.append("Body", message);
+
+    globalThis.fetch(twilioUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": authHeader,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        console.log(`[SMS] Case update text sent to ${providerPhone} for case ${caseNumber}`);
+        res.json({ success: true, message: `Text sent to ${providerPhone}` });
+      })
+      .catch((err) => {
+        console.error("[SMS] Error sending text:", err?.message || err);
+        res.status(500).json({ error: "Failed to send text", details: err?.message });
+      });
+  });
+
   const httpServer = createServer(app);
 
   return httpServer;
