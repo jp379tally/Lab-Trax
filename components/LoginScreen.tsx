@@ -18,8 +18,8 @@ import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/lib/auth-context";
-import { useApp } from "@/lib/app-context";
 import { getApiUrl } from "@/lib/query-client";
+import { generateId, GroupJoinRequest } from "@/lib/data";
 import Colors from "@/constants/colors";
 
 type SignUpStep = "credentials" | "user_type" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
@@ -36,7 +36,6 @@ function validatePassword(pw: string): { valid: boolean; errors: string[] } {
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const { login, loginWithBiometric, register } = useAuth();
-  const { sendGroupJoinRequest } = useApp();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
   const [username, setUsername] = useState("");
@@ -1005,14 +1004,34 @@ export default function LoginScreen() {
             </View>
 
             <Pressable
-              onPress={() => {
+              onPress={async () => {
                 if (!joinGroupAdminUsername.trim()) return;
-                const result = sendGroupJoinRequest(joinGroupAdminUsername.trim(), signUpUsername.trim());
-                if (result.success) {
+                try {
+                  const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
+                  const existing: GroupJoinRequest[] = stored ? JSON.parse(stored) : [];
+                  const alreadyPending = existing.find(
+                    r => r.requestingUsername.toLowerCase() === signUpUsername.trim().toLowerCase()
+                      && r.targetAdminUsername.toLowerCase() === joinGroupAdminUsername.trim().toLowerCase()
+                      && r.status === "pending"
+                  );
+                  if (alreadyPending) {
+                    setSignUpError("You already have a pending request to this admin.");
+                    return;
+                  }
+                  const request: GroupJoinRequest = {
+                    id: generateId(),
+                    requestingUsername: signUpUsername.trim(),
+                    targetAdminUsername: joinGroupAdminUsername.trim(),
+                    message: `${signUpUsername.trim()} would like to join your group.`,
+                    status: "pending",
+                    createdAt: Date.now(),
+                  };
+                  const updated = [...existing, request];
+                  await AsyncStorage.setItem("@drivesync_group_join_requests", JSON.stringify(updated));
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   setJoinGroupSent(true);
-                } else {
-                  setSignUpError(result.error || "Could not send request.");
+                } catch {
+                  setSignUpError("Could not send request. Please try again.");
                 }
               }}
               style={({ pressed }) => [
