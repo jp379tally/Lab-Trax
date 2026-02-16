@@ -48,7 +48,7 @@ export default function NotificationsScreen() {
   const { currentUser } = useAuth();
   const insets = useSafeAreaInsets();
   const [confirmInvite, setConfirmInvite] = useState<{ invitation: GroupInvitation; accept: boolean } | null>(null);
-  const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean } | null>(null);
+  const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
 
   const pendingInvitations = groupInvitations.filter(
     inv => inv.invitedUsername.toLowerCase() === (currentUser || "").toLowerCase() && inv.status === "pending"
@@ -116,20 +116,30 @@ export default function NotificationsScreen() {
             <Text style={{ fontFamily: "Inter_600SemiBold" }}>{request.requestingUsername}</Text>
             {" "}wants to join your group
           </Text>
+          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4, marginBottom: 8 }}>
+            Add user to group?
+          </Text>
           <View style={styles.inviteBtns}>
             <Pressable
               style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
-              onPress={() => setConfirmJoinRequest({ request, accept: true })}
+              onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
             >
               <Ionicons name="checkmark" size={16} color="#FFF" />
-              <Text style={styles.acceptText}>Accept</Text>
+              <Text style={styles.acceptText}>Yes, as User</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.acceptBtn, { backgroundColor: "#F59E0B" }, pressed && { opacity: 0.8 }]}
+              onPress={() => setConfirmJoinRequest({ request, accept: true, role: "admin" })}
+            >
+              <Ionicons name="shield-checkmark" size={16} color="#FFF" />
+              <Text style={styles.acceptText}>Yes, as Admin</Text>
             </Pressable>
             <Pressable
               style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
               onPress={() => setConfirmJoinRequest({ request, accept: false })}
             >
               <Ionicons name="close" size={16} color={Colors.light.error} />
-              <Text style={styles.declineText}>Decline</Text>
+              <Text style={styles.declineText}>No</Text>
             </Pressable>
           </View>
         </View>
@@ -265,11 +275,13 @@ export default function NotificationsScreen() {
               />
             </View>
             <Text style={styles.confirmTitle}>
-              {confirmJoinRequest?.accept ? "Accept Request?" : "Decline Request?"}
+              {confirmJoinRequest?.accept
+                ? `Accept as ${confirmJoinRequest?.role === "admin" ? "Admin" : "User"}?`
+                : "Decline Request?"}
             </Text>
             <Text style={styles.confirmDesc}>
               {confirmJoinRequest?.accept
-                ? `${confirmJoinRequest?.request.requestingUsername} will be added to your group.`
+                ? `${confirmJoinRequest?.request.requestingUsername} will be added to your group as ${confirmJoinRequest?.role === "admin" ? "an administrator" : "a standard user"}.`
                 : `${confirmJoinRequest?.request.requestingUsername}'s request will be declined.`}
             </Text>
             <View style={styles.confirmBtns}>
@@ -277,7 +289,7 @@ export default function NotificationsScreen() {
                 style={({ pressed }) => [styles.confirmYesBtn, !confirmJoinRequest?.accept && { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
                 onPress={() => {
                   if (!confirmJoinRequest) return;
-                  respondToGroupJoinRequest(confirmJoinRequest.request.id, confirmJoinRequest.accept);
+                  respondToGroupJoinRequest(confirmJoinRequest.request.id, confirmJoinRequest.accept, confirmJoinRequest.role);
                   if (Platform.OS !== "web") {
                     Haptics.notificationAsync(confirmJoinRequest.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
                   }

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import {
   StyleSheet,
   View,
@@ -282,6 +282,8 @@ function TechDashboard() {
   const [batchScannedCases, setBatchScannedCases] = useState<{id: string, caseNumber: string, patientName: string}[]>([]);
   const [batchScanning, setBatchScanning] = useState(true);
   const [batchLocationSelect, setBatchLocationSelect] = useState(false);
+  const [batchManualInput, setBatchManualInput] = useState("");
+  const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isLabAdmin = currentUserData?.role === "admin";
@@ -313,6 +315,9 @@ function TechDashboard() {
   }
 
   function handleBatchBarcodeScan({ data }: { data: string }) {
+    if (data === lastBatchScanRef.current) return;
+    lastBatchScanRef.current = data;
+    setTimeout(() => { lastBatchScanRef.current = ""; }, 2000);
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const found = findCaseByBarcode(data) || cases.find(c => c.id === data || c.caseNumber === data);
     if (found && !batchScannedCases.find(bc => bc.id === found.id)) {
@@ -889,7 +894,7 @@ function TechDashboard() {
           <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: batchLocationSelect ? Colors.light.text : "#FFF" }}>
             {batchLocationSelect ? "Select Location" : "Batch Scan"}
           </Text>
-          <Pressable onPress={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); }}>
+          <Pressable onPress={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); setBatchManualInput(""); lastBatchScanRef.current = ""; }}>
             <Ionicons name="close" size={28} color={batchLocationSelect ? Colors.light.text : "#FFF"} />
           </Pressable>
         </View>
@@ -931,20 +936,48 @@ function TechDashboard() {
         ) : (
           <>
             {Platform.OS === "web" ? (
-              <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
-                <Ionicons name="barcode-outline" size={60} color="#FFF" />
-                <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
-                <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
-                <TextInput
-                  style={{ backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 10, paddingHorizontal: 16, paddingVertical: 12, color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", width: 260, marginTop: 12, textAlign: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}
-                  placeholder="Enter barcode..."
-                  placeholderTextColor="rgba(255,255,255,0.4)"
-                  autoCapitalize="none"
-                  onSubmitEditing={(e) => {
-                    const val = e.nativeEvent.text.trim();
-                    if (val) handleBatchBarcodeScan({ data: val });
-                  }}
-                />
+              <View style={{ flex: 1, padding: 20 }}>
+                <View style={{ alignItems: "center", marginBottom: 24 }}>
+                  <Ionicons name="barcode-outline" size={48} color="#FFF" />
+                  <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold", textAlign: "center", marginTop: 12 }}>Enter Barcode Manually</Text>
+                  <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 4 }}>Type a case barcode or case number to add it to the batch</Text>
+                </View>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <TextInput
+                    style={{ flex: 1, backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 10, paddingHorizontal: 16, paddingVertical: 12, color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}
+                    placeholder="Enter barcode or case #..."
+                    placeholderTextColor="rgba(255,255,255,0.4)"
+                    value={batchManualInput}
+                    onChangeText={setBatchManualInput}
+                    autoCapitalize="none"
+                    onSubmitEditing={() => {
+                      const val = batchManualInput.trim();
+                      if (val) {
+                        handleBatchBarcodeScan({ data: val });
+                        setBatchManualInput("");
+                      }
+                    }}
+                  />
+                  <Pressable
+                    onPress={() => {
+                      const val = batchManualInput.trim();
+                      if (val) {
+                        handleBatchBarcodeScan({ data: val });
+                        setBatchManualInput("");
+                      }
+                    }}
+                    style={({ pressed }) => ({
+                      backgroundColor: Colors.light.tint,
+                      borderRadius: 10,
+                      paddingHorizontal: 16,
+                      justifyContent: "center",
+                      alignItems: "center",
+                      opacity: pressed ? 0.8 : 1,
+                    })}
+                  >
+                    <Ionicons name="add" size={24} color="#FFF" />
+                  </Pressable>
+                </View>
               </View>
             ) : (
               <CameraView
@@ -1292,6 +1325,17 @@ function AdminDashboard() {
   const [editingUser, setEditingUser] = useState<LabUser | null>(null);
   const [newShipCompany, setNewShipCompany] = useState("");
   const [newShipAccount, setNewShipAccount] = useState("");
+
+  const [statementPreview, setStatementPreview] = useState<{
+    clientName: string;
+    email: string;
+    invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; amount: number }[] }[];
+    totalDue: number;
+  }[] | null>(null);
+
+  const [salesPeriod, setSalesPeriod] = useState<"daily" | "mtd" | "ytd" | "custom">("mtd");
+  const [salesCustomStart, setSalesCustomStart] = useState("");
+  const [salesCustomEnd, setSalesCustomEnd] = useState("");
 
   const PRICE_LIST_ITEMS = [
     { key: "zirconia_crown", label: "Zirconia Crown" },
@@ -2419,6 +2463,123 @@ function AdminDashboard() {
   }
 
   function renderStatements() {
+    if (statementPreview) {
+      return (
+        <ScrollView
+          style={styles.container}
+          contentContainerStyle={{
+            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          }}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+            <Pressable onPress={() => setStatementPreview(null)} style={{ marginRight: 12 }}>
+              <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+            </Pressable>
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Statement Preview</Text>
+          </View>
+
+          <View style={adm.listArea}>
+            {statementPreview.map((clientStatement, idx) => (
+              <View key={idx} style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{clientStatement.clientName}</Text>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.error }}>
+                    ${clientStatement.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                  </Text>
+                </View>
+                {clientStatement.email ? (
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 12 }}>
+                    Email: {clientStatement.email}
+                  </Text>
+                ) : null}
+
+                {clientStatement.invoices.map((inv, invIdx) => (
+                  <View key={invIdx} style={{ borderTopWidth: 1, borderTopColor: Colors.light.border, paddingTop: 10, marginTop: invIdx > 0 ? 10 : 0 }}>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                        ${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                      </Text>
+                    </View>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 2 }}>
+                      Patient: {inv.patientName}
+                    </Text>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 6 }}>
+                      Issued: {new Date(inv.issuedAt).toLocaleDateString()} · Due: {new Date(inv.dueAt).toLocaleDateString()}
+                    </Text>
+                    {inv.lineItems.length > 0 && (
+                      <View style={{ backgroundColor: Colors.light.background, borderRadius: 8, padding: 8 }}>
+                        {inv.lineItems.map((li, liIdx) => (
+                          <View key={liIdx} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 3 }}>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.text, flex: 1 }}>{li.item}{li.description ? ` - ${li.description}` : ""}</Text>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.text }}>${li.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                ))}
+              </View>
+            ))}
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+              <Pressable
+                style={({ pressed }) => ({
+                  flex: 1,
+                  backgroundColor: "#16A34A",
+                  borderRadius: 14,
+                  paddingVertical: 16,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexDirection: "row",
+                  gap: 8,
+                  opacity: pressed ? 0.85 : 1,
+                })}
+                onPress={() => {
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  statementPreview.forEach((cs) => {
+                    const invoiceDetails = cs.invoices.map((inv) => {
+                      const items = inv.lineItems.map(li => `    ${li.item}: $${li.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`).join("\n");
+                      return `  ${inv.invoiceNumber} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: $${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
+                    }).join("\n\n");
+                    const emailBody = `Billing Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${cs.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
+                    sendStatementEmail(cs.clientName, cs.email, `Billing Statement - ${cs.clientName}`, emailBody);
+                  });
+                  const totalAll = statementPreview.reduce((s, cs) => s + cs.totalDue, 0);
+                  Alert.alert(
+                    "Statements Sent",
+                    `Emailed statements to ${statementPreview.length} client${statementPreview.length > 1 ? "s" : ""}.\nTotal: $${totalAll.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+                  );
+                  setStatementPreview(null);
+                }}
+              >
+                <Ionicons name="send" size={18} color="#FFF" />
+                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Statements</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => ({
+                  flex: 1,
+                  backgroundColor: Colors.light.surface,
+                  borderRadius: 14,
+                  paddingVertical: 16,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderWidth: 1,
+                  borderColor: Colors.light.border,
+                  opacity: pressed ? 0.85 : 1,
+                })}
+                onPress={() => setStatementPreview(null)}
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </ScrollView>
+      );
+    }
+
     return (
       <ScrollView
         style={styles.container}
@@ -2458,32 +2619,35 @@ function AdminDashboard() {
                     Alert.alert("No Open Invoices", "There are no open invoices to generate statements for.");
                     return;
                   }
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  const summary = clientsWithOpen.map((name) => {
-                    const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === name);
-                    const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
-                    return `${name}: ${clientInvs.length} invoice${clientInvs.length > 1 ? "s" : ""} · $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
-                  }).join("\n");
-
-                  clientsWithOpen.forEach((name) => {
+                  const preview = clientsWithOpen.map((name) => {
                     const client = clients.find((cl) => cl.practiceName === name);
                     const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === name);
                     const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
-                    const invoiceDetails = clientInvs.map((inv) => `  ${inv.invoiceNumber}: $${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
-                    const emailBody = `Billing Statement for ${name}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
-                    sendStatementEmail(name, client?.email || "", `Billing Statement - ${name}`, emailBody);
+                    return {
+                      clientName: name,
+                      email: client?.email || "",
+                      invoices: clientInvs.map(inv => ({
+                        invoiceNumber: inv.invoiceNumber,
+                        amount: inv.amount,
+                        issuedAt: inv.issuedAt,
+                        dueAt: inv.dueAt,
+                        patientName: inv.patientName,
+                        lineItems: (inv.lineItems || []).map(li => ({
+                          item: li.item,
+                          description: li.description,
+                          amount: li.amount,
+                        })),
+                      })),
+                      totalDue: clientTotal,
+                    };
                   });
-
-                  Alert.alert(
-                    "Statements Generated & Emailed",
-                    `Generated and emailed statements for all open invoices.\n\n${allOpenInvoices.length} invoices across ${clientsWithOpen.length} client${clientsWithOpen.length > 1 ? "s" : ""}\nTotal: $${totalOpenAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\n${summary}`,
-                  );
+                  setStatementPreview(preview);
                 }}
                 testID="generate-all-statements-btn"
               >
                 <Ionicons name="documents" size={22} color="#fff" />
                 <View>
-                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Generate Statements for All Open Invoices</Text>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Preview All Open Statements</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", marginTop: 2 }}>
                     {allOpenInvoices.length} open invoice{allOpenInvoices.length !== 1 ? "s" : ""} · ${totalOpenAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
                   </Text>
@@ -2491,23 +2655,35 @@ function AdminDashboard() {
               </Pressable>
             );
           })()}
-          <Text style={adm.formDesc}>Or select a client to generate an individual statement.</Text>
+          <Text style={adm.formDesc}>Or select a client to preview their statement.</Text>
           {clients.map((c) => {
-            const clientCases = cases.filter((cs) => cs.doctorName === c.leadDoctor);
-            const clientTotal = clientCases.reduce((s, cs) => s + cs.price, 0);
+            const clientOpenInvs = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+            const clientTotal = clientOpenInvs.reduce((s, inv) => s + inv.amount, 0);
+            if (clientOpenInvs.length === 0) return null;
             return (
               <Pressable
                 key={c.id}
                 style={({ pressed }) => [adm.statementCard, pressed && { opacity: 0.7 }]}
                 onPress={() => {
                   if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  const netAmount = clientTotal * (1 - c.discountRate / 100);
-                  const emailBody = `Billing Statement for ${c.practiceName}\n\n${clientCases.length} cases totaling $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}\nDiscount: ${c.discountRate}% (${c.tier})\nNet Amount Due: $${netAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
-                  sendStatementEmail(c.practiceName, c.email, `Billing Statement - ${c.practiceName}`, emailBody);
-                  Alert.alert(
-                    "Statement Generated & Emailed",
-                    `Billing statement for ${c.practiceName}\n${clientCases.length} cases totaling $${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}\nDiscount: ${c.discountRate}% (${c.tier})\nNet: $${netAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nEmailed to ${c.email} and admin.`,
-                  );
+                  const preview = [{
+                    clientName: c.practiceName,
+                    email: c.email,
+                    invoices: clientOpenInvs.map(inv => ({
+                      invoiceNumber: inv.invoiceNumber,
+                      amount: inv.amount,
+                      issuedAt: inv.issuedAt,
+                      dueAt: inv.dueAt,
+                      patientName: inv.patientName,
+                      lineItems: (inv.lineItems || []).map(li => ({
+                        item: li.item,
+                        description: li.description,
+                        amount: li.amount,
+                      })),
+                    })),
+                    totalDue: clientTotal,
+                  }];
+                  setStatementPreview(preview);
                 }}
               >
                 <View style={adm.listItemLeft}>
@@ -2516,10 +2692,10 @@ function AdminDashboard() {
                   </View>
                   <View>
                     <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                    <Text style={adm.listItemSub}>{c.accountNumber} · {clientCases.length} cases · ${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                    <Text style={adm.listItemSub}>{c.accountNumber} · {clientOpenInvs.length} open invoice{clientOpenInvs.length !== 1 ? "s" : ""} · ${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
                   </View>
                 </View>
-                <Ionicons name="download-outline" size={20} color={Colors.light.tint} />
+                <Ionicons name="eye-outline" size={20} color={Colors.light.tint} />
               </Pressable>
             );
           })}
@@ -3037,15 +3213,46 @@ function AdminDashboard() {
   }
 
   function renderSales() {
-    const completedCases = cases.filter((c) => c.status === "COMPLETE" || c.status === "SHIP");
-    const activeCases = cases.filter((c) => c.status !== "COMPLETE" && c.status !== "SHIP");
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+
+    let periodStart = monthStart;
+    let periodEnd = Date.now();
+    let periodLabel = "Month to Date";
+
+    if (salesPeriod === "daily") {
+      periodStart = todayStart;
+      periodLabel = "Today";
+    } else if (salesPeriod === "ytd") {
+      periodStart = yearStart;
+      periodLabel = "Year to Date";
+    } else if (salesPeriod === "custom") {
+      periodLabel = "Custom Range";
+      if (salesCustomStart) {
+        const parsed = new Date(salesCustomStart);
+        if (!isNaN(parsed.getTime())) periodStart = parsed.getTime();
+      }
+      if (salesCustomEnd) {
+        const parsed = new Date(salesCustomEnd);
+        if (!isNaN(parsed.getTime())) periodEnd = parsed.getTime() + 86400000;
+      }
+    }
+
+    const periodCases = cases.filter(c => c.createdAt >= periodStart && c.createdAt <= periodEnd);
+    const periodInvoices = invoices.filter(i => i.issuedAt >= periodStart && i.issuedAt <= periodEnd);
+
+    const completedCases = periodCases.filter((c) => c.status === "COMPLETE" || c.status === "SHIP");
+    const activeCases = periodCases.filter((c) => c.status !== "COMPLETE" && c.status !== "SHIP");
     const completedRevenue = completedCases.reduce((s, c) => s + c.price, 0);
     const activeRevenue = activeCases.reduce((s, c) => s + c.price, 0);
-    const paidInvoices = invoices.filter((i) => i.status === "paid");
+    const periodRevenue = periodCases.reduce((s, c) => s + c.price, 0);
+    const paidInvoices = periodInvoices.filter((i) => i.status === "paid");
     const collectedAmount = paidInvoices.reduce((s, i) => s + i.amount, 0);
 
     const materialBreakdown: { [key: string]: { count: number; revenue: number } } = {};
-    cases.forEach((c) => {
+    periodCases.forEach((c) => {
       if (!materialBreakdown[c.material]) materialBreakdown[c.material] = { count: 0, revenue: 0 };
       materialBreakdown[c.material].count++;
       materialBreakdown[c.material].revenue += c.price;
@@ -3058,6 +3265,13 @@ function AdminDashboard() {
       "Gold": "#F59E0B",
     };
 
+    const periods: { key: typeof salesPeriod; label: string }[] = [
+      { key: "daily", label: "Daily" },
+      { key: "mtd", label: "MTD" },
+      { key: "ytd", label: "YTD" },
+      { key: "custom", label: "Custom" },
+    ];
+
     return (
       <ScrollView
         style={styles.container}
@@ -3069,10 +3283,61 @@ function AdminDashboard() {
       >
         {renderBackHeader("Sales")}
         <View style={adm.listArea}>
+          <View style={{ flexDirection: "row", backgroundColor: Colors.light.surfaceSecondary, borderRadius: 12, padding: 3, marginBottom: 16 }}>
+            {periods.map(p => (
+              <Pressable
+                key={p.key}
+                onPress={() => setSalesPeriod(p.key)}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  alignItems: "center",
+                  backgroundColor: salesPeriod === p.key ? Colors.light.surface : "transparent",
+                  shadowColor: salesPeriod === p.key ? "#000" : "transparent",
+                  shadowOpacity: salesPeriod === p.key ? 0.06 : 0,
+                  shadowRadius: 4,
+                  shadowOffset: { width: 0, height: 2 },
+                  elevation: salesPeriod === p.key ? 2 : 0,
+                  opacity: pressed ? 0.8 : 1,
+                })}
+              >
+                <Text style={{ fontSize: 13, fontFamily: salesPeriod === p.key ? "Inter_700Bold" : "Inter_500Medium", color: salesPeriod === p.key ? Colors.light.tint : Colors.light.textSecondary }}>{p.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {salesPeriod === "custom" && (
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 4 }}>Start Date</Text>
+                <TextInput
+                  style={{ backgroundColor: Colors.light.surface, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.text, borderWidth: 1, borderColor: Colors.light.border }}
+                  placeholder="MM/DD/YYYY"
+                  placeholderTextColor={Colors.light.textTertiary}
+                  value={salesCustomStart}
+                  onChangeText={setSalesCustomStart}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 4 }}>End Date</Text>
+                <TextInput
+                  style={{ backgroundColor: Colors.light.surface, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.text, borderWidth: 1, borderColor: Colors.light.border }}
+                  placeholder="MM/DD/YYYY"
+                  placeholderTextColor={Colors.light.textTertiary}
+                  value={salesCustomEnd}
+                  onChangeText={setSalesCustomEnd}
+                />
+              </View>
+            </View>
+          )}
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 12 }}>{periodLabel} · {periodCases.length} cases</Text>
+
           <View style={adm.salesGrid}>
             <View style={adm.salesCard}>
               <Text style={adm.salesCardLabel}>Total Revenue</Text>
-              <Text style={adm.salesCardValue}>${totalRevenue.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+              <Text style={adm.salesCardValue}>${periodRevenue.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
             </View>
             <View style={adm.salesCard}>
               <Text style={adm.salesCardLabel}>Collected</Text>
@@ -3089,8 +3354,8 @@ function AdminDashboard() {
           </View>
 
           <Text style={adm.salesSectionTitle}>Revenue by Material</Text>
-          {Object.entries(materialBreakdown).map(([mat, data]) => {
-            const pct = totalRevenue > 0 ? (data.revenue / totalRevenue) * 100 : 0;
+          {Object.entries(materialBreakdown).length > 0 ? Object.entries(materialBreakdown).map(([mat, data]) => {
+            const pct = periodRevenue > 0 ? (data.revenue / periodRevenue) * 100 : 0;
             const color = materialColors[mat] || Colors.light.textSecondary;
             return (
               <View key={mat} style={adm.materialRow}>
@@ -3105,12 +3370,15 @@ function AdminDashboard() {
                 <Text style={adm.materialRevenue}>${data.revenue.toLocaleString("en-US", { minimumFractionDigits: 0 })}</Text>
               </View>
             );
-          })}
+          }) : (
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", paddingVertical: 20 }}>No cases in this period</Text>
+          )}
 
           <Text style={[adm.salesSectionTitle, { marginTop: 24 }]}>Top Clients by Revenue</Text>
           {clients.map((c) => {
-            const clientCases = cases.filter((cs) => cs.doctorName === c.leadDoctor);
+            const clientCases = periodCases.filter((cs) => cs.doctorName === c.leadDoctor);
             const rev = clientCases.reduce((s, cs) => s + cs.price, 0);
+            if (rev === 0) return null;
             return (
               <View key={c.id} style={adm.clientRevenueRow}>
                 <View style={adm.listItemLeft}>
@@ -3125,7 +3393,7 @@ function AdminDashboard() {
                 <Text style={adm.clientRevenueAmount}>${rev.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
               </View>
             );
-          }).sort((a, b) => 0)}
+          }).filter(Boolean)}
         </View>
       </ScrollView>
     );

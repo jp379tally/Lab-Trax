@@ -110,7 +110,7 @@ interface AppContextValue {
   batchLocateCases: (caseIds: string[], newStatus: CaseStatus) => void;
   groupJoinRequests: GroupJoinRequest[];
   sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => { success: boolean; error?: string };
-  respondToGroupJoinRequest: (requestId: string, accept: boolean) => void;
+  respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -1082,7 +1082,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return { success: true };
   }
 
-  function respondToGroupJoinRequest(requestId: string, accept: boolean) {
+  function respondToGroupJoinRequest(requestId: string, accept: boolean, role?: "admin" | "user") {
     const request = groupJoinRequests.find(r => r.id === requestId);
     if (!request) return;
 
@@ -1098,7 +1098,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (accept) {
       const adminGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === request.targetAdminUsername.toLowerCase() && m.role === "admin"));
       if (adminGroups.length > 0) {
-        addUserToGroup(adminGroups[0].id, request.requestingUsername, "user");
+        addUserToGroup(adminGroups[0].id, request.requestingUsername, role || "user");
       }
     }
   }

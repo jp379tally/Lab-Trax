@@ -385,7 +385,35 @@ export default function LoginScreen() {
         body: JSON.stringify({ username: signUpUsername.trim() }),
       });
 
-      if (practiceName.trim() && practiceAddress.trim()) {
+      if (selectedRole === "admin") {
+        const now = Date.now();
+        const newGroup = {
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+          name: signUpUsername.trim(),
+          type: (userType || "provider") === "lab" ? "lab" : "provider",
+          address: practiceAddress.trim() || "",
+          members: [{
+            userId: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+            username: signUpUsername.trim(),
+            role: "admin",
+            joinedAt: now,
+          }],
+          createdAt: now,
+        };
+        try {
+          const existingGroupsRaw = await AsyncStorage.getItem("@drivesync_groups");
+          const existingGroups = existingGroupsRaw ? JSON.parse(existingGroupsRaw) : [];
+          existingGroups.push(newGroup);
+          await AsyncStorage.setItem("@drivesync_groups", JSON.stringify(existingGroups));
+        } catch {}
+        await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
+          name: signUpUsername.trim(),
+          type: (userType || "provider") === "lab" ? "lab" : "provider",
+          address: practiceAddress.trim() || "",
+          username: signUpUsername.trim(),
+          role: "admin",
+        }));
+      } else if (practiceName.trim() && practiceAddress.trim()) {
         await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
           name: practiceName.trim(),
           type: (userType || "provider") === "lab" ? "lab" : "provider",
