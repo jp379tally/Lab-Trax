@@ -1154,6 +1154,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
           } catch {}
         });
       }
+      AsyncStorage.getItem("@drivesync_auth_users").then(raw => {
+        if (!raw) return;
+        try {
+          const allUsers = JSON.parse(raw);
+          const userData = allUsers.find((u: any) => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
+          if (userData && userData.userType === "provider") {
+            const doctorLabel = userData.doctorName
+              ? (userData.accountNumber ? `Dr. ${userData.doctorName} (${userData.accountNumber})` : `Dr. ${userData.doctorName}`)
+              : `Dr. ${userData.username}`;
+            const alreadyClient = clients.some(c =>
+              c.leadDoctor.toLowerCase() === doctorLabel.toLowerCase() ||
+              (userData.doctorName && c.leadDoctor.toLowerCase().includes(userData.doctorName.toLowerCase())) ||
+              (userData.practiceName && c.practiceName.toLowerCase() === userData.practiceName.toLowerCase())
+            );
+            if (!alreadyClient) {
+              addClient({
+                practiceName: userData.practiceName || `${userData.doctorName || userData.username}'s Practice`,
+                leadDoctor: doctorLabel,
+                phone: userData.practicePhone || userData.phone || "",
+                email: userData.email || "",
+                address: userData.practiceAddress || "",
+                tier: "Standard",
+                discountRate: 0,
+              });
+            }
+          }
+        } catch {}
+      });
     }
   }
 
