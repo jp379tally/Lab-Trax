@@ -1954,10 +1954,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "space-between",
     paddingHorizontal: 28,
+    ...(Platform.OS === "web" ? { maxWidth: 480, alignSelf: "center" as const, width: "100%" as any } : {}),
   },
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: 28,
+    ...(Platform.OS === "web" ? { maxWidth: 480, alignSelf: "center" as const, width: "100%" as any } : {}),
   },
   backBtn: {
     width: 40,
