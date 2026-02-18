@@ -198,6 +198,43 @@
         transition: opacity 0.15s;
       }
       .open-btn:hover { opacity: 0.9; }
+      .launch-section {
+        margin-bottom: 40px;
+      }
+      .launch-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 16px 40px;
+        font-size: 17px;
+        font-weight: 700;
+        border-radius: 14px;
+        text-decoration: none;
+        color: #fff;
+        background: linear-gradient(135deg, #3b82f6, #2563eb);
+        box-shadow: 0 4px 24px rgba(37,99,235,0.35);
+        transition: all 0.2s;
+        border: none;
+        cursor: pointer;
+      }
+      .launch-btn:hover { opacity: 0.92; transform: translateY(-1px); box-shadow: 0 6px 32px rgba(37,99,235,0.45); }
+      .launch-btn svg { width: 20px; height: 20px; fill: currentColor; }
+      .launch-divider {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        max-width: 320px;
+        margin: 24px auto;
+        color: #475569;
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .launch-divider::before, .launch-divider::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: rgba(255,255,255,0.1);
+      }
       .compliance {
         border-top: 1px solid rgba(255,255,255,0.06);
         padding: 24px 32px;
@@ -271,6 +308,14 @@
       <div class="content">
         <h1>Dental Lab Management,<br/><span>Simplified.</span></h1>
         <p class="subtitle">Track cases, manage workflows, and communicate with providers — all in one secure, HIPAA-compliant platform.</p>
+
+        <div class="launch-section" id="launch-section">
+          <a href="/app" class="launch-btn" id="launch-web-btn">
+            <svg viewBox="0 0 24 24"><path d="M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7l-2 3v1h8v-1l-2-3h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 12H3V4h18v10z"/></svg>
+            Launch Web App
+          </a>
+          <div class="launch-divider">or use mobile app</div>
+        </div>
 
         <div class="cards">
           <div class="card">
@@ -366,7 +411,9 @@
         });
         qrCode.append(document.getElementById("qr-code"));
 
+        var launchSection = document.getElementById("launch-section");
         if (isAndroid || isIOS) {
+          if (launchSection) launchSection.style.display = "none";
           loadingEl.style.display = "block";
           contentEl.style.display = "none";
           window.location.href = deepLink;

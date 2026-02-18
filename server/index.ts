@@ -177,6 +177,18 @@ function configureExpoAndLanding(app: express.Application) {
       return next();
     }
 
+    if (req.path === "/app") {
+      const devDomain = process.env.REPLIT_DEV_DOMAIN;
+      if (devDomain) {
+        return res.redirect(`https://${devDomain}:8081`);
+      }
+      const indexPath = path.resolve(process.cwd(), "static-build", "index.html");
+      if (fs.existsSync(indexPath)) {
+        return res.sendFile(indexPath);
+      }
+      return res.redirect("/");
+    }
+
     if (req.path !== "/" && req.path !== "/manifest") {
       return next();
     }
