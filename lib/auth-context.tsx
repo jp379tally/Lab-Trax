@@ -11,6 +11,7 @@ import React, {
 import { AppState, AppStateStatus, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
+import { logAudit } from "./audit";
 
 interface StoredUser {
   username: string;
@@ -200,6 +201,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       BIOMETRIC_USER_KEY,
       JSON.stringify({ username: found.username, password: found.password }),
     );
+    logAudit("LOGIN", username, "User authenticated");
     return { success: true };
   }
 
@@ -271,6 +273,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   function logout() {
+    logAudit("LOGOUT", currentUser || "unknown", "User signed out");
     setIsAuthenticated(false);
     setCurrentUser(null);
     setUserType(null);

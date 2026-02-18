@@ -24,6 +24,7 @@ import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
+import { logAudit } from "@/lib/audit";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -72,6 +73,12 @@ export default function CaseDetailScreen() {
   const caseItem = cases.find((c) => c.id === id);
   const isAdmin = role === "admin" && adminUnlocked;
   const showPrice = isAdmin;
+
+  React.useEffect(() => {
+    if (caseItem && currentUser) {
+      logAudit("VIEW_CASE", currentUser, `Case ${caseItem.caseNumber} - Patient: ${caseItem.patientName}`);
+    }
+  }, [id]);
 
   if (!caseItem) {
     return (

@@ -1635,6 +1635,10 @@ export default function LoginScreen() {
             </View>
             <Text style={styles.appName}>LabTrax</Text>
             <Text style={styles.appTagline}>Dental Laboratory Management</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8, backgroundColor: "rgba(16,185,129,0.12)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20 }}>
+              <Ionicons name="shield-checkmark" size={12} color="#10B981" />
+              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#10B981" }}>HIPAA Compliant</Text>
+            </View>
           </View>
 
           <View style={styles.formSection}>
@@ -1722,6 +1726,11 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.bottomSection}>
+            <View style={{ paddingHorizontal: 24, paddingTop: 12 }}>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#64748B", textAlign: "center", lineHeight: 16 }}>
+                By logging in, you acknowledge that this system contains Protected Health Information (PHI) subject to HIPAA regulations. Unauthorized access is prohibited and may result in civil and criminal penalties.
+              </Text>
+            </View>
             <View style={styles.switchRow}>
               <Text style={styles.switchText}>Don't have an account?</Text>
               <Pressable onPress={switchToSignUp} style={({ pressed }) => [pressed && { opacity: 0.7 }]} testID="switch-mode-btn">

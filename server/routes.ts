@@ -16,6 +16,8 @@ function generateCode(): string {
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  const auditLog: { timestamp: number; action: string; user: string; resource: string; ip: string }[] = [];
+
   app.post("/api/check-username", (req, res) => {
     const { username } = req.body;
     if (!username || typeof username !== "string") {
@@ -23,6 +25,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     const taken = registeredUsernames.has(username.toLowerCase().trim());
     res.json({ available: !taken });
+  });
+
+  app.post("/api/audit-log", (req, res) => {
+    const { action, user, resource } = req.body;
+    if (!action || !user) {
+      return res.status(400).json({ error: "Action and user required" });
+    }
+    const entry = {
+      timestamp: Date.now(),
+      action,
+      user,
+      resource: resource || "",
+      ip: req.ip || req.socket.remoteAddress || "unknown",
+    };
+    auditLog.push(entry);
+    if (auditLog.length > 10000) auditLog.splice(0, auditLog.length - 10000);
+    res.json({ success: true });
+  });
+
+  app.get("/api/audit-log", (_req, res) => {
+    res.json({ entries: auditLog.slice(-100) });
   });
 
   app.post("/api/send-phone-code", (req, res) => {
