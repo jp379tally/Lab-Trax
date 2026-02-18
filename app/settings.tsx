@@ -23,10 +23,15 @@ import * as Haptics from "expo-haptics";
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest } = useApp();
+  const { sendGroupJoinRequest, groups } = useApp();
   const { currentUser, userType, registeredUsers } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
+  const [showAddLabModal, setShowAddLabModal] = useState(false);
+  const [labSearchName, setLabSearchName] = useState("");
+  const [matchedLabs, setMatchedLabs] = useState<typeof groups>([]);
+  const [labSearchDone, setLabSearchDone] = useState(false);
+  const [addLabSending, setAddLabSending] = useState(false);
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
@@ -124,6 +129,34 @@ export default function SettingsScreen() {
                 <View style={styles.menuInfo}>
                   <Text style={[styles.menuTitle, { color: colors.text }]}>Admin Vault</Text>
                   <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Manage users, groups, and settings</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+              </Pressable>
+            </View>
+          </View>
+        )}
+
+        {userType === "provider" && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>LAB CONNECTION</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Pressable
+                style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                onPress={() => {
+                  setShowAddLabModal(true);
+                  setLabSearchName("");
+                  setMatchedLabs([]);
+                  setLabSearchDone(false);
+                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+                testID="add-lab-btn"
+              >
+                <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
+                  <Ionicons name="flask" size={18} color="#7C3AED" />
+                </View>
+                <View style={styles.menuInfo}>
+                  <Text style={[styles.menuTitle, { color: colors.text }]}>Add Lab</Text>
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Connect to a dental lab to view cases</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
               </Pressable>
@@ -248,6 +281,133 @@ export default function SettingsScreen() {
               <Ionicons name="send" size={18} color="#FFF" />
               <Text style={joinStyles.sendBtnText}>Send Request</Text>
             </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showAddLabModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowAddLabModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" }}
+        >
+          <View style={[joinStyles.sheet, { backgroundColor: colors.surface }]}>
+            <View style={joinStyles.handle} />
+            <View style={joinStyles.header}>
+              <Pressable onPress={() => { setShowAddLabModal(false); setLabSearchName(""); setMatchedLabs([]); setLabSearchDone(false); }}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </Pressable>
+              <Text style={[joinStyles.title, { color: colors.text }]}>Add Lab</Text>
+              <View style={{ width: 24 }} />
+            </View>
+            <Text style={[joinStyles.desc, { color: colors.textSecondary }]}>
+              Enter the lab name to search for it. If found, a join request will be sent to the lab's administrator for approval.
+            </Text>
+            <TextInput
+              style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+              placeholder="Lab name"
+              placeholderTextColor={colors.textTertiary}
+              value={labSearchName}
+              onChangeText={(t) => { setLabSearchName(t); setLabSearchDone(false); setMatchedLabs([]); }}
+              autoCapitalize="words"
+              autoCorrect={false}
+              testID="add-lab-search-input"
+            />
+
+            {!labSearchDone ? (
+              <Pressable
+                style={({ pressed }) => [
+                  joinStyles.sendBtn,
+                  { backgroundColor: "#7C3AED" },
+                  !labSearchName.trim() && { opacity: 0.5 },
+                  pressed && { opacity: 0.85 },
+                ]}
+                disabled={!labSearchName.trim()}
+                onPress={() => {
+                  const q = labSearchName.toLowerCase().trim();
+                  const found = groups.filter(g => g.type === "lab" && g.name.toLowerCase().includes(q));
+                  setMatchedLabs(found);
+                  setLabSearchDone(true);
+                }}
+                testID="add-lab-search-btn"
+              >
+                <Ionicons name="search" size={18} color="#FFF" />
+                <Text style={joinStyles.sendBtnText}>Search</Text>
+              </Pressable>
+            ) : matchedLabs.length === 0 ? (
+              <View style={{ alignItems: "center", paddingVertical: 16, gap: 8 }}>
+                <Ionicons name="alert-circle-outline" size={36} color={colors.textTertiary} />
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>No labs found</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center" }}>
+                  No lab matching "{labSearchName}" was found. Please check the name and try again.
+                </Text>
+                <Pressable
+                  onPress={() => { setLabSearchDone(false); }}
+                  style={({ pressed }) => [{ paddingVertical: 10, paddingHorizontal: 20 }, pressed && { opacity: 0.7 }]}
+                >
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: colors.tint }}>Try Again</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={{ gap: 10, maxHeight: 280 }}>
+                <ScrollView showsVerticalScrollIndicator={false}>
+                  {matchedLabs.map((lab) => {
+                    const adminMember = lab.members.find(m => m.role === "admin");
+                    const alreadyMember = lab.members.some(m => m.username.toLowerCase() === (currentUser || "").toLowerCase());
+                    return (
+                      <View key={lab.id} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
+                        <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: "#EDE9FE", justifyContent: "center", alignItems: "center" }}>
+                          <Ionicons name="flask" size={20} color="#7C3AED" />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>{lab.name}</Text>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>
+                            {lab.members.length} member{lab.members.length !== 1 ? "s" : ""}
+                          </Text>
+                        </View>
+                        {alreadyMember ? (
+                          <View style={{ backgroundColor: "#D1FAE5", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 }}>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#059669" }}>Connected</Text>
+                          </View>
+                        ) : (
+                          <Pressable
+                            style={({ pressed }) => [
+                              { backgroundColor: "#7C3AED", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
+                              addLabSending && { opacity: 0.5 },
+                              pressed && { opacity: 0.85 },
+                            ]}
+                            disabled={addLabSending}
+                            onPress={() => {
+                              if (!currentUser || !adminMember) return;
+                              setAddLabSending(true);
+                              const result = sendGroupJoinRequest(adminMember.username, currentUser, `${currentUser} would like to connect to ${lab.name}.`);
+                              setAddLabSending(false);
+                              if (result.success) {
+                                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                Alert.alert("Request Sent", `Your request to join ${lab.name} has been sent to the lab administrator. Once approved, you'll be able to view your cases.`);
+                                setShowAddLabModal(false);
+                                setLabSearchName("");
+                                setMatchedLabs([]);
+                                setLabSearchDone(false);
+                              } else {
+                                Alert.alert("Unable to Send", result.error || "Something went wrong.");
+                              }
+                            }}
+                            testID={`join-lab-${lab.id}`}
+                          >
+                            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Join</Text>
+                          </Pressable>
+                        )}
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
           </View>
         </KeyboardAvoidingView>
       </Modal>
