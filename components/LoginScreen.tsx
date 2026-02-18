@@ -19,10 +19,10 @@ import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/lib/auth-context";
 import { getApiUrl } from "@/lib/query-client";
-import { generateId, GroupJoinRequest } from "@/lib/data";
+import { generateId, GroupJoinRequest, Group } from "@/lib/data";
 import Colors from "@/constants/colors";
 
-type SignUpStep = "credentials" | "user_type" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
+type SignUpStep = "credentials" | "user_type" | "lab_name" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
 
 function validatePassword(pw: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -78,6 +78,10 @@ export default function LoginScreen() {
   const [accountNumber, setAccountNumber] = useState("");
   const [joinGroupAdminUsername, setJoinGroupAdminUsername] = useState("");
   const [joinGroupSent, setJoinGroupSent] = useState(false);
+  const [labName, setLabName] = useState("");
+  const [matchingLabGroup, setMatchingLabGroup] = useState<Group | null>(null);
+  const [labJoinRequestSent, setLabJoinRequestSent] = useState(false);
+  const [checkingLabName, setCheckingLabName] = useState(false);
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -511,8 +515,12 @@ export default function LoginScreen() {
                   setSignUpStep("user_type");
                 } else if (signUpStep === "practice_info") {
                   setSignUpStep("license");
+                } else if (signUpStep === "lab_name") {
+                  setMatchingLabGroup(null);
+                  setLabJoinRequestSent(false);
+                  setSignUpStep("user_type");
                 } else if (signUpStep === "email_verify") {
-                  setSignUpStep(userType === "lab" ? "user_type" : "practice_info");
+                  setSignUpStep(userType === "lab" ? "lab_name" : "practice_info");
                 } else if (signUpStep === "updates_opt_in") {
                   setSignUpStep("email_verify");
                 } else if (signUpStep === "phone_entry") {
@@ -562,6 +570,7 @@ export default function LoginScreen() {
               <Text style={styles.appTagline}>
                 {signUpStep === "credentials" && "Enter your details to get started"}
                 {signUpStep === "user_type" && "What type of account?"}
+                {signUpStep === "lab_name" && "Enter your lab name"}
                 {signUpStep === "license" && "Enter your license number"}
                 {signUpStep === "practice_info" && "Tell us about your practice"}
                 {signUpStep === "updates_opt_in" && "Stay connected with your lab"}
@@ -577,6 +586,7 @@ export default function LoginScreen() {
 
             {signUpStep === "credentials" && renderCredentialsStep()}
             {signUpStep === "user_type" && renderUserType()}
+            {signUpStep === "lab_name" && renderLabName()}
             {signUpStep === "license" && renderLicense()}
             {signUpStep === "practice_info" && renderPracticeInfo()}
             {signUpStep === "email_verify" && renderEmailVerify()}
@@ -601,7 +611,7 @@ export default function LoginScreen() {
 
             <View style={styles.stepIndicator}>
               {(() => {
-                const labSteps: SignUpStep[] = ["credentials", "user_type", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
+                const labSteps: SignUpStep[] = ["credentials", "user_type", "lab_name", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
                 const providerSteps: SignUpStep[] = wantsUpdates
                   ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"]
                   : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"];
@@ -671,7 +681,7 @@ export default function LoginScreen() {
           onPress={() => {
             setUserType("lab");
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            sendEmailCode();
+            setSignUpStep("lab_name");
           }}
           style={({ pressed }) => [
             styles.optionCard,
@@ -698,6 +708,191 @@ export default function LoginScreen() {
           <Text style={styles.optionCardTitle}>Dental Lab</Text>
           <Text style={styles.optionCardDesc}>Laboratory processing and fulfilling dental cases</Text>
         </Pressable>
+      </View>
+    );
+  }
+
+  async function checkLabName() {
+    if (!labName.trim()) {
+      setSignUpError("Please enter a lab name.");
+      return;
+    }
+    setCheckingLabName(true);
+    setSignUpError(null);
+    try {
+      const stored = await AsyncStorage.getItem("@drivesync_groups");
+      const existingGroups: Group[] = stored ? JSON.parse(stored) : [];
+      const match = existingGroups.find(
+        (g) => g.name.toLowerCase().trim() === labName.toLowerCase().trim() && g.type === "lab"
+      );
+      if (match) {
+        setMatchingLabGroup(match);
+        setCheckingLabName(false);
+      } else {
+        setMatchingLabGroup(null);
+        setCheckingLabName(false);
+        sendEmailCode();
+      }
+    } catch {
+      setMatchingLabGroup(null);
+      setCheckingLabName(false);
+      sendEmailCode();
+    }
+  }
+
+  async function handleJoinExistingLab() {
+    if (!matchingLabGroup) return;
+    try {
+      const adminMember = matchingLabGroup.members.find((m) => m.role === "admin");
+      if (!adminMember) {
+        setSignUpError("This lab doesn't have an admin yet. Please continue with a new account.");
+        return;
+      }
+      const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
+      const existing: GroupJoinRequest[] = stored ? JSON.parse(stored) : [];
+      const alreadyPending = existing.find(
+        (r) =>
+          r.requestingUsername.toLowerCase() === signUpUsername.trim().toLowerCase() &&
+          r.targetAdminUsername.toLowerCase() === adminMember.username.toLowerCase() &&
+          r.status === "pending"
+      );
+      if (alreadyPending) {
+        setSignUpError("You already have a pending request to join this lab.");
+        return;
+      }
+      const request: GroupJoinRequest = {
+        id: generateId(),
+        requestingUsername: signUpUsername.trim(),
+        targetAdminUsername: adminMember.username,
+        message: `${signUpUsername.trim()} would like to join ${matchingLabGroup.name}.`,
+        status: "pending",
+        createdAt: Date.now(),
+      };
+      const updated = [...existing, request];
+      await AsyncStorage.setItem("@drivesync_group_join_requests", JSON.stringify(updated));
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setLabJoinRequestSent(true);
+    } catch {
+      setSignUpError("Could not send request. Please try again.");
+    }
+  }
+
+  function renderLabName() {
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        {!matchingLabGroup ? (
+          <>
+            <View style={styles.inputWrapper}>
+              <Ionicons name="flask-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                value={labName}
+                onChangeText={(t) => { setLabName(t); setSignUpError(null); }}
+                placeholder="Lab Name"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                autoCapitalize="words"
+                testID="lab-name-input"
+              />
+            </View>
+
+            <Pressable
+              onPress={checkLabName}
+              disabled={checkingLabName || !labName.trim()}
+              style={({ pressed }) => [
+                styles.loginBtn,
+                (!labName.trim() || checkingLabName) && { opacity: 0.5 },
+                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+              ]}
+              testID="lab-name-next-btn"
+            >
+              {checkingLabName ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <>
+                  <Text style={styles.loginBtnText}>Continue</Text>
+                  <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                </>
+              )}
+            </Pressable>
+          </>
+        ) : !labJoinRequestSent ? (
+          <View style={{ gap: 16 }}>
+            <View style={{ backgroundColor: "rgba(59,130,246,0.1)", borderWidth: 1, borderColor: "rgba(59,130,246,0.3)", borderRadius: 14, padding: 20, alignItems: "center" }}>
+              <Ionicons name="business" size={32} color="#3B82F6" style={{ marginBottom: 8 }} />
+              <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF", textAlign: "center", marginBottom: 4 }}>
+                "{matchingLabGroup.name}" already exists
+              </Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18 }}>
+                A lab with this name is already registered. Would you like to request to join this lab?
+              </Text>
+            </View>
+
+            <Pressable
+              onPress={handleJoinExistingLab}
+              style={({ pressed }) => [
+                styles.loginBtn,
+                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+              ]}
+              testID="join-existing-lab-btn"
+            >
+              <Ionicons name="people" size={20} color="#FFF" />
+              <Text style={styles.loginBtnText}>Request to Join</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => {
+                setMatchingLabGroup(null);
+                setSignUpError(null);
+                sendEmailCode();
+              }}
+              style={({ pressed }) => [
+                {
+                  alignItems: "center",
+                  paddingVertical: 14,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.15)",
+                },
+                pressed && { opacity: 0.7 },
+              ]}
+              testID="create-new-lab-btn"
+            >
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.7)" }}>
+                Create New Lab Instead
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={{ alignItems: "center", paddingVertical: 20, gap: 12 }}>
+            <View style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: "rgba(16,185,129,0.2)", justifyContent: "center", alignItems: "center" }}>
+              <Ionicons name="checkmark-circle" size={36} color="#10B981" />
+            </View>
+            <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Request Sent</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18 }}>
+              Your request to join {matchingLabGroup.name} has been sent to the lab admin. You'll be notified when they respond.
+            </Text>
+            <Pressable
+              onPress={() => {
+                setSignUpStep("hipaa_disclaimer");
+              }}
+              style={({ pressed }) => [
+                styles.loginBtn,
+                { marginTop: 8 },
+                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+              ]}
+            >
+              <Text style={styles.loginBtnText}>Continue</Text>
+              <Ionicons name="arrow-forward" size={20} color="#FFF" />
+            </Pressable>
+          </View>
+        )}
       </View>
     );
   }
