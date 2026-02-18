@@ -194,13 +194,14 @@ function ChatThreadModal({
 
 export function ChatButton() {
   const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, getUserGroups, groups, clients, addConversation } = useApp();
-  const { currentUser } = useAuth();
+  const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [showConversations, setShowConversations] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [chatImageUri, setChatImageUri] = useState<string | null>(null);
   const [showNewConvo, setShowNewConvo] = useState(false);
+  const [recipientSearch, setRecipientSearch] = useState("");
 
   const myGroups = getUserGroups(currentUser || "");
   const filteredConversations = myGroups.length === 0 ? [] : conversations.filter(conv => {
@@ -213,9 +214,34 @@ export function ChatButton() {
 
   const filteredUnreadCount = filteredConversations.reduce((sum, c) => sum + c.unreadCount, 0);
 
-  function startNewConversation(group: { id: string; name: string }) {
+  const affiliatedContacts = React.useMemo(() => {
+    const contactMap = new Map<string, { username: string; groupName: string; role: string }>();
+    for (const g of myGroups) {
+      for (const m of g.members) {
+        if (m.username.toLowerCase() !== (currentUser || "").toLowerCase() && !contactMap.has(m.username.toLowerCase())) {
+          contactMap.set(m.username.toLowerCase(), { username: m.username, groupName: g.name, role: m.role });
+        }
+      }
+    }
+    for (const g of myGroups) {
+      if (!contactMap.has(g.name.toLowerCase())) {
+        contactMap.set(g.name.toLowerCase(), { username: g.name, groupName: g.name, role: "group" });
+      }
+    }
+    return Array.from(contactMap.values());
+  }, [myGroups, currentUser]);
+
+  const searchResults = React.useMemo(() => {
+    const q = recipientSearch.toLowerCase().trim();
+    if (!q) return affiliatedContacts;
+    return affiliatedContacts.filter(c =>
+      c.username.toLowerCase().includes(q) || c.groupName.toLowerCase().includes(q)
+    );
+  }, [recipientSearch, affiliatedContacts]);
+
+  function startNewConversation(contactName: string) {
     const existingConv = filteredConversations.find(c =>
-      c.clientName.toLowerCase() === group.name.toLowerCase()
+      c.clientName.toLowerCase() === contactName.toLowerCase()
     );
     if (existingConv) {
       setActiveConversationId(existingConv.id);
@@ -225,7 +251,7 @@ export function ChatButton() {
       const newConv: Conversation = {
         id: newId,
         clientId: newId,
-        clientName: group.name,
+        clientName: contactName,
         lastMessage: "",
         lastMessageTime: Date.now(),
         unreadCount: 0,
@@ -234,6 +260,7 @@ export function ChatButton() {
       setActiveConversationId(newId);
     }
     setShowNewConvo(false);
+    setRecipientSearch("");
   }
 
   return (
@@ -290,22 +317,67 @@ export function ChatButton() {
           </Pressable>
 
           {showNewConvo && (
-            <View style={{ marginHorizontal: 16, marginBottom: 12, backgroundColor: Colors.light.surface, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.border, maxHeight: 200 }}>
-              <ScrollView>
-                {myGroups.length === 0 ? (
-                  <Text style={{ padding: 16, textAlign: "center", color: Colors.light.textSecondary, fontFamily: "Inter_400Regular" }}>No groups available</Text>
+            <View style={{ marginHorizontal: 16, marginBottom: 12, backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, overflow: "hidden" }}>
+              <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.light.border, gap: 8 }}>
+                <Ionicons name="search" size={18} color={Colors.light.textTertiary} />
+                <TextInput
+                  style={{ flex: 1, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, paddingVertical: Platform.OS === "ios" ? 4 : 2 }}
+                  placeholder="Type a name..."
+                  placeholderTextColor={Colors.light.textTertiary}
+                  value={recipientSearch}
+                  onChangeText={setRecipientSearch}
+                  autoFocus
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  testID="recipient-search-input"
+                />
+                {recipientSearch.length > 0 && (
+                  <Pressable onPress={() => setRecipientSearch("")}>
+                    <Ionicons name="close-circle" size={18} color={Colors.light.textTertiary} />
+                  </Pressable>
+                )}
+              </View>
+              <ScrollView style={{ maxHeight: 220 }} keyboardShouldPersistTaps="handled">
+                {searchResults.length === 0 ? (
+                  <View style={{ padding: 20, alignItems: "center", gap: 4 }}>
+                    <Ionicons name="person-outline" size={28} color={Colors.light.textTertiary} />
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, textAlign: "center" }}>
+                      {affiliatedContacts.length === 0 ? "No contacts yet" : "No matches found"}
+                    </Text>
+                  </View>
                 ) : (
-                  myGroups.map(group => (
-                    <Pressable
-                      key={group.id}
-                      onPress={() => startNewConversation(group)}
-                      style={({ pressed }) => [
-                        { padding: 14, borderBottomWidth: 1, borderBottomColor: Colors.light.border, opacity: pressed ? 0.7 : 1 },
-                      ]}
-                    >
-                      <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{group.name}</Text>
-                    </Pressable>
-                  ))
+                  searchResults.map((contact, idx) => {
+                    const initials = contact.username.charAt(0).toUpperCase();
+                    const avatarColors = ["#2563EB", "#7C3AED", "#059669", "#DC2626", "#D97706"];
+                    const colorIndex = contact.username.charCodeAt(0) % avatarColors.length;
+                    const isGroup = contact.role === "group";
+                    return (
+                      <Pressable
+                        key={contact.username + idx}
+                        onPress={() => startNewConversation(contact.username)}
+                        style={({ pressed }) => [
+                          { flexDirection: "row", alignItems: "center", padding: 12, gap: 12, borderBottomWidth: idx < searchResults.length - 1 ? 1 : 0, borderBottomColor: Colors.light.border },
+                          pressed && { backgroundColor: Colors.light.surfaceAlt },
+                        ]}
+                        testID={`contact-${contact.username}`}
+                      >
+                        <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: isGroup ? "#EDE9FE" : avatarColors[colorIndex], justifyContent: "center", alignItems: "center" }}>
+                          {isGroup ? (
+                            <Ionicons name="people" size={18} color="#7C3AED" />
+                          ) : (
+                            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>{initials}</Text>
+                          )}
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{contact.username}</Text>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                            {isGroup ? "Group" : contact.groupName}
+                          </Text>
+                        </View>
+                        <Ionicons name="chatbubble-outline" size={16} color={Colors.light.textTertiary} />
+                      </Pressable>
+                    );
+                  })
                 )}
               </ScrollView>
             </View>
