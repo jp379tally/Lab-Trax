@@ -31,7 +31,7 @@ export default function ChatScreen() {
     {
       id: "welcome",
       role: "assistant",
-      content: "Hi! I'm DriveSync Lab's AI assistant. I can help you with case inquiries, material information, and lab workflow questions. How can I help you today?",
+      content: "Hi! I'm LabTrax's AI assistant. I can help you with case inquiries, material information, and lab workflow questions. How can I help you today?",
       timestamp: Date.now(),
     },
   ]);

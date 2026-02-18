@@ -490,7 +490,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!providerUser) return;
 
       const statusLabel = status === "INTAKE" ? "received by the lab" : "completed";
-      const message = `DriveSync Lab: Hello Dr. ${providerUser.doctorName || providerUser.username}, your case ${caseInfo.caseNumber} for patient ${caseInfo.patientName} has been ${statusLabel}. Thank you for choosing DriveSync Lab.`;
+      const message = `LabTrax: Hello Dr. ${providerUser.doctorName || providerUser.username}, your case ${caseInfo.caseNumber} for patient ${caseInfo.patientName} has been ${statusLabel}. Thank you for choosing LabTrax.`;
 
       const host = process.env.EXPO_PUBLIC_DOMAIN;
       if (!host) return;

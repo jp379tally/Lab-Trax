@@ -128,7 +128,7 @@ function SideDrawer({
                 <Ionicons name="flask" size={22} color="#FFF" />
               </LinearGradient>
               <View>
-                <Text style={drawerStyles.brandName}>DriveSync Lab</Text>
+                <Text style={drawerStyles.brandName}>LabTrax</Text>
                 <Text style={drawerStyles.brandSub}>Lab Management</Text>
               </View>
             </View>
@@ -2282,7 +2282,7 @@ function AdminDashboard() {
               <View style={{ width: 50, height: 50, borderRadius: 8, backgroundColor: Colors.light.tint, justifyContent: "center", alignItems: "center", marginBottom: 10 }}>
                 <Ionicons name="flask" size={28} color="#fff" />
               </View>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#333" }}>DriveSync Lab</Text>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#333" }}>LabTrax</Text>
               <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#555", marginTop: 2 }}>Dental Laboratory Services</Text>
               <View style={{ flexDirection: "row", marginTop: 12, backgroundColor: "#f8f8f5", borderWidth: 1, borderColor: "#ccc", borderRadius: 2, overflow: "hidden" }}>
                 <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 8, borderRightWidth: 1, borderRightColor: "#ccc" }}>
@@ -2543,7 +2543,7 @@ function AdminDashboard() {
                       const items = inv.lineItems.map(li => `    ${li.item}: $${li.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`).join("\n");
                       return `  ${inv.invoiceNumber} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: $${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
                     }).join("\n\n");
-                    const emailBody = `Billing Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${cs.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
+                    const emailBody = `Billing Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${cs.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
                     sendStatementEmail(cs.clientName, cs.email, `Billing Statement - ${cs.clientName}`, emailBody);
                     addNotification({
                       title: "Statement Generated",
@@ -2858,7 +2858,7 @@ function AdminDashboard() {
             onPress={() => {
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               const invoiceDetails = openInvoices.map((inv) => `  ${inv.invoiceNumber}: $${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
-              const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nDriveSync Lab`;
+              const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
               sendStatementEmail(selectedClient.practiceName, selectedClient.email, `Billing Statement - ${selectedClient.practiceName}`, emailBody);
               Alert.alert("Statement Generated & Emailed", `Statement for ${selectedClient.practiceName} with open balance of $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} has been generated and emailed to ${selectedClient.email} and admin.`);
             }}

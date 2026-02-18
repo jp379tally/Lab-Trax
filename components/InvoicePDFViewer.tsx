@@ -68,7 +68,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice }: InvoiceP
             <View style={s.paperContent}>
               <View style={s.topRow}>
                 <View>
-                  <Text style={s.labName}>DriveSync Lab</Text>
+                  <Text style={s.labName}>LabTrax</Text>
                   <Text style={s.labDetail}>Dental Laboratory Services</Text>
                   <Text style={s.labDetail}>1234 Innovation Dr, Suite 100</Text>
                   <Text style={s.labDetail}>Pensacola, FL 32501</Text>

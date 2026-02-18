@@ -1,8 +1,8 @@
-# DriveSync Lab
+# LabTrax
 
 ## Overview
 
-DriveSync Lab is a dental laboratory case management application built with Expo (React Native) for the frontend and Express.js for the backend. It allows dental lab users and administrators to track lab cases through various production stations (intake, design, porcelain, QC, shipping, etc.), manage clients, handle invoicing, and receive notifications. The app supports two user roles: **user** (standard user) and **admin** (administrator), with role-based access to pricing, inventory, and administrative features. Provider-type users get a separate Provider Portal dashboard.
+LabTrax is a dental laboratory case management application built with Expo (React Native) for the frontend and Express.js for the backend. It allows dental lab users and administrators to track lab cases through various production stations (intake, design, porcelain, QC, shipping, etc.), manage clients, handle invoicing, and receive notifications. The app supports two user roles: **user** (standard user) and **admin** (administrator), with role-based access to pricing, inventory, and administrative features. Provider-type users get a separate Provider Portal dashboard.
 
 ## User Preferences
 

@@ -231,7 +231,7 @@ IMPORTANT RULES:
       const smtpPort = process.env.SMTP_PORT;
       const smtpUser = process.env.SMTP_USER;
       const smtpPass = process.env.SMTP_PASS;
-      const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@drivesynclab.com";
+      const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@labtrax.com";
 
       if (!smtpHost || !smtpUser || !smtpPass) {
         console.log(`[EMAIL] SMTP not configured. Statement email would be sent to: ${recipients.join(", ")}`);
@@ -258,7 +258,7 @@ IMPORTANT RULES:
         text: body,
         html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-            <h2 style="margin: 0;">DriveSync Lab</h2>
+            <h2 style="margin: 0;">LabTrax</h2>
             <p style="margin: 4px 0 0; opacity: 0.85;">Billing Statement</p>
           </div>
           <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
@@ -282,7 +282,7 @@ IMPORTANT RULES:
         return res.status(400).json({ error: "Message required" });
       }
 
-      const systemPrompt = `You are DriveSync Lab's AI assistant for dental laboratory case management. You help dental office staff and lab technicians with questions about their cases, procedures, materials, and lab workflows.
+      const systemPrompt = `You are LabTrax's AI assistant for dental laboratory case management. You help dental office staff and lab technicians with questions about their cases, procedures, materials, and lab workflows.
 
 You have access to the following case information from the lab:
 ${caseContext || "No specific case data provided."}

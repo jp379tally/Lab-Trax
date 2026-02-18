@@ -286,7 +286,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { success: false, error: "Biometric authentication not available on this device." };
       }
       const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: "Authenticate to unlock DriveSync Lab",
+        promptMessage: "Authenticate to unlock LabTrax",
         disableDeviceFallback: false,
       });
       if (result.success) {

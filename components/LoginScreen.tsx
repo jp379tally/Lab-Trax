@@ -1633,7 +1633,7 @@ export default function LoginScreen() {
                 <Ionicons name="flask" size={36} color="#FFF" />
               </LinearGradient>
             </View>
-            <Text style={styles.appName}>DriveSync Lab</Text>
+            <Text style={styles.appName}>LabTrax</Text>
             <Text style={styles.appTagline}>Dental Laboratory Management</Text>
           </View>
 
