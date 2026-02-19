@@ -1321,6 +1321,7 @@ function AdminDashboard() {
   const [newUserStation, setNewUserStation] = useState("Design");
 
   const [editingClient, setEditingClient] = useState<Client | null>(null);
+  const [showEditClientPricing, setShowEditClientPricing] = useState(false);
   const [editingUser, setEditingUser] = useState<LabUser | null>(null);
   const [newShipCompany, setNewShipCompany] = useState("");
   const [newShipAccount, setNewShipAccount] = useState("");
@@ -1475,8 +1476,9 @@ function AdminDashboard() {
     if (!editingClient) return;
     updateClient(editingClient.id, editingClient);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Saved", "Client record updated.");
+    Alert.alert("Saved", showEditClientPricing ? "Client record and pricing updated." : "Client record updated.");
     setEditingClient(null);
+    setShowEditClientPricing(false);
   }
 
   function handleSaveEditUser() {
@@ -1490,7 +1492,7 @@ function AdminDashboard() {
   function renderBackHeader(title: string, backTo: AdminView = "hub") {
     return (
       <View style={adm.subHeader}>
-        <Pressable onPress={() => { setAdminView(backTo); setEditingClient(null); setEditingUser(null); }} style={adm.backBtn}>
+        <Pressable onPress={() => { setAdminView(backTo); setEditingClient(null); setEditingUser(null); setShowEditClientPricing(false); }} style={adm.backBtn}>
           <Ionicons name="chevron-back" size={22} color={Colors.light.tint} />
         </Pressable>
         <Text style={adm.subHeaderTitle}>{title}</Text>
@@ -1591,7 +1593,6 @@ function AdminDashboard() {
       { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · $${totalOpenBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} open`, view: "clients" },
       { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
       { icon: "people", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${clients.length} registered practices`, view: "edit-client" },
-      { icon: "pricetag", color: "#10B981", bg: "#D1FAE5", title: "Edit Client Price List", sub: "Update service pricing", view: "edit-price-list" },
     ];
     return (
       <ScrollView
@@ -1739,6 +1740,23 @@ function AdminDashboard() {
 
   function renderEditClient() {
     if (editingClient) {
+      function handleUpdateClientPrice(key: string, value: string) {
+        const cleaned = value.replace(/[^0-9.]/g, "");
+        setPriceList((prev) => ({ ...prev, [key]: cleaned }));
+      }
+
+      function handleSelectTierInEdit(tierName: string) {
+        setEditingClient({ ...editingClient, tier: tierName });
+        const tier = pricingTiers.find(t => t.name === tierName);
+        if (tier) {
+          const newPrices: Record<string, string> = {};
+          PRICE_LIST_ITEMS.forEach(item => {
+            newPrices[item.key] = tier.prices[item.key]?.toString() || "";
+          });
+          setPriceList(newPrices);
+        }
+      }
+
       return (
         <ScrollView
           style={styles.container}
@@ -1778,7 +1796,7 @@ function AdminDashboard() {
                 {pricingTiers.map((t) => (
                   <Pressable
                     key={t.id}
-                    onPress={() => setEditingClient({ ...editingClient, tier: t.name })}
+                    onPress={() => handleSelectTierInEdit(t.name)}
                     style={[adm.chip, editingClient.tier === t.name && adm.chipActive]}
                   >
                     <Text style={[adm.chipText, editingClient.tier === t.name && adm.chipTextActive]}>{t.name}</Text>
@@ -1786,6 +1804,46 @@ function AdminDashboard() {
                 ))}
               </View>
             </View>
+
+            <Pressable
+              onPress={() => setShowEditClientPricing(!showEditClientPricing)}
+              style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#fff", borderRadius: 12, padding: 14, marginTop: 8, marginBottom: 4, borderWidth: 1, borderColor: showEditClientPricing ? Colors.light.tint : Colors.light.border }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: "#D1FAE5", justifyContent: "center", alignItems: "center" }}>
+                  <Ionicons name="pricetag" size={16} color="#10B981" />
+                </View>
+                <View>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Edit Pricing</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>Customize service prices for this client</Text>
+                </View>
+              </View>
+              <Ionicons name={showEditClientPricing ? "chevron-up" : "chevron-down"} size={18} color={Colors.light.subText} />
+            </Pressable>
+
+            {showEditClientPricing && (
+              <View style={{ marginTop: 8 }}>
+                {PRICE_LIST_ITEMS.map((item) => (
+                  <View key={item.key} style={{ flexDirection: "row", alignItems: "center", marginBottom: 10, backgroundColor: "#fff", borderRadius: 12, padding: 12, shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 1 }, elevation: 1 }}>
+                    <View style={{ flex: 1, marginRight: 12 }}>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{item.label}</Text>
+                    </View>
+                    <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: Colors.light.surfaceAlt, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, minWidth: 100 }}>
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.subText, marginRight: 4 }}>$</Text>
+                      <TextInput
+                        style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text, flex: 1, padding: 0 }}
+                        value={priceList[item.key]}
+                        onChangeText={(v) => handleUpdateClientPrice(item.key, v)}
+                        placeholder="0.00"
+                        placeholderTextColor={Colors.light.textTertiary}
+                        keyboardType="decimal-pad"
+                      />
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+
             <Pressable style={({ pressed }) => [adm.submitBtn, pressed && { opacity: 0.85 }]} onPress={handleSaveEditClient}>
               <Ionicons name="checkmark" size={20} color="#FFF" />
               <Text style={adm.submitBtnText}>Save Changes</Text>
@@ -1808,7 +1866,22 @@ function AdminDashboard() {
         <View style={adm.listArea}>
           <Text style={adm.formDesc}>Select a client to edit.</Text>
           {clients.map((c) => (
-            <Pressable key={c.id} style={({ pressed }) => [adm.listItem, pressed && { opacity: 0.7 }]} onPress={() => setEditingClient({ ...c })}>
+            <Pressable key={c.id} style={({ pressed }) => [adm.listItem, pressed && { opacity: 0.7 }]} onPress={() => {
+              setEditingClient({ ...c });
+              setShowEditClientPricing(false);
+              const tier = pricingTiers.find(t => t.name === c.tier);
+              if (tier) {
+                const newPrices: Record<string, string> = {};
+                PRICE_LIST_ITEMS.forEach(item => {
+                  newPrices[item.key] = tier.prices[item.key]?.toString() || "";
+                });
+                setPriceList(newPrices);
+              } else {
+                const initial: Record<string, string> = {};
+                PRICE_LIST_ITEMS.forEach(item => { initial[item.key] = ""; });
+                setPriceList(initial);
+              }
+            }}>
               <View style={adm.listItemLeft}>
                 <View style={[adm.listAvatar, { backgroundColor: c.tier === "Elite" ? Colors.light.warningLight : c.tier === "Premium" ? Colors.light.accentLight : Colors.light.surfaceSecondary }]}>
                   <Text style={[adm.listAvatarText, { color: c.tier === "Elite" ? Colors.light.warning : c.tier === "Premium" ? Colors.light.accent : Colors.light.textSecondary }]}>
