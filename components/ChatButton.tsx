@@ -34,178 +34,20 @@ function formatRelativeTime(timestamp: number): string {
   return `${days}d ago`;
 }
 
-function ChatThreadModal({
-  visible,
-  activeConversationId,
-  conversations,
-  chatMessages,
-  sendChatMessage,
-  chatInput,
-  setChatInput,
-  chatImageUri,
-  setChatImageUri,
-  onClose,
-}: {
-  visible: boolean;
-  activeConversationId: string | null;
-  conversations: Conversation[];
-  chatMessages: ChatMessage[];
-  sendChatMessage: (conversationId: string, content: string, imageUri?: string) => void;
-  chatInput: string;
-  setChatInput: (v: string) => void;
-  chatImageUri: string | null;
-  setChatImageUri: (v: string | null) => void;
-  onClose: () => void;
-}) {
-  const insets = useSafeAreaInsets();
-  const conv = conversations.find(c => c.id === activeConversationId);
-  const msgs = chatMessages
-    .filter(m => m.conversationId === activeConversationId)
-    .sort((a, b) => b.timestamp - a.timestamp);
-
-  async function handleChatPickImage() {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("Permission needed", "Photo library access is required.");
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) {
-      setChatImageUri(result.assets[0].uri);
-    }
-  }
-
-  return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="fullScreen"
-      onRequestClose={onClose}
-    >
-      <KeyboardAvoidingView
-        style={[chatStyles.container, { paddingTop: insets.top }]}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={90}
-      >
-        <View style={chatStyles.header}>
-          <Pressable
-            onPress={onClose}
-            style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, marginRight: 12 }]}
-          >
-            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
-          </Pressable>
-          <Text style={chatStyles.headerTitle} numberOfLines={1}>{conv?.clientName ?? "Chat"}</Text>
-          <View style={{ width: 36 }} />
-        </View>
-        <FlatList
-          data={msgs}
-          keyExtractor={(item) => item.id}
-          inverted
-          contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12 }}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          renderItem={({ item }: { item: ChatMessage }) => {
-            const isLab = item.senderType === "lab";
-            return (
-              <View style={[chatStyles.bubbleRow, isLab && chatStyles.bubbleRowRight]}>
-                <View style={[chatStyles.bubble, isLab ? chatStyles.bubbleLab : chatStyles.bubbleOffice]}>
-                  {item.imageUri ? (
-                    <View style={chatStyles.imageThumb}>
-                      {item.imageUri.length > 0 ? (
-                        <Image source={{ uri: item.imageUri }} style={chatStyles.chatImage} contentFit="cover" />
-                      ) : (
-                        <View style={chatStyles.imagePlaceholder}>
-                          <Ionicons name="image-outline" size={32} color={Colors.light.textTertiary} />
-                        </View>
-                      )}
-                      {item.content.length > 0 && (
-                        <Text style={[chatStyles.bubbleText, isLab ? chatStyles.bubbleTextLab : chatStyles.bubbleTextOffice]}>
-                          {item.content}
-                        </Text>
-                      )}
-                    </View>
-                  ) : (
-                    <Text style={[chatStyles.bubbleText, isLab ? chatStyles.bubbleTextLab : chatStyles.bubbleTextOffice]}>
-                      {item.content}
-                    </Text>
-                  )}
-                  <Text style={[chatStyles.bubbleTime, isLab ? chatStyles.bubbleTimeLab : chatStyles.bubbleTimeOffice]}>
-                    {formatRelativeTime(item.timestamp)}
-                  </Text>
-                </View>
-              </View>
-            );
-          }}
-          ListEmptyComponent={
-            <View style={chatStyles.emptyWrap}>
-              <Text style={chatStyles.emptyText}>No messages yet</Text>
-            </View>
-          }
-        />
-        {chatImageUri && (
-          <View style={chatStyles.imagePreviewRow}>
-            <Image source={{ uri: chatImageUri }} style={chatStyles.imagePreview} contentFit="cover" />
-            <Pressable onPress={() => setChatImageUri(null)} style={chatStyles.imagePreviewRemove}>
-              <Ionicons name="close-circle" size={22} color="#EF4444" />
-            </Pressable>
-          </View>
-        )}
-        <View style={[chatStyles.inputBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
-          <Pressable
-            onPress={handleChatPickImage}
-            style={({ pressed }) => [chatStyles.inputIconBtn, { opacity: pressed ? 0.6 : 1 }]}
-          >
-            <Ionicons name="camera" size={22} color={Colors.light.tint} />
-          </Pressable>
-          <TextInput
-            style={chatStyles.chatTextInput}
-            value={chatInput}
-            onChangeText={setChatInput}
-            placeholder="Type a message..."
-            placeholderTextColor={Colors.light.textTertiary}
-            multiline
-            maxLength={1000}
-          />
-          <Pressable
-            onPress={() => {
-              if (!activeConversationId) return;
-              const trimmed = chatInput.trim();
-              if (!trimmed && !chatImageUri) return;
-              sendChatMessage(activeConversationId, trimmed || (chatImageUri ? "" : ""), chatImageUri ?? undefined);
-              setChatInput("");
-              setChatImageUri(null);
-              if (Platform.OS !== "web") {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              }
-            }}
-            style={({ pressed }) => [chatStyles.sendBtn, { opacity: (chatInput.trim() || chatImageUri) ? (pressed ? 0.7 : 1) : 0.4 }]}
-            disabled={!chatInput.trim() && !chatImageUri}
-          >
-            <Ionicons name="send" size={20} color="#FFF" />
-          </Pressable>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
 export function ChatButton() {
   const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, getUserGroups, groups, clients, addConversation } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
-  const [showConversations, setShowConversations] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [chatImageUri, setChatImageUri] = useState<string | null>(null);
-  const [showNewConvo, setShowNewConvo] = useState(false);
   const [recipientSearch, setRecipientSearch] = useState("");
+  const [showSearch, setShowSearch] = useState(false);
 
   const myGroups = getUserGroups(currentUser || "");
   const filteredConversations = myGroups.length === 0 ? [] : conversations.filter(conv => {
-    return myGroups.some(g => 
+    return myGroups.some(g =>
       g.name.toLowerCase() === conv.clientName.toLowerCase() ||
       conv.clientName.toLowerCase().includes(g.name.toLowerCase()) ||
       g.name.toLowerCase().includes(conv.clientName.toLowerCase())
@@ -239,7 +81,7 @@ export function ChatButton() {
     );
   }, [recipientSearch, affiliatedContacts]);
 
-  function startNewConversation(contactName: string) {
+  function openConversation(contactName: string) {
     const existingConv = filteredConversations.find(c =>
       c.clientName.toLowerCase() === contactName.toLowerCase()
     );
@@ -259,13 +101,48 @@ export function ChatButton() {
       addConversation(newConv);
       setActiveConversationId(newId);
     }
-    setShowNewConvo(false);
+    setShowSearch(false);
     setRecipientSearch("");
   }
 
+  function closeChat() {
+    setShowChat(false);
+    setActiveConversationId(null);
+    setChatInput("");
+    setChatImageUri(null);
+    setShowSearch(false);
+    setRecipientSearch("");
+  }
+
+  function goBackToList() {
+    setActiveConversationId(null);
+    setChatInput("");
+    setChatImageUri(null);
+  }
+
+  async function handleChatPickImage() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Photo library access is required.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setChatImageUri(result.assets[0].uri);
+    }
+  }
+
+  const activeConv = activeConversationId ? conversations.find(c => c.id === activeConversationId) : null;
+  const activeMsgs = activeConversationId
+    ? chatMessages.filter(m => m.conversationId === activeConversationId).sort((a, b) => b.timestamp - a.timestamp)
+    : [];
+
   return (
     <>
-      <Pressable onPress={() => setShowConversations(true)} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
+      <Pressable onPress={() => setShowChat(true)} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
         <View style={styles.chatIconWrap}>
           <Ionicons name="chatbubbles" size={24} color={Colors.light.tint} />
           {filteredUnreadCount > 0 && (
@@ -279,174 +156,265 @@ export function ChatButton() {
       </Pressable>
 
       <Modal
-        visible={showConversations}
+        visible={showChat}
         animationType="slide"
         presentationStyle="fullScreen"
-        onRequestClose={() => setShowConversations(false)}
+        onRequestClose={closeChat}
       >
-        <View style={[chatStyles.container, { paddingTop: insets.top }]}>
-          <View style={chatStyles.header}>
-            <Text style={chatStyles.headerTitle}>Messages</Text>
-            <Pressable
-              onPress={() => setShowConversations(false)}
-              style={({ pressed }) => [chatStyles.headerClose, { opacity: pressed ? 0.7 : 1 }]}
-            >
-              <Ionicons name="close" size={22} color={Colors.light.text} />
-            </Pressable>
-          </View>
-          <Pressable
-            onPress={() => setShowNewConvo(!showNewConvo)}
-            style={({ pressed }) => [
-              {
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                backgroundColor: Colors.light.tint,
-                borderRadius: 12,
-                padding: 14,
-                marginHorizontal: 16,
-                marginBottom: 12,
-                marginTop: 12,
-                opacity: pressed ? 0.85 : 1,
-              },
-            ]}
-          >
-            <Ionicons name="add-circle" size={20} color="#FFF" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Start Conversation</Text>
-          </Pressable>
-
-          {showNewConvo && (
-            <View style={{ marginHorizontal: 16, marginBottom: 12, backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, overflow: "hidden" }}>
-              <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.light.border, gap: 8 }}>
-                <Ionicons name="search" size={18} color={Colors.light.textTertiary} />
-                <TextInput
-                  style={{ flex: 1, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, paddingVertical: Platform.OS === "ios" ? 4 : 2 }}
-                  placeholder="Type a name..."
-                  placeholderTextColor={Colors.light.textTertiary}
-                  value={recipientSearch}
-                  onChangeText={setRecipientSearch}
-                  autoFocus
-                  autoCapitalize="words"
-                  autoCorrect={false}
-                  testID="recipient-search-input"
-                />
-                {recipientSearch.length > 0 && (
-                  <Pressable onPress={() => setRecipientSearch("")}>
-                    <Ionicons name="close-circle" size={18} color={Colors.light.textTertiary} />
-                  </Pressable>
-                )}
-              </View>
-              <ScrollView style={{ maxHeight: 220 }} keyboardShouldPersistTaps="handled">
-                {searchResults.length === 0 ? (
-                  <View style={{ padding: 20, alignItems: "center", gap: 4 }}>
-                    <Ionicons name="person-outline" size={28} color={Colors.light.textTertiary} />
-                    <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, textAlign: "center" }}>
-                      {affiliatedContacts.length === 0 ? "No contacts yet" : "No matches found"}
-                    </Text>
+        <KeyboardAvoidingView
+          style={[chatStyles.container, { paddingTop: insets.top }]}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={0}
+        >
+          {activeConversationId ? (
+            <>
+              <View style={chatStyles.header}>
+                <Pressable
+                  onPress={goBackToList}
+                  style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, marginRight: 12, flexDirection: "row", alignItems: "center", gap: 4 }]}
+                >
+                  <Ionicons name="arrow-back" size={24} color={Colors.light.tint} />
+                </Pressable>
+                <View style={{ flexDirection: "row", alignItems: "center", flex: 1, gap: 10 }}>
+                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.light.tint, justifyContent: "center", alignItems: "center" }}>
+                    <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_700Bold" }}>{(activeConv?.clientName ?? "?").charAt(0).toUpperCase()}</Text>
                   </View>
-                ) : (
-                  searchResults.map((contact, idx) => {
-                    const initials = contact.username.charAt(0).toUpperCase();
-                    const avatarColors = ["#2563EB", "#7C3AED", "#059669", "#DC2626", "#D97706"];
-                    const colorIndex = contact.username.charCodeAt(0) % avatarColors.length;
-                    const isGroup = contact.role === "group";
-                    return (
-                      <Pressable
-                        key={contact.username + idx}
-                        onPress={() => startNewConversation(contact.username)}
-                        style={({ pressed }) => [
-                          { flexDirection: "row", alignItems: "center", padding: 12, gap: 12, borderBottomWidth: idx < searchResults.length - 1 ? 1 : 0, borderBottomColor: Colors.light.border },
-                          pressed && { backgroundColor: Colors.light.surfaceAlt },
-                        ]}
-                        testID={`contact-${contact.username}`}
-                      >
-                        <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: isGroup ? "#EDE9FE" : avatarColors[colorIndex], justifyContent: "center", alignItems: "center" }}>
-                          {isGroup ? (
-                            <Ionicons name="people" size={18} color="#7C3AED" />
-                          ) : (
-                            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>{initials}</Text>
-                          )}
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{contact.username}</Text>
-                          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
-                            {isGroup ? "Group" : contact.groupName}
+                  <Text style={chatStyles.headerTitle} numberOfLines={1}>{activeConv?.clientName ?? "Chat"}</Text>
+                </View>
+                <Pressable
+                  onPress={closeChat}
+                  style={({ pressed }) => [chatStyles.headerClose, { opacity: pressed ? 0.7 : 1 }]}
+                >
+                  <Ionicons name="close" size={20} color={Colors.light.text} />
+                </Pressable>
+              </View>
+              <FlatList
+                data={activeMsgs}
+                keyExtractor={(item) => item.id}
+                inverted
+                contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12 }}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="interactive"
+                renderItem={({ item }: { item: ChatMessage }) => {
+                  const isLab = item.senderType === "lab";
+                  return (
+                    <View style={[chatStyles.bubbleRow, isLab && chatStyles.bubbleRowRight]}>
+                      <View style={[chatStyles.bubble, isLab ? chatStyles.bubbleLab : chatStyles.bubbleOffice]}>
+                        {item.imageUri ? (
+                          <View style={chatStyles.imageThumb}>
+                            {item.imageUri.length > 0 ? (
+                              <Image source={{ uri: item.imageUri }} style={chatStyles.chatImage} contentFit="cover" />
+                            ) : (
+                              <View style={chatStyles.imagePlaceholder}>
+                                <Ionicons name="image-outline" size={32} color={Colors.light.textTertiary} />
+                              </View>
+                            )}
+                            {item.content.length > 0 && (
+                              <Text style={[chatStyles.bubbleText, isLab ? chatStyles.bubbleTextLab : chatStyles.bubbleTextOffice]}>
+                                {item.content}
+                              </Text>
+                            )}
+                          </View>
+                        ) : (
+                          <Text style={[chatStyles.bubbleText, isLab ? chatStyles.bubbleTextLab : chatStyles.bubbleTextOffice]}>
+                            {item.content}
                           </Text>
-                        </View>
-                        <Ionicons name="chatbubble-outline" size={16} color={Colors.light.textTertiary} />
-                      </Pressable>
-                    );
-                  })
-                )}
-              </ScrollView>
-            </View>
-          )}
-
-          <FlatList
-            data={[...filteredConversations].sort((a, b) => b.lastMessageTime - a.lastMessageTime)}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
-            renderItem={({ item }: { item: Conversation }) => {
-              const initials = item.clientName.charAt(0).toUpperCase();
-              const avatarColors = ["#2563EB", "#7C3AED", "#059669", "#DC2626", "#D97706"];
-              const colorIndex = item.clientName.charCodeAt(0) % avatarColors.length;
-              return (
+                        )}
+                        <Text style={[chatStyles.bubbleTime, isLab ? chatStyles.bubbleTimeLab : chatStyles.bubbleTimeOffice]}>
+                          {formatRelativeTime(item.timestamp)}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                }}
+                ListEmptyComponent={
+                  <View style={chatStyles.emptyWrap}>
+                    <Ionicons name="chatbubble-outline" size={40} color={Colors.light.textTertiary} />
+                    <Text style={chatStyles.emptyText}>Start the conversation</Text>
+                  </View>
+                }
+              />
+              {chatImageUri && (
+                <View style={chatStyles.imagePreviewRow}>
+                  <Image source={{ uri: chatImageUri }} style={chatStyles.imagePreview} contentFit="cover" />
+                  <Pressable onPress={() => setChatImageUri(null)} style={chatStyles.imagePreviewRemove}>
+                    <Ionicons name="close-circle" size={22} color="#EF4444" />
+                  </Pressable>
+                </View>
+              )}
+              <View style={[chatStyles.inputBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+                <Pressable
+                  onPress={handleChatPickImage}
+                  style={({ pressed }) => [chatStyles.inputIconBtn, { opacity: pressed ? 0.6 : 1 }]}
+                >
+                  <Ionicons name="camera" size={22} color={Colors.light.tint} />
+                </Pressable>
+                <TextInput
+                  style={chatStyles.chatTextInput}
+                  value={chatInput}
+                  onChangeText={setChatInput}
+                  placeholder="Type a message..."
+                  placeholderTextColor={Colors.light.textTertiary}
+                  multiline
+                  maxLength={1000}
+                />
                 <Pressable
                   onPress={() => {
-                    setActiveConversationId(item.id);
-                    markConversationRead(item.id);
+                    if (!activeConversationId) return;
+                    const trimmed = chatInput.trim();
+                    if (!trimmed && !chatImageUri) return;
+                    sendChatMessage(activeConversationId, trimmed || (chatImageUri ? "" : ""), chatImageUri ?? undefined);
+                    setChatInput("");
+                    setChatImageUri(null);
+                    if (Platform.OS !== "web") {
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    }
                   }}
-                  style={({ pressed }) => [chatStyles.convRow, pressed && { backgroundColor: Colors.light.surfaceAlt }]}
+                  style={({ pressed }) => [chatStyles.sendBtn, { opacity: (chatInput.trim() || chatImageUri) ? (pressed ? 0.7 : 1) : 0.4 }]}
+                  disabled={!chatInput.trim() && !chatImageUri}
                 >
-                  <View style={[chatStyles.avatar, { backgroundColor: avatarColors[colorIndex] }]}>
-                    <Text style={chatStyles.avatarText}>{initials}</Text>
-                  </View>
-                  <View style={chatStyles.convInfo}>
-                    <View style={chatStyles.convTop}>
-                      <Text style={chatStyles.convName} numberOfLines={1}>{item.clientName}</Text>
-                      <Text style={chatStyles.convTime}>{formatRelativeTime(item.lastMessageTime)}</Text>
-                    </View>
-                    <View style={chatStyles.convBottom}>
-                      <Text style={[chatStyles.convPreview, item.unreadCount > 0 && chatStyles.convPreviewBold]} numberOfLines={1}>
-                        {item.lastMessage}
-                      </Text>
-                      {item.unreadCount > 0 && (
-                        <View style={chatStyles.unreadBadge}>
-                          <Text style={chatStyles.unreadBadgeText}>{item.unreadCount}</Text>
-                        </View>
-                      )}
-                    </View>
-                  </View>
+                  <Ionicons name="send" size={20} color="#FFF" />
                 </Pressable>
-              );
-            }}
-            ListEmptyComponent={
-              <View style={chatStyles.emptyWrap}>
-                <Ionicons name="chatbubbles-outline" size={48} color={Colors.light.textTertiary} />
-                <Text style={chatStyles.emptyText}>No conversations yet</Text>
               </View>
-            }
-          />
-        </View>
-      </Modal>
+            </>
+          ) : (
+            <>
+              <View style={chatStyles.header}>
+                <Text style={[chatStyles.headerTitle, { flex: 0 }]}>Messages</Text>
+                <View style={{ flex: 1 }} />
+                <Pressable
+                  onPress={() => setShowSearch(!showSearch)}
+                  style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, marginRight: 8 }]}
+                >
+                  <Ionicons name={showSearch ? "close-circle" : "create-outline"} size={24} color={Colors.light.tint} />
+                </Pressable>
+                <Pressable
+                  onPress={closeChat}
+                  style={({ pressed }) => [chatStyles.headerClose, { opacity: pressed ? 0.7 : 1 }]}
+                >
+                  <Ionicons name="close" size={20} color={Colors.light.text} />
+                </Pressable>
+              </View>
 
-      <ChatThreadModal
-        visible={activeConversationId !== null}
-        activeConversationId={activeConversationId}
-        conversations={filteredConversations}
-        chatMessages={chatMessages}
-        sendChatMessage={sendChatMessage}
-        chatInput={chatInput}
-        setChatInput={setChatInput}
-        chatImageUri={chatImageUri}
-        setChatImageUri={setChatImageUri}
-        onClose={() => {
-          setActiveConversationId(null);
-          setChatInput("");
-          setChatImageUri(null);
-        }}
-      />
+              {showSearch && (
+                <View style={{ marginHorizontal: 16, marginTop: 12, marginBottom: 4, backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, overflow: "hidden" }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.light.border, gap: 8 }}>
+                    <Ionicons name="search" size={18} color={Colors.light.textTertiary} />
+                    <TextInput
+                      style={{ flex: 1, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, paddingVertical: Platform.OS === "ios" ? 4 : 2 }}
+                      placeholder="Search contacts..."
+                      placeholderTextColor={Colors.light.textTertiary}
+                      value={recipientSearch}
+                      onChangeText={setRecipientSearch}
+                      autoFocus
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      testID="recipient-search-input"
+                    />
+                    {recipientSearch.length > 0 && (
+                      <Pressable onPress={() => setRecipientSearch("")}>
+                        <Ionicons name="close-circle" size={18} color={Colors.light.textTertiary} />
+                      </Pressable>
+                    )}
+                  </View>
+                  <ScrollView style={{ maxHeight: 260 }} keyboardShouldPersistTaps="handled">
+                    {searchResults.length === 0 ? (
+                      <View style={{ padding: 20, alignItems: "center", gap: 4 }}>
+                        <Ionicons name="person-outline" size={28} color={Colors.light.textTertiary} />
+                        <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, textAlign: "center" }}>
+                          {affiliatedContacts.length === 0 ? "No contacts yet" : "No matches found"}
+                        </Text>
+                      </View>
+                    ) : (
+                      searchResults.map((contact, idx) => {
+                        const initials = contact.username.charAt(0).toUpperCase();
+                        const avatarColors = ["#2563EB", "#7C3AED", "#059669", "#DC2626", "#D97706"];
+                        const colorIndex = contact.username.charCodeAt(0) % avatarColors.length;
+                        const isGroup = contact.role === "group";
+                        return (
+                          <Pressable
+                            key={contact.username + idx}
+                            onPress={() => openConversation(contact.username)}
+                            style={({ pressed }) => [
+                              { flexDirection: "row", alignItems: "center", padding: 12, gap: 12, borderBottomWidth: idx < searchResults.length - 1 ? 1 : 0, borderBottomColor: Colors.light.border },
+                              pressed && { backgroundColor: Colors.light.surfaceAlt },
+                            ]}
+                            testID={`contact-${contact.username}`}
+                          >
+                            <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: isGroup ? "#EDE9FE" : avatarColors[colorIndex], justifyContent: "center", alignItems: "center" }}>
+                              {isGroup ? (
+                                <Ionicons name="people" size={18} color="#7C3AED" />
+                              ) : (
+                                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>{initials}</Text>
+                              )}
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{contact.username}</Text>
+                              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                                {isGroup ? "Group" : contact.groupName}
+                              </Text>
+                            </View>
+                            <Ionicons name="chatbubble-outline" size={16} color={Colors.light.textTertiary} />
+                          </Pressable>
+                        );
+                      })
+                    )}
+                  </ScrollView>
+                </View>
+              )}
+
+              <FlatList
+                data={[...filteredConversations].sort((a, b) => b.lastMessageTime - a.lastMessageTime)}
+                keyExtractor={(item) => item.id}
+                contentContainerStyle={{ paddingBottom: insets.bottom + 20 }}
+                renderItem={({ item }: { item: Conversation }) => {
+                  const initials = item.clientName.charAt(0).toUpperCase();
+                  const avatarColors = ["#2563EB", "#7C3AED", "#059669", "#DC2626", "#D97706"];
+                  const colorIndex = item.clientName.charCodeAt(0) % avatarColors.length;
+                  return (
+                    <Pressable
+                      onPress={() => {
+                        setActiveConversationId(item.id);
+                        markConversationRead(item.id);
+                      }}
+                      style={({ pressed }) => [chatStyles.convRow, pressed && { backgroundColor: Colors.light.surfaceAlt }]}
+                    >
+                      <View style={[chatStyles.avatar, { backgroundColor: avatarColors[colorIndex] }]}>
+                        <Text style={chatStyles.avatarText}>{initials}</Text>
+                      </View>
+                      <View style={chatStyles.convInfo}>
+                        <View style={chatStyles.convTop}>
+                          <Text style={chatStyles.convName} numberOfLines={1}>{item.clientName}</Text>
+                          <Text style={chatStyles.convTime}>{formatRelativeTime(item.lastMessageTime)}</Text>
+                        </View>
+                        <View style={chatStyles.convBottom}>
+                          <Text style={[chatStyles.convPreview, item.unreadCount > 0 && chatStyles.convPreviewBold]} numberOfLines={1}>
+                            {item.lastMessage || "Start chatting"}
+                          </Text>
+                          {item.unreadCount > 0 && (
+                            <View style={chatStyles.unreadBadge}>
+                              <Text style={chatStyles.unreadBadgeText}>{item.unreadCount}</Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    </Pressable>
+                  );
+                }}
+                ListEmptyComponent={
+                  <View style={chatStyles.emptyWrap}>
+                    <Ionicons name="chatbubbles-outline" size={48} color={Colors.light.textTertiary} />
+                    <Text style={chatStyles.emptyText}>No conversations yet</Text>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", marginTop: 4 }}>
+                      Tap the compose icon to start a new chat
+                    </Text>
+                  </View>
+                }
+              />
+            </>
+          )}
+        </KeyboardAvoidingView>
+      </Modal>
     </>
   );
 }
