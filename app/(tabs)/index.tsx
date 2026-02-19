@@ -2714,7 +2714,7 @@ function AdminDashboard() {
       const openBalance = clientInvoices.reduce((s, inv) => s + inv.amount, 0);
       const openCount = clientInvoices.length;
       return { ...c, openBalance, openCount };
-    });
+    }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     const totalOpen = clientsWithBalance.reduce((s, c) => s + c.openBalance, 0);
 
     return (
@@ -4090,7 +4090,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, createGroup, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups } = useApp();
+  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -4102,11 +4102,6 @@ function ProviderDashboard() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [showUsersAdmin, setShowUsersAdmin] = useState(false);
-  const [showCreateGroup, setShowCreateGroup] = useState(false);
-  const [newGroupName, setNewGroupName] = useState("");
-  const [newGroupAddress, setNewGroupAddress] = useState("");
-  const [newGroupType, setNewGroupType] = useState<"provider" | "lab">("provider");
-
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const myGroups = getUserGroups(currentUser || "");
   const isGroupMember = myGroups.length > 0;
@@ -4289,18 +4284,28 @@ function ProviderDashboard() {
               <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>Users</Text>
               <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
             </Pressable>
-            <Pressable
-              style={({ pressed }) => ({
-                flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface,
-                borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border,
-                opacity: pressed ? 0.7 : 1,
-              })}
-              onPress={() => { setShowSettings(false); setShowCreateGroup(true); }}
-            >
-              <MaterialCommunityIcons name="account-group-outline" size={20} color={Colors.light.text} />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>Create Group</Text>
-              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
-            </Pressable>
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginTop: 24, marginBottom: 8, letterSpacing: 0.5 }}>CONNECTED LABS</Text>
+            {myGroups.filter(g => g.type === "lab").length === 0 ? (
+              <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+                <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center" }}>No connected labs yet</Text>
+              </View>
+            ) : (
+              myGroups.filter(g => g.type === "lab").map(g => (
+                <View key={g.id} style={{ flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border }}>
+                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
+                    <Ionicons name="business" size={18} color="#2563EB" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{g.name}</Text>
+                    {g.address ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{g.address}</Text> : null}
+                  </View>
+                  <View style={{ backgroundColor: "#DBEAFE", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#2563EB" }}>Lab</Text>
+                  </View>
+                </View>
+              ))
+            )}
 
             <Pressable
               style={({ pressed }) => ({
@@ -4469,80 +4474,6 @@ function ProviderDashboard() {
         </View>
       </Modal>
 
-      <Modal
-        transparent
-        visible={showCreateGroup}
-        animationType="slide"
-        statusBarTranslucent
-        onRequestClose={() => setShowCreateGroup(false)}
-      >
-        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center", padding: 24 }}>
-          <View style={{ backgroundColor: "#FFF", borderRadius: 20, width: "100%", maxWidth: 400, padding: 24 }}>
-            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 20 }}>Create Group</Text>
-
-            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>Group Name</Text>
-            <TextInput
-              style={{ borderWidth: 1, borderColor: Colors.light.border, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 16 }}
-              value={newGroupName}
-              onChangeText={setNewGroupName}
-              placeholder="Practice / Lab Name"
-            />
-
-            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>Address</Text>
-            <TextInput
-              style={{ borderWidth: 1, borderColor: Colors.light.border, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 16 }}
-              value={newGroupAddress}
-              onChangeText={setNewGroupAddress}
-              placeholder="123 Main St, City, State"
-            />
-
-            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 6 }}>Type</Text>
-            <View style={{ flexDirection: "row", gap: 12, marginBottom: 20 }}>
-              <Pressable
-                style={{ flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: "center", backgroundColor: newGroupType === "provider" ? Colors.light.tint : Colors.light.surface, borderWidth: 1, borderColor: newGroupType === "provider" ? Colors.light.tint : Colors.light.border }}
-                onPress={() => setNewGroupType("provider")}
-              >
-                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: newGroupType === "provider" ? "#FFF" : Colors.light.text }}>Provider</Text>
-              </Pressable>
-              <Pressable
-                style={{ flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: "center", backgroundColor: newGroupType === "lab" ? Colors.light.tint : Colors.light.surface, borderWidth: 1, borderColor: newGroupType === "lab" ? Colors.light.tint : Colors.light.border }}
-                onPress={() => setNewGroupType("lab")}
-              >
-                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: newGroupType === "lab" ? "#FFF" : Colors.light.text }}>Lab</Text>
-              </Pressable>
-            </View>
-
-            <View style={{ flexDirection: "row", gap: 12 }}>
-              <Pressable
-                style={({ pressed }) => ({ flex: 1, alignItems: "center" as const, paddingVertical: 14, borderRadius: 12, backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border, opacity: pressed ? 0.7 : 1 })}
-                onPress={() => { setShowCreateGroup(false); setNewGroupName(""); setNewGroupAddress(""); }}
-              >
-                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => ({ flex: 1, alignItems: "center" as const, paddingVertical: 14, borderRadius: 12, backgroundColor: Colors.light.tint, opacity: pressed ? 0.7 : 1 })}
-                onPress={() => {
-                  if (!newGroupName.trim()) {
-                    Alert.alert("Required", "Group name is required.");
-                    return;
-                  }
-                  if (!newGroupAddress.trim()) {
-                    Alert.alert("Required", "Address is required.");
-                    return;
-                  }
-                  createGroup(newGroupName.trim(), newGroupType, newGroupAddress.trim(), currentUser || "", "admin");
-                  Alert.alert("Group Created", `"${newGroupName.trim()}" has been created.`);
-                  setShowCreateGroup(false);
-                  setNewGroupName("");
-                  setNewGroupAddress("");
-                }}
-              >
-                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Create</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }

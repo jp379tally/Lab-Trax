@@ -190,6 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { success: false, error: "Invalid username or password." };
     }
 
+    setRegisteredUsers(allUsers);
     setIsAuthenticated(true);
     setCurrentUser(found.username);
     setUserType(found.userType || "lab");

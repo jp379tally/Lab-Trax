@@ -1400,7 +1400,7 @@ export default function ScanScreen() {
             </Pressable>
             {caseTypeOpen && (
               <View style={styles.caseTypeDropdown}>
-                {["Restorative", "Removable", "Appliance", "Temporary"].map((type) => (
+                {["Restorative", "Removable", "Appliance", "Temporary", "Other"].map((type) => (
                   <Pressable
                     key={type}
                     onPress={() => {

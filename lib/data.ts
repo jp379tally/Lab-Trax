@@ -81,7 +81,7 @@ export const MATERIAL_PRICES: Record<string, number> = {
   "Other": 250,
 };
 
-export type CaseTypeValue = "Restorative" | "Removable" | "Appliance" | "Temporary" | "";
+export type CaseTypeValue = "Restorative" | "Removable" | "Appliance" | "Temporary" | "Other" | "";
 
 export interface LabCase {
   id: string;
