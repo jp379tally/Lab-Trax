@@ -1231,17 +1231,17 @@ export default function LoginScreen() {
     return (
       <View style={styles.formSection}>
         <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", lineHeight: 20, marginBottom: 20 }}>
-          Enter an admin's username to request to join their group. The admin will receive a notification to approve your request. You can also skip this step.
+          Enter a lab name to establish your connection. The lab admin will receive a notification to approve your request. You can also skip this step.
         </Text>
 
         {!joinGroupSent ? (
           <>
             <View style={[styles.inputGroup, { marginBottom: 16 }]}>
               <View style={styles.inputWrapper}>
-                <Ionicons name="person" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+                <Ionicons name="business" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Admin's username"
+                  placeholder="Lab name"
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   value={joinGroupAdminUsername}
                   onChangeText={setJoinGroupAdminUsername}
@@ -1263,14 +1263,14 @@ export default function LoginScreen() {
                       && r.status === "pending"
                   );
                   if (alreadyPending) {
-                    setSignUpError("You already have a pending request to this admin.");
+                    setSignUpError("You already have a pending request to this lab.");
                     return;
                   }
                   const request: GroupJoinRequest = {
                     id: generateId(),
                     requestingUsername: signUpUsername.trim(),
                     targetAdminUsername: joinGroupAdminUsername.trim(),
-                    message: `${signUpUsername.trim()} would like to join your group.`,
+                    message: `${signUpUsername.trim()} would like to connect with your lab.`,
                     status: "pending",
                     createdAt: Date.now(),
                   };
@@ -1299,7 +1299,7 @@ export default function LoginScreen() {
             </View>
             <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF", marginBottom: 4 }}>Request Sent</Text>
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center" }}>
-              Your request has been sent to {joinGroupAdminUsername}. You'll be notified when they respond.
+              Your connection request has been sent to {joinGroupAdminUsername}. You'll be notified when they respond.
             </Text>
           </View>
         )}
