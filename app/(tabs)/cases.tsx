@@ -23,7 +23,7 @@ import { ChatButton } from "@/components/ChatButton";
 
 export default function CasesScreen() {
   const { cases, role, adminUnlocked, findCaseByBarcode, getUserGroups } = useApp();
-  const { userType, currentUser } = useAuth();
+  const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<CaseStatus | "ALL">("ALL");
@@ -64,6 +64,12 @@ export default function CasesScreen() {
       if (myGroups.length === 0) {
         return [];
       }
+      const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+      const myDoctorName = currentUserData?.doctorName || currentUser || "";
+      result = result.filter(c =>
+        c.doctorName.toLowerCase() === myDoctorName.toLowerCase() ||
+        c.doctorName.toLowerCase().includes((currentUser || "").toLowerCase())
+      );
     }
 
     if (filterStatus !== "ALL") {
@@ -81,7 +87,7 @@ export default function CasesScreen() {
       );
     }
     return result;
-  }, [cases, filterStatus, search, userType, currentUser]);
+  }, [cases, filterStatus, search, userType, currentUser, registeredUsers]);
 
   const showPrice = role === "admin" && adminUnlocked;
 
