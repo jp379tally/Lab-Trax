@@ -35,6 +35,7 @@ import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
@@ -271,7 +272,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest } = useApp();
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -287,10 +288,14 @@ function TechDashboard() {
   const [batchScanning, setBatchScanning] = useState(true);
   const [batchLocationSelect, setBatchLocationSelect] = useState(false);
   const [batchManualInput, setBatchManualInput] = useState("");
+  const [confirmJoinReq, setConfirmJoinReq] = useState<{ requestId: string; username: string; accept: boolean } | null>(null);
   const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isLabAdmin = currentUserData?.role === "admin";
+  const pendingJoinRequests = groupJoinRequests.filter(
+    r => r.targetAdminUsername.toLowerCase() === (currentUser || "").toLowerCase() && r.status === "pending"
+  );
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
     .slice(0, 5);
@@ -674,6 +679,52 @@ function TechDashboard() {
           </Pressable>
         </View>
       </LinearGradient>
+
+      {pendingJoinRequests.length > 0 && (
+        <View style={styles.joinRequestSection}>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Connection Requests</Text>
+            <View style={[styles.dueTodayBadge, { backgroundColor: "#EF4444" }]}>
+              <Text style={styles.dueTodayBadgeText}>{pendingJoinRequests.length}</Text>
+            </View>
+          </View>
+          {pendingJoinRequests.map((req) => {
+            const reqUser = registeredUsers.find(u => u.username.toLowerCase() === req.requestingUsername.toLowerCase());
+            const isProvider = reqUser?.userType === "provider";
+            const displayName = reqUser?.doctorName ? `Dr. ${reqUser.doctorName}` : req.requestingUsername;
+            const practiceName = reqUser?.practiceName;
+            return (
+              <View key={req.id} style={styles.joinReqCard}>
+                <View style={[styles.joinReqIconWrap, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
+                  <Ionicons name={isProvider ? "medical" : "person-add"} size={22} color={isProvider ? "#2563EB" : "#D97706"} />
+                </View>
+                <View style={styles.joinReqContent}>
+                  <Text style={styles.joinReqTitle}>{isProvider ? "Provider Connection Request" : "Join Request"}</Text>
+                  <Text style={styles.joinReqName}>{displayName}</Text>
+                  {practiceName ? <Text style={styles.joinReqPractice}>{practiceName}</Text> : null}
+                  <Text style={styles.joinReqMsg}>{req.message}</Text>
+                  <View style={styles.joinReqBtns}>
+                    <Pressable
+                      style={({ pressed }) => [styles.joinReqAcceptBtn, pressed && { opacity: 0.8 }]}
+                      onPress={() => setConfirmJoinReq({ requestId: req.id, username: displayName, accept: true })}
+                    >
+                      <Ionicons name="checkmark" size={16} color="#FFF" />
+                      <Text style={styles.joinReqAcceptText}>Accept</Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [styles.joinReqDeclineBtn, pressed && { opacity: 0.8 }]}
+                      onPress={() => setConfirmJoinReq({ requestId: req.id, username: displayName, accept: false })}
+                    >
+                      <Ionicons name="close" size={16} color="#EF4444" />
+                      <Text style={styles.joinReqDeclineText}>Decline</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       {activeFilter !== null && (
         <View style={styles.filterSection}>
@@ -1136,6 +1187,50 @@ function TechDashboard() {
       </Pressable>
     </Modal>
 
+    <Modal transparent visible={!!confirmJoinReq} animationType="fade" onRequestClose={() => setConfirmJoinReq(null)}>
+      <View style={styles.joinReqOverlay}>
+        <View style={styles.joinReqConfirmCard}>
+          <View style={[styles.joinReqConfirmIconWrap, { backgroundColor: confirmJoinReq?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
+            <Ionicons
+              name={confirmJoinReq?.accept ? "person-add" : "close-circle"}
+              size={32}
+              color={confirmJoinReq?.accept ? "#16A34A" : "#EF4444"}
+            />
+          </View>
+          <Text style={styles.joinReqConfirmTitle}>
+            {confirmJoinReq?.accept ? "Accept Provider?" : "Decline Request?"}
+          </Text>
+          <Text style={styles.joinReqConfirmDesc}>
+            {confirmJoinReq?.accept
+              ? `${confirmJoinReq?.username} will be added to your group as a provider.`
+              : `${confirmJoinReq?.username}'s connection request will be declined.`}
+          </Text>
+          <View style={styles.joinReqConfirmBtns}>
+            <Pressable
+              style={({ pressed }) => [styles.joinReqConfirmYesBtn, !confirmJoinReq?.accept && { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
+              onPress={() => {
+                if (!confirmJoinReq) return;
+                respondToGroupJoinRequest(confirmJoinReq.requestId, confirmJoinReq.accept, "user");
+                if (Platform.OS !== "web") {
+                  Haptics.notificationAsync(confirmJoinReq.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                }
+                setConfirmJoinReq(null);
+              }}
+            >
+              <Text style={styles.joinReqConfirmYesText}>
+                {confirmJoinReq?.accept ? "Accept" : "Decline"}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
+              onPress={() => setConfirmJoinReq(null)}
+            >
+              <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
 
     </>
   );
@@ -1298,7 +1393,8 @@ type AdminView =
   | "shipping"
   | "inventory"
   | "create-group"
-  | "lab-users";
+  | "lab-users"
+  | "payment-processing";
 
 function AdminDashboard() {
   const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification } = useApp();
@@ -1534,6 +1630,7 @@ function AdminDashboard() {
       { icon: "trending-up", iconSet: "ion", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
       { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
       { icon: "cube", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items tracked`, view: "inventory" as AdminView },
+      { icon: "card", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Payment Processing", sub: "Process payments & refunds", view: "payment-processing" as AdminView },
       { icon: "add-circle", iconSet: "ion", color: "#059669", bg: "#ECFDF5", title: "Create Group", sub: "Create a new user group", view: "create-group" as AdminView },
       { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Add Users", sub: `${labPortalUsers.length} lab users · Assign to groups`, view: "lab-users" as AdminView },
     ];
@@ -3961,6 +4058,62 @@ function AdminDashboard() {
     );
   }
 
+  function renderPaymentProcessing() {
+    const paymentCards = [
+      { icon: "card-outline" as const, color: "#7C3AED", bg: "#F3E8FF", title: "Process Payment", sub: "Accept and process new payments" },
+      { icon: "time-outline" as const, color: "#0EA5E9", bg: "#E0F2FE", title: "Payment History", sub: "View past transactions" },
+      { icon: "return-down-back-outline" as const, color: "#EF4444", bg: "#FEF2F2", title: "Refunds", sub: "Issue and manage refunds" },
+    ];
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Payment Processing")}
+
+        <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
+          <LinearGradient
+            colors={["#7C3AED", "#6D28D9"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ borderRadius: 16, padding: 20, alignItems: "center" }}
+          >
+            <Ionicons name="card" size={36} color="#FFF" style={{ marginBottom: 8 }} />
+            <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold", marginBottom: 4 }}>Payment Processing</Text>
+            <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Payment processing features coming soon</Text>
+          </LinearGradient>
+        </View>
+
+        <View style={adm.menuSection}>
+          {paymentCards.map((item) => (
+            <Pressable
+              key={item.title}
+              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                Alert.alert(item.title, "This feature is coming soon.");
+              }}
+            >
+              <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
+                <Ionicons name={item.icon} size={20} color={item.color} />
+              </View>
+              <View style={adm.menuInfo}>
+                <Text style={adm.menuTitle}>{item.title}</Text>
+                <Text style={adm.menuSub}>{item.sub}</Text>
+              </View>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+          ))}
+        </View>
+      </ScrollView>
+    );
+  }
+
   function renderCreateGroupAdmin() {
     function handleCreateGroup() {
       if (!newGroupNameAdmin.trim()) {
@@ -4234,6 +4387,7 @@ function AdminDashboard() {
     case "sales": return renderSales();
     case "shipping": return renderShipping();
     case "inventory": return renderInventory();
+    case "payment-processing": return renderPaymentProcessing();
     case "create-group": return renderCreateGroupAdmin();
     case "lab-users": return renderLabUsers();
     default: return renderHub();
@@ -4253,6 +4407,12 @@ function ProviderDashboard() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [showUsersAdmin, setShowUsersAdmin] = useState(false);
+  const [prefOcclusion, setPrefOcclusion] = useState("");
+  const [prefPontic, setPrefPontic] = useState("");
+  const [prefContact, setPrefContact] = useState("");
+  const [prefOcclusionOpen, setPrefOcclusionOpen] = useState(false);
+  const [prefPonticOpen, setPrefPonticOpen] = useState(false);
+  const [prefContactOpen, setPrefContactOpen] = useState(false);
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const myGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === (currentUser || "").toLowerCase()));
   const isGroupMember = myGroups.length > 0;
@@ -4267,6 +4427,33 @@ function ProviderDashboard() {
   const completedCases = myCases.filter(c => c.status === "COMPLETE");
   const inProgressCount = activeCases.length;
   const completedCount = completedCases.length;
+
+  const OCCLUSION_OPTIONS = ["Centric Occlusion", "Balanced Occlusion", "Group Function", "Canine Guidance", "Mutually Protected"];
+  const PONTIC_OPTIONS = ["Ridge Lap", "Modified Ridge Lap", "Sanitary/Hygienic", "Ovate", "Conical"];
+  const CONTACT_OPTIONS = ["Light Contact", "Normal Contact", "Heavy Contact"];
+
+  const prefStorageKey = `@drivesync_provider_preferences_${(currentUser || "").toLowerCase()}`;
+
+  useEffect(() => {
+    if (!currentUser) return;
+    (async () => {
+      try {
+        const stored = await AsyncStorage.getItem(prefStorageKey);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed.occlusionType) setPrefOcclusion(parsed.occlusionType);
+          if (parsed.ponticType) setPrefPontic(parsed.ponticType);
+          if (parsed.contactType) setPrefContact(parsed.contactType);
+        }
+      } catch {}
+    })();
+  }, [currentUser]);
+
+  const saveProviderPreferences = useCallback(async (occlusion: string, pontic: string, contact: string) => {
+    try {
+      await AsyncStorage.setItem(prefStorageKey, JSON.stringify({ occlusionType: occlusion, ponticType: pontic, contactType: contact }));
+    } catch {}
+  }, [prefStorageKey]);
 
   return (
     <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
@@ -4425,6 +4612,97 @@ function ProviderDashboard() {
               <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>Change Password</Text>
               <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
             </Pressable>
+
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginTop: 24, marginBottom: 8, letterSpacing: 0.5 }}>ACCOUNT PREFERENCES</Text>
+            <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, marginBottom: 8, overflow: "hidden" }}>
+              <Pressable
+                style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 12, padding: 16, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => { setPrefOcclusionOpen(!prefOcclusionOpen); setPrefPonticOpen(false); setPrefContactOpen(false); }}
+              >
+                <Ionicons name="ellipse-outline" size={20} color="#6366F1" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text }}>Occlusion Type</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{prefOcclusion || "Not set"}</Text>
+                </View>
+                <Feather name={prefOcclusionOpen ? "chevron-up" : "chevron-down"} size={18} color={Colors.light.textTertiary} />
+              </Pressable>
+              {prefOcclusionOpen && (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  {OCCLUSION_OPTIONS.map(opt => (
+                    <Pressable
+                      key={opt}
+                      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, backgroundColor: prefOcclusion === opt ? "#EEF2FF" : "transparent", opacity: pressed ? 0.7 : 1 })}
+                      onPress={() => { setPrefOcclusion(opt); setPrefOcclusionOpen(false); saveProviderPreferences(opt, prefPontic, prefContact); if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+                    >
+                      <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: prefOcclusion === opt ? "#6366F1" : Colors.light.border, justifyContent: "center", alignItems: "center" }}>
+                        {prefOcclusion === opt && <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: "#6366F1" }} />}
+                      </View>
+                      <Text style={{ fontSize: 14, fontFamily: prefOcclusion === opt ? "Inter_600SemiBold" : "Inter_400Regular", color: prefOcclusion === opt ? "#6366F1" : Colors.light.text }}>{opt}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+
+              <View style={{ height: 1, backgroundColor: Colors.light.borderLight, marginHorizontal: 16 }} />
+
+              <Pressable
+                style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 12, padding: 16, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => { setPrefPonticOpen(!prefPonticOpen); setPrefOcclusionOpen(false); setPrefContactOpen(false); }}
+              >
+                <MaterialCommunityIcons name="bridge" size={20} color="#8B5CF6" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text }}>Pontic Type</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{prefPontic || "Not set"}</Text>
+                </View>
+                <Feather name={prefPonticOpen ? "chevron-up" : "chevron-down"} size={18} color={Colors.light.textTertiary} />
+              </Pressable>
+              {prefPonticOpen && (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  {PONTIC_OPTIONS.map(opt => (
+                    <Pressable
+                      key={opt}
+                      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, backgroundColor: prefPontic === opt ? "#F5F3FF" : "transparent", opacity: pressed ? 0.7 : 1 })}
+                      onPress={() => { setPrefPontic(opt); setPrefPonticOpen(false); saveProviderPreferences(prefOcclusion, opt, prefContact); if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+                    >
+                      <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: prefPontic === opt ? "#8B5CF6" : Colors.light.border, justifyContent: "center", alignItems: "center" }}>
+                        {prefPontic === opt && <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: "#8B5CF6" }} />}
+                      </View>
+                      <Text style={{ fontSize: 14, fontFamily: prefPontic === opt ? "Inter_600SemiBold" : "Inter_400Regular", color: prefPontic === opt ? "#8B5CF6" : Colors.light.text }}>{opt}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+
+              <View style={{ height: 1, backgroundColor: Colors.light.borderLight, marginHorizontal: 16 }} />
+
+              <Pressable
+                style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 12, padding: 16, opacity: pressed ? 0.7 : 1 })}
+                onPress={() => { setPrefContactOpen(!prefContactOpen); setPrefOcclusionOpen(false); setPrefPonticOpen(false); }}
+              >
+                <Ionicons name="finger-print-outline" size={20} color="#0EA5E9" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text }}>Contact Type</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{prefContact || "Not set"}</Text>
+                </View>
+                <Feather name={prefContactOpen ? "chevron-up" : "chevron-down"} size={18} color={Colors.light.textTertiary} />
+              </Pressable>
+              {prefContactOpen && (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                  {CONTACT_OPTIONS.map(opt => (
+                    <Pressable
+                      key={opt}
+                      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, backgroundColor: prefContact === opt ? "#F0F9FF" : "transparent", opacity: pressed ? 0.7 : 1 })}
+                      onPress={() => { setPrefContact(opt); setPrefContactOpen(false); saveProviderPreferences(prefOcclusion, prefPontic, opt); if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+                    >
+                      <View style={{ width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: prefContact === opt ? "#0EA5E9" : Colors.light.border, justifyContent: "center", alignItems: "center" }}>
+                        {prefContact === opt && <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: "#0EA5E9" }} />}
+                      </View>
+                      <Text style={{ fontSize: 14, fontFamily: prefContact === opt ? "Inter_600SemiBold" : "Inter_400Regular", color: prefContact === opt ? "#0EA5E9" : Colors.light.text }}>{opt}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </View>
 
             <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginTop: 24, marginBottom: 8, letterSpacing: 0.5 }}>ADMINISTRATION</Text>
             <Pressable
@@ -6164,6 +6442,157 @@ const invStyles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     marginTop: 8,
+  },
+  joinRequestSection: {
+    paddingHorizontal: 20,
+    marginTop: 16,
+  },
+  joinReqCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "#EFF6FF",
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    gap: 14,
+    marginBottom: 10,
+  },
+  joinReqIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  joinReqContent: {
+    flex: 1,
+  },
+  joinReqTitle: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  joinReqName: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  joinReqPractice: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
+  joinReqMsg: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.subText,
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  joinReqBtns: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 12,
+  },
+  joinReqAcceptBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#16A34A",
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  joinReqAcceptText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  joinReqDeclineBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FEE2E2",
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  joinReqDeclineText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#EF4444",
+  },
+  joinReqOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  joinReqConfirmCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 28,
+    width: "100%",
+    maxWidth: 340,
+    alignItems: "center",
+  },
+  joinReqConfirmIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  joinReqConfirmTitle: {
+    fontSize: 17,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  joinReqConfirmDesc: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.subText,
+    textAlign: "center",
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  joinReqConfirmBtns: {
+    flexDirection: "row",
+    gap: 12,
+    width: "100%",
+  },
+  joinReqConfirmYesBtn: {
+    flex: 1,
+    backgroundColor: Colors.light.tint,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  joinReqConfirmYesText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  joinReqConfirmNoBtn: {
+    flex: 1,
+    backgroundColor: Colors.light.surfaceAlt,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  joinReqConfirmNoText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
   },
 });
 

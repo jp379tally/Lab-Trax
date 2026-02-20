@@ -6,6 +6,7 @@ import { Platform, StyleSheet, View, Text, Pressable, useWindowDimensions } from
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import { useApp } from "@/lib/app-context";
+import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 
@@ -13,6 +14,8 @@ const DESKTOP_BREAKPOINT = 768;
 
 function NativeTabLayout() {
   const { unreadCount } = useApp();
+  const { userType } = useAuth();
+  const isProvider = userType === "provider";
   return (
     <NativeTabs>
       <NativeTabs.Trigger name="index">
@@ -23,10 +26,12 @@ function NativeTabLayout() {
         <Icon sf={{ default: "tray.full", selected: "tray.full.fill" }} />
         <Label>Cases</Label>
       </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="scan">
-        <Icon sf={{ default: "location", selected: "location.fill" }} />
-        <Label>Locate</Label>
-      </NativeTabs.Trigger>
+      {!isProvider && (
+        <NativeTabs.Trigger name="scan">
+          <Icon sf={{ default: "location", selected: "location.fill" }} />
+          <Label>Locate</Label>
+        </NativeTabs.Trigger>
+      )}
       <NativeTabs.Trigger name="notifications">
         <Icon sf={{ default: "bell", selected: "bell.fill" }} />
         <Label>Alerts</Label>
@@ -53,6 +58,8 @@ const TAB_ITEMS: TabItem[] = [
 function DesktopSidebar({ state, descriptors, navigation }: BottomTabBarProps) {
   const { isDark, colors } = useTheme();
   const { unreadCount } = useApp();
+  const { userType } = useAuth();
+  const isProvider = userType === "provider";
 
   return (
     <View style={[desktopStyles.sidebar, { backgroundColor: isDark ? "#0F172A" : "#FFFFFF", borderRightColor: isDark ? "#1E293B" : "#E2E8F0" }]}>
@@ -68,6 +75,7 @@ function DesktopSidebar({ state, descriptors, navigation }: BottomTabBarProps) {
         {state.routes.map((route, index) => {
           const tabItem = TAB_ITEMS.find(t => t.key === route.name);
           if (!tabItem) return null;
+          if (isProvider && tabItem.key === "scan") return null;
 
           const isFocused = state.index === index;
           const { options } = descriptors[route.key];
@@ -131,6 +139,8 @@ function ClassicTabLayout() {
   const isWeb = Platform.OS === "web";
   const isIOS = Platform.OS === "ios";
   const { unreadCount, role, setRole, setAdminUnlocked } = useApp();
+  const { userType } = useAuth();
+  const isProvider = userType === "provider";
   const { width } = useWindowDimensions();
   const isDesktop = isWeb && width >= DESKTOP_BREAKPOINT;
 
@@ -210,6 +220,7 @@ function ClassicTabLayout() {
           name="scan"
           options={{
             title: "Locate",
+            href: isProvider ? null : undefined,
             tabBarIcon: ({ color, focused }) => (
               <Ionicons
                 name={focused ? "location" : "location-outline"}
@@ -237,7 +248,7 @@ function ClassicTabLayout() {
           name="profile"
           options={{
             title: "Profile",
-            href: null,
+            href: isProvider ? undefined : null,
             tabBarIcon: ({ color, focused }) => (
               <Ionicons
                 name={focused ? "person" : "person-outline"}

@@ -530,6 +530,102 @@ export default function CaseDetailScreen() {
     setShowEntryPrompt(false);
   }
 
+  async function handleProviderAddMedia() {
+    Alert.alert(
+      "Add Photo/Video",
+      "Choose a source",
+      [
+        {
+          text: "Take Photo",
+          onPress: async () => {
+            if (Platform.OS === "web") {
+              try {
+                const uri = await webFilePickerForCamera();
+                if (uri) {
+                  addCasePhoto(caseItem!.id, uri, userInitials);
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert("Photo Added", "Photo has been attached to this case.");
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
+              return;
+            }
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Camera access is required to take photos.");
+              return;
+            }
+            const result = await ImagePicker.launchCameraAsync({
+              mediaTypes: ["images"],
+              quality: 0.8,
+            });
+            if (!result.canceled && result.assets[0]) {
+              addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert("Photo Added", "Photo has been attached to this case.");
+            }
+          },
+        },
+        {
+          text: "Record Video",
+          onPress: async () => {
+            if (Platform.OS === "web") {
+              try {
+                const uri = await webFilePickerForCamera();
+                if (uri) {
+                  addCasePhoto(caseItem!.id, uri, userInitials);
+                  Alert.alert("Media Added", "Media has been attached to this case.");
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
+              return;
+            }
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Camera access is required to record video.");
+              return;
+            }
+            const result = await ImagePicker.launchCameraAsync({
+              mediaTypes: ["videos"],
+              quality: 0.8,
+              videoMaxDuration: 60,
+            });
+            if (!result.canceled && result.assets[0]) {
+              addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert("Video Added", "Video has been attached to this case.");
+            }
+          },
+        },
+        {
+          text: "Choose from Gallery",
+          onPress: async () => {
+            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Gallery access is required.");
+              return;
+            }
+            const result = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images", "videos"],
+              quality: 0.8,
+              allowsMultipleSelection: true,
+            });
+            if (!result.canceled && result.assets.length > 0) {
+              result.assets.forEach((asset) => {
+                addCasePhoto(caseItem!.id, asset.uri, userInitials);
+              });
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert("Media Added", `${result.assets.length} file(s) attached to this case.`);
+            }
+          },
+        },
+        { text: "Cancel", style: "cancel" },
+      ]
+    );
+  }
+
   return (
     <View style={styles.container}>
       <View
@@ -628,6 +724,32 @@ export default function CaseDetailScreen() {
             </View>
           )}
         </View>
+
+        {userType === "provider" && (
+        <Pressable
+          onPress={() => {
+            handleProviderAddMedia();
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }}
+          style={({ pressed }) => [
+            {
+              flexDirection: "row" as const,
+              alignItems: "center" as const,
+              justifyContent: "center" as const,
+              gap: 8,
+              marginHorizontal: 16,
+              marginBottom: 16,
+              paddingVertical: 14,
+              borderRadius: 12,
+              backgroundColor: "#8B5CF6",
+            },
+            pressed && { opacity: 0.85 },
+          ]}
+        >
+          <Ionicons name="camera" size={18} color="#FFF" />
+          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Add Photo/Video</Text>
+        </Pressable>
+        )}
 
         {showPrice && (
         <Pressable
