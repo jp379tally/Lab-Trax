@@ -4450,7 +4450,7 @@ function ProviderDashboard() {
               </Pressable>
               <Pressable
                 style={({ pressed }) => ({ flex: 1, alignItems: "center" as const, paddingVertical: 14, borderRadius: 12, backgroundColor: Colors.light.tint, opacity: pressed ? 0.7 : 1 })}
-                onPress={() => {
+                onPress={async () => {
                   setPasswordError(null);
                   setPasswordSuccess(false);
                   if (!currentPasswordInput.trim()) {
@@ -4477,7 +4477,7 @@ function ProviderDashboard() {
                     setPasswordError("Passwords do not match.");
                     return;
                   }
-                  const result = changePassword(currentPasswordInput, newPassword);
+                  const result = await changePassword(currentPasswordInput, newPassword);
                   if (result.success) {
                     setPasswordSuccess(true);
                     setCurrentPasswordInput("");

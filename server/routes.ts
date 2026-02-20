@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "node:http";
 import OpenAI from "openai";
 import nodemailer from "nodemailer";
+import { storage } from "./storage";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -9,22 +10,165 @@ const openai = new OpenAI({
 });
 
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
-const registeredUsernames = new Set<string>(["admin", "tech"]);
 
 function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+const DEFAULT_USERS = [
+  { username: "admin", password: "123", userType: "lab", role: "user" },
+  { username: "tech", password: "tech123", userType: "lab", role: "user" },
+  { username: "JPPhillips", password: "Master1!", email: "john.phillips3@yahoo.com", phone: "850-363-3336", userType: "master_admin", role: "admin", accountNumber: "MA-001" },
+];
+
+async function seedDefaultUsers() {
+  for (const def of DEFAULT_USERS) {
+    const existing = await storage.getUserByUsername(def.username);
+    if (!existing) {
+      await storage.createUser(def as any);
+      console.log(`[SEED] Created default user: ${def.username}`);
+    }
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
+  await seedDefaultUsers();
+
   const auditLog: { timestamp: number; action: string; user: string; resource: string; ip: string }[] = [];
 
-  app.post("/api/check-username", (req, res) => {
+  app.post("/api/check-username", async (req, res) => {
     const { username } = req.body;
     if (!username || typeof username !== "string") {
       return res.status(400).json({ error: "Username required" });
     }
-    const taken = registeredUsernames.has(username.toLowerCase().trim());
-    res.json({ available: !taken });
+    const existing = await storage.getUserByUsername(username.trim());
+    res.json({ available: !existing });
+  });
+
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const { username, password, email, phone, userType, role, licenseNumber, practiceName, doctorName, practiceAddress, practicePhone, phoneContactName, accountNumber, wantsUpdates } = req.body;
+      if (!username || !password) {
+        return res.status(400).json({ error: "Username and password required" });
+      }
+      const existing = await storage.getUserByUsername(username.trim());
+      if (existing) {
+        return res.status(409).json({ error: "Username already taken." });
+      }
+      const user = await storage.createUser({
+        username: username.trim(),
+        password,
+        email: email || null,
+        phone: phone || null,
+        userType: userType || "lab",
+        role: role || "user",
+        licenseNumber: licenseNumber || null,
+        practiceName: practiceName || null,
+        doctorName: doctorName || null,
+        practiceAddress: practiceAddress || null,
+        practicePhone: practicePhone || null,
+        phoneContactName: phoneContactName || null,
+        accountNumber: accountNumber || null,
+        wantsUpdates: wantsUpdates || false,
+      });
+      res.json({
+        success: true,
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          phone: user.phone,
+          userType: user.userType,
+          role: user.role,
+          licenseNumber: user.licenseNumber,
+          practiceName: user.practiceName,
+          doctorName: user.doctorName,
+          practiceAddress: user.practiceAddress,
+          practicePhone: user.practicePhone,
+          phoneContactName: user.phoneContactName,
+          accountNumber: user.accountNumber,
+        },
+      });
+    } catch (error: any) {
+      console.error("Registration error:", error?.message || error);
+      res.status(500).json({ error: "Registration failed" });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      if (!username || !password) {
+        return res.status(400).json({ error: "Username and password required" });
+      }
+      const user = await storage.getUserByUsername(username.trim());
+      if (!user || user.password !== password) {
+        return res.status(401).json({ error: "Invalid username or password." });
+      }
+      res.json({
+        success: true,
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          phone: user.phone,
+          userType: user.userType,
+          role: user.role,
+          licenseNumber: user.licenseNumber,
+          practiceName: user.practiceName,
+          doctorName: user.doctorName,
+          practiceAddress: user.practiceAddress,
+          practicePhone: user.practicePhone,
+          phoneContactName: user.phoneContactName,
+          accountNumber: user.accountNumber,
+        },
+      });
+    } catch (error: any) {
+      console.error("Login error:", error?.message || error);
+      res.status(500).json({ error: "Login failed" });
+    }
+  });
+
+  app.get("/api/auth/users", async (_req, res) => {
+    try {
+      const allUsers = await storage.getAllUsers();
+      res.json({
+        users: allUsers.map(u => ({
+          id: u.id,
+          username: u.username,
+          email: u.email,
+          phone: u.phone,
+          userType: u.userType,
+          role: u.role,
+          licenseNumber: u.licenseNumber,
+          practiceName: u.practiceName,
+          doctorName: u.doctorName,
+          practiceAddress: u.practiceAddress,
+          practicePhone: u.practicePhone,
+          phoneContactName: u.phoneContactName,
+          accountNumber: u.accountNumber,
+        })),
+      });
+    } catch (error: any) {
+      console.error("Get users error:", error?.message || error);
+      res.status(500).json({ error: "Failed to fetch users" });
+    }
+  });
+
+  app.put("/api/auth/users/:id/password", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { currentPassword, newPassword } = req.body;
+      const user = await storage.getUser(id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.password !== currentPassword) {
+        return res.status(401).json({ error: "Current password is incorrect" });
+      }
+      await storage.updateUser(id, { password: newPassword });
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: "Failed to update password" });
+    }
   });
 
   app.post("/api/audit-log", (req, res) => {
@@ -53,13 +197,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!phone || typeof phone !== "string") {
       return res.status(400).json({ error: "Phone number required" });
     }
-
     const code = generateCode();
     const key = `phone:${phone.trim()}`;
     verificationCodes.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
-
     console.log(`[SMS VERIFICATION] Code for ${phone}: ${code}`);
-
     res.json({ success: true, message: "Verification code sent via SMS.", demoCode: code });
   });
 
@@ -68,10 +209,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!phone || !code) {
       return res.status(400).json({ error: "Phone and code required" });
     }
-
     const key = `phone:${phone.trim()}`;
     const stored = verificationCodes.get(key);
-
     if (!stored) {
       return res.json({ verified: false, error: "No code sent. Please request a new one." });
     }
@@ -82,7 +221,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (stored.code !== code.trim()) {
       return res.json({ verified: false, error: "Incorrect code. Please try again." });
     }
-
     verificationCodes.delete(key);
     res.json({ verified: true });
   });
@@ -92,13 +230,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!email || typeof email !== "string") {
       return res.status(400).json({ error: "Email required" });
     }
-
     const code = generateCode();
     const key = `email:${email.trim().toLowerCase()}`;
     verificationCodes.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
-
     console.log(`[EMAIL VERIFICATION] Code for ${email}: ${code}`);
-
     res.json({ success: true, message: "Verification code sent to your email.", demoCode: code });
   });
 
@@ -107,10 +242,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!email || !code) {
       return res.status(400).json({ error: "Email and code required" });
     }
-
     const key = `email:${email.trim().toLowerCase()}`;
     const stored = verificationCodes.get(key);
-
     if (!stored) {
       return res.json({ verified: false, error: "No code sent. Please request a new one." });
     }
@@ -121,17 +254,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (stored.code !== code.trim()) {
       return res.json({ verified: false, error: "Incorrect code. Please try again." });
     }
-
     verificationCodes.delete(key);
     res.json({ verified: true });
   });
 
-  app.post("/api/register", (req, res) => {
+  app.post("/api/register", async (req, res) => {
     const { username } = req.body;
     if (!username) {
       return res.status(400).json({ error: "Username required" });
     }
-    registeredUsernames.add(username.toLowerCase().trim());
     res.json({ success: true });
   });
 

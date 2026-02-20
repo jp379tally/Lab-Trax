@@ -39,7 +39,7 @@ export default function ProfileScreen() {
     }
   }
 
-  function handleChangePassword() {
+  async function handleChangePassword() {
     setPasswordError(null);
     if (!currentPasswordInput.trim()) {
       setPasswordError("Please enter your current password.");
@@ -65,7 +65,7 @@ export default function ProfileScreen() {
       setPasswordError("New passwords do not match.");
       return;
     }
-    const result = changePassword(currentPasswordInput, newPassword);
+    const result = await changePassword(currentPasswordInput, newPassword);
     if (!result.success) {
       setPasswordError(result.error || "Failed to change password.");
       return;

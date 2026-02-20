@@ -12,10 +12,12 @@ import { AppState, AppStateStatus, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
 import { logAudit } from "./audit";
+import { getApiUrl } from "./query-client";
 
 interface StoredUser {
+  id?: string;
   username: string;
-  password: string;
+  password?: string;
   email?: string;
   phone?: string;
   wantsUpdates?: boolean;
@@ -45,22 +47,15 @@ interface AuthContextValue {
   isLocked: boolean;
   unlockWithBiometric: () => Promise<{ success: boolean; error?: string }>;
   unlockWithPassword: (password: string) => { success: boolean; error?: string };
-  changePassword: (currentPassword: string, newPassword: string) => { success: boolean; error?: string };
+  changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
   resetInactivityTimer: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 const AUTH_KEY = "@drivesync_auth";
-const USERS_STORE_KEY = "@drivesync_auth_users";
 const PROFILE_PIC_KEY = "@drivesync_profile_pic";
 const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
-
-const DEFAULT_USERS: StoredUser[] = [
-  { username: "admin", password: "123" },
-  { username: "tech", password: "tech123" },
-  { username: "JPPhillips", password: "Master1!", email: "john.phillips3@yahoo.com", phone: "850-363-3336", userType: "master_admin", role: "admin", accountNumber: "MA-001" },
-];
 
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -68,10 +63,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [userType, setUserType] = useState<"provider" | "lab" | "master_admin" | null>(null);
   const [registeredUsers, setRegisteredUsers] = useState<StoredUser[]>([]);
   const [profilePicUri, setProfilePicUriState] = useState<string | null>(null);
   const [isLocked, setIsLocked] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState<string | null>(null);
   const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
@@ -112,28 +109,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loadAuth();
   }, []);
 
+  async function fetchAllUsers() {
+    try {
+      const baseUrl = getApiUrl();
+      const res = await fetch(`${baseUrl}api/auth/users`);
+      if (res.ok) {
+        const data = await res.json();
+        setRegisteredUsers(data.users || []);
+        return data.users || [];
+      }
+    } catch (e) {
+      console.log("Could not fetch users from server, using cached data");
+    }
+    return registeredUsers;
+  }
+
   async function loadAuth() {
     try {
-      const [savedAuth, savedUsers, savedPic] = await Promise.all([
+      const [savedAuth, savedPic] = await Promise.all([
         AsyncStorage.getItem(AUTH_KEY),
-        AsyncStorage.getItem(USERS_STORE_KEY),
         AsyncStorage.getItem(PROFILE_PIC_KEY),
       ]);
 
-      const mergedUsers = [...DEFAULT_USERS];
-      if (savedUsers) {
-        const parsed: StoredUser[] = JSON.parse(savedUsers);
-        for (const pu of parsed) {
-          const isDefault = DEFAULT_USERS.some(
-            (d) => d.username.toLowerCase() === pu.username.toLowerCase(),
-          );
-          if (!isDefault) {
-            mergedUsers.push(pu);
-          }
-        }
-      }
-      setRegisteredUsers(mergedUsers);
-      await AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(mergedUsers));
+      await fetchAllUsers();
 
       if (savedPic) {
         setProfilePicUriState(savedPic);
@@ -144,14 +142,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (auth.loggedIn && auth.username) {
           setIsAuthenticated(true);
           setCurrentUser(auth.username);
-          const matchedUser = mergedUsers.find(
-            (u) => u.username.toLowerCase() === auth.username.toLowerCase(),
-          );
-          setUserType(matchedUser?.userType || "lab");
+          setCurrentUserId(auth.userId || null);
+          setUserType(auth.userType || "lab");
+          setCurrentPassword(auth.password || null);
         }
       }
     } catch (e) {
-      setRegisteredUsers(DEFAULT_USERS);
+      console.error("Error loading auth:", e);
     } finally {
       setIsAuthLoading(false);
     }
@@ -167,43 +164,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function login(username: string, password: string): Promise<{ success: boolean; error?: string }> {
-    const savedRaw = await AsyncStorage.getItem(USERS_STORE_KEY);
-    let allUsers = [...DEFAULT_USERS];
-    if (savedRaw) {
-      try {
-        const saved: StoredUser[] = JSON.parse(savedRaw);
-        for (const su of saved) {
-          const isDefault = DEFAULT_USERS.some(
-            (d) => d.username.toLowerCase() === su.username.toLowerCase(),
-          );
-          if (!isDefault) {
-            allUsers.push(su);
-          }
-        }
-      } catch {}
-    }
-    const found = allUsers.find(
-      (u) => u.username.toLowerCase() === username.toLowerCase() && u.password === password,
-    );
+    try {
+      const baseUrl = getApiUrl();
+      const res = await fetch(`${baseUrl}api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
 
-    if (!found) {
-      return { success: false, error: "Invalid username or password." };
-    }
+      const data = await res.json();
 
-    setRegisteredUsers(allUsers);
-    setIsAuthenticated(true);
-    setCurrentUser(found.username);
-    setUserType(found.userType || "lab");
-    await AsyncStorage.setItem(
-      AUTH_KEY,
-      JSON.stringify({ loggedIn: true, username: found.username }),
-    );
-    await AsyncStorage.setItem(
-      BIOMETRIC_USER_KEY,
-      JSON.stringify({ username: found.username, password: found.password }),
-    );
-    logAudit("LOGIN", username, "User authenticated");
-    return { success: true };
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Invalid username or password." };
+      }
+
+      const user = data.user;
+      setIsAuthenticated(true);
+      setCurrentUser(user.username);
+      setCurrentUserId(user.id);
+      setUserType(user.userType || "lab");
+      setCurrentPassword(password);
+      await AsyncStorage.setItem(
+        AUTH_KEY,
+        JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || "lab", password }),
+      );
+      await AsyncStorage.setItem(
+        BIOMETRIC_USER_KEY,
+        JSON.stringify({ username: user.username, password }),
+      );
+      await fetchAllUsers();
+      logAudit("LOGIN", username, "User authenticated");
+      return { success: true };
+    } catch (e: any) {
+      console.error("Login error:", e);
+      return { success: false, error: "Connection error. Please try again." };
+    }
   }
 
   async function loginWithBiometric(): Promise<{ success: boolean; error?: string }> {
@@ -220,65 +215,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }): Promise<{ success: boolean; error?: string }> {
-    const savedRaw = await AsyncStorage.getItem(USERS_STORE_KEY);
-    let allUsers = [...DEFAULT_USERS];
-    if (savedRaw) {
-      try {
-        const saved: StoredUser[] = JSON.parse(savedRaw);
-        for (const su of saved) {
-          const isDefault = DEFAULT_USERS.some(
-            (d) => d.username.toLowerCase() === su.username.toLowerCase(),
-          );
-          if (!isDefault) {
-            allUsers.push(su);
-          }
-        }
-      } catch {}
+    try {
+      const baseUrl = getApiUrl();
+      const res = await fetch(`${baseUrl}api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+
+      const result = await res.json();
+
+      if (!res.ok || !result.success) {
+        return { success: false, error: result.error || "Registration failed." };
+      }
+
+      const user = result.user;
+      setIsAuthenticated(true);
+      setCurrentUser(user.username);
+      setCurrentUserId(user.id);
+      setUserType(user.userType || data.userType || "lab");
+      setCurrentPassword(data.password);
+      await AsyncStorage.setItem(
+        AUTH_KEY,
+        JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || data.userType || "lab", password: data.password }),
+      );
+      await fetchAllUsers();
+      return { success: true };
+    } catch (e: any) {
+      console.error("Register error:", e);
+      return { success: false, error: "Connection error. Please try again." };
     }
-
-    const exists = allUsers.some(
-      (u) => u.username.toLowerCase() === data.username.toLowerCase(),
-    );
-    if (exists) {
-      return { success: false, error: "Username already taken." };
-    }
-
-    const newUser: StoredUser = {
-      username: data.username,
-      password: data.password,
-      email: data.email,
-      phone: data.phone,
-      wantsUpdates: data.wantsUpdates,
-      userType: data.userType,
-      licenseNumber: data.licenseNumber,
-      practiceName: data.practiceName,
-      doctorName: data.doctorName,
-      practiceAddress: data.practiceAddress,
-      practicePhone: data.practicePhone,
-      phoneContactName: data.phoneContactName,
-      role: data.role,
-      accountNumber: data.accountNumber,
-    };
-    allUsers.push(newUser);
-    setRegisteredUsers(allUsers);
-    await AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(allUsers));
-
-    setIsAuthenticated(true);
-    setCurrentUser(data.username);
-    setUserType(data.userType || "lab");
-    await AsyncStorage.setItem(
-      AUTH_KEY,
-      JSON.stringify({ loggedIn: true, username: data.username }),
-    );
-    return { success: true };
   }
 
   function logout() {
     logAudit("LOGOUT", currentUser || "unknown", "User signed out");
     setIsAuthenticated(false);
     setCurrentUser(null);
+    setCurrentUserId(null);
     setUserType(null);
     setIsLocked(false);
+    setCurrentPassword(null);
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     AsyncStorage.removeItem(AUTH_KEY);
   }
@@ -304,31 +280,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  function changePassword(currentPassword: string, newPassword: string): { success: boolean; error?: string } {
-    if (!currentUser) return { success: false, error: "Not logged in" };
-    const user = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
-    if (!user) return { success: false, error: "User not found." };
-    if (user.password !== currentPassword) {
-      return { success: false, error: "Current password is incorrect" };
+  async function changePassword(currentPwd: string, newPassword: string): Promise<{ success: boolean; error?: string }> {
+    if (!currentUser || !currentUserId) return { success: false, error: "Not logged in" };
+    try {
+      const baseUrl = getApiUrl();
+      const res = await fetch(`${baseUrl}api/auth/users/${currentUserId}/password`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: currentPwd, newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to change password" };
+      }
+      setCurrentPassword(newPassword);
+      await AsyncStorage.setItem(
+        BIOMETRIC_USER_KEY,
+        JSON.stringify({ username: currentUser, password: newPassword }),
+      );
+      const savedAuth = await AsyncStorage.getItem(AUTH_KEY);
+      if (savedAuth) {
+        const auth = JSON.parse(savedAuth);
+        auth.password = newPassword;
+        await AsyncStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+      }
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: "Connection error. Please try again." };
     }
-    user.password = newPassword;
-    const updated = registeredUsers.map(u =>
-      u.username.toLowerCase() === currentUser.toLowerCase() ? { ...u, password: newPassword } : u
-    );
-    setRegisteredUsers(updated);
-    AsyncStorage.setItem(USERS_STORE_KEY, JSON.stringify(updated));
-    AsyncStorage.setItem(
-      BIOMETRIC_USER_KEY,
-      JSON.stringify({ username: currentUser, password: newPassword }),
-    );
-    return { success: true };
   }
 
   function unlockWithPassword(password: string): { success: boolean; error?: string } {
     if (!currentUser) return { success: false, error: "No user session found." };
-    const user = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
-    if (!user) return { success: false, error: "User not found." };
-    if (user.password !== password) return { success: false, error: "Incorrect password." };
+    if (!currentPassword || currentPassword !== password) {
+      return { success: false, error: "Incorrect password." };
+    }
     setIsLocked(false);
     resetInactivityTimer();
     return { success: true };
@@ -353,7 +339,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       changePassword,
       resetInactivityTimer,
     }),
-    [isAuthenticated, isAuthLoading, currentUser, userType, registeredUsers, profilePicUri, isLocked, resetInactivityTimer],
+    [isAuthenticated, isAuthLoading, currentUser, userType, registeredUsers, profilePicUri, isLocked, resetInactivityTimer, currentPassword, currentUserId],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

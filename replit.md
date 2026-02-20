@@ -28,8 +28,9 @@ Preferred communication style: Simple, everyday language.
 
 ### Data Storage
 - **Client-side**: AsyncStorage for persistent local state (cases, notifications, settings)
-- **Server-side**: In-memory Map-based storage (MemStorage) — designed to be replaced with PostgreSQL via Drizzle ORM
-- **Database Schema**: Drizzle ORM schema defined in `shared/schema.ts` with PostgreSQL dialect. Currently only has a `users` table with id, username, and password fields. The Drizzle config expects a `DATABASE_URL` environment variable.
+- **Server-side**: PostgreSQL database via Drizzle ORM (`DatabaseStorage` class in `server/storage.ts`)
+- **User Authentication**: Login and registration are handled via server API endpoints (`/api/auth/login`, `/api/auth/register`, `/api/auth/users`), with user accounts persisted in PostgreSQL. Default users (admin, tech, JPPhillips) are seeded on server startup.
+- **Database Schema**: Drizzle ORM schema defined in `shared/schema.ts` with PostgreSQL dialect. The `users` table has full user profile fields (id, username, password, email, phone, userType, role, licenseNumber, practiceName, doctorName, practiceAddress, practicePhone, phoneContactName, accountNumber, wantsUpdates, createdAt).
 - **Schema Validation**: Zod schemas generated from Drizzle table definitions using `drizzle-zod`
 
 ### API Client
