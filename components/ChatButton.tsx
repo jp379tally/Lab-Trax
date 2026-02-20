@@ -524,23 +524,20 @@ export function ChatButton() {
               multiline
               maxLength={2000}
             />
-            <Pressable style={{ padding: 4 }}>
-              <Ionicons name="happy-outline" size={22} color={MESSENGER_BLUE} />
-            </Pressable>
           </View>
           {chatInput.trim() || chatImageUri ? (
             <Pressable
               onPress={handleSend}
-              style={({ pressed }) => [s.inputCircleBtn, { opacity: pressed ? 0.6 : 1 }]}
+              style={({ pressed }) => [s.inputSendBtn, { opacity: pressed ? 0.6 : 1 }]}
             >
-              <Ionicons name="send" size={22} color={MESSENGER_BLUE} />
+              <Ionicons name="send" size={20} color="#FFF" />
             </Pressable>
           ) : (
             <Pressable
               onPress={handleThumbsUp}
               style={({ pressed }) => [s.inputCircleBtn, { opacity: pressed ? 0.6 : 1 }]}
             >
-              <Ionicons name="thumbs-up" size={24} color={MESSENGER_BLUE} />
+              <Ionicons name="thumbs-up" size={22} color={MESSENGER_BLUE} />
             </Pressable>
           )}
         </View>
@@ -965,6 +962,14 @@ const s = StyleSheet.create({
   inputCircleBtn: {
     width: 36,
     height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  inputSendBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: MESSENGER_BLUE,
     alignItems: "center",
     justifyContent: "center",
   },
