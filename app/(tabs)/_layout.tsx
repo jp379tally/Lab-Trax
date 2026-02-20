@@ -24,8 +24,8 @@ function NativeTabLayout() {
         <Label>Cases</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="scan">
-        <Icon sf={{ default: "camera.viewfinder", selected: "camera.viewfinder" }} />
-        <Label>Scan</Label>
+        <Icon sf={{ default: "location", selected: "location.fill" }} />
+        <Label>Locate</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="notifications">
         <Icon sf={{ default: "bell", selected: "bell.fill" }} />
@@ -46,7 +46,7 @@ type TabItem = {
 const TAB_ITEMS: TabItem[] = [
   { key: "index", label: "Dashboard", icon: "home-outline", iconFocused: "home" },
   { key: "cases", label: "Cases", icon: "file-tray-full-outline", iconFocused: "file-tray-full" },
-  { key: "scan", label: "Scan", icon: "scan-outline", iconFocused: "scan" },
+  { key: "scan", label: "Locate", icon: "location-outline", iconFocused: "location" },
   { key: "notifications", label: "Alerts", icon: "notifications-outline", iconFocused: "notifications" },
 ];
 
@@ -209,10 +209,10 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="scan"
           options={{
-            title: "Scan",
+            title: "Locate",
             tabBarIcon: ({ color, focused }) => (
               <Ionicons
-                name={focused ? "scan" : "scan-outline"}
+                name={focused ? "location" : "location-outline"}
                 size={22}
                 color={color}
               />

@@ -56,9 +56,8 @@ export default function CasesScreen() {
     }
   }
 
-  const filteredCases = useMemo(() => {
+  const baseCases = useMemo(() => {
     let result = cases;
-
     if (userType === "provider") {
       const myGroups = getUserGroups(currentUser || "");
       if (myGroups.length === 0) {
@@ -71,6 +70,19 @@ export default function CasesScreen() {
         c.doctorName.toLowerCase().includes((currentUser || "").toLowerCase())
       );
     }
+    return result;
+  }, [cases, userType, currentUser, registeredUsers]);
+
+  const stationCounts = useMemo(() => {
+    const counts: Record<string, number> = { ALL: baseCases.length };
+    for (const c of baseCases) {
+      counts[c.status] = (counts[c.status] || 0) + 1;
+    }
+    return counts;
+  }, [baseCases]);
+
+  const filteredCases = useMemo(() => {
+    let result = baseCases;
 
     if (filterStatus !== "ALL") {
       result = result.filter((c) => c.status === filterStatus);
@@ -87,7 +99,7 @@ export default function CasesScreen() {
       );
     }
     return result;
-  }, [cases, filterStatus, search, userType, currentUser, registeredUsers]);
+  }, [baseCases, filterStatus, search]);
 
   const showPrice = role === "admin" && adminUnlocked;
 
@@ -108,6 +120,27 @@ export default function CasesScreen() {
             pathname: "/case/[id]",
             params: { id: item.id },
           })
+        }
+        onLongPress={() =>
+          Alert.alert(
+            "Locate Case",
+            "Would you like to locate this case?",
+            [
+              {
+                text: "No",
+                onPress: () => {},
+                style: "cancel",
+              },
+              {
+                text: "Yes",
+                onPress: () =>
+                  router.push({
+                    pathname: "/case/[id]",
+                    params: { id: item.id },
+                  }),
+              },
+            ]
+          )
         }
       >
         <View style={styles.caseTop}>
@@ -258,6 +291,13 @@ export default function CasesScreen() {
                 ]}
               >
                 {item.label}
+                {" "}
+                <Text style={[
+                  styles.filterCountText,
+                  filterStatus === item.id && styles.filterTextActive,
+                ]}>
+                  {stationCounts[item.id] || 0}
+                </Text>
               </Text>
             </Pressable>
           )}
@@ -382,6 +422,11 @@ const styles = StyleSheet.create({
   },
   filterTextActive: {
     color: "#FFF",
+  },
+  filterCountText: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
   },
   listContent: {
     padding: 20,

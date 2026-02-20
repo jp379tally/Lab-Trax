@@ -258,12 +258,7 @@ export default function LoginScreen() {
     if (wants && userType !== "lab") {
       setSignUpStep("phone_entry");
     } else {
-      if (userType === "provider") {
-        setSelectedRole("admin");
-        setSignUpStep("join_group");
-      } else {
-        setSignUpStep("role_select");
-      }
+      setSignUpStep("role_select");
     }
   }
 
@@ -538,15 +533,7 @@ export default function LoginScreen() {
                 } else if (signUpStep === "hipaa_disclaimer") {
                   setSignUpStep("join_group");
                 } else if (signUpStep === "join_group") {
-                  if (userType === "provider") {
-                    if (wantsUpdates) {
-                      setSignUpStep("phone_contact_name");
-                    } else {
-                      setSignUpStep("updates_opt_in");
-                    }
-                  } else {
-                    setSignUpStep("role_select");
-                  }
+                  setSignUpStep("role_select");
                 }
               }}
               style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.6 }]}
@@ -579,7 +566,7 @@ export default function LoginScreen() {
                 {signUpStep === "phone_contact_name" && "Who will receive text updates?"}
                 {signUpStep === "email_verify" && "Verify your email address"}
                 {signUpStep === "role_select" && "Select your role"}
-                {signUpStep === "join_group" && "Join a Group"}
+                {signUpStep === "join_group" && "Connect with the Lab"}
                 {signUpStep === "hipaa_disclaimer" && "Review & Accept Terms"}
               </Text>
             </View>
@@ -1133,12 +1120,7 @@ export default function LoginScreen() {
               return;
             }
             setSignUpError(null);
-            if (userType === "provider") {
-              setSelectedRole("admin");
-              setSignUpStep("join_group");
-            } else {
-              setSignUpStep("role_select");
-            }
+            setSignUpStep("role_select");
           }}
           style={({ pressed }) => [styles.loginBtn, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
           testID="phone-contact-next-btn"
@@ -1228,69 +1210,105 @@ export default function LoginScreen() {
   }
 
   function renderJoinGroup() {
+    const labSearchText = joinGroupAdminUsername;
+    const matchingLabs = labSearchText.trim().length > 0
+      ? registeredUsers.filter(u =>
+          u.userType === "lab" &&
+          u.role === "admin" &&
+          (
+            (u.username && u.username.toLowerCase().includes(labSearchText.trim().toLowerCase())) ||
+            (u.practiceName && u.practiceName.toLowerCase().includes(labSearchText.trim().toLowerCase())) ||
+            (u.doctorName && u.doctorName.toLowerCase().includes(labSearchText.trim().toLowerCase()))
+          )
+        )
+      : [];
+
+    const handleSelectLab = async (labAdmin: typeof registeredUsers[0]) => {
+      const selectedUsername = labAdmin.username;
+      setJoinGroupAdminUsername(selectedUsername);
+      try {
+        const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
+        const existing: GroupJoinRequest[] = stored ? JSON.parse(stored) : [];
+        const alreadyPending = existing.find(
+          r => r.requestingUsername.toLowerCase() === signUpUsername.trim().toLowerCase()
+            && r.targetAdminUsername.toLowerCase() === selectedUsername.toLowerCase()
+            && r.status === "pending"
+        );
+        if (alreadyPending) {
+          setSignUpError("You already have a pending request to this lab.");
+          return;
+        }
+        const request: GroupJoinRequest = {
+          id: generateId(),
+          requestingUsername: signUpUsername.trim(),
+          targetAdminUsername: selectedUsername,
+          message: `${signUpUsername.trim()} would like to connect with your lab.`,
+          status: "pending",
+          createdAt: Date.now(),
+        };
+        const updated = [...existing, request];
+        await AsyncStorage.setItem("@drivesync_group_join_requests", JSON.stringify(updated));
+        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setJoinGroupSent(true);
+      } catch {
+        setSignUpError("Could not send request. Please try again.");
+      }
+    };
+
     return (
       <View style={styles.formSection}>
         <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", lineHeight: 20, marginBottom: 20 }}>
-          Enter a lab name to establish your connection. The lab admin will receive a notification to approve your request. You can also skip this step.
+          Start typing to find your lab. Select the correct lab to send a connection request.
         </Text>
 
         {!joinGroupSent ? (
           <>
-            <View style={[styles.inputGroup, { marginBottom: 16 }]}>
+            <View style={[styles.inputGroup, { marginBottom: 0 }]}>
               <View style={styles.inputWrapper}>
-                <Ionicons name="business" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+                <Ionicons name="search" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Lab name"
+                  placeholder="Search for your lab..."
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   value={joinGroupAdminUsername}
-                  onChangeText={setJoinGroupAdminUsername}
+                  onChangeText={(t) => { setJoinGroupAdminUsername(t); setJoinGroupSent(false); setSignUpError(null); }}
                   autoCapitalize="none"
                   autoCorrect={false}
                 />
               </View>
             </View>
 
-            <Pressable
-              onPress={async () => {
-                if (!joinGroupAdminUsername.trim()) return;
-                try {
-                  const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
-                  const existing: GroupJoinRequest[] = stored ? JSON.parse(stored) : [];
-                  const alreadyPending = existing.find(
-                    r => r.requestingUsername.toLowerCase() === signUpUsername.trim().toLowerCase()
-                      && r.targetAdminUsername.toLowerCase() === joinGroupAdminUsername.trim().toLowerCase()
-                      && r.status === "pending"
-                  );
-                  if (alreadyPending) {
-                    setSignUpError("You already have a pending request to this lab.");
-                    return;
-                  }
-                  const request: GroupJoinRequest = {
-                    id: generateId(),
-                    requestingUsername: signUpUsername.trim(),
-                    targetAdminUsername: joinGroupAdminUsername.trim(),
-                    message: `${signUpUsername.trim()} would like to connect with your lab.`,
-                    status: "pending",
-                    createdAt: Date.now(),
-                  };
-                  const updated = [...existing, request];
-                  await AsyncStorage.setItem("@drivesync_group_join_requests", JSON.stringify(updated));
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  setJoinGroupSent(true);
-                } catch {
-                  setSignUpError("Could not send request. Please try again.");
-                }
-              }}
-              style={({ pressed }) => [
-                styles.loginBtn,
-                !joinGroupAdminUsername.trim() && { opacity: 0.5 },
-                pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
-              ]}
-              disabled={!joinGroupAdminUsername.trim()}
-            >
-              <Text style={styles.loginBtnText}>Send Join Request</Text>
-            </Pressable>
+            {matchingLabs.length > 0 && (
+              <View style={{ marginTop: 4, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.1)", maxHeight: 200, overflow: "hidden" }}>
+                <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                  {matchingLabs.map((lab, index) => (
+                    <Pressable
+                      key={lab.username + index}
+                      onPress={() => handleSelectLab(lab)}
+                      style={({ pressed }) => [
+                        { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: index < matchingLabs.length - 1 ? 1 : 0, borderBottomColor: "rgba(255,255,255,0.06)" },
+                        pressed && { backgroundColor: "rgba(255,255,255,0.1)" },
+                      ]}
+                    >
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
+                        {lab.practiceName || lab.username}
+                      </Text>
+                      {lab.practiceAddress ? (
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>
+                          {lab.practiceAddress}
+                        </Text>
+                      ) : null}
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
+            {labSearchText.trim().length > 0 && matchingLabs.length === 0 && (
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.4)", marginTop: 8, textAlign: "center" }}>
+                No matching labs found
+              </Text>
+            )}
           </>
         ) : (
           <View style={{ alignItems: "center", paddingVertical: 20 }}>
@@ -1321,7 +1339,7 @@ export default function LoginScreen() {
           ]}
         >
           <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.7)" }}>
-            {joinGroupSent ? "Continue" : "Skip"}
+            {joinGroupSent ? "Continue" : "Skip for now"}
           </Text>
         </Pressable>
 

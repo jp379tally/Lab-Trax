@@ -36,6 +36,10 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 
+function formatCurrency(amount: number): string {
+  return `$${amount.toFixed(2)}`;
+}
+
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
 
 function SideDrawer({
@@ -666,7 +670,7 @@ function TechDashboard() {
             onPress={() => setActiveFilter(activeFilter === "shipped" ? null : "shipped")}
           >
             <Text style={styles.heroStatNum}>{shippedCases.length}</Text>
-            <Text style={styles.heroStatLabel}>Shipped</Text>
+            <Text style={styles.heroStatLabel}>Completed</Text>
           </Pressable>
         </View>
       </LinearGradient>
@@ -675,7 +679,7 @@ function TechDashboard() {
         <View style={styles.filterSection}>
           <View style={styles.filterHeader}>
             <Text style={styles.filterTitle}>
-              {activeFilter === "intake" ? "Intake Cases" : activeFilter === "progress" ? "In Progress Cases" : "Shipped Cases"}
+              {activeFilter === "intake" ? "Intake Cases" : activeFilter === "progress" ? "In Progress Cases" : "Completed Cases"}
             </Text>
             <Pressable onPress={() => setActiveFilter(null)}>
               <Ionicons name="close-circle" size={22} color={Colors.light.textTertiary} />
@@ -685,7 +689,7 @@ function TechDashboard() {
             <View style={styles.filterEmpty}>
               <Ionicons name="file-tray-outline" size={28} color={Colors.light.textTertiary} />
               <Text style={styles.filterEmptyText}>
-                No {activeFilter === "intake" ? "intake" : activeFilter === "progress" ? "in progress" : "shipped"} cases
+                No {activeFilter === "intake" ? "intake" : activeFilter === "progress" ? "in progress" : "completed"} cases
               </Text>
             </View>
           ) : (
@@ -1308,6 +1312,8 @@ function AdminDashboard() {
 
   const [newClientName, setNewClientName] = useState("");
   const [newClientDoctor, setNewClientDoctor] = useState("");
+  const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
+  const [doctorSearch, setDoctorSearch] = useState("");
   const [newClientPhone, setNewClientPhone] = useState("");
   const [newClientEmail, setNewClientEmail] = useState("");
   const [newClientAddress, setNewClientAddress] = useState("");
@@ -1401,6 +1407,8 @@ function AdminDashboard() {
   function resetClientForm() {
     setNewClientName("");
     setNewClientDoctor("");
+    setDoctorDropdownOpen(false);
+    setDoctorSearch("");
     setNewClientPhone("");
     setNewClientEmail("");
     setNewClientAddress("");
@@ -1475,6 +1483,16 @@ function AdminDashboard() {
   function handleSaveEditClient() {
     if (!editingClient) return;
     updateClient(editingClient.id, editingClient);
+    if (showEditClientPricing) {
+      const tier = pricingTiers.find(t => t.name === editingClient.tier);
+      if (tier) {
+        const prices: Record<string, number> = {};
+        PRICE_LIST_ITEMS.forEach(item => {
+          prices[item.key] = parseFloat(priceList[item.key] || "0") || 0;
+        });
+        updateTierPricing(tier.id, prices);
+      }
+    }
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert("Saved", showEditClientPricing ? "Client record and pricing updated." : "Client record updated.");
     setEditingClient(null);
@@ -1545,9 +1563,9 @@ function AdminDashboard() {
           end={{ x: 1, y: 1 }}
           style={styles.heroCard}
         >
-          <Text style={[styles.heroLabel, { opacity: 0.5 }]}>TOTAL BILLABLES</Text>
+          <Text style={[styles.heroLabel, { opacity: 0.5 }]}>OPEN INVOICES</Text>
           <Text style={styles.heroCount}>
-            ${totalRevenue.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+            {formatCurrency(totalRevenue)}
           </Text>
           <View style={adm.heroBadgeRow}>
             <View style={adm.heroBadge}>
@@ -1590,7 +1608,7 @@ function AdminDashboard() {
       return sum + clientInvoices.reduce((s, inv) => s + inv.amount, 0);
     }, 0);
     const clientMenuItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
-      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · $${totalOpenBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} open`, view: "clients" },
+      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · ${formatCurrency(totalOpenBalance)} open`, view: "clients" },
       { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
       { icon: "people", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${clients.length} registered practices`, view: "edit-client" },
     ];
@@ -1700,9 +1718,62 @@ function AdminDashboard() {
             <Text style={adm.fieldLabel}>Practice Name</Text>
             <TextInput style={adm.input} value={newClientName} onChangeText={setNewClientName} placeholder="Elite Dental Group" placeholderTextColor={Colors.light.textTertiary} />
           </View>
-          <View style={adm.field}>
+          <View style={[adm.field, { zIndex: 10 }]}>
             <Text style={adm.fieldLabel}>Lead Doctor</Text>
-            <TextInput style={adm.input} value={newClientDoctor} onChangeText={setNewClientDoctor} placeholder="Dr. Smith" placeholderTextColor={Colors.light.textTertiary} />
+            <Pressable
+              style={[adm.input, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}
+              onPress={() => setDoctorDropdownOpen(!doctorDropdownOpen)}
+            >
+              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: newClientDoctor ? Colors.light.text : Colors.light.textTertiary }}>
+                {newClientDoctor || "Select a provider..."}
+              </Text>
+              <Ionicons name={doctorDropdownOpen ? "chevron-up" : "chevron-down"} size={18} color={Colors.light.textSecondary} />
+            </Pressable>
+            {doctorDropdownOpen && (
+              <View style={{ backgroundColor: Colors.light.surface, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.border, marginTop: 6, maxHeight: 220, overflow: "hidden" }}>
+                <TextInput
+                  style={[adm.input, { borderRadius: 0, borderWidth: 0, borderBottomWidth: 1, borderBottomColor: Colors.light.border }]}
+                  value={doctorSearch}
+                  onChangeText={setDoctorSearch}
+                  placeholder="Search providers..."
+                  placeholderTextColor={Colors.light.textTertiary}
+                  autoFocus
+                />
+                <ScrollView style={{ maxHeight: 160 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                  {registeredUsers
+                    .filter(u => u.userType === "provider")
+                    .filter(u => {
+                      if (!doctorSearch.trim()) return true;
+                      const search = doctorSearch.toLowerCase();
+                      return (u.doctorName || "").toLowerCase().includes(search) || (u.practiceAddress || "").toLowerCase().includes(search) || u.username.toLowerCase().includes(search);
+                    })
+                    .map(u => (
+                      <Pressable
+                        key={u.username}
+                        onPress={() => {
+                          setNewClientDoctor(u.doctorName || u.username);
+                          if (u.practiceAddress && !newClientAddress) setNewClientAddress(u.practiceAddress);
+                          setDoctorDropdownOpen(false);
+                          setDoctorSearch("");
+                        }}
+                        style={({ pressed }) => ({ paddingVertical: 12, paddingHorizontal: 14, backgroundColor: pressed ? Colors.light.surfaceSecondary : "transparent", borderBottomWidth: 1, borderBottomColor: Colors.light.border })}
+                      >
+                        <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{u.doctorName || u.username}</Text>
+                        {u.practiceAddress ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{u.practiceAddress}</Text> : null}
+                      </Pressable>
+                    ))}
+                  {registeredUsers.filter(u => u.userType === "provider").filter(u => {
+                    if (!doctorSearch.trim()) return true;
+                    const search = doctorSearch.toLowerCase();
+                    return (u.doctorName || "").toLowerCase().includes(search) || (u.practiceAddress || "").toLowerCase().includes(search) || u.username.toLowerCase().includes(search);
+                  }).length === 0 && (
+                    <View style={{ paddingVertical: 20, alignItems: "center" }}>
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary }}>No providers found</Text>
+                    </View>
+                  )}
+                </ScrollView>
+              </View>
+            )}
           </View>
           <View style={adm.fieldRow}>
             <View style={[adm.field, { flex: 1 }]}>
@@ -2308,7 +2379,7 @@ function AdminDashboard() {
                     <Text style={adm.invoiceNumber}>{inv.invoiceNumber}</Text>
                     <Text style={adm.invoiceClient}>{inv.clientName}</Text>
                   </View>
-                  <Text style={adm.invoiceAmount}>${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                  <Text style={adm.invoiceAmount}>{formatCurrency(inv.amount)}</Text>
                 </View>
                 <View style={adm.invoiceCardBottom}>
                   <Text style={adm.invoiceDate}>Due {new Date(inv.dueAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</Text>
@@ -2478,10 +2549,10 @@ function AdminDashboard() {
                   <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#555" }}>{li.description}</Text>
                 </View>
                 <View style={{ width: 60, paddingVertical: 8, paddingHorizontal: 4, borderRightWidth: 1, borderRightColor: "#eee", alignItems: "flex-end" }}>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#333" }}>${li.rate.toFixed(2)}</Text>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#333" }}>{formatCurrency(li.rate)}</Text>
                 </View>
                 <View style={{ width: 70, paddingVertical: 8, paddingHorizontal: 4, alignItems: "flex-end" }}>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#333" }}>${li.amount.toFixed(2)}</Text>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#333" }}>{formatCurrency(li.amount)}</Text>
                 </View>
               </View>
             ))}
@@ -2504,15 +2575,15 @@ function AdminDashboard() {
             <View style={{ borderLeftWidth: 1, borderLeftColor: "#999" }}>
               <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#ccc", paddingVertical: 6, paddingHorizontal: 10 }}>
                 <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Total</Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>${lineTotal.toFixed(2)}</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(lineTotal)}</Text>
               </View>
               <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#ccc", paddingVertical: 6, paddingHorizontal: 10 }}>
                 <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Credits</Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>${inv.credits.toFixed(2)}</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(inv.credits)}</Text>
               </View>
               <View style={{ flexDirection: "row", paddingVertical: 6, paddingHorizontal: 10 }}>
                 <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Total</Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", minWidth: 70, textAlign: "right" }}>${finalTotal.toFixed(2)}</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(finalTotal)}</Text>
               </View>
             </View>
           </View>
@@ -2558,7 +2629,7 @@ function AdminDashboard() {
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{clientStatement.clientName}</Text>
                   <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.error }}>
-                    ${clientStatement.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                    {formatCurrency(clientStatement.totalDue)}
                   </Text>
                 </View>
                 {clientStatement.email ? (
@@ -2572,7 +2643,7 @@ function AdminDashboard() {
                     <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}>
                       <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
                       <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
-                        ${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                        {formatCurrency(inv.amount)}
                       </Text>
                     </View>
                     <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 2 }}>
@@ -2586,7 +2657,7 @@ function AdminDashboard() {
                         {inv.lineItems.map((li, liIdx) => (
                           <View key={liIdx} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 3 }}>
                             <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.text, flex: 1 }}>{li.item}{li.description ? ` - ${li.description}` : ""}</Text>
-                            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.text }}>${li.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{formatCurrency(li.amount)}</Text>
                           </View>
                         ))}
                       </View>
@@ -2613,21 +2684,21 @@ function AdminDashboard() {
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   statementPreview.forEach((cs) => {
                     const invoiceDetails = cs.invoices.map((inv) => {
-                      const items = inv.lineItems.map(li => `    ${li.item}: $${li.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`).join("\n");
-                      return `  ${inv.invoiceNumber} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: $${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
+                      const items = inv.lineItems.map(li => `    ${li.item}: ${formatCurrency(li.amount)}`).join("\n");
+                      return `  ${inv.invoiceNumber} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: ${formatCurrency(inv.amount)}`;
                     }).join("\n\n");
-                    const emailBody = `Billing Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${cs.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
+                    const emailBody = `Billing Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(cs.totalDue)}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
                     sendStatementEmail(cs.clientName, cs.email, `Billing Statement - ${cs.clientName}`, emailBody);
                     addNotification({
                       title: "Statement Generated",
-                      message: `A billing statement has been generated for ${cs.clientName}. Total due: $${cs.totalDue.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+                      message: `A billing statement has been generated for ${cs.clientName}. Total due: ${formatCurrency(cs.totalDue)}`,
                       type: "update",
                     });
                   });
                   const totalAll = statementPreview.reduce((s, cs) => s + cs.totalDue, 0);
                   Alert.alert(
                     "Statements Sent",
-                    `Emailed statements to ${statementPreview.length} client${statementPreview.length > 1 ? "s" : ""}.\nTotal: $${totalAll.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+                    `Emailed statements to ${statementPreview.length} client${statementPreview.length > 1 ? "s" : ""}.\nTotal: ${formatCurrency(totalAll)}`,
                   );
                   setStatementPreview(null);
                 }}
@@ -2726,7 +2797,7 @@ function AdminDashboard() {
                 <View>
                   <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Preview All Open Statements</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", marginTop: 2 }}>
-                    {allOpenInvoices.length} open invoice{allOpenInvoices.length !== 1 ? "s" : ""} · ${totalOpenAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                    {allOpenInvoices.length} open invoice{allOpenInvoices.length !== 1 ? "s" : ""} · {formatCurrency(totalOpenAmount)}
                   </Text>
                 </View>
               </Pressable>
@@ -2769,7 +2840,7 @@ function AdminDashboard() {
                   </View>
                   <View>
                     <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                    <Text style={adm.listItemSub}>{c.accountNumber} · {clientOpenInvs.length} open invoice{clientOpenInvs.length !== 1 ? "s" : ""} · ${clientTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                    <Text style={adm.listItemSub}>{c.accountNumber} · {clientOpenInvs.length} open invoice{clientOpenInvs.length !== 1 ? "s" : ""} · {formatCurrency(clientTotal)}</Text>
                   </View>
                 </View>
                 <Ionicons name="eye-outline" size={20} color={Colors.light.tint} />
@@ -2799,7 +2870,7 @@ function AdminDashboard() {
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Clients</Text>
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>
-              {clients.length} practices · ${totalOpen.toLocaleString("en-US", { minimumFractionDigits: 2 })} total open
+              {clients.length} practices · {formatCurrency(totalOpen)} total open
             </Text>
           </View>
         </View>
@@ -2817,7 +2888,7 @@ function AdminDashboard() {
               </View>
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: c.openBalance > 0 ? Colors.light.warning : Colors.light.success }}>
-                  ${c.openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                  {formatCurrency(c.openBalance)}
                 </Text>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>
                   {c.openCount > 0 ? `${c.openCount} open invoice${c.openCount > 1 ? "s" : ""}` : "Paid up"}
@@ -2907,11 +2978,11 @@ function AdminDashboard() {
         <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
           <View style={{ flex: 1, backgroundColor: openBalance > 0 ? "#FEF3C7" : "#D1FAE5", borderRadius: 14, padding: 14 }}>
             <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: openBalance > 0 ? "#92400E" : "#065F46" }}>Open Balance</Text>
-            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: openBalance > 0 ? "#D97706" : "#059669", marginTop: 4 }}>${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: openBalance > 0 ? "#D97706" : "#059669", marginTop: 4 }}>{formatCurrency(openBalance)}</Text>
           </View>
           <View style={{ flex: 1, backgroundColor: "#EFF6FF", borderRadius: 14, padding: 14 }}>
             <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#1E40AF" }}>Paid to Date</Text>
-            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 4 }}>${paidTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 4 }}>{formatCurrency(paidTotal)}</Text>
           </View>
         </View>
 
@@ -2930,10 +3001,10 @@ function AdminDashboard() {
           <Pressable
             onPress={() => {
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              const invoiceDetails = openInvoices.map((inv) => `  ${inv.invoiceNumber}: $${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
-              const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
+              const invoiceDetails = openInvoices.map((inv) => `  ${inv.invoiceNumber}: ${formatCurrency(inv.amount)} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
+              const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(openBalance)}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
               sendStatementEmail(selectedClient.practiceName, selectedClient.email, `Billing Statement - ${selectedClient.practiceName}`, emailBody);
-              Alert.alert("Statement Generated & Emailed", `Statement for ${selectedClient.practiceName} with open balance of $${openBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} has been generated and emailed to ${selectedClient.email} and admin.`);
+              Alert.alert("Statement Generated & Emailed", `Statement for ${selectedClient.practiceName} with open balance of ${formatCurrency(openBalance)} has been generated and emailed to ${selectedClient.email} and admin.`);
             }}
             style={{ marginHorizontal: 16, marginBottom: 16, backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8 }}
           >
@@ -2959,7 +3030,7 @@ function AdminDashboard() {
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Due {new Date(inv.dueAt).toLocaleDateString()}</Text>
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
-                  <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning }}>${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning }}>{formatCurrency(inv.amount)}</Text>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning, textTransform: "uppercase", marginTop: 2 }}>{inv.status}</Text>
                 </View>
               </Pressable>
@@ -2983,7 +3054,7 @@ function AdminDashboard() {
                   <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Paid {new Date(inv.issuedAt).toLocaleDateString()}</Text>
                 </View>
-                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.success }}>${inv.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.success }}>{formatCurrency(inv.amount)}</Text>
               </Pressable>
             ))}
           </View>
@@ -3140,6 +3211,17 @@ function AdminDashboard() {
 
     function handleConfirmYes() {
       setPriceConfirmVisible(false);
+      if (selectedPriceClient) {
+        const tierName = selectedTierForClient || selectedPriceClient.tier;
+        const tier = pricingTiers.find(t => t.name === tierName);
+        if (tier) {
+          const prices: Record<string, number> = {};
+          PRICE_LIST_ITEMS.forEach(item => {
+            prices[item.key] = parseFloat(priceList[item.key] || "0") || 0;
+          });
+          updateTierPricing(tier.id, prices);
+        }
+      }
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert("Saved", "Client price list has been updated.");
       setAdminView("hub");
@@ -3414,19 +3496,15 @@ function AdminDashboard() {
           <View style={adm.salesGrid}>
             <View style={adm.salesCard}>
               <Text style={adm.salesCardLabel}>Total Revenue</Text>
-              <Text style={adm.salesCardValue}>${periodRevenue.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+              <Text style={adm.salesCardValue}>{formatCurrency(periodRevenue)}</Text>
             </View>
             <View style={adm.salesCard}>
               <Text style={adm.salesCardLabel}>Collected</Text>
-              <Text style={[adm.salesCardValue, { color: Colors.light.success }]}>${collectedAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+              <Text style={[adm.salesCardValue, { color: Colors.light.success }]}>{formatCurrency(collectedAmount)}</Text>
             </View>
             <View style={adm.salesCard}>
-              <Text style={adm.salesCardLabel}>Active Pipeline</Text>
-              <Text style={[adm.salesCardValue, { color: Colors.light.tint }]}>${activeRevenue.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
-            </View>
-            <View style={adm.salesCard}>
-              <Text style={adm.salesCardLabel}>Shipped / Done</Text>
-              <Text style={adm.salesCardValue}>${completedRevenue.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+              <Text style={adm.salesCardLabel}>Open Invoices</Text>
+              <Text style={[adm.salesCardValue, { color: Colors.light.tint }]}>{formatCurrency(activeRevenue)}</Text>
             </View>
           </View>
 
@@ -3444,7 +3522,7 @@ function AdminDashboard() {
                 <View style={adm.materialBarWrap}>
                   <View style={[adm.materialBar, { width: `${Math.max(pct, 4)}%`, backgroundColor: color }]} />
                 </View>
-                <Text style={adm.materialRevenue}>${data.revenue.toLocaleString("en-US", { minimumFractionDigits: 0 })}</Text>
+                <Text style={adm.materialRevenue}>{formatCurrency(data.revenue)}</Text>
               </View>
             );
           }) : (
@@ -3467,7 +3545,7 @@ function AdminDashboard() {
                     <Text style={adm.listItemSub}>ID: {c.clientNumber} · {clientCases.length} cases</Text>
                   </View>
                 </View>
-                <Text style={adm.clientRevenueAmount}>${rev.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+                <Text style={adm.clientRevenueAmount}>{formatCurrency(rev)}</Text>
               </View>
             );
           }).filter(Boolean)}
@@ -4176,8 +4254,10 @@ function ProviderDashboard() {
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [showUsersAdmin, setShowUsersAdmin] = useState(false);
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
-  const myGroups = getUserGroups(currentUser || "");
+  const myGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === (currentUser || "").toLowerCase()));
   const isGroupMember = myGroups.length > 0;
+  const myLabGroups = myGroups.filter(g => g.type === "lab");
+  const myLabName = myLabGroups.length > 0 ? myLabGroups[0].name : "Allied Dental Lab";
   const myDoctorName = currentUserData?.doctorName || currentUser || "";
   const myCases = isGroupMember ? cases.filter(c =>
     c.doctorName.toLowerCase() === myDoctorName.toLowerCase() ||
@@ -4258,6 +4338,7 @@ function ProviderDashboard() {
                 <View style={{ flex: 1 }}>
                   <Text style={provStyles.caseName}>{c.patientName}</Text>
                   <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
                   <Text style={[provStyles.caseStatus, { color: getStationInfo(c.status).color }]}>{getStationInfo(c.status).label}</Text>
@@ -4281,6 +4362,7 @@ function ProviderDashboard() {
                 <View style={{ flex: 1 }}>
                   <Text style={provStyles.caseName}>{c.patientName}</Text>
                   <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
                 </View>
                 <Ionicons name="checkmark-circle" size={20} color={Colors.light.success} />
               </Pressable>
@@ -4903,7 +4985,7 @@ function MasterAdminDashboard() {
           </View>
           <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
             <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 8 }}>REVENUE</Text>
-            <Text style={{ fontSize: 24, fontFamily: "Inter_700Bold", color: Colors.light.text }}>${totalRevenue.toLocaleString("en-US", { minimumFractionDigits: 2 })}</Text>
+            <Text style={{ fontSize: 24, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{formatCurrency(totalRevenue)}</Text>
           </View>
           <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
             <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 8 }}>LAB USERS</Text>

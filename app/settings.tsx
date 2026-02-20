@@ -19,6 +19,8 @@ import { useTheme } from "@/lib/theme-context";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -77,7 +79,18 @@ export default function SettingsScreen() {
 
             <Pressable
               style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-              onPress={() => Alert.alert("Company Logo", "Upload your company logo to customize the app background and branding. This feature is coming soon.")}
+              onPress={async () => {
+                const result = await ImagePicker.launchImageLibraryAsync({
+                  mediaTypes: "images",
+                  allowsEditing: true,
+                  aspect: [1, 1] as [number, number],
+                  quality: 0.8,
+                });
+                if (!result.canceled && result.assets[0]) {
+                  await AsyncStorage.setItem("@drivesync_company_logo", result.assets[0].uri);
+                  Alert.alert("Logo Updated", "Your company logo has been saved successfully.");
+                }
+              }}
             >
               <View style={[styles.menuIcon, { backgroundColor: colors.accentLight }]}>
                 <MaterialCommunityIcons name="image-edit" size={18} color={colors.accent} />
@@ -164,24 +177,42 @@ export default function SettingsScreen() {
           </View>
         )}
 
-        <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>GROUP</Text>
-          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Pressable
-              style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-              onPress={() => setShowJoinModal(true)}
-            >
-              <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                <Ionicons name="people-circle" size={18} color="#2563EB" />
+        {userType === "lab" ? (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MY LAB</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={styles.menuItem}>
+                <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
+                  <Ionicons name="flask" size={18} color="#7C3AED" />
+                </View>
+                <View style={styles.menuInfo}>
+                  <Text style={[styles.menuTitle, { color: colors.text }]}>{currentUserData?.practiceName || currentUserData?.username}</Text>
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practiceAddress || "Not set"}</Text>
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practicePhone || currentUserData?.phone || "Not set"}</Text>
+                </View>
               </View>
-              <View style={styles.menuInfo}>
-                <Text style={[styles.menuTitle, { color: colors.text }]}>Join a Group</Text>
-                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Send request using admin's username</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-            </Pressable>
+            </View>
           </View>
-        </View>
+        ) : (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>GROUP</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Pressable
+                style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                onPress={() => setShowJoinModal(true)}
+              >
+                <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
+                  <Ionicons name="people-circle" size={18} color="#2563EB" />
+                </View>
+                <View style={styles.menuInfo}>
+                  <Text style={[styles.menuTitle, { color: colors.text }]}>Connect with a Lab</Text>
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Send request to join a lab group</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+              </Pressable>
+            </View>
+          </View>
+        )}
 
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>DATA</Text>
