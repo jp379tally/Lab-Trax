@@ -10,6 +10,7 @@ import {
   FlatList,
   Modal,
   KeyboardAvoidingView,
+  ScrollView,
   Dimensions,
   Animated as RNAnimated,
 } from "react-native";
@@ -88,6 +89,8 @@ export function ChatButton() {
   const [searchQuery, setSearchQuery] = useState("");
   const [showNewMessage, setShowNewMessage] = useState(false);
   const [newMessageSearch, setNewMessageSearch] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [emojiCategory, setEmojiCategory] = useState(0);
   const inputRef = useRef<TextInput>(null);
 
   const myGroups = getUserGroups(currentUser || "");
@@ -164,6 +167,7 @@ export function ChatButton() {
     setSearchQuery("");
     setShowNewMessage(false);
     setNewMessageSearch("");
+    setShowEmojiPicker(false);
   }
 
   function goBackToList() {
@@ -171,6 +175,7 @@ export function ChatButton() {
     setChatInput("");
     setChatImageUri(null);
     setShowNewMessage(false);
+    setShowEmojiPicker(false);
   }
 
   async function handleChatPickImage() {
@@ -207,6 +212,67 @@ export function ChatButton() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
   }
+
+  function insertEmoji(emoji: string) {
+    setChatInput(prev => prev + emoji);
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  }
+
+  const EMOJI_CATEGORIES = [
+    { icon: "time-outline" as const, label: "Recent", emojis: ["\u{1F44D}", "\u2764\uFE0F", "\u{1F602}", "\u{1F64F}", "\u{1F525}", "\u{1F60D}", "\u{1F62D}", "\u{1F389}"] },
+    { icon: "happy-outline" as const, label: "Smileys", emojis: [
+      "\u{1F600}", "\u{1F603}", "\u{1F604}", "\u{1F601}", "\u{1F606}", "\u{1F605}", "\u{1F602}", "\u{1F923}",
+      "\u{1F60A}", "\u{1F607}", "\u{1F642}", "\u{1F643}", "\u{1F609}", "\u{1F60C}", "\u{1F60D}", "\u{1F618}",
+      "\u{1F617}", "\u{1F619}", "\u{1F61A}", "\u{1F60B}", "\u{1F61C}", "\u{1F61D}", "\u{1F61B}", "\u{1F911}",
+      "\u{1F917}", "\u{1F914}", "\u{1F910}", "\u{1F928}", "\u{1F610}", "\u{1F611}", "\u{1F636}", "\u{1F60F}",
+      "\u{1F612}", "\u{1F644}", "\u{1F62C}", "\u{1F925}", "\u{1F60C}", "\u{1F614}", "\u{1F62A}", "\u{1F924}",
+      "\u{1F634}", "\u{1F637}", "\u{1F912}", "\u{1F915}", "\u{1F922}", "\u{1F92E}", "\u{1F927}", "\u{1F975}",
+      "\u{1F976}", "\u{1F974}", "\u{1F635}", "\u{1F92F}", "\u{1F920}", "\u{1F973}", "\u{1F60E}", "\u{1F913}",
+      "\u{1F9D0}", "\u{1F615}", "\u{1F61F}", "\u{1F641}", "\u2639\uFE0F", "\u{1F62E}", "\u{1F62F}", "\u{1F632}",
+      "\u{1F633}", "\u{1F97A}", "\u{1F626}", "\u{1F627}", "\u{1F628}", "\u{1F630}", "\u{1F625}", "\u{1F622}",
+      "\u{1F62D}", "\u{1F631}", "\u{1F616}", "\u{1F623}", "\u{1F61E}", "\u{1F613}", "\u{1F629}", "\u{1F624}",
+    ] },
+    { icon: "hand-left-outline" as const, label: "Hands", emojis: [
+      "\u{1F44D}", "\u{1F44E}", "\u{1F44A}", "\u270A", "\u{1F91B}", "\u{1F91C}", "\u{1F44F}", "\u{1F64C}",
+      "\u{1F450}", "\u{1F932}", "\u{1F91D}", "\u{1F64F}", "\u270D\uFE0F", "\u{1F485}", "\u{1F933}", "\u{1F4AA}",
+      "\u{1F9B5}", "\u{1F9B6}", "\u{1F442}", "\u{1F443}", "\u{1F9E0}", "\u{1F9B7}", "\u{1F9B4}", "\u{1F440}",
+      "\u{1F441}\uFE0F", "\u{1F445}", "\u{1F444}", "\u{1F44B}", "\u{1F91A}", "\u{1F590}\uFE0F", "\u270B",
+      "\u{1F596}", "\u{1F44C}", "\u270C\uFE0F", "\u{1F91E}", "\u{1F91F}", "\u{1F918}", "\u{1F919}", "\u{1F448}",
+      "\u{1F449}", "\u{1F446}", "\u{1F447}", "\u261D\uFE0F", "\u{1F595}", "\u{1F91A}",
+    ] },
+    { icon: "heart-outline" as const, label: "Symbols", emojis: [
+      "\u2764\uFE0F", "\u{1F9E1}", "\u{1F49B}", "\u{1F49A}", "\u{1F499}", "\u{1F49C}", "\u{1F5A4}", "\u{1F90D}",
+      "\u{1F90E}", "\u{1F494}", "\u2763\uFE0F", "\u{1F495}", "\u{1F49E}", "\u{1F493}", "\u{1F497}", "\u{1F496}",
+      "\u{1F498}", "\u{1F49D}", "\u{1F49F}", "\u262E\uFE0F", "\u271D\uFE0F", "\u262A\uFE0F", "\u{1F549}\uFE0F",
+      "\u2721\uFE0F", "\u{1F52F}", "\u{1F54E}", "\u262F\uFE0F", "\u2626\uFE0F", "\u{1F6D0}", "\u26CE",
+      "\u2648", "\u2649", "\u264A", "\u264B", "\u264C", "\u264D", "\u264E", "\u264F",
+      "\u2650", "\u2651", "\u2652", "\u2653", "\u{1F194}", "\u269B\uFE0F", "\u{1F251}",
+      "\u2622\uFE0F", "\u2623\uFE0F", "\u{1F4F4}", "\u{1F4F3}", "\u{1F236}", "\u{1F21A}",
+    ] },
+    { icon: "paw-outline" as const, label: "Animals", emojis: [
+      "\u{1F436}", "\u{1F431}", "\u{1F42D}", "\u{1F439}", "\u{1F430}", "\u{1F98A}", "\u{1F43B}", "\u{1F43C}",
+      "\u{1F428}", "\u{1F42F}", "\u{1F981}", "\u{1F42E}", "\u{1F437}", "\u{1F43D}", "\u{1F438}", "\u{1F435}",
+      "\u{1F648}", "\u{1F649}", "\u{1F64A}", "\u{1F412}", "\u{1F414}", "\u{1F427}", "\u{1F426}", "\u{1F424}",
+      "\u{1F423}", "\u{1F425}", "\u{1F986}", "\u{1F985}", "\u{1F989}", "\u{1F987}", "\u{1F43A}", "\u{1F417}",
+      "\u{1F434}", "\u{1F984}", "\u{1F41D}", "\u{1F41B}", "\u{1F98B}", "\u{1F40C}", "\u{1F41E}", "\u{1F41C}",
+    ] },
+    { icon: "leaf-outline" as const, label: "Nature", emojis: [
+      "\u{1F33B}", "\u{1F339}", "\u{1F940}", "\u{1F33A}", "\u{1F338}", "\u{1F33C}", "\u{1F337}", "\u{1F331}",
+      "\u{1F332}", "\u{1F333}", "\u{1F334}", "\u{1F335}", "\u{1F33E}", "\u{1F33F}", "\u2618\uFE0F", "\u{1F340}",
+      "\u{1F341}", "\u{1F342}", "\u{1F343}", "\u{1F347}", "\u{1F348}", "\u{1F349}", "\u{1F34A}", "\u{1F34B}",
+      "\u{1F34C}", "\u{1F34D}", "\u{1F96D}", "\u{1F34E}", "\u{1F34F}", "\u{1F350}", "\u{1F351}", "\u{1F352}",
+      "\u{1F353}", "\u{1F95D}", "\u{1F345}", "\u{1F965}", "\u{1F951}", "\u{1F346}", "\u{1F954}", "\u{1F955}",
+    ] },
+    { icon: "flag-outline" as const, label: "Objects", emojis: [
+      "\u26BD", "\u{1F3C0}", "\u{1F3C8}", "\u26BE", "\u{1F94E}", "\u{1F3BE}", "\u{1F3D0}", "\u{1F3C9}",
+      "\u{1F94F}", "\u{1F3B1}", "\u{1F3D3}", "\u{1F3F8}", "\u{1F3D2}", "\u{1F3D1}", "\u{1F94D}", "\u{1F3AF}",
+      "\u26F3", "\u{1F94A}", "\u{1F94B}", "\u{1F3BF}", "\u26F7\uFE0F", "\u{1F3C2}", "\u{1F3CB}\uFE0F",
+      "\u{1F525}", "\u{1F4A5}", "\u{1F31F}", "\u2B50", "\u{1F31E}", "\u{1F31D}", "\u{1F31B}", "\u{1F31C}",
+      "\u{1F319}", "\u{1F4AB}", "\u2728", "\u{1F388}", "\u{1F389}", "\u{1F38A}", "\u{1F38E}", "\u{1F3AE}",
+    ] },
+  ];
 
   const activeConv = activeConversationId ? conversations.find(c => c.id === activeConversationId) : null;
   const activeMsgs = activeConversationId
@@ -500,7 +566,7 @@ export function ChatButton() {
           </View>
         )}
 
-        <View style={[s.inputBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+        <View style={[s.inputBar, { paddingBottom: showEmojiPicker ? 4 : Math.max(insets.bottom, 8) }]}>
           <Pressable
             onPress={handleChatPickImage}
             style={({ pressed }) => [s.inputCircleBtn, { opacity: pressed ? 0.6 : 1 }]}
@@ -523,7 +589,14 @@ export function ChatButton() {
               placeholderTextColor={MESSENGER_SECONDARY}
               multiline
               maxLength={2000}
+              onFocus={() => setShowEmojiPicker(false)}
             />
+            <Pressable
+              onPress={() => setShowEmojiPicker(!showEmojiPicker)}
+              style={({ pressed }) => [{ padding: 4, opacity: pressed ? 0.6 : 1 }]}
+            >
+              <Ionicons name={showEmojiPicker ? "keypad" : "happy-outline"} size={22} color={MESSENGER_BLUE} />
+            </Pressable>
           </View>
           {chatInput.trim() || chatImageUri ? (
             <Pressable
@@ -541,6 +614,44 @@ export function ChatButton() {
             </Pressable>
           )}
         </View>
+
+        {showEmojiPicker && (
+          <View style={[s.emojiPicker, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+            <View style={s.emojiCategoryBar}>
+              {EMOJI_CATEGORIES.map((cat, idx) => (
+                <Pressable
+                  key={cat.label}
+                  onPress={() => setEmojiCategory(idx)}
+                  style={[s.emojiCategoryBtn, emojiCategory === idx && s.emojiCategoryBtnActive]}
+                >
+                  <Ionicons
+                    name={cat.icon}
+                    size={20}
+                    color={emojiCategory === idx ? MESSENGER_BLUE : MESSENGER_SECONDARY}
+                  />
+                </Pressable>
+              ))}
+            </View>
+            <ScrollView
+              style={s.emojiGrid}
+              contentContainerStyle={s.emojiGridContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={s.emojiRow}>
+                {EMOJI_CATEGORIES[emojiCategory].emojis.map((emoji, idx) => (
+                  <Pressable
+                    key={emoji + idx}
+                    onPress={() => insertEmoji(emoji)}
+                    style={({ pressed }) => [s.emojiBtn, pressed && { backgroundColor: MESSENGER_GRAY }]}
+                  >
+                    <Text style={s.emojiText}>{emoji}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </ScrollView>
+          </View>
+        )}
       </>
     );
   }
@@ -990,5 +1101,47 @@ const s = StyleSheet.create({
     color: MESSENGER_DARK,
     padding: 0,
     maxHeight: 80,
+  },
+
+  emojiPicker: {
+    backgroundColor: MESSENGER_BG,
+    borderTopWidth: 0.5,
+    borderTopColor: MESSENGER_BORDER,
+  },
+  emojiCategoryBar: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingVertical: 6,
+    borderBottomWidth: 0.5,
+    borderBottomColor: MESSENGER_BORDER,
+    paddingHorizontal: 8,
+  },
+  emojiCategoryBtn: {
+    padding: 8,
+    borderRadius: 8,
+  },
+  emojiCategoryBtnActive: {
+    backgroundColor: "#E7F3FF",
+  },
+  emojiGrid: {
+    height: 220,
+  },
+  emojiGridContent: {
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+  },
+  emojiRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  emojiBtn: {
+    width: "12.5%",
+    aspectRatio: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+  },
+  emojiText: {
+    fontSize: 26,
   },
 });
