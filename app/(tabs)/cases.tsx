@@ -22,13 +22,15 @@ import { getStationInfo, STATIONS, CaseStatus, LabCase } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, getUserGroups } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, getUserGroups, updateCaseStatus } = useApp();
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<CaseStatus | "ALL">("ALL");
   const [showBarcodeLocate, setShowBarcodeLocate] = useState(false);
   const [barcodeLocateScanned, setBarcodeLocateScanned] = useState(false);
+  const [locateCaseId, setLocateCaseId] = useState<string | null>(null);
+  const locateCase = locateCaseId ? cases.find(c => c.id === locateCaseId) : null;
   const [permission, requestPermission] = useCameraPermissions();
 
   function handleBarcodeLocateScanned({ data }: { data: string }) {
@@ -121,27 +123,17 @@ export default function CasesScreen() {
             params: { id: item.id },
           })
         }
-        onLongPress={() =>
+        onLongPress={() => {
+          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           Alert.alert(
             "Locate Case",
             "Would you like to locate this case?",
             [
-              {
-                text: "No",
-                onPress: () => {},
-                style: "cancel",
-              },
-              {
-                text: "Yes",
-                onPress: () =>
-                  router.push({
-                    pathname: "/case/[id]",
-                    params: { id: item.id },
-                  }),
-              },
+              { text: "No", style: "cancel" },
+              { text: "Yes", onPress: () => setLocateCaseId(item.id) },
             ]
-          )
-        }
+          );
+        }}
       >
         <View style={styles.caseTop}>
           <View style={styles.caseLeft}>
@@ -362,9 +354,131 @@ export default function CasesScreen() {
           )}
         </View>
       </Modal>
+
+      <Modal visible={!!locateCaseId} animationType="fade" transparent>
+        <View style={locStyles.overlay}>
+          <View style={locStyles.card}>
+            <Text style={locStyles.title}>Locate Case</Text>
+            {locateCase && (
+              <Text style={locStyles.subtitle}>
+                {locateCase.patientName} ({locateCase.caseNumber})
+              </Text>
+            )}
+            <Text style={locStyles.prompt}>Select a station:</Text>
+            <View style={locStyles.stationGrid}>
+              {STATIONS.map((station) => {
+                const isCurrent = locateCase?.status === station.id;
+                return (
+                  <Pressable
+                    key={station.id}
+                    onPress={() => {
+                      if (!isCurrent && locateCaseId) {
+                        const initials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
+                        updateCaseStatus(locateCaseId, station.id, initials);
+                        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                        setLocateCaseId(null);
+                      }
+                    }}
+                    disabled={isCurrent}
+                    style={[
+                      locStyles.stationChip,
+                      isCurrent && { borderColor: station.color, backgroundColor: station.color + "15" },
+                    ]}
+                  >
+                    <View style={[locStyles.stationDot, { backgroundColor: station.color }]} />
+                    <Text style={[locStyles.stationLabel, isCurrent && { color: station.color, fontFamily: "Inter_700Bold" }]}>
+                      {station.label}
+                    </Text>
+                    {isCurrent && <Ionicons name="checkmark" size={14} color={station.color} />}
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable onPress={() => setLocateCaseId(null)} style={locStyles.cancelBtn}>
+              <Text style={locStyles.cancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
+
+const locStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  card: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 24,
+    width: "100%",
+    maxWidth: 380,
+  },
+  title: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    textAlign: "center",
+  },
+  subtitle: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+    textAlign: "center",
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  prompt: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+    marginBottom: 12,
+    marginTop: 8,
+  },
+  stationGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 16,
+  },
+  stationChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.light.border,
+    backgroundColor: Colors.light.surfaceSecondary,
+  },
+  stationDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  stationLabel: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  cancelBtn: {
+    alignItems: "center",
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.light.surfaceSecondary,
+  },
+  cancelText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+});
 
 const styles = StyleSheet.create({
   container: {
