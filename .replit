@@ -5,13 +5,17 @@ modules = ["nodejs-22", "postgresql-16"]
 channel = "stable-24_05"
 
 [deployment]
-deploymentTarget = "cloudrun"
-build = ["sh", "-c", "npm run expo:static:build && npm run server:build"]
-run = ["npm", "run", "server:prod"]
+deploymentTarget = "autoscale"
+build = ["npm", "run", "build"]
+run = ["npm", "run", "start"]
 
 [[ports]]
 localPort = 5000
 externalPort = 5000
+
+[[ports]]
+localPort = 5904
+externalPort = 3000
 
 [[ports]]
 localPort = 8081
