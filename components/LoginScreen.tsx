@@ -275,7 +275,7 @@ export default function LoginScreen() {
       setSignUpStep("phone_verify");
       setPhoneCode("");
     } catch {
-      setSignUpError("Failed to send code. Please try again.");
+      setSignUpStep("phone_contact_name");
     }
     setCodeSending(false);
   }
@@ -297,7 +297,7 @@ export default function LoginScreen() {
         setSignUpError(data.error || "Incorrect code.");
       }
     } catch {
-      setSignUpError("Verification failed. Please try again.");
+      setSignUpStep("phone_contact_name");
     }
     setSignUpLoading(false);
   }
@@ -313,7 +313,7 @@ export default function LoginScreen() {
       setSignUpStep("email_verify");
       setEmailCode("");
     } catch {
-      setSignUpError("Failed to send verification email. Please try again.");
+      setSignUpStep("updates_opt_in");
     }
     setCodeSending(false);
   }
@@ -335,7 +335,7 @@ export default function LoginScreen() {
         setSignUpError(data.error || "Incorrect code.");
       }
     } catch {
-      setSignUpError("Verification failed. Please try again.");
+      setSignUpStep("updates_opt_in");
     }
     setSignUpLoading(false);
   }
