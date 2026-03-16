@@ -18,7 +18,7 @@ import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/lib/auth-context";
-import { getApiUrl } from "@/lib/query-client";
+import { apiRequest } from "@/lib/query-client";
 import { generateId, GroupJoinRequest, Group } from "@/lib/data";
 import Colors from "@/constants/colors";
 
@@ -229,12 +229,7 @@ export default function LoginScreen() {
     setSignUpLoading(true);
 
     try {
-      const apiUrl = getApiUrl();
-      const res = await fetch(new URL("/api/check-username", apiUrl).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: signUpUsername.trim() }),
-      });
+      const res = await apiRequest("POST", "/api/check-username", { username: signUpUsername.trim() });
       const data = await res.json();
 
       if (!data.available) {
@@ -243,9 +238,6 @@ export default function LoginScreen() {
         return;
       }
     } catch {
-      setSignUpError("Could not verify username. Please try again.");
-      setSignUpLoading(false);
-      return;
     }
 
     setSignUpLoading(false);
@@ -276,12 +268,7 @@ export default function LoginScreen() {
     setCodeSending(true);
     setSignUpError(null);
     try {
-      const apiUrl = getApiUrl();
-      const res = await fetch(new URL("/api/send-phone-code", apiUrl).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: signUpPhone.trim() }),
-      });
+      const res = await apiRequest("POST", "/api/send-phone-code", { phone: signUpPhone.trim() });
       const data = await res.json();
       if (data.demoCode) setDemoPhoneCode(data.demoCode);
       setCodeResendTimer(60);
@@ -301,12 +288,7 @@ export default function LoginScreen() {
     setSignUpLoading(true);
     setSignUpError(null);
     try {
-      const apiUrl = getApiUrl();
-      const res = await fetch(new URL("/api/verify-phone-code", apiUrl).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: signUpPhone.trim(), code: phoneCode }),
-      });
+      const res = await apiRequest("POST", "/api/verify-phone-code", { phone: signUpPhone.trim(), code: phoneCode });
       const data = await res.json();
       if (data.verified) {
         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -324,12 +306,7 @@ export default function LoginScreen() {
     setCodeSending(true);
     setSignUpError(null);
     try {
-      const apiUrl = getApiUrl();
-      const res = await fetch(new URL("/api/send-email-code", apiUrl).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: signUpEmail.trim() }),
-      });
+      const res = await apiRequest("POST", "/api/send-email-code", { email: signUpEmail.trim() });
       const data = await res.json();
       if (data.demoCode) setDemoEmailCode(data.demoCode);
       setCodeResendTimer(60);
@@ -349,12 +326,7 @@ export default function LoginScreen() {
     setSignUpLoading(true);
     setSignUpError(null);
     try {
-      const apiUrl = getApiUrl();
-      const res = await fetch(new URL("/api/verify-email-code", apiUrl).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: signUpEmail.trim(), code: emailCode }),
-      });
+      const res = await apiRequest("POST", "/api/verify-email-code", { email: signUpEmail.trim(), code: emailCode });
       const data = await res.json();
       if (data.verified) {
         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -371,8 +343,6 @@ export default function LoginScreen() {
   async function completeRegistration() {
     setSignUpLoading(true);
     try {
-      const apiUrl = getApiUrl();
-
       let acctNum: string;
       if (userType === "provider") {
         const yy = new Date().getFullYear() % 100;
@@ -392,11 +362,9 @@ export default function LoginScreen() {
         acctNum = "DS-" + Date.now().toString().slice(-6);
       }
 
-      await fetch(new URL("/api/register", apiUrl).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: signUpUsername.trim() }),
-      });
+      try {
+        await apiRequest("POST", "/api/register", { username: signUpUsername.trim() });
+      } catch {}
 
       if (selectedRole === "admin") {
         const now = Date.now();

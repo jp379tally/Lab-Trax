@@ -11,6 +11,7 @@ import React, {
 import { AppState, AppStateStatus, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
+import { fetch } from "expo/fetch";
 import { logAudit } from "./audit";
 import { getApiUrl } from "./query-client";
 
