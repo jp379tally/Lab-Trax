@@ -273,16 +273,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "No image provided" });
       }
 
+      console.log("Analyzing prescription, image data length:", imageBase64.length);
+
       const dataUrl = imageBase64.startsWith("data:")
         ? imageBase64
         : `data:image/jpeg;base64,${imageBase64}`;
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read handwritten or printed dental prescription forms and extract ALL information. Read every word on the document carefully.
+      const models = ["gpt-4o", "gpt-4o-mini"];
+      let response: any = null;
+      let lastModelErr: any = null;
+      const visionMessages = [
+        {
+          role: "system" as const,
+          content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read handwritten or printed dental prescription forms and extract ALL information. Read every word on the document carefully.
 
 Return ONLY valid JSON with these fields:
 {
@@ -306,23 +309,41 @@ IMPORTANT RULES:
 - Include ALL notes and instructions in the notes field, even if they seem minor
 - Patient name is CRITICAL - look everywhere on the form for it
 - Tooth numbers should use American dental numbering (1-32)`,
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Analyze this dental prescription document thoroughly. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully.",
-              },
-              {
-                type: "image_url",
-                image_url: { url: dataUrl, detail: "high" },
-              },
-            ],
-          },
-        ],
-        max_tokens: 1000,
-      });
+        },
+        {
+          role: "user" as const,
+          content: [
+            {
+              type: "text" as const,
+              text: "Analyze this dental prescription document thoroughly. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully.",
+            },
+            {
+              type: "image_url" as const,
+              image_url: { url: dataUrl, detail: "high" as const },
+            },
+          ],
+        },
+      ];
+
+      for (const model of models) {
+        try {
+          console.log("Trying model:", model);
+          response = await openai.chat.completions.create({
+            model,
+            messages: visionMessages,
+            max_tokens: 1000,
+          });
+          console.log("Model", model, "succeeded");
+          break;
+        } catch (modelErr: any) {
+          console.log("Model", model, "failed:", modelErr?.message);
+          lastModelErr = modelErr;
+        }
+      }
+
+      if (!response) {
+        throw lastModelErr || new Error("All models failed");
+      }
 
       const content = response.choices[0]?.message?.content || "{}";
       let parsed;

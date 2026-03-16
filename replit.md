@@ -69,4 +69,4 @@ Preferred communication style: Simple, everyday language.
 ### Server Configuration
 - **Single instance**: Server listens without `reusePort` to ensure a single process handles all requests. This is critical for in-memory state like verification codes.
 - **Body parser limit**: Express JSON body parser is set to 50MB to support base64-encoded prescription photos from the camera.
-- **AI prescription scanning**: POST `/api/analyze-prescription` uses GPT-4o-mini vision via Replit's AI integration to extract doctor name, patient name, tooth numbers, shade, material, and notes from scanned dental prescriptions.
+- **AI prescription scanning**: POST `/api/analyze-prescription` uses GPT-4o vision (with GPT-4o-mini fallback) via Replit's AI integration to extract doctor name, patient name, tooth numbers, shade, material, and notes from scanned dental prescriptions. Images are compressed to max 1024px on the client side before sending (web: canvas resize, native: expo-image-manipulator). The client uses `resilientFetch` with a 90s timeout and shows an Alert on failure instead of failing silently.

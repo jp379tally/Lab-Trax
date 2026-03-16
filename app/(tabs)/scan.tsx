@@ -553,6 +553,101 @@ export default function ScanScreen() {
     scanAnim.setValue(0);
   }
 
+  async function compressImageForAI(uri: string): Promise<string> {
+    if (Platform.OS === "web") {
+      const response = await globalThis.fetch(uri);
+      const blob = await response.blob();
+      return new Promise<string>((resolve, reject) => {
+        const img = new (globalThis as any).Image();
+        const objUrl = URL.createObjectURL(blob);
+        img.onload = () => {
+          URL.revokeObjectURL(objUrl);
+          const maxDim = 1024;
+          let w = img.width;
+          let h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+            else { w = Math.round(w * maxDim / h); h = maxDim; }
+          }
+          const canvas = (globalThis as any).document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL("image/jpeg", 0.7));
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(objUrl);
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        };
+        img.src = objUrl;
+      });
+    } else {
+      const FileSystem = require("expo-file-system");
+      const info = await FileSystem.getInfoAsync(uri);
+      const fileSize = info.size || 0;
+      if (fileSize > 500000) {
+        try {
+          const ImageManipulator = require("expo-image-manipulator");
+          const manipulated = await ImageManipulator.manipulateAsync(
+            uri,
+            [{ resize: { width: 1024 } }],
+            { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+          );
+          const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          return `data:image/jpeg;base64,${fileBase64}`;
+        } catch {
+          const fileBase64 = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          return `data:image/jpeg;base64,${fileBase64}`;
+        }
+      }
+      const fileBase64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      return `data:image/jpeg;base64,${fileBase64}`;
+    }
+  }
+
+  async function sendToAI(base64Data: string): Promise<{ success: boolean; data?: any }> {
+    const { resilientFetch } = await import("@/lib/query-client");
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+    try {
+      const res = await resilientFetch("/api/analyze-prescription", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64Data }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.log("AI response error:", res.status, errText);
+        return { success: false };
+      }
+      return await res.json();
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      console.log("AI fetch error:", err?.message || err);
+      return { success: false };
+    }
+  }
+
   async function handleFinishedReview() {
     const entries: ActivityEntry[] = [];
     casePhotos.forEach((uri) => {
@@ -572,61 +667,46 @@ export default function ScanScreen() {
     if (analyzeUri) {
       setIsAnalyzing(true);
       try {
-        let base64Data: string;
-        if (Platform.OS === "web") {
-          const response = await globalThis.fetch(analyzeUri);
-          const blob = await response.blob();
-          const reader = new FileReader();
-          base64Data = await new Promise<string>((resolve) => {
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.readAsDataURL(blob);
-          });
-        } else {
-          const FileSystem = require("expo-file-system");
-          const fileBase64 = await FileSystem.readAsStringAsync(analyzeUri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          base64Data = `data:image/jpeg;base64,${fileBase64}`;
-        }
+        const base64Data = await compressImageForAI(analyzeUri);
+        console.log("AI: Sending image, base64 length:", base64Data.length);
 
-        const { resilientFetch } = await import("@/lib/query-client");
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        const result = await sendToAI(base64Data);
+        console.log("AI: Response received, success:", result.success);
 
-        const aiResponse = await resilientFetch("/api/analyze-prescription", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageBase64: base64Data }),
-          signal: controller.signal,
-        });
+        if (result.success && result.data) {
+          const d = result.data;
+          if (d.doctorName) setDoctorName(d.doctorName);
+          if (d.patientName) setPatientName(d.patientName);
+          else if (d.patientInitials) setPatientName(d.patientInitials);
+          if (d.caseType) setCaseType(d.caseType);
+          if (d.toothIndices) {
+            setToothIndices(d.toothIndices);
+            const nums = d.toothIndices.match(/\d+/g);
+            if (nums) setSelectedTeeth(nums.map(Number).filter((n: number) => n >= 1 && n <= 32).sort((a: number, b: number) => a - b));
+          }
+          if (d.shade) setShade(d.shade);
+          if (d.material) setMaterial(d.material);
+          if (d.dueDate) setDueDate(d.dueDate);
+          if (d.isRush !== undefined) setIsRush(d.isRush);
+          if (d.notes) setNotes(d.notes);
+          aiSuccess = true;
 
-        clearTimeout(timeoutId);
-
-        if (aiResponse.ok) {
-          const result = await aiResponse.json();
-          if (result.success && result.data) {
-            const d = result.data;
-            if (d.doctorName) setDoctorName(d.doctorName);
-            if (d.patientName) setPatientName(d.patientName);
-            else if (d.patientInitials) setPatientName(d.patientInitials);
-            if (d.caseType) setCaseType(d.caseType);
-            if (d.toothIndices) {
-              setToothIndices(d.toothIndices);
-              const nums = d.toothIndices.match(/\d+/g);
-              if (nums) setSelectedTeeth(nums.map(Number).filter((n: number) => n >= 1 && n <= 32).sort((a: number, b: number) => a - b));
-            }
-            if (d.shade) setShade(d.shade);
-            if (d.material) setMaterial(d.material);
-            if (d.dueDate) setDueDate(d.dueDate);
-            if (d.isRush !== undefined) setIsRush(d.isRush);
-            if (d.notes) setNotes(d.notes);
-            aiSuccess = true;
+          if (Platform.OS !== "web") {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
         }
-      } catch (err) {
-        console.log("AI analysis failed, using manual entry:", err);
+      } catch (err: any) {
+        console.log("AI analysis failed:", err?.message || err);
       } finally {
         setIsAnalyzing(false);
+      }
+
+      if (!aiSuccess) {
+        Alert.alert(
+          "AI Analysis",
+          "Could not read the prescription automatically. Please fill in the fields manually.",
+          [{ text: "OK" }]
+        );
       }
     }
 
