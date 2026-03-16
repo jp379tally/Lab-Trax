@@ -1,11 +1,11 @@
 import { fetch } from "expo/fetch";
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-/**
- * Gets the base URL for the Express API server (e.g., "http://localhost:3000")
- * @returns {string} The API base URL
- */
+let cachedBaseUrl: string | null = null;
+
 export function getApiUrl(): string {
+  if (cachedBaseUrl) return cachedBaseUrl;
+
   let host = process.env.EXPO_PUBLIC_DOMAIN;
 
   if (!host) {
@@ -16,6 +16,37 @@ export function getApiUrl(): string {
   url.port = "";
 
   return url.href;
+}
+
+function getApiUrlWithPort(): string | null {
+  let host = process.env.EXPO_PUBLIC_DOMAIN;
+  if (!host || !host.includes(":")) return null;
+  return new URL(`https://${host}`).href;
+}
+
+async function resilientFetch(
+  path: string,
+  options?: RequestInit,
+): Promise<Response> {
+  const primaryUrl = getApiUrl();
+  const primaryFullUrl = new URL(path, primaryUrl).toString();
+
+  try {
+    const res = await fetch(primaryFullUrl, options);
+    cachedBaseUrl = primaryUrl;
+    return res;
+  } catch (primaryError) {
+    const fallbackUrl = getApiUrlWithPort();
+    if (fallbackUrl && fallbackUrl !== primaryUrl) {
+      try {
+        const fallbackFullUrl = new URL(path, fallbackUrl).toString();
+        const res = await fetch(fallbackFullUrl, options);
+        cachedBaseUrl = fallbackUrl;
+        return res;
+      } catch {}
+    }
+    throw primaryError;
+  }
 }
 
 async function throwIfResNotOk(res: Response) {
@@ -30,10 +61,7 @@ export async function apiRequest(
   route: string,
   data?: unknown | undefined,
 ): Promise<Response> {
-  const baseUrl = getApiUrl();
-  const url = new URL(route, baseUrl);
-
-  const res = await fetch(url.toString(), {
+  const res = await resilientFetch(route, {
     method,
     headers: data ? { "Content-Type": "application/json" } : {},
     body: data ? JSON.stringify(data) : undefined,
@@ -45,15 +73,16 @@ export async function apiRequest(
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";
+export { resilientFetch };
+
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const baseUrl = getApiUrl();
-    const url = new URL(queryKey.join("/") as string, baseUrl);
+    const route = queryKey.join("/") as string;
 
-    const res = await fetch(url.toString(), {
+    const res = await resilientFetch(route, {
       credentials: "include",
     });
 

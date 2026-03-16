@@ -586,8 +586,8 @@ export default function ScanScreen() {
           base64Data = `data:image/jpeg;base64,${fileBase64}`;
         }
 
-        const apiUrl = getApiUrl();
-        const aiResponse = await fetch(new URL("/api/analyze-prescription", apiUrl).toString(), {
+        const { resilientFetch } = await import("@/lib/query-client");
+        const aiResponse = await resilientFetch("/api/analyze-prescription", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ imageBase64: base64Data }),

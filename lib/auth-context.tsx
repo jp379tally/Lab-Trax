@@ -11,9 +11,8 @@ import React, {
 import { AppState, AppStateStatus, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
-import { fetch } from "expo/fetch";
 import { logAudit } from "./audit";
-import { getApiUrl } from "./query-client";
+import { getApiUrl, resilientFetch } from "./query-client";
 
 interface StoredUser {
   id?: string;
@@ -112,8 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function fetchAllUsers() {
     try {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/auth/users`);
+      const res = await resilientFetch("/api/auth/users");
       if (res.ok) {
         const data = await res.json();
         setRegisteredUsers(data.users || []);
@@ -166,8 +164,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function login(username: string, password: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/auth/login`, {
+      const res = await resilientFetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
@@ -217,8 +214,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }): Promise<{ success: boolean; error?: string }> {
     try {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/auth/register`, {
+      const res = await resilientFetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -284,8 +280,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function changePassword(currentPwd: string, newPassword: string): Promise<{ success: boolean; error?: string }> {
     if (!currentUser || !currentUserId) return { success: false, error: "Not logged in" };
     try {
-      const baseUrl = getApiUrl();
-      const res = await fetch(`${baseUrl}api/auth/users/${currentUserId}/password`, {
+      const res = await resilientFetch(`/api/auth/users/${currentUserId}/password`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ currentPassword: currentPwd, newPassword }),

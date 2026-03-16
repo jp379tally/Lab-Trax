@@ -60,8 +60,8 @@ export default function ChatScreen() {
         `Case ${c.caseNumber}: Patient ${c.patientName}, Dr. ${c.doctorName}, Status: ${c.status}, Material: ${c.material}, Teeth: ${c.toothIndices}, Shade: ${c.shade}, Due: ${c.dueDate}${c.isRush ? " (RUSH)" : ""}`
       ).join("\n");
 
-      const apiUrl = getApiUrl();
-      const response = await fetch(new URL("/api/ai-chat", apiUrl).toString(), {
+      const { resilientFetch } = await import("@/lib/query-client");
+      const response = await resilientFetch("/api/ai-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: userMsg.content, caseContext }),
