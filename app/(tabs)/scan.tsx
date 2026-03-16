@@ -10,6 +10,7 @@ import {
   Alert,
   Modal,
   Animated as RNAnimated,
+  ActivityIndicator,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -110,6 +111,7 @@ export default function ScanScreen() {
   const [timeDuePeriod, setTimeDuePeriod] = useState<"AM" | "PM">("AM");
   const [casePhotos, setCasePhotos] = useState<string[]>([]);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
   const [doctorSearch, setDoctorSearch] = useState("");
   const [patientDropdownOpen, setPatientDropdownOpen] = useState(false);
@@ -568,10 +570,11 @@ export default function ScanScreen() {
     const analyzeUri = casePhotos[0] || capturedUri;
     let aiSuccess = false;
     if (analyzeUri) {
+      setIsAnalyzing(true);
       try {
         let base64Data: string;
         if (Platform.OS === "web") {
-          const response = await fetch(analyzeUri);
+          const response = await globalThis.fetch(analyzeUri);
           const blob = await response.blob();
           const reader = new FileReader();
           base64Data = await new Promise<string>((resolve) => {
@@ -587,11 +590,17 @@ export default function ScanScreen() {
         }
 
         const { resilientFetch } = await import("@/lib/query-client");
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
+
         const aiResponse = await resilientFetch("/api/analyze-prescription", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ imageBase64: base64Data }),
+          signal: controller.signal,
         });
+
+        clearTimeout(timeoutId);
 
         if (aiResponse.ok) {
           const result = await aiResponse.json();
@@ -616,6 +625,8 @@ export default function ScanScreen() {
         }
       } catch (err) {
         console.log("AI analysis failed, using manual entry:", err);
+      } finally {
+        setIsAnalyzing(false);
       }
     }
 
@@ -2246,15 +2257,38 @@ export default function ScanScreen() {
             </Pressable>
             <Pressable
               onPress={handleFinishedReview}
+              disabled={isAnalyzing}
               style={({ pressed }) => [
                 styles.reviewActionBtn,
                 styles.actionBtnPrimary,
                 pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] },
+                isAnalyzing && { opacity: 0.6 },
               ]}
             >
-              <Ionicons name="checkmark-circle" size={22} color="#FFF" />
-              <Text style={styles.actionBtnText}>Finished</Text>
+              {isAnalyzing ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Ionicons name="checkmark-circle" size={22} color="#FFF" />
+              )}
+              <Text style={styles.actionBtnText}>{isAnalyzing ? "Analyzing..." : "Finished"}</Text>
             </Pressable>
+          </View>
+        )}
+        {isAnalyzing && (
+          <View style={{
+            position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", zIndex: 100,
+          }}>
+            <View style={{
+              backgroundColor: "rgba(30,30,30,0.95)", borderRadius: 16, padding: 32,
+              alignItems: "center", gap: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.1)",
+            }}>
+              <ActivityIndicator size="large" color="#4F8EF7" />
+              <Text style={{ color: "#FFF", fontSize: 18, fontFamily: "Inter_600SemiBold" }}>Analyzing Prescription</Text>
+              <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>
+                AI is reading the document...
+              </Text>
+            </View>
           </View>
         )}
       </View>

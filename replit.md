@@ -63,5 +63,10 @@ Preferred communication style: Simple, everyday language.
 - `REPLIT_INTERNAL_APP_DOMAIN`: Replit deployment domain for production builds.
 
 ### API Proxy (Development)
-- **Metro proxy**: `metro.config.js` configures the Expo dev server (port 8081) to proxy `/api` requests to the Express backend (port 5000). This ensures API calls work without specifying a port number, matching the production behavior where Express serves both API and static assets on a single port.
+- **Metro proxy**: `metro.config.js` configures the Expo dev server (port 8081) to proxy `/api` requests to the Express backend (port 5000) using a single shared `http-proxy-middleware` instance with 120s timeout. This ensures API calls work without specifying a port number, matching the production behavior where Express serves both API and static assets on a single port.
 - **`.local/` exclusion**: Metro's file watcher excludes `.local/` to prevent ENOENT crashes from transient Replit log files.
+
+### Server Configuration
+- **Single instance**: Server listens without `reusePort` to ensure a single process handles all requests. This is critical for in-memory state like verification codes.
+- **Body parser limit**: Express JSON body parser is set to 50MB to support base64-encoded prescription photos from the camera.
+- **AI prescription scanning**: POST `/api/analyze-prescription` uses GPT-4o-mini vision via Replit's AI integration to extract doctor name, patient name, tooth numbers, shade, material, and notes from scanned dental prescriptions.

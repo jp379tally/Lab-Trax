@@ -21,15 +21,19 @@ if (existingBlockList) {
   };
 }
 
+const apiProxy = createProxyMiddleware({
+  target: "http://localhost:5000",
+  changeOrigin: true,
+  timeout: 120000,
+  proxyTimeout: 120000,
+});
+
 config.server = {
   ...config.server,
   enhanceMiddleware: (middleware) => {
     return (req, res, next) => {
       if (req.url && req.url.startsWith("/api")) {
-        return createProxyMiddleware({
-          target: "http://localhost:5000",
-          changeOrigin: true,
-        })(req, res, next);
+        return apiProxy(req, res, next);
       }
       return middleware(req, res, next);
     };

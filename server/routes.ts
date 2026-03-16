@@ -361,7 +361,11 @@ IMPORTANT RULES:
         },
       });
     } catch (error: any) {
-      console.error("Prescription analysis error:", error?.message || error);
+      const errorMsg = error?.message || String(error);
+      console.log("Prescription analysis error:", errorMsg);
+      if (error?.response) {
+        console.log("OpenAI response status:", error.response.status);
+      }
       res.status(500).json({
         error: "Failed to analyze prescription",
         fallback: true,
