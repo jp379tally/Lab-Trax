@@ -59,5 +59,9 @@ Preferred communication style: Simple, everyday language.
 ### Environment Variables
 - `DATABASE_URL`: PostgreSQL connection string.
 - `REPLIT_DEV_DOMAIN`: Replit development domain for CORS and API URL construction.
-- `EXPO_PUBLIC_DOMAIN`: Public domain for client-side API requests.
+- `EXPO_PUBLIC_DOMAIN`: Public domain for client-side API requests (port is stripped by `getApiUrl()` so all requests use default HTTPS port 443).
 - `REPLIT_INTERNAL_APP_DOMAIN`: Replit deployment domain for production builds.
+
+### API Proxy (Development)
+- **Metro proxy**: `metro.config.js` configures the Expo dev server (port 8081) to proxy `/api` requests to the Express backend (port 5000). This ensures API calls work without specifying a port number, matching the production behavior where Express serves both API and static assets on a single port.
+- **`.local/` exclusion**: Metro's file watcher excludes `.local/` to prevent ENOENT crashes from transient Replit log files.
