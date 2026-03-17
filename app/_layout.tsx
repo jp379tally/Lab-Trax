@@ -39,6 +39,10 @@ function RootLayoutNav() {
         name="chat"
         options={{ headerShown: false }}
       />
+      <Stack.Screen
+        name="smile-preview"
+        options={{ headerShown: false }}
+      />
     </Stack>
   );
 }
