@@ -29,7 +29,7 @@ import { logAudit } from "@/lib/audit";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification } = useApp();
   const { currentUser, userType } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
@@ -464,9 +464,26 @@ export default function CaseDetailScreen() {
     if (Platform.OS !== "web") {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
-    const msg = photoNotes.trim()
-      ? `${capturedPhotos.length} photo${capturedPhotos.length > 1 ? "s" : ""} and notes added to case.`
-      : `${capturedPhotos.length} photo${capturedPhotos.length > 1 ? "s" : ""} added to case.`;
+    const photoCount = capturedPhotos.length;
+    const hasNotes = !!photoNotes.trim();
+
+    if (userType === "provider") {
+      const parts: string[] = [];
+      parts.push(`${photoCount} photo${photoCount > 1 ? "s" : ""}`);
+      if (hasNotes) parts.push("notes");
+      const notifTitle = "Provider Photos Added";
+      const notifMsg = `${currentUser || "Provider"} added ${parts.join(" and ")} to Case ${caseItem!.caseNumber}`;
+      addNotification({
+        title: notifTitle,
+        message: notifMsg,
+        type: "alert",
+        caseId: caseItem!.id,
+      });
+    }
+
+    const msg = hasNotes
+      ? `${photoCount} photo${photoCount > 1 ? "s" : ""} and notes added to case.`
+      : `${photoCount} photo${photoCount > 1 ? "s" : ""} added to case.`;
     Alert.alert("Saved", msg);
     setCapturedPhotos([]);
     setPhotoNotes("");
