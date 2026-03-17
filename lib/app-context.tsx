@@ -114,6 +114,7 @@ interface AppContextValue {
   sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => { success: boolean; error?: string };
   respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => void;
   addConversation: (conv: Conversation) => void;
+  removeConversation: (conversationId: string) => void;
   addNotification: (notif: Omit<Notification, "id" | "read" | "timestamp">) => void;
   customStationLabels: Record<string, string>;
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
@@ -1351,6 +1352,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function removeConversation(conversationId: string) {
+    setConversations(prev => {
+      const updated = prev.filter(c => c.id !== conversationId);
+      AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+    setChatMessages(prev => {
+      const updated = prev.filter(m => m.conversationId !== conversationId);
+      AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   function addNotification(notif: Omit<Notification, "id" | "read" | "timestamp">) {
     const newNotif: Notification = {
       id: generateId(),
@@ -1479,6 +1493,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sendGroupJoinRequest,
       respondToGroupJoinRequest,
       addConversation,
+      removeConversation,
       addNotification,
       customStationLabels,
       updateStationLabel,

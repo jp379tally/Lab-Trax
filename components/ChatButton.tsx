@@ -13,6 +13,7 @@ import {
   ScrollView,
   Dimensions,
   Animated as RNAnimated,
+  PanResponder,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -78,8 +79,66 @@ function shouldShowTimestamp(currentMsg: ChatMessage, prevMsg: ChatMessage | nul
   return (currentMsg.timestamp - prevMsg.timestamp) > 3600000;
 }
 
+function SwipeableRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
+  const translateX = useRef(new RNAnimated.Value(0)).current;
+  const deleteThreshold = -80;
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+      },
+      onPanResponderMove: (_, gestureState) => {
+        if (gestureState.dx < 0) {
+          translateX.setValue(Math.max(gestureState.dx, -120));
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (gestureState.dx < deleteThreshold) {
+          RNAnimated.timing(translateX, { toValue: -120, duration: 150, useNativeDriver: true }).start();
+        } else {
+          RNAnimated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 8 }).start();
+        }
+      },
+    })
+  ).current;
+
+  const resetSwipe = () => {
+    RNAnimated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 8 }).start();
+  };
+
+  const handleDelete = () => {
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    }
+    Alert.alert("Delete Conversation", "Are you sure you want to delete this conversation? This cannot be undone.", [
+      { text: "Cancel", style: "cancel", onPress: resetSwipe },
+      { text: "Delete", style: "destructive", onPress: () => {
+        RNAnimated.timing(translateX, { toValue: -500, duration: 200, useNativeDriver: true }).start(() => onDelete());
+      }},
+    ]);
+  };
+
+  return (
+    <View style={{ overflow: "hidden" }}>
+      <View style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 120, flexDirection: "row", justifyContent: "flex-end" }}>
+        <Pressable
+          onPress={handleDelete}
+          style={{ width: 120, backgroundColor: "#EF4444", justifyContent: "center", alignItems: "center" }}
+        >
+          <Ionicons name="trash" size={22} color="#FFF" />
+          <Text style={{ color: "#FFF", fontSize: 12, fontFamily: "Inter_500Medium", marginTop: 4 }}>Delete</Text>
+        </Pressable>
+      </View>
+      <RNAnimated.View style={{ transform: [{ translateX }], backgroundColor: MESSENGER_BG }} {...panResponder.panHandlers}>
+        {children}
+      </RNAnimated.View>
+    </View>
+  );
+}
+
 export function ChatButton() {
-  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, getUserGroups, groups, clients, addConversation } = useApp();
+  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, getUserGroups, groups, clients, addConversation, removeConversation } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [showChat, setShowChat] = useState(false);
@@ -345,6 +404,7 @@ export function ChatButton() {
             const hasUnread = item.unreadCount > 0;
             const lastMsgPreview = item.lastMessage || "Tap to start chatting";
             return (
+              <SwipeableRow onDelete={() => removeConversation(item.id)}>
               <Pressable
                 onPress={() => {
                   setActiveConversationId(item.id);
@@ -370,6 +430,7 @@ export function ChatButton() {
                   <View style={s.unreadDot} />
                 )}
               </Pressable>
+              </SwipeableRow>
             );
           }}
           ListEmptyComponent={
