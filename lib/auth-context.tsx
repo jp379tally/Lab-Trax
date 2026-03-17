@@ -191,6 +191,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         JSON.stringify({ username: user.username, password }),
       );
       await fetchAllUsers();
+      const allUsersRaw = await AsyncStorage.getItem("@drivesync_auth_users");
+      if (allUsersRaw) {
+        try {
+          const allUsers = JSON.parse(allUsersRaw);
+          const matchedUser = allUsers.find((u: any) => u.username.toLowerCase() === user.username.toLowerCase());
+          if (matchedUser?.role) {
+            await AsyncStorage.setItem("@drivesync_role", matchedUser.role);
+          }
+        } catch {}
+      }
       logAudit("LOGIN", username, "User authenticated");
       return { success: true };
     } catch (e: any) {
@@ -236,6 +246,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         AUTH_KEY,
         JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || data.userType || "lab", password: data.password }),
       );
+      if (data.role) {
+        await AsyncStorage.setItem("@drivesync_role", data.role);
+      }
       await fetchAllUsers();
       return { success: true };
     } catch (e: any) {
