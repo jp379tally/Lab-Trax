@@ -18,6 +18,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
@@ -28,7 +29,7 @@ import { logAudit } from "@/lib/audit";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode } = useApp();
   const { currentUser, userType } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
@@ -59,6 +60,10 @@ export default function CaseDetailScreen() {
   const [applianceSubtype, setApplianceSubtype] = useState("");
   const [nightGuardType, setNightGuardType] = useState("");
   const [essexShade, setEssexShade] = useState("");
+
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [barcodeScanned, setBarcodeScanned] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const [showCourtesyModal, setShowCourtesyModal] = useState(false);
   const [courtesyMessage, setCourtesyMessage] = useState("");
@@ -1110,6 +1115,56 @@ export default function CaseDetailScreen() {
           >
             <Ionicons name="document-text" size={20} color="#FFF" />
             <Text style={styles.actionBtnText}>Reprint Lab Slip</Text>
+          </Pressable>
+          )}
+
+          {userType !== "provider" && caseItem.status !== "COMPLETE" && (
+          <Pressable
+            onPress={async () => {
+              if (caseItem.assignedBarcode) {
+                Alert.alert(
+                  "Barcode Assigned",
+                  `This case already has barcode: ${caseItem.assignedBarcode}`,
+                  [
+                    { text: "Keep", style: "cancel" },
+                    {
+                      text: "Reassign",
+                      onPress: async () => {
+                        if (!cameraPermission?.granted) {
+                          const perm = await requestCameraPermission();
+                          if (!perm.granted) {
+                            Alert.alert("Camera access is required to scan barcodes.");
+                            return;
+                          }
+                        }
+                        setBarcodeScanned(false);
+                        setShowBarcodeScanner(true);
+                      },
+                    },
+                  ]
+                );
+              } else {
+                if (!cameraPermission?.granted) {
+                  const perm = await requestCameraPermission();
+                  if (!perm.granted) {
+                    Alert.alert("Camera access is required to scan barcodes.");
+                    return;
+                  }
+                }
+                setBarcodeScanned(false);
+                setShowBarcodeScanner(true);
+              }
+            }}
+            style={({ pressed }) => [
+              styles.actionBtn,
+              { backgroundColor: caseItem.assignedBarcode ? "#22C55E" : "#8B5CF6" },
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Ionicons name="barcode" size={20} color="#FFF" />
+            <Text style={styles.actionBtnText}>
+              {caseItem.assignedBarcode ? `Barcode: ${caseItem.assignedBarcode}` : "Assign Barcode"}
+            </Text>
           </Pressable>
           )}
 
@@ -2410,6 +2465,47 @@ export default function CaseDetailScreen() {
               <Ionicons name="print" size={20} color="#FFF" />
               <Text style={labSlipStyles.printBtnText}>Print Lab Slip</Text>
             </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
+        <View style={{ flex: 1, backgroundColor: "#000" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
+            <Pressable onPress={() => setShowBarcodeScanner(false)} style={{ padding: 8 }}>
+              <Ionicons name="close" size={24} color="#FFF" />
+            </Pressable>
+          </View>
+          <View style={{ flex: 1, overflow: "hidden" }}>
+            <CameraView
+              style={{ flex: 1 }}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: ["code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "qr", "pdf417", "itf14", "codabar"] }}
+              onBarcodeScanned={barcodeScanned ? undefined : (result) => {
+                setBarcodeScanned(true);
+                const scannedBarcode = result.data;
+                const existingCase = findCaseByBarcode(scannedBarcode);
+                if (existingCase && existingCase.id !== id) {
+                  Alert.alert(
+                    "Barcode In Use",
+                    `This barcode is already assigned to case ${existingCase.caseNumber}. Please scan a different barcode.`,
+                    [{ text: "OK", onPress: () => setBarcodeScanned(false) }]
+                  );
+                } else {
+                  assignBarcodeToCase(id!, scannedBarcode);
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setShowBarcodeScanner(false);
+                  Alert.alert("Barcode Assigned", `Barcode ${scannedBarcode} has been assigned to this case.`);
+                }
+              }}
+            />
+            <View style={{ position: "absolute", top: "50%", left: 20, right: 20, marginTop: -1, height: 2, backgroundColor: "#4F8EF7", borderRadius: 1 }} />
+          </View>
+          <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, paddingTop: 16, alignItems: "center" }}>
+            <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>
+              Point camera at a barcode to assign it to case {caseItem?.caseNumber}
+            </Text>
           </View>
         </View>
       </Modal>
