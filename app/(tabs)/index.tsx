@@ -273,7 +273,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices } = useApp();
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -910,6 +910,7 @@ function TechDashboard() {
         {recentCases.map((c) => {
           const stationInfo = getStationInfo(c.status, customStationLabels);
           const userInit = currentUser ? currentUser.split(" ").map((w: string) => w.charAt(0).toUpperCase()).join("").slice(0, 2) : "??";
+          const caseInvoice = invoices.find(inv => inv.caseIds.includes(c.id));
           return (
             <Pressable
               key={c.id}
@@ -932,6 +933,10 @@ function TechDashboard() {
                     <View style={styles.userInitialsBadge}>
                       <Text style={styles.userInitialsText}>{userInit}</Text>
                     </View>
+                  </View>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 1 }}>
+                    {c.caseNumber ? <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.tint }}>Pan {c.caseNumber}</Text> : null}
+                    {caseInvoice ? <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>{formatInvNum(caseInvoice.invoiceNumber)}</Text> : null}
                   </View>
                   <Text style={[styles.caseDoctor, { color: themeColors.textSecondary }]}>{c.doctorName}</Text>
                   {c.isRush && (
