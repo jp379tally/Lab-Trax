@@ -117,6 +117,7 @@ interface AppContextValue {
   addNotification: (notif: Omit<Notification, "id" | "read" | "timestamp">) => void;
   customStationLabels: Record<string, string>;
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
+  userIsAffiliated: boolean;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -157,10 +158,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
 
+  const userIsAffiliated = useMemo(() => {
+    if (!currentUser) return false;
+    return groups.some(g => g.members.some(m => m.username.toLowerCase() === currentUser.toLowerCase()));
+  }, [groups, currentUser]);
+
   const cases = useMemo(() => {
-    if (!currentUserId) return allCases;
-    return allCases.filter((c) => !c.ownerId || c.ownerId === currentUserId);
-  }, [allCases, currentUserId]);
+    if (!currentUserId) return [];
+    if (!userIsAffiliated) return [];
+    return allCases.filter((c) => c.ownerId === currentUserId);
+  }, [allCases, currentUserId, userIsAffiliated]);
 
   function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
     setAllCases(updater);
@@ -1475,8 +1482,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addNotification,
       customStationLabels,
       updateStationLabel,
+      userIsAffiliated,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, groupJoinRequests, inventory, customStationLabels],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, groupJoinRequests, inventory, customStationLabels, userIsAffiliated],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

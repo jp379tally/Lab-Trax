@@ -126,16 +126,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function loadAuth() {
     try {
-      const [savedAuth, savedPic] = await Promise.all([
-        AsyncStorage.getItem(AUTH_KEY),
-        AsyncStorage.getItem(PROFILE_PIC_KEY),
-      ]);
+      const savedAuth = await AsyncStorage.getItem(AUTH_KEY);
 
       await fetchAllUsers();
-
-      if (savedPic) {
-        setProfilePicUriState(savedPic);
-      }
 
       if (savedAuth) {
         const auth = JSON.parse(savedAuth);
@@ -145,7 +138,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setCurrentUserId(auth.userId || null);
           setUserType(auth.userType || "lab");
           setCurrentPassword(auth.password || null);
+          const userPicKey = `${PROFILE_PIC_KEY}_${auth.userId || auth.username}`;
+          const savedPic = await AsyncStorage.getItem(userPicKey);
+          setProfilePicUriState(savedPic);
+        } else {
+          setProfilePicUriState(null);
         }
+      } else {
+        setProfilePicUriState(null);
       }
     } catch (e) {
       console.error("Error loading auth:", e);
@@ -156,10 +156,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function setProfilePicUri(uri: string | null) {
     setProfilePicUriState(uri);
+    const picKey = `${PROFILE_PIC_KEY}_${currentUserId || currentUser}`;
     if (uri) {
-      await AsyncStorage.setItem(PROFILE_PIC_KEY, uri);
+      await AsyncStorage.setItem(picKey, uri);
     } else {
-      await AsyncStorage.removeItem(PROFILE_PIC_KEY);
+      await AsyncStorage.removeItem(picKey);
     }
   }
 
@@ -202,6 +203,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         } catch {}
       }
+      const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
+      const savedPic = await AsyncStorage.getItem(userPicKey);
+      setProfilePicUriState(savedPic);
       logAudit("LOGIN", username, "User authenticated");
       return { success: true };
     } catch (e: any) {
@@ -266,6 +270,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUserType(null);
     setIsLocked(false);
     setCurrentPassword(null);
+    setProfilePicUriState(null);
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     AsyncStorage.removeItem(AUTH_KEY);
   }

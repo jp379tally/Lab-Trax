@@ -37,6 +37,8 @@ Preferred communication style: Simple, everyday language.
 - **Barcode System**: Supports barcode scanning for case intake, location, and batch processing, linking physical barcodes to digital case records.
 - **Remake Detection**: Implements a specific flow for identifying and managing remakes, including reason selection and recharge options.
 - **Group-Based Permissions**: Organizes users into groups (e.g., practice/lab) with associated members and invitation mechanisms.
+- **Data Isolation (HIPAA)**: Users who are not affiliated with any group see an empty dashboard with no cases, clients, invoices, or other data. The `userIsAffiliated` flag in app-context checks group membership. Cases are strictly filtered by `ownerId === currentUserId`. Profile pictures are stored per-user (keyed by user ID) and cleared on logout.
+- **Duplicate Registration Prevention**: During account creation, email, phone number, and address are checked against existing active accounts to prevent duplicates. Deleted accounts release their information for reuse.
 - **Security**: Incorporates inactivity timeouts, biometric/password-based lock screens, and robust password change mechanisms.
 - **Global Chat System**: Facilitates communication between users and labs with real-time messaging and unread message indicators.
 - **Courtesy Text Feature**: Automates delay notifications and negotiation flows for updated delivery dates directly from case details.

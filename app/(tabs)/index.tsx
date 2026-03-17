@@ -273,7 +273,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated } = useApp();
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -562,6 +562,16 @@ function TechDashboard() {
           <Text style={styles.liveText}>Available</Text>
         </View>
 
+        {!userIsAffiliated && (
+          <View style={{ marginTop: 24, padding: 24, backgroundColor: isDarkMode ? "#1E293B" : "#F8FAFC", borderRadius: 16, alignItems: "center" }}>
+            <Ionicons name="business-outline" size={48} color={isDarkMode ? "#64748B" : "#94A3B8"} />
+            <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 18, color: themeColors.text, marginTop: 16, textAlign: "center" }}>No Lab Affiliation</Text>
+            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 14, color: themeColors.textSecondary, marginTop: 8, textAlign: "center", lineHeight: 20 }}>
+              Your account is not yet affiliated with a lab. Ask your lab administrator to invite you, or join an existing lab to see cases and data.
+            </Text>
+          </View>
+        )}
+        {userIsAffiliated && (
         <View style={styles.headerQuickActions}>
           <Pressable
             style={({ pressed }) => [
@@ -600,6 +610,7 @@ function TechDashboard() {
             <Text style={[styles.quickLabel, { color: themeColors.text }]}>Batch Locate</Text>
           </Pressable>
         </View>
+        )}
       </View>
 
       <Modal
@@ -669,6 +680,8 @@ function TechDashboard() {
         </Pressable>
       </Modal>
 
+      {userIsAffiliated && (
+      <>
       <View style={styles.headerRow}>
         <View>
           <Text style={[styles.greeting, { color: themeColors.textSecondary }]}>Lab Floor</Text>
@@ -969,6 +982,8 @@ function TechDashboard() {
         </View>
         <Ionicons name="chevron-forward" size={20} color={Colors.light.textTertiary} />
       </Pressable>
+      </>
+      )}
     </ScrollView>
 
     <Modal
@@ -4545,7 +4560,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification } = useApp();
+  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -4656,6 +4671,18 @@ function ProviderDashboard() {
           </View>
         </View>
 
+        {!userIsAffiliated && (
+          <View style={{ margin: 20, padding: 24, backgroundColor: "#F8FAFC", borderRadius: 16, alignItems: "center" }}>
+            <Ionicons name="business-outline" size={48} color="#94A3B8" />
+            <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 18, color: Colors.light.text, marginTop: 16, textAlign: "center" }}>No Practice Affiliation</Text>
+            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 14, color: Colors.light.textSecondary, marginTop: 8, textAlign: "center", lineHeight: 20 }}>
+              Your account is not yet affiliated with a practice. Ask your practice administrator to invite you, or join an existing practice to see cases and data.
+            </Text>
+          </View>
+        )}
+
+        {userIsAffiliated && (
+        <>
         <LinearGradient
           colors={["#1E40AF", "#3B82F6"]}
           start={{ x: 0, y: 0 }}
@@ -4749,6 +4776,8 @@ function ProviderDashboard() {
             ))}
           </View>
         )}
+      </>
+      )}
       </ScrollView>
 
       <Modal
