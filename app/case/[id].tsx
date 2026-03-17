@@ -976,21 +976,23 @@ export default function CaseDetailScreen() {
         </View>
 
         <View style={styles.actionSection}>
-          <Pressable
-            onPress={() => setShowRouting(!showRouting)}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: Colors.light.tint },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="navigate" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>
-              {showRouting ? "Hide Stations" : "Locate Case"}
-            </Text>
-          </Pressable>
+          {userType !== "provider" && (
+            <Pressable
+              onPress={() => setShowRouting(!showRouting)}
+              style={({ pressed }) => [
+                styles.actionBtn,
+                { backgroundColor: Colors.light.tint },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Ionicons name="navigate" size={20} color="#FFF" />
+              <Text style={styles.actionBtnText}>
+                {showRouting ? "Hide Stations" : "Locate Case"}
+              </Text>
+            </Pressable>
+          )}
 
-          {showRouting && (
+          {showRouting && userType !== "provider" && (
             <View style={styles.stationGrid}>
               {STATIONS.map((station) => {
                 const isCurrent = station.id === caseItem.status;
