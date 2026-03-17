@@ -4557,6 +4557,8 @@ function ProviderDashboard() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [showUsersAdmin, setShowUsersAdmin] = useState(false);
+  const [showProviderInvoices, setShowProviderInvoices] = useState(false);
+  const [providerInvoiceFilter, setProviderInvoiceFilter] = useState<"open" | "all">("open");
   const [prefOcclusion, setPrefOcclusion] = useState("");
   const [prefPontic, setPrefPontic] = useState("");
   const [prefContact, setPrefContact] = useState("");
@@ -4881,6 +4883,24 @@ function ProviderDashboard() {
                 </View>
               )}
             </View>
+
+            {currentUserData?.role === "admin" && (
+              <>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginTop: 24, marginBottom: 8, letterSpacing: 0.5 }}>BILLING</Text>
+                <Pressable
+                  style={({ pressed }) => ({
+                    flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface,
+                    borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border,
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                  onPress={() => { setShowSettings(false); setTimeout(() => { setProviderInvoiceFilter("open"); setShowProviderInvoices(true); }, 350); }}
+                >
+                  <Ionicons name="document-text-outline" size={20} color={Colors.light.tint} />
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>View Invoices</Text>
+                  <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+                </Pressable>
+              </>
+            )}
 
             <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginTop: 24, marginBottom: 8, letterSpacing: 0.5 }}>ADMINISTRATION</Text>
             <Pressable
@@ -5219,6 +5239,107 @@ function ProviderDashboard() {
                 );
               })
             )}
+          </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={showProviderInvoices}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setShowProviderInvoices(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Invoices</Text>
+            <Pressable onPress={() => setShowProviderInvoices(false)}>
+              <Ionicons name="close" size={28} color={Colors.light.text} />
+            </Pressable>
+          </View>
+
+          <View style={{ flexDirection: "row", margin: 16, backgroundColor: Colors.light.surfaceSecondary, borderRadius: 10, padding: 3 }}>
+            <Pressable
+              onPress={() => setProviderInvoiceFilter("open")}
+              style={{
+                flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center",
+                backgroundColor: providerInvoiceFilter === "open" ? Colors.light.surface : "transparent",
+              }}
+            >
+              <Text style={{ fontSize: 14, fontFamily: providerInvoiceFilter === "open" ? "Inter_600SemiBold" : "Inter_400Regular", color: providerInvoiceFilter === "open" ? Colors.light.tint : Colors.light.textSecondary }}>Open Invoices</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setProviderInvoiceFilter("all")}
+              style={{
+                flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center",
+                backgroundColor: providerInvoiceFilter === "all" ? Colors.light.surface : "transparent",
+              }}
+            >
+              <Text style={{ fontSize: 14, fontFamily: providerInvoiceFilter === "all" ? "Inter_600SemiBold" : "Inter_400Regular", color: providerInvoiceFilter === "all" ? Colors.light.tint : Colors.light.textSecondary }}>All Invoices</Text>
+            </Pressable>
+          </View>
+
+          <ScrollView style={{ flex: 1, paddingHorizontal: 16 }}>
+            {(() => {
+              const filtered = providerInvoiceFilter === "open"
+                ? invoices.filter(i => i.status === "open" || i.status === "sent" || i.status === "overdue")
+                : invoices;
+              if (filtered.length === 0) {
+                return (
+                  <View style={{ padding: 40, alignItems: "center" }}>
+                    <Ionicons name="document-text-outline" size={48} color={Colors.light.textTertiary} />
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 12 }}>
+                      {providerInvoiceFilter === "open" ? "No open invoices" : "No invoices found"}
+                    </Text>
+                  </View>
+                );
+              }
+              return filtered.sort((a, b) => b.issuedAt - a.issuedAt).map((inv) => {
+                const isOverdue = inv.status === "overdue" || (inv.dueAt < Date.now() && inv.status !== "paid");
+                const isPaid = inv.status === "paid";
+                return (
+                  <View key={inv.id} style={{
+                    backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 10,
+                    borderWidth: 1, borderColor: isOverdue ? Colors.light.errorLight : Colors.light.border,
+                  }}>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                          <View style={{
+                            paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6,
+                            backgroundColor: isPaid ? Colors.light.successLight : isOverdue ? Colors.light.errorLight : Colors.light.warningLight,
+                          }}>
+                            <Text style={{
+                              fontSize: 10, fontFamily: "Inter_700Bold", textTransform: "uppercase",
+                              color: isPaid ? Colors.light.success : isOverdue ? Colors.light.error : Colors.light.warning,
+                            }}>{isOverdue ? "Overdue" : inv.status}</Text>
+                          </View>
+                        </View>
+                        <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{inv.patientName || "No patient"}</Text>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 2 }}>
+                          Issued: {new Date(inv.issuedAt).toLocaleDateString()} · Due: {new Date(inv.dueAt).toLocaleDateString()}
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: isOverdue ? Colors.light.error : isPaid ? Colors.light.success : Colors.light.tint }}>
+                        ${inv.amount.toFixed(2)}
+                      </Text>
+                    </View>
+                    {inv.lineItems && inv.lineItems.length > 0 && (
+                      <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: Colors.light.border }}>
+                        {inv.lineItems.map((li, liIdx) => (
+                          <View key={liIdx} style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 3 }}>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, flex: 1 }}>{li.item} - {li.description}</Text>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>${li.amount.toFixed(2)}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                );
+              });
+            })()}
+            <View style={{ height: 40 }} />
           </ScrollView>
         </View>
       </Modal>
