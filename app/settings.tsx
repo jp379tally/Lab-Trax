@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   StyleSheet,
   View,
@@ -11,6 +11,7 @@ import {
   TextInput,
   Modal,
   KeyboardAvoidingView,
+  Image,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -34,6 +35,13 @@ export default function SettingsScreen() {
   const [matchedLabs, setMatchedLabs] = useState<typeof groups>([]);
   const [labSearchDone, setLabSearchDone] = useState(false);
   const [addLabSending, setAddLabSending] = useState(false);
+  const [companyLogoUri, setCompanyLogoUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
+      if (uri) setCompanyLogoUri(uri);
+    });
+  }, []);
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
@@ -182,13 +190,27 @@ export default function SettingsScreen() {
             <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MY LAB</Text>
             <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <View style={styles.menuItem}>
-                <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
-                  <Ionicons name="flask" size={18} color="#7C3AED" />
-                </View>
-                <View style={styles.menuInfo}>
-                  <Text style={[styles.menuTitle, { color: colors.text }]}>{currentUserData?.practiceName || currentUserData?.username}</Text>
-                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practiceAddress || "Not set"}</Text>
-                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practicePhone || currentUserData?.phone || "Not set"}</Text>
+                {companyLogoUri ? (
+                  <Image
+                    source={{ uri: companyLogoUri }}
+                    style={{ width: 44, height: 44, borderRadius: 10, marginRight: 12 }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE", width: 44, height: 44, borderRadius: 10, marginRight: 12 }]}>
+                    <Ionicons name="flask" size={22} color="#7C3AED" />
+                  </View>
+                )}
+                <View style={[styles.menuInfo, { flex: 1 }]}>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: colors.text }}>{currentUserData?.practiceName || currentUserData?.username || "My Lab"}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 3 }}>
+                    <Ionicons name="location-outline" size={12} color={colors.textSecondary} />
+                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practiceAddress || "Address not set"}</Text>
+                  </View>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 }}>
+                    <Ionicons name="call-outline" size={12} color={colors.textSecondary} />
+                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practicePhone || currentUserData?.phone || "Phone not set"}</Text>
+                  </View>
                 </View>
               </View>
             </View>
