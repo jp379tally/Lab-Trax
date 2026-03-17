@@ -69,7 +69,9 @@ export default function LoginScreen() {
   const [licenseNumber, setLicenseNumber] = useState("");
   const [practiceName, setPracticeName] = useState("");
   const [doctorName, setDoctorName] = useState("");
-  const [practiceAddress, setPracticeAddress] = useState("");
+  const [streetAddress, setStreetAddress] = useState("");
+  const [city, setCity] = useState("");
+  const [zipCode, setZipCode] = useState("");
   const [fetchingLocation, setFetchingLocation] = useState(false);
   const [practicePhone, setPracticePhone] = useState("");
   const [phoneContactName, setPhoneContactName] = useState("");
@@ -125,7 +127,9 @@ export default function LoginScreen() {
     setLicenseNumber("");
     setPracticeName("");
     setDoctorName("");
-    setPracticeAddress("");
+    setStreetAddress("");
+    setCity("");
+    setZipCode("");
     setPracticePhone("");
     setPhoneContactName("");
     setSelectedRole(null);
@@ -372,7 +376,7 @@ export default function LoginScreen() {
           id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
           name: signUpUsername.trim(),
           type: (userType || "provider") === "lab" ? "lab" : "provider",
-          address: practiceAddress.trim() || "",
+          address: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
           members: [{
             userId: Date.now().toString() + Math.random().toString(36).substr(2, 9),
             username: signUpUsername.trim(),
@@ -390,15 +394,15 @@ export default function LoginScreen() {
         await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
           name: signUpUsername.trim(),
           type: (userType || "provider") === "lab" ? "lab" : "provider",
-          address: practiceAddress.trim() || "",
+          address: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
           username: signUpUsername.trim(),
           role: "admin",
         }));
-      } else if (practiceName.trim() && practiceAddress.trim()) {
+      } else if (practiceName.trim() && streetAddress.trim()) {
         await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
           name: practiceName.trim(),
           type: (userType || "provider") === "lab" ? "lab" : "provider",
-          address: practiceAddress.trim(),
+          address: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
           username: signUpUsername.trim(),
           role: selectedRole || "user",
         }));
@@ -409,7 +413,7 @@ export default function LoginScreen() {
           leadDoctor: doctorName.trim() ? `Dr. ${doctorName.trim()} (${acctNum})` : signUpUsername.trim(),
           phone: practicePhone.trim(),
           email: signUpEmail.trim(),
-          address: practiceAddress.trim(),
+          address: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
           tier: "Standard",
           discountRate: 0,
         };
@@ -426,7 +430,7 @@ export default function LoginScreen() {
         licenseNumber: licenseNumber.trim(),
         practiceName: practiceName.trim(),
         doctorName: doctorName.trim(),
-        practiceAddress: practiceAddress.trim(),
+        practiceAddress: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
         practicePhone: practicePhone.trim(),
         phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
         role: selectedRole || "user",
@@ -526,7 +530,7 @@ export default function LoginScreen() {
                 {signUpStep === "credentials" && "Enter your details to get started"}
                 {signUpStep === "user_type" && "What type of account?"}
                 {signUpStep === "lab_name" && "Enter your lab name"}
-                {signUpStep === "license" && "Enter your license number"}
+                {signUpStep === "license" && (userType === "lab" ? "Enter your lab license number" : "Enter your dental license number")}
                 {signUpStep === "practice_info" && "Tell us about your practice"}
                 {signUpStep === "updates_opt_in" && "Stay connected with your lab"}
                 {signUpStep === "phone_entry" && "Enter your phone number"}
@@ -868,7 +872,7 @@ export default function LoginScreen() {
             style={styles.input}
             value={licenseNumber}
             onChangeText={(t) => { setLicenseNumber(t); setSignUpError(null); }}
-            placeholder="License Number"
+            placeholder={userType === "lab" ? "Lab License Number" : "Dental License Number"}
             placeholderTextColor="rgba(255,255,255,0.3)"
             autoCapitalize="characters"
             autoCorrect={false}
@@ -879,7 +883,7 @@ export default function LoginScreen() {
         <Pressable
           onPress={() => {
             if (!licenseNumber.trim()) {
-              setSignUpError("Please enter your license number.");
+              setSignUpError(userType === "lab" ? "Please enter your lab license number." : "Please enter your dental license number.");
               return;
             }
             setSignUpError(null);
@@ -913,8 +917,15 @@ export default function LoginScreen() {
           headers: { "User-Agent": "DriveSync-Lab/1.0" },
         });
         const data = await resp.json();
-        if (data?.display_name) {
-          setPracticeAddress(data.display_name);
+        if (data?.address) {
+          const a = data.address;
+          const streetParts = [a.house_number, a.road].filter(Boolean);
+          if (streetParts.length) setStreetAddress(streetParts.join(" "));
+          if (a.city || a.town || a.village) setCity(a.city || a.town || a.village);
+          if (a.postcode) setZipCode(a.postcode);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } else if (data?.display_name) {
+          setStreetAddress(data.display_name);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } else {
           setSignUpError("Could not determine address. Please type it manually.");
@@ -929,10 +940,11 @@ export default function LoginScreen() {
         const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
         if (geocode && geocode.length > 0) {
           const g = geocode[0];
-          const parts = [g.streetNumber, g.street, g.city, g.region, g.postalCode].filter(Boolean);
-          const address = parts.join(" ");
-          if (address.trim()) {
-            setPracticeAddress(address);
+          const streetParts = [g.streetNumber, g.street].filter(Boolean);
+          if (streetParts.length) setStreetAddress(streetParts.join(" "));
+          if (g.city) setCity(g.city);
+          if (g.postalCode) setZipCode(g.postalCode);
+          if (streetParts.length || g.city || g.postalCode) {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           } else {
             setSignUpError("Could not determine address. Please type it manually.");
@@ -989,14 +1001,14 @@ export default function LoginScreen() {
             <Ionicons name="location-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
             <TextInput
               style={styles.input}
-              value={practiceAddress}
-              onChangeText={(t) => { setPracticeAddress(t); setSignUpError(null); }}
-              placeholder="Office Location"
+              value={streetAddress}
+              onChangeText={(t) => { setStreetAddress(t); setSignUpError(null); }}
+              placeholder="Street Address"
               placeholderTextColor="rgba(255,255,255,0.3)"
               autoCapitalize="words"
               textContentType="oneTimeCode"
               autoComplete="off"
-              testID="practice-address"
+              testID="street-address"
             />
             <Pressable
               onPress={fetchLocationAddress}
@@ -1010,6 +1022,31 @@ export default function LoginScreen() {
                 <Ionicons name="navigate" size={18} color="#4A90D9" />
               )}
             </Pressable>
+          </View>
+
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <View style={[styles.inputWrapper, { flex: 1 }]}>
+              <TextInput
+                style={styles.input}
+                value={city}
+                onChangeText={(t) => { setCity(t); setSignUpError(null); }}
+                placeholder="City"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                autoCapitalize="words"
+                testID="city"
+              />
+            </View>
+            <View style={[styles.inputWrapper, { flex: 0.6 }]}>
+              <TextInput
+                style={styles.input}
+                value={zipCode}
+                onChangeText={(t) => { setZipCode(t); setSignUpError(null); }}
+                placeholder="Zip Code"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                keyboardType="number-pad"
+                testID="zip-code"
+              />
+            </View>
           </View>
 
           <View style={styles.inputWrapper}>
@@ -1030,7 +1067,7 @@ export default function LoginScreen() {
 
         <Pressable
           onPress={() => {
-            if (!practiceName.trim() || !doctorName.trim() || !practiceAddress.trim() || !practicePhone.trim()) {
+            if (!practiceName.trim() || !doctorName.trim() || !streetAddress.trim() || !city.trim() || !zipCode.trim() || !practicePhone.trim()) {
               setSignUpError("All fields are required.");
               return;
             }
