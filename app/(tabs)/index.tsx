@@ -3688,6 +3688,59 @@ function AdminDashboard() {
               </View>
             );
           }).filter(Boolean)}
+
+          {(() => {
+            const openPeriodInvoices = periodInvoices.filter(i => i.status === "open" || i.status === "sent" || i.status === "overdue");
+            return (
+              <>
+                <Text style={[adm.salesSectionTitle, { marginTop: 24 }]}>Open Invoices ({openPeriodInvoices.length})</Text>
+                {openPeriodInvoices.length > 0 ? openPeriodInvoices.map((inv) => {
+                  const isOverdue = inv.status === "overdue" || (inv.dueAt < Date.now() && inv.status !== "paid");
+                  return (
+                    <Pressable
+                      key={inv.id}
+                      onPress={() => {
+                        setSelectedInvoice(inv);
+                        setAdminView("invoices");
+                      }}
+                      style={({ pressed }) => ({
+                        backgroundColor: Colors.light.surface,
+                        borderRadius: 12,
+                        padding: 14,
+                        marginBottom: 8,
+                        borderWidth: 1,
+                        borderColor: isOverdue ? Colors.light.errorLight : Colors.light.border,
+                        opacity: pressed ? 0.85 : 1,
+                      })}
+                    >
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <View style={{ flex: 1, marginRight: 12 }}>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                            {isOverdue && (
+                              <View style={{ backgroundColor: Colors.light.errorLight, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1 }}>
+                                <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: Colors.light.error }}>OVERDUE</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }} numberOfLines={1}>{inv.clientName}</Text>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 2 }}>
+                            {inv.patientName ? `Patient: ${inv.patientName} · ` : ""}Due: {new Date(inv.dueAt).toLocaleDateString()}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: "flex-end" }}>
+                          <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: isOverdue ? Colors.light.error : Colors.light.tint }}>{formatCurrency(inv.amount)}</Text>
+                          <Ionicons name="chevron-forward" size={16} color={Colors.light.textTertiary} style={{ marginTop: 4 }} />
+                        </View>
+                      </View>
+                    </Pressable>
+                  );
+                }) : (
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", paddingVertical: 20 }}>No open invoices in this period</Text>
+                )}
+              </>
+            );
+          })()}
         </View>
       </ScrollView>
     );
