@@ -325,23 +325,32 @@ function TechDashboard() {
   }
 
   const batchScannedIdsRef = useRef<Set<string>>(new Set());
+  const batchCameraLayoutRef = useRef({ width: 0, height: 0 });
+  const SCAN_GUIDE_W = 260;
+  const SCAN_GUIDE_H = 160;
 
   function handleBatchBarcodeScan(result: { data: string; cornerPoints?: any; bounds?: any }) {
     const data = result.data;
     if (data === lastBatchScanRef.current) return;
 
-    if (Platform.OS !== "web" && result.bounds) {
+    const camW = batchCameraLayoutRef.current.width;
+    const camH = batchCameraLayoutRef.current.height;
+    if (Platform.OS !== "web" && result.bounds && camW > 0 && camH > 0) {
       const bx = result.bounds.origin?.x ?? 0;
       const by = result.bounds.origin?.y ?? 0;
       const bw = result.bounds.size?.width ?? 0;
       const bh = result.bounds.size?.height ?? 0;
       const centerX = bx + bw / 2;
       const centerY = by + bh / 2;
-      const scanMinX = 0.15;
-      const scanMaxX = 0.85;
-      const scanMinY = 0.25;
-      const scanMaxY = 0.75;
-      if (centerX < scanMinX || centerX > scanMaxX || centerY < scanMinY || centerY > scanMaxY) {
+      const guideLeft = (camW - SCAN_GUIDE_W) / 2;
+      const guideTop = (camH - SCAN_GUIDE_H) / 2;
+      const guideRight = guideLeft + SCAN_GUIDE_W;
+      const guideBottom = guideTop + SCAN_GUIDE_H;
+      const pad = 30;
+      if (
+        centerX < guideLeft - pad || centerX > guideRight + pad ||
+        centerY < guideTop - pad || centerY > guideBottom + pad
+      ) {
         return;
       }
     }
@@ -1064,9 +1073,15 @@ function TechDashboard() {
                 facing="back"
                 barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
                 onBarcodeScanned={handleBatchBarcodeScan}
+                onLayout={(e) => {
+                  batchCameraLayoutRef.current = { width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height };
+                }}
               >
                 <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-                  <View style={{ width: 260, height: 160, borderWidth: 2, borderColor: "rgba(255,255,255,0.5)", borderRadius: 16, borderStyle: "dashed" }} />
+                  <View style={{ width: SCAN_GUIDE_W, height: SCAN_GUIDE_H, borderWidth: 2, borderColor: "rgba(255,255,255,0.5)", borderRadius: 16, borderStyle: "dashed" }} />
+                  <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 10 }}>
+                    Align barcode within the box
+                  </Text>
                 </View>
               </CameraView>
             )}
