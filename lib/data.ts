@@ -85,6 +85,7 @@ export type CaseTypeValue = "Restorative" | "Removable" | "Appliance" | "Tempora
 
 export interface LabCase {
   id: string;
+  ownerId?: string;
   caseNumber: string;
   doctorName: string;
   patientName: string;

@@ -43,6 +43,7 @@ import {
   GroupInvitation,
   GroupJoinRequest,
 } from "./data";
+import { useAuth } from "./auth-context";
 
 interface AppContextValue {
   role: UserRole;
@@ -137,9 +138,10 @@ const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 const STATION_LABELS_KEY = "@drivesync_station_labels";
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  const { currentUserId, currentUser, userType } = useAuth();
   const [role, setRoleState] = useState<UserRole>("user");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
-  const [cases, setCases] = useState<LabCase[]>([]);
+  const [allCases, setAllCases] = useState<LabCase[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [users, setUsers] = useState<LabUser[]>([]);
@@ -155,9 +157,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
 
+  const cases = useMemo(() => {
+    if (!currentUserId) return allCases;
+    return allCases.filter((c) => !c.ownerId || c.ownerId === currentUserId);
+  }, [allCases, currentUserId]);
+
+  function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
+    setAllCases(updater);
+  }
+
   useEffect(() => {
     loadData();
-  }, []);
+  }, [currentUserId]);
 
   async function loadData() {
     try {
@@ -175,9 +186,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ]);
 
       if (savedCases) {
-        setCases(JSON.parse(savedCases));
+        const parsedCases: LabCase[] = JSON.parse(savedCases);
+        setAllCases(parsedCases);
+      } else if (currentUserId) {
+        const stampedCases = SAMPLE_CASES.map((c) => ({ ...c, ownerId: currentUserId }));
+        setAllCases(stampedCases);
+        await AsyncStorage.setItem(CASES_KEY, JSON.stringify(stampedCases));
       } else {
-        setCases(SAMPLE_CASES);
+        setAllCases(SAMPLE_CASES);
         await AsyncStorage.setItem(CASES_KEY, JSON.stringify(SAMPLE_CASES));
       }
 
@@ -322,7 +338,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         AsyncStorage.removeItem("@drivesync_pending_client");
       }
     } catch (e) {
-      setCases(SAMPLE_CASES);
+      setAllCases(currentUserId ? SAMPLE_CASES.map((c) => ({ ...c, ownerId: currentUserId })) : SAMPLE_CASES);
       setNotifications(SAMPLE_NOTIFICATIONS);
       setClients(SAMPLE_CLIENTS);
       setUsers(SAMPLE_USERS);
@@ -355,6 +371,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const newCase: LabCase = {
       ...c,
       id: caseId,
+      ownerId: currentUserId || undefined,
       createdAt: now,
       updatedAt: now,
       routeHistory: [{ station: c.status, timestamp: now }],
@@ -409,8 +426,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setInvoices(updatedInvoices);
     AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updatedInvoices));
 
-    const updated = [newCase, ...cases];
-    setCases(updated);
+    const updated = [newCase, ...allCases];
+    setAllCases(updated);
     AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
 
     const newNotif: Notification = {
