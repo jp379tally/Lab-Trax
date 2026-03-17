@@ -999,6 +999,24 @@ export default function CaseDetailScreen() {
                       }}>
                         {entry.description}
                       </Text>
+                      {isPhoto && (() => {
+                        const nearbyNote = (caseItem.activityLog || []).find(
+                          (e) => e.type === "note" && Math.abs(e.timestamp - entry.timestamp) < 5000
+                        );
+                        if (!nearbyNote) return null;
+                        return (
+                          <Text style={{
+                            fontSize: 12,
+                            fontFamily: "Inter_400Regular",
+                            fontStyle: "italic",
+                            color: Colors.light.textSecondary,
+                            marginTop: 4,
+                            lineHeight: 17,
+                          }}>
+                            {nearbyNote.description}
+                          </Text>
+                        );
+                      })()}
                       {isPhoto && entry.imageUri && (
                         <Pressable onPress={() => setFullScreenPhoto(entry.imageUri!)}>
                           <Image
