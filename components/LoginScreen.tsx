@@ -231,6 +231,12 @@ export default function LoginScreen() {
       return;
     }
 
+    const emailMatch = registeredUsers.find(u => u.email && u.email.toLowerCase() === signUpEmail.trim().toLowerCase());
+    if (emailMatch) {
+      setSignUpError("This email address is already associated with another account. Please enter a different email.");
+      return;
+    }
+
     setSignUpError(null);
 
     const localMatch = registeredUsers.some(
@@ -1090,6 +1096,25 @@ export default function LoginScreen() {
               setSignUpError("Please fill in all fields.");
               return;
             }
+            const enteredPhone = labPhone.trim().replace(/\D/g, "");
+            const enteredEmail = labEmail.trim().toLowerCase();
+            const enteredAddress = [labStreet.trim(), labCity.trim(), labState.trim(), labZip.trim()].filter(Boolean).join(", ").toLowerCase();
+
+            const phoneMatch = registeredUsers.find(u => u.practicePhone && u.practicePhone.replace(/\D/g, "") === enteredPhone && enteredPhone.length >= 7);
+            if (phoneMatch) {
+              setSignUpError("This phone number is already associated with another account. Please enter a different phone number.");
+              return;
+            }
+            const emailMatch = registeredUsers.find(u => u.email && u.email.toLowerCase() === enteredEmail);
+            if (emailMatch) {
+              setSignUpError("This email address is already associated with another account. Please enter a different email.");
+              return;
+            }
+            const addressMatch = registeredUsers.find(u => u.practiceAddress && u.practiceAddress.toLowerCase() === enteredAddress);
+            if (addressMatch) {
+              setSignUpError("This address is already associated with another account. Please enter a different address.");
+              return;
+            }
             setSignUpError(null);
             sendEmailCode();
           }}
@@ -1320,6 +1345,19 @@ export default function LoginScreen() {
           onPress={() => {
             if (!practiceName.trim() || !doctorName.trim() || !streetAddress.trim() || !city.trim() || !zipCode.trim() || !practicePhone.trim()) {
               setSignUpError("All fields are required.");
+              return;
+            }
+            const enteredPhone = practicePhone.trim().replace(/\D/g, "");
+            const enteredAddress = [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", ").toLowerCase();
+
+            const phoneMatch = registeredUsers.find(u => u.practicePhone && u.practicePhone.replace(/\D/g, "") === enteredPhone && enteredPhone.length >= 7);
+            if (phoneMatch) {
+              setSignUpError("This phone number is already associated with another account. Please enter a different phone number.");
+              return;
+            }
+            const addressMatch = registeredUsers.find(u => u.practiceAddress && u.practiceAddress.toLowerCase() === enteredAddress);
+            if (addressMatch) {
+              setSignUpError("This address is already associated with another account. Please enter a different address.");
               return;
             }
             setSignUpError(null);
