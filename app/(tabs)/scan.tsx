@@ -119,6 +119,9 @@ export default function ScanScreen() {
   const [patientSearch, setPatientSearch] = useState("");
   const [addingNewPatient, setAddingNewPatient] = useState(false);
   const [newPatientInput, setNewPatientInput] = useState("");
+  const [newPatientFirst, setNewPatientFirst] = useState("");
+  const [newPatientMiddle, setNewPatientMiddle] = useState("");
+  const [newPatientLast, setNewPatientLast] = useState("");
   const [addingNewDoctor, setAddingNewDoctor] = useState(false);
   const [newDoctorInput, setNewDoctorInput] = useState("");
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
@@ -1465,26 +1468,56 @@ export default function ScanScreen() {
                       <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
                       <TextInput
                         style={styles.dropdownSearchInput}
-                        value={newPatientInput}
-                        onChangeText={setNewPatientInput}
-                        placeholder="Enter full name..."
+                        value={newPatientFirst}
+                        onChangeText={setNewPatientFirst}
+                        placeholder="First name"
                         placeholderTextColor={Colors.light.textTertiary}
                         autoFocus
                       />
                     </View>
+                    <View style={[styles.dropdownSearchWrap, { marginTop: 8 }]}>
+                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newPatientMiddle}
+                        onChangeText={setNewPatientMiddle}
+                        placeholder="Middle name (optional)"
+                        placeholderTextColor={Colors.light.textTertiary}
+                      />
+                    </View>
+                    <View style={[styles.dropdownSearchWrap, { marginTop: 8 }]}>
+                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newPatientLast}
+                        onChangeText={setNewPatientLast}
+                        placeholder="Last name"
+                        placeholderTextColor={Colors.light.textTertiary}
+                      />
+                    </View>
                     <View style={styles.addNewPatientActions}>
                       <Pressable
-                        onPress={() => { setAddingNewPatient(false); setNewPatientInput(""); }}
+                        onPress={() => {
+                          setAddingNewPatient(false);
+                          setNewPatientFirst("");
+                          setNewPatientMiddle("");
+                          setNewPatientLast("");
+                          setNewPatientInput("");
+                        }}
                         style={({ pressed }) => [styles.addNewPatientCancelBtn, pressed && { opacity: 0.7 }]}
                       >
                         <Text style={styles.addNewPatientCancelText}>Back</Text>
                       </Pressable>
                       <Pressable
                         onPress={() => {
-                          if (!newPatientInput.trim()) return;
-                          setPatientName(newPatientInput.trim());
+                          if (!newPatientFirst.trim() || !newPatientLast.trim()) return;
+                          const fullName = [newPatientFirst.trim(), newPatientMiddle.trim(), newPatientLast.trim()].filter(Boolean).join(" ");
+                          setPatientName(fullName);
                           setPatientDropdownOpen(false);
                           setAddingNewPatient(false);
+                          setNewPatientFirst("");
+                          setNewPatientMiddle("");
+                          setNewPatientLast("");
                           setNewPatientInput("");
                           if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
