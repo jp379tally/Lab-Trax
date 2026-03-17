@@ -92,6 +92,9 @@ export default function LoginScreen() {
   const [matchingLabGroup, setMatchingLabGroup] = useState<Group | null>(null);
   const [labJoinRequestSent, setLabJoinRequestSent] = useState(false);
   const [checkingLabName, setCheckingLabName] = useState(false);
+  const [browseExistingLabs, setBrowseExistingLabs] = useState(false);
+  const [allLabGroups, setAllLabGroups] = useState<Group[]>([]);
+  const [labSearchFilter, setLabSearchFilter] = useState("");
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -692,6 +695,16 @@ export default function LoginScreen() {
     );
   }
 
+  async function loadAllLabGroups() {
+    try {
+      const stored = await AsyncStorage.getItem("@drivesync_groups");
+      const groups: Group[] = stored ? JSON.parse(stored) : [];
+      setAllLabGroups(groups.filter(g => g.type === "lab"));
+    } catch {
+      setAllLabGroups([]);
+    }
+  }
+
   async function checkLabName() {
     if (!labName.trim()) {
       setSignUpError("Please enter a lab name.");
@@ -767,7 +780,7 @@ export default function LoginScreen() {
           </View>
         )}
 
-        {!matchingLabGroup ? (
+        {!matchingLabGroup && !browseExistingLabs ? (
           <>
             <View style={styles.inputWrapper}>
               <Ionicons name="flask-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
@@ -801,7 +814,100 @@ export default function LoginScreen() {
                 </>
               )}
             </Pressable>
+
+            <View style={{ alignItems: "center", marginTop: 16 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,255,255,0.12)" }} />
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.4)" }}>or</Text>
+                <View style={{ flex: 1, height: 1, backgroundColor: "rgba(255,255,255,0.12)" }} />
+              </View>
+              <Pressable
+                onPress={() => {
+                  loadAllLabGroups();
+                  setBrowseExistingLabs(true);
+                  setLabSearchFilter("");
+                  setSignUpError(null);
+                }}
+                style={({ pressed }) => [
+                  {
+                    flexDirection: "row", alignItems: "center", gap: 8,
+                    paddingVertical: 14, paddingHorizontal: 20, borderRadius: 14,
+                    borderWidth: 1, borderColor: "rgba(255,255,255,0.15)",
+                  },
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Ionicons name="business-outline" size={18} color="rgba(255,255,255,0.7)" />
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.7)" }}>Join an Existing Lab</Text>
+              </Pressable>
+            </View>
           </>
+        ) : browseExistingLabs && !matchingLabGroup ? (
+          <View style={{ gap: 12 }}>
+            <View style={styles.inputWrapper}>
+              <Ionicons name="search" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                value={labSearchFilter}
+                onChangeText={setLabSearchFilter}
+                placeholder="Search labs..."
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                autoCapitalize="none"
+              />
+            </View>
+
+            <ScrollView style={{ maxHeight: 240 }} showsVerticalScrollIndicator={false}>
+              {allLabGroups
+                .filter(g => !labSearchFilter || g.name.toLowerCase().includes(labSearchFilter.toLowerCase()))
+                .length === 0 ? (
+                <View style={{ padding: 24, alignItems: "center" }}>
+                  <Ionicons name="business-outline" size={32} color="rgba(255,255,255,0.2)" />
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.4)", marginTop: 8, textAlign: "center" }}>
+                    {allLabGroups.length === 0 ? "No labs registered yet" : "No labs match your search"}
+                  </Text>
+                </View>
+              ) : (
+                allLabGroups
+                  .filter(g => !labSearchFilter || g.name.toLowerCase().includes(labSearchFilter.toLowerCase()))
+                  .map(g => (
+                    <Pressable
+                      key={g.id}
+                      onPress={() => {
+                        setMatchingLabGroup(g);
+                        setLabJoinRequestSent(false);
+                        setSignUpError(null);
+                      }}
+                      style={({ pressed }) => ({
+                        flexDirection: "row", alignItems: "center", gap: 12,
+                        backgroundColor: pressed ? "rgba(59,130,246,0.15)" : "rgba(255,255,255,0.06)",
+                        borderRadius: 12, padding: 14, marginBottom: 8,
+                        borderWidth: 1, borderColor: "rgba(255,255,255,0.1)",
+                      })}
+                    >
+                      <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(59,130,246,0.2)", justifyContent: "center", alignItems: "center" }}>
+                        <Ionicons name="business" size={20} color="#3B82F6" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>{g.name}</Text>
+                        {g.address && <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>{g.address}</Text>}
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.35)", marginTop: 2 }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.3)" />
+                    </Pressable>
+                  ))
+              )}
+            </ScrollView>
+
+            <Pressable
+              onPress={() => { setBrowseExistingLabs(false); setSignUpError(null); }}
+              style={({ pressed }) => [
+                { alignItems: "center", paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.15)" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.6)" }}>Create a New Lab Instead</Text>
+            </Pressable>
+          </View>
         ) : !labJoinRequestSent ? (
           <View style={{ gap: 16 }}>
             <View style={{ backgroundColor: "rgba(59,130,246,0.1)", borderWidth: 1, borderColor: "rgba(59,130,246,0.3)", borderRadius: 14, padding: 20, alignItems: "center" }}>
@@ -830,6 +936,9 @@ export default function LoginScreen() {
               onPress={() => {
                 setMatchingLabGroup(null);
                 setSignUpError(null);
+                if (browseExistingLabs) {
+                  setBrowseExistingLabs(false);
+                }
                 setSignUpStep("lab_info");
               }}
               style={({ pressed }) => [
@@ -848,6 +957,18 @@ export default function LoginScreen() {
                 Create New Lab Instead
               </Text>
             </Pressable>
+
+            {browseExistingLabs && (
+              <Pressable
+                onPress={() => { setMatchingLabGroup(null); setSignUpError(null); }}
+                style={({ pressed }) => [
+                  { alignItems: "center", paddingVertical: 12, marginTop: 4 },
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.5)" }}>Back to Lab List</Text>
+              </Pressable>
+            )}
           </View>
         ) : (
           <View style={{ alignItems: "center", paddingVertical: 20, gap: 12 }}>

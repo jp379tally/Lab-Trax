@@ -108,37 +108,68 @@ export default function NotificationsScreen() {
 
   function renderJoinRequestCard(request: GroupJoinRequest) {
     const reqUserData = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
+    const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
     const isProvider = reqUserData?.userType === "provider";
+    const isSameType = reqUserData?.userType === currentUserData?.userType;
+    const isInternalJoin = isSameType && !isProvider;
 
     return (
       <View key={request.id} style={styles.inviteCard}>
-        <View style={[styles.notifIcon, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
+        <View style={[styles.notifIcon, { backgroundColor: isProvider ? "#DBEAFE" : isInternalJoin ? "#FEF3C7" : "#FEF3C7" }]}>
           <Ionicons name={isProvider ? "medical" : "person-add"} size={20} color={isProvider ? "#2563EB" : "#D97706"} />
         </View>
         <View style={styles.notifContent}>
-          <Text style={styles.notifTitle}>{isProvider ? "Provider Join Request" : "Group Join Request"}</Text>
+          <Text style={styles.notifTitle}>{isProvider ? "Provider Join Request" : isInternalJoin ? "User Join Request" : "Group Join Request"}</Text>
           <Text style={styles.notifMessage}>
             <Text style={{ fontFamily: "Inter_600SemiBold" }}>{request.requestingUsername}</Text>
-            {isProvider ? " (Provider) wants to join your group" : " wants to join your group"}
+            {isProvider ? " (Provider) wants to join your group" : isInternalJoin ? " wants to join your lab" : " wants to join your group"}
           </Text>
           <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4, marginBottom: 8 }}>
-            {isProvider ? "Accept this provider into your group?" : "Accept this lab into your group?"}
+            {isInternalJoin ? "What role should this user have?" : isProvider ? "Accept this provider into your group?" : "Accept this lab into your group?"}
           </Text>
           <View style={styles.inviteBtns}>
-            <Pressable
-              style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
-              onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
-            >
-              <Ionicons name="checkmark" size={16} color="#FFF" />
-              <Text style={styles.acceptText}>Accept</Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
-              onPress={() => setConfirmJoinRequest({ request, accept: false })}
-            >
-              <Ionicons name="close" size={16} color={Colors.light.error} />
-              <Text style={styles.declineText}>Reject</Text>
-            </Pressable>
+            {isInternalJoin ? (
+              <>
+                <Pressable
+                  style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
+                >
+                  <Ionicons name="checkmark" size={16} color="#FFF" />
+                  <Text style={styles.acceptText}>As User</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.acceptBtn, { backgroundColor: "#F59E0B" }, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "admin" })}
+                >
+                  <Ionicons name="shield-checkmark" size={16} color="#FFF" />
+                  <Text style={styles.acceptText}>As Admin</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: false })}
+                >
+                  <Ionicons name="close" size={16} color={Colors.light.error} />
+                  <Text style={styles.declineText}>Reject</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
+                >
+                  <Ionicons name="checkmark" size={16} color="#FFF" />
+                  <Text style={styles.acceptText}>Accept</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
+                  onPress={() => setConfirmJoinRequest({ request, accept: false })}
+                >
+                  <Ionicons name="close" size={16} color={Colors.light.error} />
+                  <Text style={styles.declineText}>Reject</Text>
+                </Pressable>
+              </>
+            )}
           </View>
         </View>
       </View>
