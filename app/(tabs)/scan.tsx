@@ -950,7 +950,12 @@ export default function ScanScreen() {
     setBarcodeAttachScanned(true);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    if (barcodeScanForCase) {
+    const caseId = barcodeScanForCase;
+    if (!caseId) return;
+
+    setBarcodeScanForCase(null);
+
+    setTimeout(() => {
       Alert.alert(
         "Confirm Barcode",
         `Detected barcode: "${data}". Assign this barcode to the case?`,
@@ -959,7 +964,7 @@ export default function ScanScreen() {
             text: "Yes",
             onPress: () => {
               const existingCase = findCaseByBarcode(data);
-              if (existingCase && existingCase.id !== barcodeScanForCase) {
+              if (existingCase && existingCase.id !== caseId) {
                 Alert.alert(
                   "Barcode Already Assigned",
                   `This barcode is already assigned to case ${existingCase.caseNumber || existingCase.id}. Do you wish to add another case to this barcode?`,
@@ -967,28 +972,40 @@ export default function ScanScreen() {
                     {
                       text: "Yes",
                       onPress: () => {
-                        assignBarcodeToCase(barcodeScanForCase, data);
-                        setBarcodeScanForCase(null);
+                        assignBarcodeToCase(caseId, data);
                         setLabelModalVisible(false);
                         setPendingRemakeCheck(null);
                         resetForm();
-                        Alert.alert("Barcode Shared", `Barcode "${data}" is now assigned to both cases.`, [
-                          { text: "OK", onPress: () => router.push("/(tabs)") },
-                        ]);
+                        setTimeout(() => {
+                          Alert.alert("Barcode Shared", `Barcode "${data}" is now assigned to both cases.`, [
+                            { text: "OK", onPress: () => router.push("/(tabs)") },
+                          ]);
+                        }, 400);
                       },
                     },
-                    { text: "No", style: "cancel", onPress: () => setBarcodeAttachScanned(false) },
+                    {
+                      text: "No",
+                      style: "cancel",
+                      onPress: () => {
+                        setBarcodeAttachScanned(false);
+                        setLabelModalVisible(false);
+                        setPendingRemakeCheck(null);
+                        resetForm();
+                        router.push("/(tabs)/cases");
+                      },
+                    },
                   ]
                 );
               } else {
-                assignBarcodeToCase(barcodeScanForCase, data);
-                setBarcodeScanForCase(null);
+                assignBarcodeToCase(caseId, data);
                 setLabelModalVisible(false);
                 setPendingRemakeCheck(null);
                 resetForm();
-                Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
-                  { text: "OK", onPress: () => router.push("/(tabs)") },
-                ]);
+                setTimeout(() => {
+                  Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
+                    { text: "OK", onPress: () => router.push("/(tabs)") },
+                  ]);
+                }, 400);
               }
             },
           },
@@ -997,7 +1014,6 @@ export default function ScanScreen() {
             style: "cancel",
             onPress: () => {
               setBarcodeAttachScanned(false);
-              setBarcodeScanForCase(null);
               setLabelModalVisible(false);
               setPendingRemakeCheck(null);
               resetForm();
@@ -1006,7 +1022,7 @@ export default function ScanScreen() {
           },
         ]
       );
-    }
+    }, 500);
   }
 
   function handleBarcodeScanned({ data }: { data: string }) {
@@ -1020,12 +1036,15 @@ export default function ScanScreen() {
       setBarcodeScanned(false);
       setTimeout(() => {
         router.navigate(`/case/${foundCase.id}`);
-      }, 300);
+      }, 400);
     } else {
-      Alert.alert("Case Not Found", `No case found with ID: ${data}`, [
-        { text: "Scan Again", onPress: () => setBarcodeScanned(false) },
-        { text: "Close", onPress: () => { setShowBarcodeScanner(false); setBarcodeScanned(false); } },
-      ]);
+      setShowBarcodeScanner(false);
+      setTimeout(() => {
+        Alert.alert("Case Not Found", `No case found with ID: ${data}`, [
+          { text: "Scan Again", onPress: () => { setBarcodeScanned(false); setShowBarcodeScanner(true); } },
+          { text: "Close", onPress: () => setBarcodeScanned(false) },
+        ]);
+      }, 500);
     }
   }
 
