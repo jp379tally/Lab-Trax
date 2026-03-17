@@ -859,11 +859,13 @@ export default function ScanScreen() {
     setBarcodeScanned(true);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    const foundCase = cases.find(c => c.id === data || c.caseNumber === data);
+    const foundCase = cases.find(c => c.id === data || c.caseNumber === data || c.assignedBarcode === data);
     if (foundCase) {
       setShowBarcodeScanner(false);
       setBarcodeScanned(false);
-      router.push(`/case/${foundCase.id}`);
+      setTimeout(() => {
+        router.navigate(`/case/${foundCase.id}`);
+      }, 300);
     } else {
       Alert.alert("Case Not Found", `No case found with ID: ${data}`, [
         { text: "Scan Again", onPress: () => setBarcodeScanned(false) },
