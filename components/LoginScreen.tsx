@@ -538,7 +538,7 @@ export default function LoginScreen() {
                 {signUpStep === "phone_contact_name" && "Who will receive text updates?"}
                 {signUpStep === "email_verify" && "Verify your email address"}
                 {signUpStep === "role_select" && "Select your role"}
-                {signUpStep === "join_group" && "Connect with the Lab"}
+                {signUpStep === "join_group" && (userType === "lab" ? "Connect with a Provider" : "Connect with the Lab")}
                 {signUpStep === "hipaa_disclaimer" && "Review & Accept Terms"}
               </Text>
             </View>
@@ -1215,10 +1215,19 @@ export default function LoginScreen() {
   }
 
   function renderJoinGroup() {
+    const isLabUser = userType === "lab";
+    const searchTargetType = isLabUser ? "provider" : "lab";
+    const searchLabel = isLabUser ? "Search for a dental provider..." : "Search for your lab...";
+    const searchDescription = isLabUser
+      ? "Start typing to find a dental provider. Select a provider to send a connection request. They will need to accept before being linked to your lab."
+      : "Start typing to find your lab. Select the correct lab to send a connection request.";
+    const noResultsText = isLabUser ? "No matching providers found" : "No matching labs found";
+    const duplicateText = isLabUser ? "You already have a pending request to this provider." : "You already have a pending request to this lab.";
+
     const labSearchText = joinGroupAdminUsername;
-    const matchingLabs = labSearchText.trim().length > 0
+    const matchingResults = labSearchText.trim().length > 0
       ? registeredUsers.filter(u =>
-          u.userType === "lab" &&
+          u.userType === searchTargetType &&
           u.role === "admin" &&
           (
             (u.username && u.username.toLowerCase().includes(labSearchText.trim().toLowerCase())) ||
@@ -1228,8 +1237,8 @@ export default function LoginScreen() {
         )
       : [];
 
-    const handleSelectLab = async (labAdmin: typeof registeredUsers[0]) => {
-      const selectedUsername = labAdmin.username;
+    const handleSelectTarget = async (target: typeof registeredUsers[0]) => {
+      const selectedUsername = target.username;
       setJoinGroupAdminUsername(selectedUsername);
       try {
         const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
@@ -1240,14 +1249,17 @@ export default function LoginScreen() {
             && r.status === "pending"
         );
         if (alreadyPending) {
-          setSignUpError("You already have a pending request to this lab.");
+          setSignUpError(duplicateText);
           return;
         }
+        const requestMessage = isLabUser
+          ? `${signUpUsername.trim()} (Lab) would like to connect with your practice.`
+          : `${signUpUsername.trim()} would like to connect with your lab.`;
         const request: GroupJoinRequest = {
           id: generateId(),
           requestingUsername: signUpUsername.trim(),
           targetAdminUsername: selectedUsername,
-          message: `${signUpUsername.trim()} would like to connect with your lab.`,
+          message: requestMessage,
           status: "pending",
           createdAt: Date.now(),
         };
@@ -1263,7 +1275,7 @@ export default function LoginScreen() {
     return (
       <View style={styles.formSection}>
         <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", lineHeight: 20, marginBottom: 20 }}>
-          Start typing to find your lab. Select the correct lab to send a connection request.
+          {searchDescription}
         </Text>
 
         {!joinGroupSent ? (
@@ -1273,7 +1285,7 @@ export default function LoginScreen() {
                 <Ionicons name="search" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Search for your lab..."
+                  placeholder={searchLabel}
                   placeholderTextColor="rgba(255,255,255,0.35)"
                   value={joinGroupAdminUsername}
                   onChangeText={(t) => { setJoinGroupAdminUsername(t); setJoinGroupSent(false); setSignUpError(null); }}
@@ -1283,24 +1295,29 @@ export default function LoginScreen() {
               </View>
             </View>
 
-            {matchingLabs.length > 0 && (
+            {matchingResults.length > 0 && (
               <View style={{ marginTop: 4, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.1)", maxHeight: 200, overflow: "hidden" }}>
                 <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                  {matchingLabs.map((lab, index) => (
+                  {matchingResults.map((result, index) => (
                     <Pressable
-                      key={lab.username + index}
-                      onPress={() => handleSelectLab(lab)}
+                      key={result.username + index}
+                      onPress={() => handleSelectTarget(result)}
                       style={({ pressed }) => [
-                        { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: index < matchingLabs.length - 1 ? 1 : 0, borderBottomColor: "rgba(255,255,255,0.06)" },
+                        { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: index < matchingResults.length - 1 ? 1 : 0, borderBottomColor: "rgba(255,255,255,0.06)" },
                         pressed && { backgroundColor: "rgba(255,255,255,0.1)" },
                       ]}
                     >
                       <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
-                        {lab.practiceName || lab.username}
+                        {isLabUser ? (result.doctorName || result.practiceName || result.username) : (result.practiceName || result.username)}
                       </Text>
-                      {lab.practiceAddress ? (
+                      {result.practiceAddress ? (
                         <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>
-                          {lab.practiceAddress}
+                          {result.practiceAddress}
+                        </Text>
+                      ) : null}
+                      {isLabUser && result.practiceName && result.doctorName ? (
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>
+                          {result.practiceName}
                         </Text>
                       ) : null}
                     </Pressable>
@@ -1309,9 +1326,9 @@ export default function LoginScreen() {
               </View>
             )}
 
-            {labSearchText.trim().length > 0 && matchingLabs.length === 0 && (
+            {labSearchText.trim().length > 0 && matchingResults.length === 0 && (
               <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.4)", marginTop: 8, textAlign: "center" }}>
-                No matching labs found
+                {noResultsText}
               </Text>
             )}
           </>
@@ -1322,7 +1339,10 @@ export default function LoginScreen() {
             </View>
             <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF", marginBottom: 4 }}>Request Sent</Text>
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center" }}>
-              Your connection request has been sent to {joinGroupAdminUsername}. You'll be notified when they respond.
+              {isLabUser
+                ? `Your connection request has been sent to ${joinGroupAdminUsername}. They will need to accept before being linked to your lab.`
+                : `Your connection request has been sent to ${joinGroupAdminUsername}. You'll be notified when they respond.`
+              }
             </Text>
           </View>
         )}
