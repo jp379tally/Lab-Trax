@@ -1372,11 +1372,12 @@ export default function ScanScreen() {
                                   {c.leadDoctor.replace("Dr. ", "").charAt(0)}
                                 </Text>
                               </View>
-                              <View>
+                              <View style={{ flex: 1 }}>
                                 <Text style={[styles.dropdownItemName, doctorName === c.leadDoctor && { color: Colors.light.tint }]}>
                                   {c.leadDoctor}
                                 </Text>
                                 <Text style={styles.dropdownItemSub}>{c.practiceName}</Text>
+                                {c.address ? <Text style={styles.dropdownItemAddr} numberOfLines={1}>{c.address}</Text> : null}
                               </View>
                             </View>
                             {doctorName === c.leadDoctor && (
@@ -3638,6 +3639,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: "Inter_400Regular",
     color: Colors.light.textSecondary,
+    marginTop: 1,
+  },
+  dropdownItemAddr: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
     marginTop: 1,
   },
   addNewPatientBtn: {
