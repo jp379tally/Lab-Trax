@@ -2483,15 +2483,6 @@ export default function CaseDetailScreen() {
               facing="back"
               barcodeScannerSettings={{ barcodeTypes: ["code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "qr", "pdf417", "itf14", "codabar"] }}
               onBarcodeScanned={barcodeScanned ? undefined : (result) => {
-                if (Platform.OS !== "web" && result.bounds) {
-                  const bx = result.bounds.origin?.x ?? 0;
-                  const by = result.bounds.origin?.y ?? 0;
-                  const bw = result.bounds.size?.width ?? 0;
-                  const bh = result.bounds.size?.height ?? 0;
-                  const cx = bx + bw / 2;
-                  const cy = by + bh / 2;
-                  if (cx < 0.15 || cx > 0.85 || cy < 0.25 || cy > 0.75) return;
-                }
                 setBarcodeScanned(true);
                 const scannedBarcode = result.data;
                 const existingCase = findCaseByBarcode(scannedBarcode);
@@ -2512,7 +2503,12 @@ export default function CaseDetailScreen() {
                 }
               }}
             />
-            <View style={{ position: "absolute", top: "50%", left: 20, right: 20, marginTop: -1, height: 2, backgroundColor: "#4F8EF7", borderRadius: 1 }} />
+            <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "center", alignItems: "center" }} pointerEvents="none">
+              <View style={{ width: 260, height: 100, borderWidth: 2, borderColor: "rgba(79,142,247,0.6)", borderRadius: 12, borderStyle: "dashed" }} />
+              <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 8 }}>
+                Align barcode in the box
+              </Text>
+            </View>
           </View>
           <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, paddingTop: 16, alignItems: "center" }}>
             <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>
