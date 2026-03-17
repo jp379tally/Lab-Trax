@@ -2495,8 +2495,11 @@ export default function CaseDetailScreen() {
                 } else {
                   assignBarcodeToCase(id!, scannedBarcode);
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  setShowBarcodeScanner(false);
-                  Alert.alert("Barcode Assigned", `Barcode ${scannedBarcode} has been assigned to this case.`);
+                  Alert.alert(
+                    "Barcode Assigned",
+                    `Barcode ${scannedBarcode} has been assigned to this case.`,
+                    [{ text: "OK", onPress: () => setShowBarcodeScanner(false) }]
+                  );
                 }
               }}
             />
