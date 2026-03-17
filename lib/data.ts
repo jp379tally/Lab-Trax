@@ -78,6 +78,8 @@ export const MATERIAL_PRICES: Record<string, number> = {
   "E.max": 300,
   "PFM": 200,
   "Gold": 400,
+  "Semi Precious": 275,
+  "Full Cast": 225,
   "Other": 250,
 };
 

@@ -374,9 +374,13 @@ export default function ScanScreen() {
         if (!cameraReady) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-        const photo = await cameraRef.current.takePictureAsync({ quality: 1.0 });
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, base64: true });
         if (photo?.uri) {
-          setCapturedUri(photo.uri);
+          if (photo.base64) {
+            setCapturedUri(`data:image/jpeg;base64,${photo.base64}`);
+          } else {
+            setCapturedUri(photo.uri);
+          }
           setPhase("scanning");
           if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           return;
@@ -404,9 +408,15 @@ export default function ScanScreen() {
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ["images"],
       quality: 0.8,
+      base64: true,
     });
     if (!result.canceled && result.assets[0]) {
-      setCapturedUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      if (asset.base64) {
+        setCapturedUri(`data:image/jpeg;base64,${asset.base64}`);
+      } else {
+        setCapturedUri(asset.uri);
+      }
       setPhase("scanning");
     }
   }
@@ -544,10 +554,16 @@ export default function ScanScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       quality: 0.8,
+      base64: true,
     });
 
     if (!result.canceled && result.assets[0]) {
-      setCapturedUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      if (asset.base64) {
+        setCapturedUri(`data:image/jpeg;base64,${asset.base64}`);
+      } else {
+        setCapturedUri(asset.uri);
+      }
       setPhase("scanning");
       if (Platform.OS !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -562,93 +578,138 @@ export default function ScanScreen() {
   }
 
   async function compressImageForAI(uri: string): Promise<string> {
+    if (uri.startsWith("data:")) {
+      console.log("AI compress: URI is already a data URI, using directly");
+      return uri;
+    }
+
     if (Platform.OS === "web") {
-      const response = await globalThis.fetch(uri);
-      const blob = await response.blob();
-      return new Promise<string>((resolve, reject) => {
-        const img = new (globalThis as any).Image();
-        const objUrl = URL.createObjectURL(blob);
-        img.onload = () => {
-          URL.revokeObjectURL(objUrl);
-          const maxDim = 1024;
-          let w = img.width;
-          let h = img.height;
-          if (w > maxDim || h > maxDim) {
-            if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
-            else { w = Math.round(w * maxDim / h); h = maxDim; }
-          }
-          const canvas = (globalThis as any).document.createElement("canvas");
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
+      try {
+        const response = await globalThis.fetch(uri);
+        const blob = await response.blob();
+        return new Promise<string>((resolve, reject) => {
+          const img = new (globalThis as any).Image();
+          img.crossOrigin = "anonymous";
+          const objUrl = URL.createObjectURL(blob);
+          img.onload = () => {
+            URL.revokeObjectURL(objUrl);
+            const maxDim = 1024;
+            let w = img.width;
+            let h = img.height;
+            if (w > maxDim || h > maxDim) {
+              if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+              else { w = Math.round(w * maxDim / h); h = maxDim; }
+            }
+            const canvas = (globalThis as any).document.createElement("canvas");
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+              return;
+            }
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL("image/jpeg", 0.7));
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(objUrl);
             const reader = new FileReader();
             reader.onloadend = () => resolve(reader.result as string);
             reader.onerror = reject;
             reader.readAsDataURL(blob);
-            return;
-          }
-          ctx.drawImage(img, 0, 0, w, h);
-          resolve(canvas.toDataURL("image/jpeg", 0.7));
-        };
-        img.onerror = () => {
-          URL.revokeObjectURL(objUrl);
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        };
-        img.src = objUrl;
-      });
+          };
+          img.src = objUrl;
+        });
+      } catch (webErr: any) {
+        console.log("AI compress web: fetch+canvas failed:", webErr?.message);
+        throw new Error("Web image compression failed: " + (webErr?.message || "unknown"));
+      }
     } else {
       const FileSystem = require("expo-file-system");
-      let readableUri = uri;
-      try {
-        if (!uri.startsWith("file://") && !uri.startsWith("content://")) {
-          readableUri = `file://${uri}`;
-        }
-        if (uri.startsWith("content://") || uri.startsWith("ph://")) {
+
+      const urisToTry: string[] = [];
+
+      if (uri.startsWith("content://") || uri.startsWith("ph://")) {
+        try {
           const destUri = FileSystem.cacheDirectory + "ai_compress_" + Date.now() + ".jpg";
           await FileSystem.copyAsync({ from: uri, to: destUri });
-          readableUri = destUri;
+          urisToTry.push(destUri);
+          console.log("AI compress: copied content/ph URI to cache:", destUri);
+        } catch (copyErr: any) {
+          console.log("AI compress: copy from content/ph failed:", copyErr?.message);
         }
-      } catch (copyErr: any) {
-        console.log("AI compress: URI normalization failed:", copyErr?.message);
       }
-      try {
-        const ImageManipulator = require("expo-image-manipulator");
-        const manipulated = await ImageManipulator.manipulateAsync(
-          readableUri,
-          [{ resize: { width: 800 } }],
-          { compress: 0.6, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
-        );
-        console.log("AI compress: resized to 800px, uri:", manipulated.uri);
-        const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        console.log("AI compress: base64 length:", fileBase64.length);
-        return `data:image/jpeg;base64,${fileBase64}`;
-      } catch (compressErr: any) {
-        console.log("AI compress: manipulator failed, reading raw:", compressErr?.message);
+
+      if (uri.startsWith("file://")) {
+        urisToTry.push(uri);
+        urisToTry.push(uri.replace("file://", ""));
+      } else if (!uri.startsWith("content://") && !uri.startsWith("ph://")) {
+        urisToTry.push(uri);
+        if (!uri.startsWith("/")) {
+          urisToTry.push(`file://${uri}`);
+        } else {
+          urisToTry.push(`file://${uri}`);
+        }
+      }
+
+      urisToTry.push(uri);
+
+      const uniqueUris = [...new Set(urisToTry)];
+      console.log("AI compress: trying URIs:", JSON.stringify(uniqueUris));
+
+      for (const tryUri of uniqueUris) {
         try {
-          const fileBase64 = await FileSystem.readAsStringAsync(readableUri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          console.log("AI compress: raw base64 length:", fileBase64.length);
-          return `data:image/jpeg;base64,${fileBase64}`;
-        } catch (readErr: any) {
-          console.log("AI compress: raw read also failed:", readErr?.message);
-          const info = await FileSystem.getInfoAsync(uri).catch(() => null);
-          console.log("AI compress: file info for original uri:", JSON.stringify(info));
-          if (info?.exists && info?.uri) {
-            const fileBase64 = await FileSystem.readAsStringAsync(info.uri, {
+          const ImageManipulator = require("expo-image-manipulator");
+          if (ImageManipulator.manipulateAsync) {
+            const manipulated = await ImageManipulator.manipulateAsync(
+              tryUri,
+              [{ resize: { width: 800 } }],
+              { compress: 0.6, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
+            );
+            console.log("AI compress: manipulator succeeded with:", tryUri);
+            const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
               encoding: FileSystem.EncodingType.Base64,
             });
+            console.log("AI compress: base64 length:", fileBase64.length);
             return `data:image/jpeg;base64,${fileBase64}`;
           }
-          throw new Error("Could not read image file: " + (readErr?.message || "unknown"));
+        } catch (manipErr: any) {
+          console.log("AI compress: manipulator failed for", tryUri, ":", manipErr?.message);
+        }
+
+        try {
+          const fileBase64 = await FileSystem.readAsStringAsync(tryUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (fileBase64 && fileBase64.length > 100) {
+            console.log("AI compress: raw read succeeded for", tryUri, "length:", fileBase64.length);
+            return `data:image/jpeg;base64,${fileBase64}`;
+          }
+        } catch (readErr: any) {
+          console.log("AI compress: raw read failed for", tryUri, ":", readErr?.message);
         }
       }
+
+      const info = await FileSystem.getInfoAsync(uri).catch(() => null);
+      console.log("AI compress: file info for original uri:", JSON.stringify(info));
+      if (info?.exists && info?.uri) {
+        try {
+          const fileBase64 = await FileSystem.readAsStringAsync(info.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (fileBase64 && fileBase64.length > 100) {
+            console.log("AI compress: read via getInfoAsync uri succeeded, length:", fileBase64.length);
+            return `data:image/jpeg;base64,${fileBase64}`;
+          }
+        } catch (infoReadErr: any) {
+          console.log("AI compress: read via getInfoAsync uri failed:", infoReadErr?.message);
+        }
+      }
+
+      throw new Error("Could not read image file after trying all URI formats");
     }
   }
 
@@ -2145,7 +2206,7 @@ export default function ScanScreen() {
             <View style={[styles.formGroup, { flex: 1 }]}>
               <Text style={styles.formLabel}>Material</Text>
               <View style={styles.materialSelector}>
-                {["Zirconia", "E.max", "PFM", "Gold"].map((m) => (
+                {["Zirconia", "E.max", "PFM", "Gold", "Semi Precious", "Full Cast"].map((m) => (
                   <Pressable
                     key={m}
                     onPress={() => setMaterial(m)}

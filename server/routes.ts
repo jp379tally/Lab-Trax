@@ -313,7 +313,7 @@ Return ONLY valid JSON with these fields:
   "caseType": "one of: Restorative, Removable, Appliance, Temporary - determine from the type of work described (crowns/bridges/veneers/inlays/onlays = Restorative, dentures/partials = Removable, retainers/guards/splints = Appliance, temps/provisionals = Temporary)",
   "toothIndices": "tooth numbers in format #8, #9, #10 - look for tooth numbers, tooth chart markings, tooth diagrams, Treatment Information tables, or FDI notation and convert to American numbering 1-32",
   "shade": "dental shade like A1, A2, A3, B1, B2, C1, etc. - look for shade, color, Vita shade, or shade columns in treatment tables",
-  "material": "one of: Zirconia, E.max, PFM, Gold - determine from material descriptions like zirconia, ceramic translucent zirconia, lithium disilicate, porcelain fused to metal, full gold, etc.",
+  "material": "one of: Zirconia, E.max, PFM, Gold, Semi Precious, Full Cast - determine from material descriptions (zirconia/ceramic translucent zirconia = Zirconia, lithium disilicate/emax = E.max, porcelain fused to metal = PFM, full gold/high noble = Gold, semi precious/noble metal = Semi Precious, full cast/base metal = Full Cast). If material cannot be determined from the main fields, check the notes section for material clues.",
   "dueDate": "due date in MM/DD/YYYY format if visible - look for Due Date, Date Needed, Ship Date, Return By",
   "isRush": false,
   "notes": "ALL other instructions, special notes, treatment specifications, procedure type (Fixed Restorative, etc.), practice name and address, and any other text on the form",
