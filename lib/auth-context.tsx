@@ -43,6 +43,7 @@ interface AuthContextValue {
   loginWithBiometric: () => Promise<{ success: boolean; error?: string }>;
   register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
+  deleteAccount: () => Promise<{ success: boolean; error?: string }>;
   registeredUsers: StoredUser[];
   isLocked: boolean;
   unlockWithBiometric: () => Promise<{ success: boolean; error?: string }>;
@@ -269,6 +270,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     AsyncStorage.removeItem(AUTH_KEY);
   }
 
+  async function deleteAccount(): Promise<{ success: boolean; error?: string }> {
+    if (!currentUserId) return { success: false, error: "No user logged in." };
+    try {
+      const apiUrl = getApiUrl();
+      const url = new URL(`/api/auth/users/${currentUserId}`, apiUrl);
+      const resp = await resilientFetch(url.toString(), { method: "DELETE" });
+      const data = await resp.json();
+      if (data.success) {
+        logAudit("DELETE_ACCOUNT", currentUser || "unknown", "User deleted their account");
+        const storedRaw = await AsyncStorage.getItem("@drivesync_auth_users");
+        if (storedRaw) {
+          const storedUsers = JSON.parse(storedRaw);
+          const filtered = storedUsers.filter((u: any) => u.id !== currentUserId);
+          await AsyncStorage.setItem("@drivesync_auth_users", JSON.stringify(filtered));
+        }
+        setIsAuthenticated(false);
+        setCurrentUser(null);
+        setCurrentUserId(null);
+        setUserType(null);
+        setIsLocked(false);
+        setCurrentPassword(null);
+        if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+        await AsyncStorage.removeItem(AUTH_KEY);
+        await AsyncStorage.removeItem("@drivesync_role");
+        setRegisteredUsers((prev) => prev.filter((u) => u.id !== currentUserId));
+        return { success: true };
+      }
+      return { success: false, error: data.error || "Failed to delete account." };
+    } catch (e) {
+      console.error("Delete account error:", e);
+      return { success: false, error: "Connection error. Please try again." };
+    }
+  }
+
   async function unlockWithBiometric(): Promise<{ success: boolean; error?: string }> {
     try {
       const hasHardware = await LocalAuthentication.hasHardwareAsync();
@@ -341,6 +376,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loginWithBiometric,
       register,
       logout,
+      deleteAccount,
       registeredUsers,
       isLocked,
       unlockWithBiometric,

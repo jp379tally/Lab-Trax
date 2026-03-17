@@ -26,7 +26,7 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
   const { sendGroupJoinRequest, groups } = useApp();
-  const { currentUser, userType, registeredUsers } = useAuth();
+  const { currentUser, userType, registeredUsers, deleteAccount } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
   const [showAddLabModal, setShowAddLabModal] = useState(false);
@@ -255,6 +255,47 @@ export default function SettingsScreen() {
               </View>
             </View>
           </View>
+        </View>
+
+        <View style={{ marginTop: 12, marginBottom: 40 }}>
+          <Pressable
+            onPress={() => {
+              Alert.alert(
+                "Delete Account",
+                "Are you sure you want to permanently delete your account? This action cannot be undone and all your data will be removed from LabTrax.",
+                [
+                  { text: "No", style: "cancel" },
+                  {
+                    text: "Yes, Delete",
+                    style: "destructive",
+                    onPress: async () => {
+                      const result = await deleteAccount();
+                      if (result.success) {
+                        Alert.alert("Account Deleted", "Your account has been permanently removed.");
+                      } else {
+                        Alert.alert("Error", result.error || "Failed to delete account. Please try again.");
+                      }
+                    },
+                  },
+                ]
+              );
+            }}
+            style={({ pressed }) => [{
+              backgroundColor: "rgba(239,68,68,0.08)",
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: "rgba(239,68,68,0.2)",
+              paddingVertical: 14,
+              paddingHorizontal: 20,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+            }, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="trash-outline" size={18} color="#EF4444" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#EF4444" }}>Delete Account</Text>
+          </Pressable>
         </View>
       </ScrollView>
 

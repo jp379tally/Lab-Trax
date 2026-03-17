@@ -171,6 +171,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.delete("/api/auth/users/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await storage.getUser(id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      const deleted = await storage.deleteUser(id);
+      if (deleted) {
+        res.json({ success: true });
+      } else {
+        res.status(500).json({ error: "Failed to delete user" });
+      }
+    } catch (error: any) {
+      console.error("Delete user error:", error?.message || error);
+      res.status(500).json({ error: "Failed to delete user" });
+    }
+  });
+
   app.post("/api/audit-log", (req, res) => {
     const { action, user, resource } = req.body;
     if (!action || !user) {
