@@ -15,6 +15,7 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
+import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications";
 import Colors from "@/constants/colors";
 import { Notification, GroupInvitation, GroupJoinRequest } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
@@ -44,11 +45,12 @@ function formatTime(ts: number) {
 }
 
 export default function NotificationsScreen() {
-  const { notifications, markNotificationRead, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
+  const { markNotificationRead, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [confirmInvite, setConfirmInvite] = useState<{ invitation: GroupInvitation; accept: boolean } | null>(null);
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
+  const filteredNotifications = useProviderFilteredNotifications();
 
   const pendingInvitations = groupInvitations.filter(
     inv => inv.invitedUsername.toLowerCase() === (currentUser || "").toLowerCase() && inv.status === "pending"
@@ -221,7 +223,7 @@ export default function NotificationsScreen() {
         </View>
       </View>
       <FlatList
-        data={notifications}
+        data={filteredNotifications}
         keyExtractor={(item) => item.id}
         renderItem={renderNotification}
         contentContainerStyle={[

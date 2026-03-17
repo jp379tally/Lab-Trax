@@ -8,14 +8,16 @@ import React from "react";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
+import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 
 const DESKTOP_BREAKPOINT = 768;
 
 function NativeTabLayout() {
-  const { unreadCount } = useApp();
   const { userType } = useAuth();
   const isProvider = userType === "provider";
+  const filteredNotifs = useProviderFilteredNotifications();
+  const filteredUnread = filteredNotifs.filter(n => !n.read).length;
   return (
     <NativeTabs>
       <NativeTabs.Trigger name="index">
@@ -35,7 +37,7 @@ function NativeTabLayout() {
       <NativeTabs.Trigger name="notifications">
         <Icon sf={{ default: "bell", selected: "bell.fill" }} />
         <Label>Alerts</Label>
-        {unreadCount > 0 && <Badge>{unreadCount}</Badge>}
+        {filteredUnread > 0 && <Badge>{filteredUnread}</Badge>}
       </NativeTabs.Trigger>
     </NativeTabs>
   );
@@ -57,9 +59,10 @@ const TAB_ITEMS: TabItem[] = [
 
 function DesktopSidebar({ state, descriptors, navigation }: BottomTabBarProps) {
   const { isDark, colors } = useTheme();
-  const { unreadCount } = useApp();
   const { userType } = useAuth();
   const isProvider = userType === "provider";
+  const filteredNotifs = useProviderFilteredNotifications();
+  const unreadCount = filteredNotifs.filter(n => !n.read).length;
 
   return (
     <View style={[desktopStyles.sidebar, { backgroundColor: isDark ? "#0F172A" : "#FFFFFF", borderRightColor: isDark ? "#1E293B" : "#E2E8F0" }]}>
@@ -138,9 +141,11 @@ function ClassicTabLayout() {
   const { isDark, colors } = useTheme();
   const isWeb = Platform.OS === "web";
   const isIOS = Platform.OS === "ios";
-  const { unreadCount, role, setRole, setAdminUnlocked } = useApp();
+  const { role, setRole, setAdminUnlocked } = useApp();
   const { userType } = useAuth();
   const isProvider = userType === "provider";
+  const filteredNotifs = useProviderFilteredNotifications();
+  const unreadCount = filteredNotifs.filter(n => !n.read).length;
   const { width } = useWindowDimensions();
   const isDesktop = isWeb && width >= DESKTOP_BREAKPOINT;
 
