@@ -4,6 +4,7 @@ import {
   View,
   Text,
   ScrollView,
+  FlatList,
   Pressable,
   Platform,
   ActivityIndicator,
@@ -4476,7 +4477,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels } = useApp();
+  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels, sendGroupJoinRequest, groupJoinRequests } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -4494,6 +4495,8 @@ function ProviderDashboard() {
   const [prefOcclusionOpen, setPrefOcclusionOpen] = useState(false);
   const [prefPonticOpen, setPrefPonticOpen] = useState(false);
   const [prefContactOpen, setPrefContactOpen] = useState(false);
+  const [showAddLab, setShowAddLab] = useState(false);
+  const [labSearchQuery, setLabSearchQuery] = useState("");
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const myGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === (currentUser || "").toLowerCase()));
   const isGroupMember = myGroups.length > 0;
@@ -4825,7 +4828,21 @@ function ProviderDashboard() {
               <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
             </Pressable>
 
-            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginTop: 24, marginBottom: 8, letterSpacing: 0.5 }}>CONNECTED LABS</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 24, marginBottom: 8 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, letterSpacing: 0.5 }}>CONNECTED LABS</Text>
+              <Pressable
+                style={({ pressed }) => ({
+                  flexDirection: "row", alignItems: "center", gap: 4,
+                  backgroundColor: pressed ? "#DBEAFE" : Colors.light.tintLight,
+                  paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
+                  opacity: pressed ? 0.85 : 1,
+                })}
+                onPress={() => { setLabSearchQuery(""); setShowAddLab(true); }}
+              >
+                <Ionicons name="add" size={16} color={Colors.light.tint} />
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Add a Lab</Text>
+              </Pressable>
+            </View>
             {myGroups.filter(g => g.type === "lab").length === 0 ? (
               <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
                 <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center" }}>No connected labs yet</Text>
@@ -4864,6 +4881,130 @@ function ProviderDashboard() {
               <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#DC2626" }}>Sign Out</Text>
             </Pressable>
           </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={showAddLab}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setShowAddLab(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" }}>
+          <View style={{ backgroundColor: "#FFF", borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: "80%", paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 }}>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Add a Lab</Text>
+              <Pressable onPress={() => setShowAddLab(false)} hitSlop={12}>
+                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+            <View style={{ paddingHorizontal: 20, marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: Colors.light.surface, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.border, paddingHorizontal: 12 }}>
+                <Ionicons name="search" size={18} color={Colors.light.textTertiary} />
+                <TextInput
+                  style={{ flex: 1, paddingVertical: 12, paddingHorizontal: 8, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+                  placeholder="Search lab name..."
+                  placeholderTextColor={Colors.light.textTertiary}
+                  value={labSearchQuery}
+                  onChangeText={setLabSearchQuery}
+                  autoFocus
+                />
+                {labSearchQuery.length > 0 && (
+                  <Pressable onPress={() => setLabSearchQuery("")} hitSlop={8}>
+                    <Ionicons name="close-circle" size={18} color={Colors.light.textTertiary} />
+                  </Pressable>
+                )}
+              </View>
+            </View>
+            <FlatList
+              data={(() => {
+                const labGroups = groups.filter(g => g.type === "lab");
+                const myLabIds = new Set(myGroups.filter(g => g.type === "lab").map(g => g.id));
+                const available = labGroups.filter(g => !myLabIds.has(g.id));
+                if (!labSearchQuery.trim()) return available;
+                const q = labSearchQuery.trim().toLowerCase();
+                return available.filter(g => g.name.toLowerCase().includes(q));
+              })()}
+              keyExtractor={item => item.id}
+              contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 16 }}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item: lab }) => {
+                const labAdmin = lab.members.find(m => m.role === "admin");
+                const alreadyRequested = labAdmin ? groupJoinRequests.some(
+                  r => r.targetAdminUsername.toLowerCase() === labAdmin.username.toLowerCase()
+                    && r.requestingUsername.toLowerCase() === (currentUser || "").toLowerCase()
+                    && r.status === "pending"
+                ) : false;
+                return (
+                  <Pressable
+                    style={({ pressed }) => ({
+                      flexDirection: "row", alignItems: "center", gap: 12,
+                      backgroundColor: pressed ? Colors.light.tintLight : Colors.light.surface,
+                      borderRadius: 14, padding: 14, marginBottom: 8,
+                      borderWidth: 1, borderColor: Colors.light.border,
+                    })}
+                    onPress={() => {
+                      if (alreadyRequested) {
+                        Alert.alert("Already Requested", "You have already sent a join request to this lab.");
+                        return;
+                      }
+                      Alert.alert(
+                        "Join Lab",
+                        `Send a join request to "${lab.name}"?`,
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Send Request",
+                            onPress: () => {
+                              const admin = lab.members.find(m => m.role === "admin");
+                              if (admin) {
+                                const result = sendGroupJoinRequest(admin.username, currentUser || "", `Provider ${currentUserData?.doctorName || currentUser} would like to join ${lab.name}`);
+                                if (result.success) {
+                                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                  Alert.alert("Request Sent", `Your join request has been sent to ${lab.name}. You'll be notified when it's accepted.`);
+                                  setShowAddLab(false);
+                                } else {
+                                  Alert.alert("Error", result.error || "Could not send request.");
+                                }
+                              } else {
+                                Alert.alert("Error", "This lab has no admin to send a request to.");
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                  >
+                    <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
+                      <Ionicons name="business" size={20} color="#2563EB" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{lab.name}</Text>
+                      {lab.address ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{lab.address}</Text> : null}
+                    </View>
+                    {alreadyRequested ? (
+                      <View style={{ backgroundColor: "#FEF3C7", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#D97706" }}>Pending</Text>
+                      </View>
+                    ) : (
+                      <View style={{ backgroundColor: "#DCFCE7", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#16A34A" }}>Join</Text>
+                      </View>
+                    )}
+                  </Pressable>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={{ alignItems: "center", paddingVertical: 32 }}>
+                  <Ionicons name="search-outline" size={36} color={Colors.light.textTertiary} />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 8, textAlign: "center" }}>
+                    {labSearchQuery.trim() ? "No labs found matching your search" : "No available labs to join"}
+                  </Text>
+                </View>
+              }
+            />
+          </View>
         </View>
       </Modal>
 
