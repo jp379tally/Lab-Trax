@@ -836,12 +836,34 @@ export default function CaseDetailScreen() {
           return null;
         })()}
 
-        {caseItem.notes ? (
-          <View style={styles.notesCard}>
-            <Text style={styles.notesLabel}>Notes</Text>
-            <Text style={styles.notesText}>{caseItem.notes}</Text>
-          </View>
-        ) : null}
+        {(() => {
+          const noteEntries = (caseItem.activityLog || [])
+            .filter((e) => e.type === "note")
+            .sort((a, b) => a.timestamp - b.timestamp);
+          if (noteEntries.length === 0 && !caseItem.notes) return null;
+          return (
+            <View style={styles.notesCard}>
+              <Text style={styles.notesLabel}>Notes</Text>
+              {noteEntries.length > 0 ? noteEntries.map((entry) => (
+                <View key={entry.id} style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 8, gap: 10 }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary, minWidth: 70 }}>
+                    {new Date(entry.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                  </Text>
+                  <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text, lineHeight: 20 }}>
+                    {entry.description}
+                  </Text>
+                  {entry.user ? (
+                    <View style={{ backgroundColor: "rgba(0,0,0,0.06)", borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, marginLeft: 4 }}>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: Colors.light.textSecondary }}>{entry.user}</Text>
+                    </View>
+                  ) : null}
+                </View>
+              )) : (
+                <Text style={styles.notesText}>{caseItem.notes}</Text>
+              )}
+            </View>
+          );
+        })()}
 
         {(caseItem.photos?.length ?? 0) > 0 && (
           <View style={{ marginBottom: 16 }}>
