@@ -29,7 +29,7 @@ export const STATIONS: { id: CaseStatus; label: string; color: string }[] = [
   { id: "HOLD", label: "On Hold", color: "#94A3B8" },
 ];
 
-export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created" | "courtesy_text";
+export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created" | "courtesy_text" | "barcode_assigned" | "barcode_unassigned" | "invoice_paid" | "invoice_attached" | "tracking_added";
 
 export type CourtesyTextStatus = "sent" | "date_requested" | "date_proposed" | "accepted" | "declined";
 

@@ -599,13 +599,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function addTrackingNumber(caseId: string, tracking: string) {
+    const now = Date.now();
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "tracking_added",
+            timestamp: now,
+            description: `Tracking number added: ${tracking}`,
+            user: currentUser || undefined,
+          };
           return {
             ...c,
-            updatedAt: Date.now(),
+            updatedAt: now,
             trackingNumbers: [...(c.trackingNumbers || []), tracking],
+            activityLog: [...(c.activityLog || []), entry],
           };
         }
         return c;
@@ -709,7 +718,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
-          return { ...c, invoiceId, updatedAt: Date.now() };
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "invoice_attached",
+            timestamp: Date.now(),
+            description: `Case attached to invoice #${invoiceId}`,
+            user: currentUser || undefined,
+          };
+          return { ...c, invoiceId, updatedAt: Date.now(), activityLog: [...(c.activityLog || []), entry] };
         }
         return c;
       });
@@ -988,9 +1004,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function updateInvoice(id: string, inv: Partial<Invoice>) {
-    const updated = invoices.map((i) => (i.id === id ? { ...i, ...inv } : i));
-    setInvoices(updated);
-    AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
+    setInvoices((prev) => {
+      const updated = prev.map((i) => (i.id === id ? { ...i, ...inv } : i));
+      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
+
+      if (inv.status === "paid") {
+        const targetInvoice = prev.find(i => i.id === id);
+        if (targetInvoice && targetInvoice.caseIds && targetInvoice.caseIds.length > 0) {
+          const now = Date.now();
+          setCases((prevCases) => {
+            const alreadyLogged = prevCases.some((c) =>
+              targetInvoice.caseIds.includes(c.id) &&
+              (c.activityLog || []).some(e => e.type === "invoice_paid" && e.description.includes(id))
+            );
+            if (alreadyLogged) return prevCases;
+            const updatedCases = prevCases.map((c) => {
+              if (targetInvoice.caseIds.includes(c.id)) {
+                const entry: ActivityEntry = {
+                  id: generateId(),
+                  type: "invoice_paid",
+                  timestamp: now,
+                  description: `Invoice #${targetInvoice.invoiceNumber || id} paid — $${targetInvoice.amount.toFixed(2)}`,
+                  user: currentUser || undefined,
+                };
+                return { ...c, updatedAt: now, activityLog: [...(c.activityLog || []), entry] };
+              }
+              return c;
+            });
+            AsyncStorage.setItem(CASES_KEY, JSON.stringify(updatedCases));
+            return updatedCases;
+          });
+        }
+      }
+
+      return updated;
+    });
   }
 
   function addShippingAccount(companyName: string, accountNumber: string) {
@@ -1282,10 +1330,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function assignBarcodeToCase(caseId: string, barcode: string) {
+    const now = Date.now();
     setCases((prev) => {
       const updated = prev.map((c) => {
         if (c.id === caseId) {
-          return { ...c, assignedBarcode: barcode, updatedAt: Date.now() };
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "barcode_assigned",
+            timestamp: now,
+            description: `Barcode ${barcode} assigned to case`,
+            user: currentUser || undefined,
+          };
+          return { ...c, assignedBarcode: barcode, updatedAt: now, activityLog: [...(c.activityLog || []), entry] };
         }
         return c;
       });
@@ -1295,10 +1351,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function unassignBarcode(caseId: string) {
+    const now = Date.now();
     setCases((prev) => {
       const updated = prev.map((c) => {
         if (c.id === caseId) {
-          return { ...c, assignedBarcode: undefined, updatedAt: Date.now() };
+          const oldBarcode = c.assignedBarcode || "unknown";
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "barcode_unassigned",
+            timestamp: now,
+            description: `Barcode ${oldBarcode} removed from case`,
+            user: currentUser || undefined,
+          };
+          return { ...c, assignedBarcode: undefined, updatedAt: now, activityLog: [...(c.activityLog || []), entry] };
         }
         return c;
       });

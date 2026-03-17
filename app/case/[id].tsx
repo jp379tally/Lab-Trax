@@ -907,6 +907,11 @@ export default function CaseDetailScreen() {
             const isStation = entry.type === "station_change" || entry.type === "created" || entry.type === "scan";
             const isNote = entry.type === "note";
             const isPhoto = entry.type === "photo";
+            const isBarcode = entry.type === "barcode_assigned" || entry.type === "barcode_unassigned";
+            const isInvoice = entry.type === "invoice_paid" || entry.type === "invoice_attached";
+            const isTracking = entry.type === "tracking_added";
+            const isCourtesy = entry.type === "courtesy_text";
+            const isEvent = isBarcode || isInvoice || isTracking || isCourtesy;
             const stationInfo = entry.station ? getStationInfo(entry.station, customStationLabels) : null;
 
             let dotColor = Colors.light.textTertiary;
@@ -917,6 +922,14 @@ export default function CaseDetailScreen() {
               dotColor = "#F59E0B";
             } else if (isPhoto) {
               dotColor = "#8B5CF6";
+            } else if (isBarcode) {
+              dotColor = "#10B981";
+            } else if (isInvoice) {
+              dotColor = "#3B82F6";
+            } else if (isTracking) {
+              dotColor = "#6366F1";
+            } else if (isCourtesy) {
+              dotColor = "#EC4899";
             }
 
             const entryUserName = entry.user
@@ -966,6 +979,46 @@ export default function CaseDetailScreen() {
                           Case Pan: {caseItem.assignedBarcode}
                         </Text>
                       )}
+                    </View>
+                  ) : isEvent ? (
+                    <View style={{
+                      backgroundColor: isBarcode ? "#ECFDF5" : isInvoice ? "#EFF6FF" : isTracking ? "#EEF2FF" : "#FDF2F8",
+                      borderRadius: 10,
+                      padding: 10,
+                      borderLeftWidth: 3,
+                      borderLeftColor: isBarcode ? "#10B981" : isInvoice ? "#3B82F6" : isTracking ? "#6366F1" : "#EC4899",
+                    }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <Ionicons
+                          name={isBarcode ? "barcode" : isInvoice ? (entry.type === "invoice_paid" ? "card" : "receipt") : isTracking ? "airplane" : "chatbubble-ellipses"}
+                          size={13}
+                          color={isBarcode ? "#059669" : isInvoice ? "#2563EB" : isTracking ? "#4F46E5" : "#DB2777"}
+                        />
+                        <Text style={{
+                          fontSize: 11,
+                          fontFamily: "Inter_600SemiBold",
+                          color: isBarcode ? "#059669" : isInvoice ? "#2563EB" : isTracking ? "#4F46E5" : "#DB2777",
+                          textTransform: "uppercase",
+                          letterSpacing: 0.5,
+                        }}>
+                          {isBarcode ? (entry.type === "barcode_assigned" ? "Barcode Assigned" : "Barcode Removed")
+                            : isInvoice ? (entry.type === "invoice_paid" ? "Payment" : "Invoice")
+                            : isTracking ? "Tracking" : "Courtesy Text"}
+                        </Text>
+                        {entry.user && (
+                          <View style={styles.initialsChip}>
+                            <Text style={styles.initialsText}>{entry.user}</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={{
+                        fontSize: 13,
+                        fontFamily: "Inter_500Medium",
+                        color: Colors.light.text,
+                        lineHeight: 18,
+                      }}>
+                        {entry.description}
+                      </Text>
                     </View>
                   ) : (
                     <View style={{
