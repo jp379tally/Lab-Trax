@@ -44,7 +44,7 @@ export default function SmilePreviewScreen() {
   const [whitenIntensity, setWhitenIntensity] = useState(0.3);
   const [selectedShade, setSelectedShade] = useState("#F5F5F0");
   const [effectOn, setEffectOn] = useState(true);
-  const [symmetryOn, setSymmetryOn] = useState(false);
+  const [symmetryOn, setSymmetryOn] = useState(true);
   const [capturing, setCapturing] = useState(false);
   const [facing, setFacing] = useState<"front" | "back">("front");
   const [teethZone, setTeethZone] = useState(DEFAULT_ZONE);
@@ -281,33 +281,35 @@ export default function SmilePreviewScreen() {
                 borderWidth: 1.5,
                 borderColor:
                   effectOn || symmetryOn
-                    ? "rgba(255,255,255,0.6)"
+                    ? "rgba(255,255,255,0.2)"
                     : "rgba(255,255,255,0.25)",
                 borderStyle: "dashed",
                 alignItems: "center",
                 justifyContent: "center",
               }}
             >
-              <View
-                style={{
-                  position: "absolute",
-                  top: -22,
-                  backgroundColor: "rgba(0,0,0,0.55)",
-                  borderRadius: 8,
-                  paddingHorizontal: 8,
-                  paddingVertical: 3,
-                }}
-              >
-                <Text
+              {!effectOn && !symmetryOn && (
+                <View
                   style={{
-                    color: "rgba(255,255,255,0.7)",
-                    fontSize: 10,
-                    fontFamily: "Inter_500Medium",
+                    position: "absolute",
+                    top: -22,
+                    backgroundColor: "rgba(0,0,0,0.55)",
+                    borderRadius: 8,
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
                   }}
                 >
-                  Drag to position over teeth
-                </Text>
-              </View>
+                  <Text
+                    style={{
+                      color: "rgba(255,255,255,0.7)",
+                      fontSize: 10,
+                      fontFamily: "Inter_500Medium",
+                    }}
+                  >
+                    Drag to position over teeth
+                  </Text>
+                </View>
+              )}
             </View>
           )}
         </View>
