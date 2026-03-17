@@ -75,6 +75,7 @@ export default function CaseDetailScreen() {
   const [showDeclineModal, setShowDeclineModal] = useState(false);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showLabSlipModal, setShowLabSlipModal] = useState(false);
+  const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
 
   const caseItem = cases.find((c) => c.id === id);
   const isAdmin = role === "admin" && adminUnlocked;
@@ -204,7 +205,7 @@ export default function CaseDetailScreen() {
     }
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ["images"],
-      quality: 0.8,
+      quality: 1.0,
       allowsEditing: false,
     });
     if (!result.canceled && result.assets[0]) {
@@ -235,7 +236,7 @@ export default function CaseDetailScreen() {
     setTimeout(async () => {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ["images"],
-        quality: 0.8,
+        quality: 1.0,
         allowsEditing: false,
       });
       if (!result.canceled && result.assets[0]) {
@@ -408,7 +409,7 @@ export default function CaseDetailScreen() {
             }
             const result = await ImagePicker.launchImageLibraryAsync({
               mediaTypes: ["images"],
-              quality: 0.8,
+              quality: 1.0,
               allowsMultipleSelection: true,
             });
             if (!result.canceled && result.assets.length > 0) {
@@ -492,7 +493,7 @@ export default function CaseDetailScreen() {
     }
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ["images"],
-      quality: 0.8,
+      quality: 1.0,
       allowsEditing: false,
     });
     if (!result.canceled && result.assets[0]) {
@@ -564,7 +565,7 @@ export default function CaseDetailScreen() {
             }
             const result = await ImagePicker.launchCameraAsync({
               mediaTypes: ["images"],
-              quality: 0.8,
+              quality: 1.0,
             });
             if (!result.canceled && result.assets[0]) {
               addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
@@ -595,7 +596,7 @@ export default function CaseDetailScreen() {
             }
             const result = await ImagePicker.launchCameraAsync({
               mediaTypes: ["videos"],
-              quality: 0.8,
+              quality: 1.0,
               videoMaxDuration: 60,
             });
             if (!result.canceled && result.assets[0]) {
@@ -615,7 +616,7 @@ export default function CaseDetailScreen() {
             }
             const result = await ImagePicker.launchImageLibraryAsync({
               mediaTypes: ["images", "videos"],
-              quality: 0.8,
+              quality: 1.0,
               allowsMultipleSelection: true,
             });
             if (!result.canceled && result.assets.length > 0) {
@@ -822,11 +823,12 @@ export default function CaseDetailScreen() {
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
               {caseItem.photos!.map((uri, idx) => (
-                <Image
-                  key={idx}
-                  source={{ uri }}
-                  style={styles.photoThumb}
-                />
+                <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
+                  <Image
+                    source={{ uri }}
+                    style={styles.photoThumb}
+                  />
+                </Pressable>
               ))}
             </ScrollView>
           </View>
@@ -949,16 +951,18 @@ export default function CaseDetailScreen() {
                         {entry.description}
                       </Text>
                       {isPhoto && entry.imageUri && (
-                        <Image
-                          source={{ uri: entry.imageUri }}
-                          style={{
-                            width: "100%",
-                            height: 120,
-                            borderRadius: 8,
-                            marginTop: 8,
-                          }}
-                          resizeMode="cover"
-                        />
+                        <Pressable onPress={() => setFullScreenPhoto(entry.imageUri!)}>
+                          <Image
+                            source={{ uri: entry.imageUri }}
+                            style={{
+                              width: "100%",
+                              height: 120,
+                              borderRadius: 8,
+                              marginTop: 8,
+                            }}
+                            resizeMode="cover"
+                          />
+                        </Pressable>
                       )}
                     </View>
                   )}
@@ -2514,6 +2518,31 @@ export default function CaseDetailScreen() {
             <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>
               Point camera at a barcode to assign it to case {caseItem?.caseNumber}
             </Text>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={!!fullScreenPhoto}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setFullScreenPhoto(null)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.95)" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 8, paddingHorizontal: 16, paddingBottom: 12, flexDirection: "row", justifyContent: "flex-end" }}>
+            <Pressable onPress={() => setFullScreenPhoto(null)} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="close" size={24} color="#FFF" />
+            </Pressable>
+          </View>
+          <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 8 }}>
+            {fullScreenPhoto && (
+              <Image
+                source={{ uri: fullScreenPhoto }}
+                style={{ width: "100%", height: "100%" }}
+                resizeMode="contain"
+              />
+            )}
           </View>
         </View>
       </Modal>

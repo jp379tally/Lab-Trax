@@ -374,7 +374,7 @@ export default function ScanScreen() {
         if (!cameraReady) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-        const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
+        const photo = await cameraRef.current.takePictureAsync({ quality: 1.0 });
         if (photo?.uri) {
           setCapturedUri(photo.uri);
           setPhase("scanning");
@@ -419,7 +419,7 @@ export default function ScanScreen() {
         if (!cameraReady) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-        const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
+        const photo = await cameraRef.current.takePictureAsync({ quality: 1.0 });
         if (photo?.uri) {
           photoUri = photo.uri;
         }
@@ -2342,6 +2342,7 @@ export default function ScanScreen() {
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
             facing="back"
+            autofocus="on"
             onCameraReady={() => setCameraReady(true)}
           />
         )}
