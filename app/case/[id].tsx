@@ -76,6 +76,8 @@ export default function CaseDetailScreen() {
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showLabSlipModal, setShowLabSlipModal] = useState(false);
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
+  const [photoNotes, setPhotoNotes] = useState("");
+  const [showPhotoNotes, setShowPhotoNotes] = useState(false);
 
   const caseItem = cases.find((c) => c.id === id);
   const isAdmin = role === "admin" && adminUnlocked;
@@ -456,11 +458,19 @@ export default function CaseDetailScreen() {
     capturedPhotos.forEach((uri) => {
       addCasePhoto(caseItem!.id, uri, userInitials);
     });
+    if (photoNotes.trim()) {
+      addCaseNote(caseItem!.id, photoNotes.trim(), userInitials);
+    }
     if (Platform.OS !== "web") {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
-    Alert.alert("Photos Saved", `${capturedPhotos.length} photo${capturedPhotos.length > 1 ? "s" : ""} added to case.`);
+    const msg = photoNotes.trim()
+      ? `${capturedPhotos.length} photo${capturedPhotos.length > 1 ? "s" : ""} and notes added to case.`
+      : `${capturedPhotos.length} photo${capturedPhotos.length > 1 ? "s" : ""} added to case.`;
+    Alert.alert("Saved", msg);
     setCapturedPhotos([]);
+    setPhotoNotes("");
+    setShowPhotoNotes(false);
     setShowPhotoPreview(false);
   }
 
@@ -1313,10 +1323,15 @@ export default function CaseDetailScreen() {
         transparent
         onRequestClose={() => {
           setCapturedPhotos([]);
+          setPhotoNotes("");
+          setShowPhotoNotes(false);
           setShowPhotoPreview(false);
         }}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.modalOverlay}
+        >
           <View style={[styles.photoModal, { paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }]}>
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>
@@ -1329,33 +1344,115 @@ export default function CaseDetailScreen() {
               ))}
             </ScrollView>
 
-            <View style={styles.photoActions}>
-              <Pressable
-                onPress={handleAddMorePhoto}
-                style={({ pressed }) => [
-                  styles.photoActionBtn,
-                  { backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border },
-                  pressed && { opacity: 0.85 },
-                ]}
-              >
-                <Ionicons name="camera" size={20} color={Colors.light.text} />
-                <Text style={[styles.photoActionText, { color: Colors.light.text }]}>Add More</Text>
-              </Pressable>
+            {showPhotoNotes ? (
+              <View style={{ paddingHorizontal: 4, gap: 10 }}>
+                <TextInput
+                  style={{
+                    borderWidth: 1,
+                    borderColor: Colors.light.border,
+                    borderRadius: 12,
+                    padding: 14,
+                    fontSize: 15,
+                    fontFamily: "Inter_400Regular",
+                    color: Colors.light.text,
+                    backgroundColor: Colors.light.surface,
+                    minHeight: 90,
+                    textAlignVertical: "top",
+                  }}
+                  placeholder="Dictate notes to the lab..."
+                  placeholderTextColor={Colors.light.textTertiary}
+                  value={photoNotes}
+                  onChangeText={setPhotoNotes}
+                  multiline
+                  autoFocus
+                />
+                <View style={styles.photoActions}>
+                  <Pressable
+                    onPress={() => {
+                      setPhotoNotes("");
+                      setShowPhotoNotes(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.photoActionBtn,
+                      { backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border },
+                      pressed && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Ionicons name="close" size={18} color={Colors.light.text} />
+                    <Text style={[styles.photoActionText, { color: Colors.light.text }]}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      if (photoNotes.trim()) {
+                        setShowPhotoNotes(false);
+                      }
+                    }}
+                    style={({ pressed }) => [
+                      styles.photoActionBtn,
+                      { backgroundColor: photoNotes.trim() ? "#10B981" : "#ccc" },
+                      pressed && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Ionicons name="checkmark" size={18} color="#FFF" />
+                    <Text style={[styles.photoActionText, { color: "#FFF" }]}>Submit Notes</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <>
+                {photoNotes.trim() ? (
+                  <View style={{ backgroundColor: "#F0FDF4", borderRadius: 10, padding: 12, marginBottom: 4, borderWidth: 1, borderColor: "#BBF7D0" }}>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#16A34A" }}>Notes attached</Text>
+                      <Pressable onPress={() => setShowPhotoNotes(true)} hitSlop={8}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Edit</Text>
+                      </Pressable>
+                    </View>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.text }} numberOfLines={2}>{photoNotes}</Text>
+                  </View>
+                ) : null}
 
-              <Pressable
-                onPress={handleFinishPhotos}
-                style={({ pressed }) => [
-                  styles.photoActionBtn,
-                  { backgroundColor: Colors.light.tint },
-                  pressed && { opacity: 0.85 },
-                ]}
-              >
-                <Ionicons name="checkmark" size={20} color="#FFF" />
-                <Text style={[styles.photoActionText, { color: "#FFF" }]}>Done</Text>
-              </Pressable>
-            </View>
+                <View style={styles.photoActions}>
+                  <Pressable
+                    onPress={handleAddMorePhoto}
+                    style={({ pressed }) => [
+                      styles.photoActionBtn,
+                      { backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border },
+                      pressed && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Ionicons name="camera" size={20} color={Colors.light.text} />
+                    <Text style={[styles.photoActionText, { color: Colors.light.text }]}>Add More</Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={() => setShowPhotoNotes(true)}
+                    style={({ pressed }) => [
+                      styles.photoActionBtn,
+                      { backgroundColor: "#F59E0B" },
+                      pressed && { opacity: 0.85 },
+                    ]}
+                  >
+                    <Ionicons name="create-outline" size={20} color="#FFF" />
+                    <Text style={[styles.photoActionText, { color: "#FFF" }]}>Add Notes</Text>
+                  </Pressable>
+                </View>
+
+                <Pressable
+                  onPress={handleFinishPhotos}
+                  style={({ pressed }) => [
+                    styles.photoActionBtn,
+                    { backgroundColor: Colors.light.tint, marginTop: 6 },
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Ionicons name="checkmark" size={20} color="#FFF" />
+                  <Text style={[styles.photoActionText, { color: "#FFF" }]}>Done</Text>
+                </Pressable>
+              </>
+            )}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
