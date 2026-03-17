@@ -34,7 +34,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group } from "@/lib/data";
+import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group, formatAcctNum, formatInvNum, cleanDoctorDisplay } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -2115,7 +2115,7 @@ function AdminDashboard() {
                 </View>
                 <View>
                   <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                  <Text style={adm.listItemSub}>{c.accountNumber} · {c.leadDoctor}</Text>
+                  <Text style={adm.listItemSub}>{formatAcctNum(c.accountNumber)} · {cleanDoctorDisplay(c.leadDoctor)}</Text>
                 </View>
               </View>
               <View style={adm.tierBadge}>
@@ -2530,7 +2530,7 @@ function AdminDashboard() {
               >
                 <View style={adm.invoiceCardTop}>
                   <View>
-                    <Text style={adm.invoiceNumber}>{inv.invoiceNumber}</Text>
+                    <Text style={adm.invoiceNumber}>{formatInvNum(inv.invoiceNumber)}</Text>
                     <Text style={adm.invoiceClient}>{inv.clientName}</Text>
                   </View>
                   <Text style={adm.invoiceAmount}>{formatCurrency(inv.amount)}</Text>
@@ -2612,7 +2612,7 @@ function AdminDashboard() {
                   <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>{inv.caseType}</Text>
                 </View>
                 <View style={{ flex: 1.2, paddingVertical: 4, paddingHorizontal: 6, borderRightWidth: 1, borderRightColor: "#999" }}>
-                  <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#333" }}>{inv.invoiceNumber}</Text>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#333" }}>{formatInvNum(inv.invoiceNumber)}</Text>
                 </View>
                 <View style={{ flex: 1, paddingVertical: 4, paddingHorizontal: 6 }}>
                   <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#333" }}>{dateStr}</Text>
@@ -2795,7 +2795,7 @@ function AdminDashboard() {
                 {clientStatement.invoices.map((inv, invIdx) => (
                   <View key={invIdx} style={{ borderTopWidth: 1, borderTopColor: Colors.light.border, paddingTop: 10, marginTop: invIdx > 0 ? 10 : 0 }}>
                     <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}>
-                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                       <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
                         {formatCurrency(inv.amount)}
                       </Text>
@@ -2839,7 +2839,7 @@ function AdminDashboard() {
                   statementPreview.forEach((cs) => {
                     const invoiceDetails = cs.invoices.map((inv) => {
                       const items = inv.lineItems.map(li => `    ${li.item}: ${formatCurrency(li.amount)}`).join("\n");
-                      return `  ${inv.invoiceNumber} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: ${formatCurrency(inv.amount)}`;
+                      return `  ${formatInvNum(inv.invoiceNumber)} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: ${formatCurrency(inv.amount)}`;
                     }).join("\n\n");
                     const emailBody = `Billing Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(cs.totalDue)}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
                     sendStatementEmail(cs.clientName, cs.email, `Billing Statement - ${cs.clientName}`, emailBody);
@@ -2994,7 +2994,7 @@ function AdminDashboard() {
                   </View>
                   <View>
                     <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                    <Text style={adm.listItemSub}>{c.accountNumber} · {clientOpenInvs.length} open invoice{clientOpenInvs.length !== 1 ? "s" : ""} · {formatCurrency(clientTotal)}</Text>
+                    <Text style={adm.listItemSub}>{formatAcctNum(c.accountNumber)} · {clientOpenInvs.length} open invoice{clientOpenInvs.length !== 1 ? "s" : ""} · {formatCurrency(clientTotal)}</Text>
                   </View>
                 </View>
                 <Ionicons name="eye-outline" size={20} color={Colors.light.tint} />
@@ -3038,7 +3038,7 @@ function AdminDashboard() {
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
               <View style={{ flex: 1, marginRight: 12 }}>
                 <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{c.practiceName}</Text>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 3 }}>{c.accountNumber} · Dr. {c.leadDoctor}</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 3 }}>{formatAcctNum(c.accountNumber)} · {cleanDoctorDisplay(c.leadDoctor)}</Text>
               </View>
               <View style={{ alignItems: "flex-end" }}>
                 <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: c.openBalance > 0 ? Colors.light.warning : Colors.light.success }}>
@@ -3110,7 +3110,7 @@ function AdminDashboard() {
           ) : null}
           <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
             <Ionicons name="id-card" size={18} color={Colors.light.tint} />
-            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginLeft: 10 }}>Account: {selectedClient.accountNumber}</Text>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginLeft: 10 }}>{formatAcctNum(selectedClient.accountNumber)}</Text>
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
             <Ionicons name="call" size={18} color={Colors.light.tint} />
@@ -3155,7 +3155,7 @@ function AdminDashboard() {
           <Pressable
             onPress={() => {
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              const invoiceDetails = openInvoices.map((inv) => `  ${inv.invoiceNumber}: ${formatCurrency(inv.amount)} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
+              const invoiceDetails = openInvoices.map((inv) => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
               const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(openBalance)}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
               sendStatementEmail(selectedClient.practiceName, selectedClient.email, `Billing Statement - ${selectedClient.practiceName}`, emailBody);
               Alert.alert("Statement Generated & Emailed", `Statement for ${selectedClient.practiceName} with open balance of ${formatCurrency(openBalance)} has been generated and emailed to ${selectedClient.email} and admin.`);
@@ -3180,7 +3180,7 @@ function AdminDashboard() {
                 }}
               >
                 <View>
-                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Due {new Date(inv.dueAt).toLocaleDateString()}</Text>
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
@@ -3205,7 +3205,7 @@ function AdminDashboard() {
                 }}
               >
                 <View>
-                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                   <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Paid {new Date(inv.issuedAt).toLocaleDateString()}</Text>
                 </View>
                 <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.success }}>{formatCurrency(inv.amount)}</Text>
@@ -3406,7 +3406,7 @@ function AdminDashboard() {
             >
               <Ionicons name="business-outline" size={20} color={Colors.light.tint} style={{ marginRight: 10 }} />
               <Text style={{ flex: 1, fontSize: 15, fontFamily: "Inter_500Medium", color: selectedPriceClient ? Colors.light.text : Colors.light.textTertiary }}>
-                {selectedPriceClient ? `${selectedPriceClient.practiceName} (${selectedPriceClient.accountNumber})` : "Select Client..."}
+                {selectedPriceClient ? `${selectedPriceClient.practiceName} ${formatAcctNum(selectedPriceClient.accountNumber)}` : "Select Client..."}
               </Text>
               <Ionicons name="chevron-down" size={18} color={Colors.light.subText} />
             </Pressable>
@@ -3476,7 +3476,7 @@ function AdminDashboard() {
                   >
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{c.practiceName}</Text>
-                      <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>{c.accountNumber} · {c.leadDoctor}</Text>
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>{formatAcctNum(c.accountNumber)} · {cleanDoctorDisplay(c.leadDoctor)}</Text>
                     </View>
                     <View style={{ backgroundColor: "#F0F0F0", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
                       <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>{c.tier}</Text>
@@ -3731,7 +3731,7 @@ function AdminDashboard() {
                       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                         <View style={{ flex: 1, marginRight: 12 }}>
                           <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                             {isOverdue && (
                               <View style={{ backgroundColor: Colors.light.errorLight, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1 }}>
                                 <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: Colors.light.error }}>OVERDUE</Text>
@@ -5371,7 +5371,7 @@ function ProviderDashboard() {
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }}>
                       <View style={{ flex: 1 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                           <View style={{
                             paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6,
                             backgroundColor: isPaid ? Colors.light.successLight : isOverdue ? Colors.light.errorLight : Colors.light.warningLight,
@@ -5511,7 +5511,7 @@ function ProviderDashboard() {
                             >
                               <View style={{ flex: 1 }}>
                                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                                   {isOverdue && (
                                     <View style={{ backgroundColor: Colors.light.errorLight, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5 }}>
                                       <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: Colors.light.error }}>OVERDUE</Text>
@@ -5548,7 +5548,7 @@ function ProviderDashboard() {
                           >
                             <Ionicons name="checkmark-circle" size={22} color={Colors.light.success} />
                             <View style={{ flex: 1 }}>
-                              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                               <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>
                                 {inv.patientName || inv.clientName}
                               </Text>
@@ -5743,7 +5743,7 @@ function ProviderDashboard() {
                   {paidInvs.map((inv) => (
                     <View key={inv.id} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
                       <View>
-                        <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                        <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                         <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{inv.patientName || inv.clientName}</Text>
                       </View>
                       <View style={{ alignItems: "flex-end" }}>
@@ -5815,7 +5815,7 @@ function ProviderDashboard() {
             </View>
             <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20 }}>
               <View style={{ alignItems: "center", marginBottom: 24 }}>
-                <Text style={{ fontSize: 28, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{viewingInvoice.invoiceNumber}</Text>
+                <Text style={{ fontSize: 28, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{formatInvNum(viewingInvoice.invoiceNumber)}</Text>
                 <View style={{
                   marginTop: 8, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 8,
                   backgroundColor: viewingInvoice.status === "paid" ? Colors.light.successLight
@@ -6172,7 +6172,7 @@ function MasterAdminDashboard() {
                 <Text style={adm.menuTitle}>{u.username}{u.doctorName ? ` (Dr. ${u.doctorName})` : ""}</Text>
                 <Text style={adm.menuSub}>
                   {u.userType === "provider" ? "Provider" : u.userType === "master_admin" ? "Master Admin" : "Lab"} · {u.role === "admin" ? "Admin" : "User"}
-                  {u.accountNumber ? ` · ${u.accountNumber}` : ""}
+                  {u.accountNumber ? ` · ${formatAcctNum(u.accountNumber)}` : ""}
                   {userGroups.length > 0 ? ` · ${userGroups.map(g => g.name).join(", ")}` : ""}
                 </Text>
               </View>
@@ -6309,7 +6309,7 @@ function MasterAdminDashboard() {
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{p.doctorName ? `Dr. ${p.doctorName}` : p.username}</Text>
                       <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>
-                        {p.accountNumber || "N/A"} · {provCases.length} cases · {p.role === "admin" ? "Admin" : "User"}
+                        {p.accountNumber ? formatAcctNum(p.accountNumber) : "N/A"} · {provCases.length} cases · {p.role === "admin" ? "Admin" : "User"}
                         {provGroups.length > 0 ? ` · ${provGroups[0].name}` : ""}
                       </Text>
                     </View>

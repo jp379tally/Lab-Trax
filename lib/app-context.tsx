@@ -25,6 +25,8 @@ import {
   MATERIAL_PRICES,
   generateId,
   getStationInfo,
+  formatAcctNum,
+  formatInvNum,
   CourtesyTextRequest,
   CourtesyTextResponse,
   InventoryItem,
@@ -722,7 +724,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             id: generateId(),
             type: "invoice_attached",
             timestamp: Date.now(),
-            description: `Case attached to invoice #${invoiceId}`,
+            description: `Case attached to ${formatInvNum(invoiceId)}`,
             user: currentUser || undefined,
           };
           return { ...c, invoiceId, updatedAt: Date.now(), activityLog: [...(c.activityLog || []), entry] };
@@ -1024,7 +1026,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   id: generateId(),
                   type: "invoice_paid",
                   timestamp: now,
-                  description: `Invoice #${targetInvoice.invoiceNumber || id} paid — $${targetInvoice.amount.toFixed(2)}`,
+                  description: `${formatInvNum(targetInvoice.invoiceNumber || id)} paid — $${targetInvoice.amount.toFixed(2)}`,
                   user: currentUser || undefined,
                 };
                 return { ...c, updatedAt: now, activityLog: [...(c.activityLog || []), entry] };
@@ -1246,7 +1248,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const userData = allUsers.find((u: any) => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
           if (userData && userData.userType === "provider") {
             const doctorLabel = userData.doctorName
-              ? (userData.accountNumber ? `Dr. ${userData.doctorName} (${userData.accountNumber})` : `Dr. ${userData.doctorName}`)
+              ? (userData.accountNumber ? `Dr. ${userData.doctorName} ${formatAcctNum(userData.accountNumber)}` : `Dr. ${userData.doctorName}`)
               : `Dr. ${userData.username}`;
             const alreadyClient = clients.some(c =>
               c.leadDoctor.toLowerCase() === doctorLabel.toLowerCase() ||

@@ -11,6 +11,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Invoice } from "@/lib/data";
+import { formatInvNum } from "@/lib/data";
 
 interface InvoicePDFViewerProps {
   visible: boolean;
@@ -89,8 +90,8 @@ export default function InvoicePDFViewer({ visible, onClose, invoice }: InvoiceP
 
               <View style={s.metaRow}>
                 <View style={s.metaCol}>
-                  <Text style={s.metaLabel}>Invoice #</Text>
-                  <Text style={s.metaValue}>{invoice.invoiceNumber}</Text>
+                  <Text style={s.metaLabel}>Invoice</Text>
+                  <Text style={s.metaValue}>{formatInvNum(invoice.invoiceNumber)}</Text>
                 </View>
                 <View style={s.metaCol}>
                   <Text style={s.metaLabel}>Issue Date</Text>

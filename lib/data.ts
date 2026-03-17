@@ -199,6 +199,25 @@ export function generateId(): string {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9);
 }
 
+export function formatAcctNum(accountNumber: string): string {
+  if (!accountNumber) return "";
+  return `Acct #${accountNumber}`;
+}
+
+export function cleanDoctorDisplay(name: string): string {
+  if (!name) return "";
+  const match = name.match(/^(.+?)\s*\(([^)]+)\)\s*$/);
+  if (match) {
+    return `${match[1].trim()} ${formatAcctNum(match[2].trim())}`;
+  }
+  return name;
+}
+
+export function formatInvNum(invoiceNumber: string): string {
+  if (!invoiceNumber) return "";
+  return `Inv #${invoiceNumber}`;
+}
+
 export const SAMPLE_CASES: LabCase[] = [
   {
     id: generateId(),

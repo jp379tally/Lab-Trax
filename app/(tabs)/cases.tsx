@@ -18,7 +18,7 @@ import { router } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, LabCase } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 
 export default function CasesScreen() {
@@ -151,7 +151,7 @@ export default function CasesScreen() {
                 </View>
               )}
             </View>
-            <Text style={styles.caseDoctor}>{item.doctorName}</Text>
+            <Text style={styles.caseDoctor}>{cleanDoctorDisplay(item.doctorName)}</Text>
             <Text style={styles.caseMeta}>
               {item.toothIndices} · {item.shade} · {item.material}
             </Text>

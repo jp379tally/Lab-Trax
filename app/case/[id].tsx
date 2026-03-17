@@ -22,7 +22,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { logAudit } from "@/lib/audit";
@@ -721,7 +721,7 @@ export default function CaseDetailScreen() {
         <View style={styles.infoGrid}>
           <View style={styles.infoItem}>
             <Text style={styles.infoLabel}>Doctor</Text>
-            <Text style={styles.infoValue}>{caseItem.doctorName}</Text>
+            <Text style={styles.infoValue}>{cleanDoctorDisplay(caseItem.doctorName)}</Text>
           </View>
           <View style={styles.infoItem}>
             <Text style={styles.infoLabel}>Patient</Text>
@@ -2579,7 +2579,7 @@ export default function CaseDetailScreen() {
                 <View style={labSlipStyles.slipRow}>
                   <View style={labSlipStyles.slipCol}>
                     <Text style={labSlipStyles.slipLabel}>Doctor</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.doctorName}</Text>
+                    <Text style={labSlipStyles.slipValue}>{cleanDoctorDisplay(caseItem.doctorName)}</Text>
                   </View>
                   <View style={labSlipStyles.slipCol}>
                     <Text style={labSlipStyles.slipLabel}>Patient</Text>

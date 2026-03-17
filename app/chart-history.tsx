@@ -12,7 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "@/lib/app-context";
 import Colors from "@/constants/colors";
-import { getStationInfo } from "@/lib/data";
+import { getStationInfo, formatInvNum } from "@/lib/data";
 
 export default function ChartHistoryScreen() {
   const { patient } = useLocalSearchParams<{ patient: string }>();
@@ -157,7 +157,7 @@ export default function ChartHistoryScreen() {
                   {linkedInvoice && (
                     <View style={styles.invoiceBadge}>
                       <Ionicons name="receipt-outline" size={12} color="#3B82F6" />
-                      <Text style={styles.invoiceBadgeText}>{linkedInvoice.invoiceNumber}</Text>
+                      <Text style={styles.invoiceBadgeText}>{formatInvNum(linkedInvoice.invoiceNumber)}</Text>
                     </View>
                   )}
                 </View>

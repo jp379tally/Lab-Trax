@@ -23,7 +23,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES } from "@/lib/data";
+import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
 import { getApiUrl } from "@/lib/query-client";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
@@ -1365,7 +1365,7 @@ export default function ScanScreen() {
               style={[styles.formInput, styles.dropdownTrigger]}
             >
               <Text style={[styles.dropdownTriggerText, !doctorName && { color: Colors.light.textTertiary }]}>
-                {doctorName || "Select Doctor"}
+                {doctorName ? cleanDoctorDisplay(doctorName) : "Select Doctor"}
               </Text>
               <Ionicons
                 name={doctorDropdownOpen ? "chevron-up" : "chevron-down"}
@@ -1435,7 +1435,7 @@ export default function ScanScreen() {
                               </View>
                               <View style={{ flex: 1 }}>
                                 <Text style={[styles.dropdownItemName, doctorName === c.leadDoctor && { color: Colors.light.tint }]}>
-                                  {c.leadDoctor}
+                                  {cleanDoctorDisplay(c.leadDoctor)}{c.accountNumber && !c.leadDoctor.includes(c.accountNumber) ? ` ${formatAcctNum(c.accountNumber)}` : ""}
                                 </Text>
                                 <Text style={styles.dropdownItemSub}>{c.practiceName}</Text>
                                 {c.address ? <Text style={styles.dropdownItemAddr} numberOfLines={1}>{c.address}</Text> : null}
