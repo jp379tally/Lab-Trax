@@ -846,9 +846,14 @@ export default function CaseDetailScreen() {
               <Text style={styles.notesLabel}>Notes</Text>
               {noteEntries.length > 0 ? noteEntries.map((entry) => (
                 <View key={entry.id} style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 8, gap: 10 }}>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary, minWidth: 70 }}>
-                    {new Date(entry.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                  </Text>
+                  <View style={{ minWidth: 70 }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary }}>
+                      {new Date(entry.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                    </Text>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>
+                      {new Date(entry.timestamp).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })}
+                    </Text>
+                  </View>
                   <Text style={{ flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text, lineHeight: 20 }}>
                     {entry.description}
                   </Text>
