@@ -4545,7 +4545,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices } = useApp();
+  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -4559,6 +4559,18 @@ function ProviderDashboard() {
   const [showUsersAdmin, setShowUsersAdmin] = useState(false);
   const [showProviderInvoices, setShowProviderInvoices] = useState(false);
   const [providerInvoiceFilter, setProviderInvoiceFilter] = useState<"open" | "all">("open");
+  const [showPayInvoices, setShowPayInvoices] = useState(false);
+  const [payStep, setPayStep] = useState<"select" | "card" | "receipt">("select");
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
+  const [cardNumber, setCardNumber] = useState("");
+  const [cardExpiry, setCardExpiry] = useState("");
+  const [cardCvc, setCardCvc] = useState("");
+  const [cardName, setCardName] = useState("");
+  const [cardZip, setCardZip] = useState("");
+  const [saveCard, setSaveCard] = useState(false);
+  const [payProcessing, setPayProcessing] = useState(false);
+  const [paidInvoiceIds, setPaidInvoiceIds] = useState<string[]>([]);
+  const [paymentReceiptEmail, setPaymentReceiptEmail] = useState("");
   const [prefOcclusion, setPrefOcclusion] = useState("");
   const [prefPontic, setPrefPontic] = useState("");
   const [prefContact, setPrefContact] = useState("");
@@ -4897,6 +4909,27 @@ function ProviderDashboard() {
                 >
                   <Ionicons name="document-text-outline" size={20} color={Colors.light.tint} />
                   <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>View Invoices</Text>
+                  <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => ({
+                    flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface,
+                    borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border,
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                  onPress={() => {
+                    setShowSettings(false);
+                    setTimeout(() => {
+                      setPayStep("select");
+                      setSelectedInvoiceIds([]);
+                      setCardNumber(""); setCardExpiry(""); setCardCvc(""); setCardName(""); setCardZip("");
+                      setSaveCard(false); setPaidInvoiceIds([]); setPaymentReceiptEmail("");
+                      setShowPayInvoices(true);
+                    }, 350);
+                  }}
+                >
+                  <Ionicons name="card-outline" size={20} color={Colors.light.success} />
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>Pay Invoices</Text>
                   <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
                 </Pressable>
               </>
@@ -5341,6 +5374,346 @@ function ProviderDashboard() {
             })()}
             <View style={{ height: 40 }} />
           </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={showPayInvoices}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => setShowPayInvoices(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              {payStep !== "select" && payStep !== "receipt" && (
+                <Pressable onPress={() => setPayStep("select")}>
+                  <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+                </Pressable>
+              )}
+              <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>
+                {payStep === "select" ? "Pay Invoices" : payStep === "card" ? "Payment" : "Receipt"}
+              </Text>
+            </View>
+            <Pressable onPress={() => setShowPayInvoices(false)}>
+              <Ionicons name="close" size={28} color={Colors.light.text} />
+            </Pressable>
+          </View>
+
+          {payStep === "select" && (() => {
+            const openInvs = invoices.filter(i => i.status === "open" || i.status === "sent" || i.status === "overdue");
+            const selectedTotal = openInvs.filter(i => selectedInvoiceIds.includes(i.id)).reduce((sum, i) => sum + i.amount, 0);
+            return (
+              <View style={{ flex: 1 }}>
+                <ScrollView style={{ flex: 1, paddingHorizontal: 16, paddingTop: 16 }}>
+                  {openInvs.length === 0 ? (
+                    <View style={{ padding: 40, alignItems: "center" }}>
+                      <Ionicons name="checkmark-circle-outline" size={48} color={Colors.light.success} />
+                      <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginTop: 12 }}>All Caught Up!</Text>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4, textAlign: "center" }}>You have no open invoices to pay.</Text>
+                    </View>
+                  ) : (
+                    <>
+                      <Pressable
+                        onPress={() => {
+                          if (selectedInvoiceIds.length === openInvs.length) {
+                            setSelectedInvoiceIds([]);
+                          } else {
+                            setSelectedInvoiceIds(openInvs.map(i => i.id));
+                          }
+                        }}
+                        style={({ pressed }) => ({
+                          flexDirection: "row", alignItems: "center", gap: 10,
+                          backgroundColor: Colors.light.tintLight, borderRadius: 12, padding: 14, marginBottom: 12,
+                          opacity: pressed ? 0.8 : 1,
+                        })}
+                      >
+                        <Ionicons
+                          name={selectedInvoiceIds.length === openInvs.length ? "checkbox" : "square-outline"}
+                          size={22} color={Colors.light.tint}
+                        />
+                        <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.tint, flex: 1 }}>
+                          {selectedInvoiceIds.length === openInvs.length ? "Deselect All" : "Pay All Open Invoices"}
+                        </Text>
+                        <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.tint }}>
+                          ${openInvs.reduce((s, i) => s + i.amount, 0).toFixed(2)}
+                        </Text>
+                      </Pressable>
+
+                      {openInvs.sort((a, b) => a.dueAt - b.dueAt).map((inv) => {
+                        const selected = selectedInvoiceIds.includes(inv.id);
+                        const isOverdue = inv.status === "overdue" || (inv.dueAt < Date.now() && inv.status !== "paid");
+                        return (
+                          <Pressable
+                            key={inv.id}
+                            onPress={() => {
+                              setSelectedInvoiceIds(prev =>
+                                prev.includes(inv.id) ? prev.filter(id => id !== inv.id) : [...prev, inv.id]
+                              );
+                            }}
+                            style={({ pressed }) => ({
+                              flexDirection: "row", alignItems: "center", gap: 12,
+                              backgroundColor: selected ? "#EFF6FF" : Colors.light.surface,
+                              borderRadius: 14, padding: 14, marginBottom: 8,
+                              borderWidth: selected ? 2 : 1,
+                              borderColor: selected ? Colors.light.tint : isOverdue ? Colors.light.errorLight : Colors.light.border,
+                              opacity: pressed ? 0.85 : 1,
+                            })}
+                          >
+                            <Ionicons
+                              name={selected ? "checkbox" : "square-outline"}
+                              size={22} color={selected ? Colors.light.tint : Colors.light.textTertiary}
+                            />
+                            <View style={{ flex: 1 }}>
+                              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                                {isOverdue && (
+                                  <View style={{ backgroundColor: Colors.light.errorLight, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5 }}>
+                                    <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: Colors.light.error }}>OVERDUE</Text>
+                                  </View>
+                                )}
+                              </View>
+                              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>
+                                {inv.patientName || inv.clientName} · Due {new Date(inv.dueAt).toLocaleDateString()}
+                              </Text>
+                            </View>
+                            <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: isOverdue ? Colors.light.error : Colors.light.text }}>
+                              ${inv.amount.toFixed(2)}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </>
+                  )}
+                  <View style={{ height: 120 }} />
+                </ScrollView>
+
+                {selectedInvoiceIds.length > 0 && (
+                  <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: 16, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16, backgroundColor: Colors.light.background, borderTopWidth: 1, borderTopColor: Colors.light.border }}>
+                    <Pressable
+                      onPress={() => setPayStep("card")}
+                      style={({ pressed }) => ({
+                        backgroundColor: pressed ? "#1D4ED8" : Colors.light.tint, borderRadius: 14, paddingVertical: 16, alignItems: "center",
+                      })}
+                    >
+                      <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" }}>
+                        Continue to Payment · ${selectedTotal.toFixed(2)}
+                      </Text>
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            );
+          })()}
+
+          {payStep === "card" && (() => {
+            const selectedTotal = invoices.filter(i => selectedInvoiceIds.includes(i.id)).reduce((sum, i) => sum + i.amount, 0);
+
+            function formatCardNumber(val: string) {
+              const digits = val.replace(/\D/g, "").slice(0, 16);
+              return digits.replace(/(.{4})/g, "$1 ").trim();
+            }
+            function formatExpiry(val: string) {
+              const digits = val.replace(/\D/g, "").slice(0, 4);
+              if (digits.length > 2) return digits.slice(0, 2) + "/" + digits.slice(2);
+              return digits;
+            }
+
+            return (
+              <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
+                <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 14, padding: 16, marginBottom: 20, alignItems: "center" }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Total Amount</Text>
+                  <Text style={{ fontSize: 32, fontFamily: "Inter_700Bold", color: Colors.light.tint, marginTop: 4 }}>${selectedTotal.toFixed(2)}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4 }}>
+                    {selectedInvoiceIds.length} invoice{selectedInvoiceIds.length !== 1 ? "s" : ""}
+                  </Text>
+                </View>
+
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 10, letterSpacing: 0.5 }}>CARD INFORMATION</Text>
+                <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, overflow: "hidden" }}>
+                  <TextInput
+                    placeholder="Name on card"
+                    value={cardName}
+                    onChangeText={setCardName}
+                    style={{ padding: 16, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}
+                    placeholderTextColor={Colors.light.textTertiary}
+                  />
+                  <TextInput
+                    placeholder="Card number"
+                    value={cardNumber}
+                    onChangeText={(t) => setCardNumber(formatCardNumber(t))}
+                    keyboardType="number-pad"
+                    maxLength={19}
+                    style={{ padding: 16, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}
+                    placeholderTextColor={Colors.light.textTertiary}
+                  />
+                  <View style={{ flexDirection: "row" }}>
+                    <TextInput
+                      placeholder="MM/YY"
+                      value={cardExpiry}
+                      onChangeText={(t) => setCardExpiry(formatExpiry(t))}
+                      keyboardType="number-pad"
+                      maxLength={5}
+                      style={{ flex: 1, padding: 16, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, borderRightWidth: 1, borderRightColor: Colors.light.border }}
+                      placeholderTextColor={Colors.light.textTertiary}
+                    />
+                    <TextInput
+                      placeholder="CVC"
+                      value={cardCvc}
+                      onChangeText={(t) => setCardCvc(t.replace(/\D/g, "").slice(0, 4))}
+                      keyboardType="number-pad"
+                      maxLength={4}
+                      secureTextEntry
+                      style={{ flex: 1, padding: 16, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+                      placeholderTextColor={Colors.light.textTertiary}
+                    />
+                  </View>
+                </View>
+
+                <TextInput
+                  placeholder="Billing ZIP code"
+                  value={cardZip}
+                  onChangeText={(t) => setCardZip(t.replace(/\D/g, "").slice(0, 5))}
+                  keyboardType="number-pad"
+                  maxLength={5}
+                  style={{ marginTop: 12, padding: 16, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border }}
+                  placeholderTextColor={Colors.light.textTertiary}
+                />
+
+                <Pressable
+                  onPress={() => setSaveCard(!saveCard)}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 16, paddingVertical: 8 }}
+                >
+                  <Ionicons name={saveCard ? "checkbox" : "square-outline"} size={22} color={Colors.light.tint} />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.text }}>Keep this card on file for future payments</Text>
+                </Pressable>
+
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginTop: 20, marginBottom: 10, letterSpacing: 0.5 }}>SEND RECEIPT TO</Text>
+                <TextInput
+                  placeholder="Email address"
+                  value={paymentReceiptEmail}
+                  onChangeText={setPaymentReceiptEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  style={{ padding: 16, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border }}
+                  placeholderTextColor={Colors.light.textTertiary}
+                />
+
+                <Pressable
+                  disabled={payProcessing || !cardNumber || !cardExpiry || !cardCvc || !cardName}
+                  onPress={async () => {
+                    setPayProcessing(true);
+                    await new Promise(r => setTimeout(r, 2000));
+                    const now = Date.now();
+                    for (const invId of selectedInvoiceIds) {
+                      updateInvoice(invId, { status: "paid" });
+                    }
+                    const paidInvs = invoices.filter(i => selectedInvoiceIds.includes(i.id));
+                    const totalPaid = paidInvs.reduce((s, i) => s + i.amount, 0);
+                    addNotification({
+                      type: "alert",
+                      message: `Payment received: $${totalPaid.toFixed(2)} for ${paidInvs.length} invoice${paidInvs.length !== 1 ? "s" : ""} from ${currentUser || "Provider"}`,
+                      caseId: "",
+                      timestamp: now,
+                    });
+                    setPaidInvoiceIds([...selectedInvoiceIds]);
+                    setPayProcessing(false);
+                    setPayStep("receipt");
+                  }}
+                  style={({ pressed }) => ({
+                    marginTop: 24, backgroundColor: (!cardNumber || !cardExpiry || !cardCvc || !cardName) ? Colors.light.textTertiary : pressed ? "#1D4ED8" : Colors.light.tint,
+                    borderRadius: 14, paddingVertical: 16, alignItems: "center", marginBottom: 40,
+                  })}
+                >
+                  {payProcessing ? (
+                    <ActivityIndicator color="#FFF" />
+                  ) : (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <Ionicons name="lock-closed" size={18} color="#FFF" />
+                      <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" }}>Pay ${selectedTotal.toFixed(2)}</Text>
+                    </View>
+                  )}
+                </Pressable>
+
+                <View style={{ flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6, marginBottom: 30 }}>
+                  <Ionicons name="shield-checkmark" size={14} color={Colors.light.textTertiary} />
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary }}>Secure payment processing</Text>
+                </View>
+              </ScrollView>
+            );
+          })()}
+
+          {payStep === "receipt" && (() => {
+            const paidInvs = invoices.filter(i => paidInvoiceIds.includes(i.id));
+            const totalPaid = paidInvs.reduce((s, i) => s + i.amount, 0);
+            return (
+              <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, alignItems: "center" }}>
+                <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: Colors.light.successLight, justifyContent: "center", alignItems: "center", marginTop: 24 }}>
+                  <Ionicons name="checkmark-circle" size={48} color={Colors.light.success} />
+                </View>
+                <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, marginTop: 16 }}>Payment Successful</Text>
+                <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 6, textAlign: "center" }}>
+                  Your payment of ${totalPaid.toFixed(2)} has been processed.
+                </Text>
+                {paymentReceiptEmail ? (
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4, textAlign: "center" }}>
+                    A receipt has been sent to {paymentReceiptEmail}
+                  </Text>
+                ) : null}
+
+                <View style={{ width: "100%", backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, marginTop: 24, padding: 16 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 12, letterSpacing: 0.5 }}>PAID INVOICES</Text>
+                  {paidInvs.map((inv) => (
+                    <View key={inv.id} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+                      <View>
+                        <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{inv.invoiceNumber}</Text>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{inv.patientName || inv.clientName}</Text>
+                      </View>
+                      <View style={{ alignItems: "flex-end" }}>
+                        <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.success }}>${inv.amount.toFixed(2)}</Text>
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                          <Ionicons name="checkmark-circle" size={12} color={Colors.light.success} />
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.success }}>Paid</Text>
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", paddingTop: 12, marginTop: 4 }}>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Total Paid</Text>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.success }}>${totalPaid.toFixed(2)}</Text>
+                  </View>
+                </View>
+
+                <View style={{ width: "100%", backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, marginTop: 12, padding: 16 }}>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>Date</Text>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{new Date().toLocaleDateString()}</Text>
+                  </View>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8 }}>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>Card</Text>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }}>····{cardNumber.replace(/\s/g, "").slice(-4)}</Text>
+                  </View>
+                  {saveCard && (
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8 }}>
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>Card saved</Text>
+                      <Ionicons name="checkmark-circle" size={16} color={Colors.light.success} />
+                    </View>
+                  )}
+                </View>
+
+                <Pressable
+                  onPress={() => { setShowPayInvoices(false); setPayStep("select"); setSelectedInvoiceIds([]); }}
+                  style={({ pressed }) => ({
+                    width: "100%", marginTop: 24, backgroundColor: pressed ? "#1D4ED8" : Colors.light.tint,
+                    borderRadius: 14, paddingVertical: 16, alignItems: "center", marginBottom: 40,
+                  })}
+                >
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" }}>Done</Text>
+                </Pressable>
+              </ScrollView>
+            );
+          })()}
         </View>
       </Modal>
 
