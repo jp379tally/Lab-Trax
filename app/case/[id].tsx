@@ -187,66 +187,189 @@ export default function CaseDetailScreen() {
     });
   }
 
-  async function handleTakePhoto() {
-    if (Platform.OS === "web") {
-      try {
-        const uri = await webFilePickerForCamera();
-        if (uri) {
-          setCapturedPhotos((prev) => [...prev, uri]);
-          setShowPhotoPreview(true);
-        }
-      } catch (e) {
-        Alert.alert("Camera Error", "Unable to open camera. Please try again.");
-      }
-      return;
-    }
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("Permission needed", "Camera access is required to take photos.");
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      quality: 1.0,
-      allowsEditing: false,
-    });
-    if (!result.canceled && result.assets[0]) {
-      const uri = result.assets[0].uri;
-      setCapturedPhotos((prev) => [...prev, uri]);
-      setShowPhotoPreview(true);
-    }
+  function handleTakePhoto() {
+    Alert.alert(
+      "Add Picture or Video",
+      "Choose an option",
+      [
+        {
+          text: "Take Photo",
+          onPress: async () => {
+            if (Platform.OS === "web") {
+              try {
+                const uri = await webFilePickerForCamera();
+                if (uri) {
+                  setCapturedPhotos((prev) => [...prev, uri]);
+                  setShowPhotoPreview(true);
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
+              return;
+            }
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Camera access is required to take photos.");
+              return;
+            }
+            const result = await ImagePicker.launchCameraAsync({
+              mediaTypes: ["images"],
+              quality: 1.0,
+              allowsEditing: false,
+            });
+            if (!result.canceled && result.assets[0]) {
+              setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
+              setShowPhotoPreview(true);
+            }
+          },
+        },
+        {
+          text: "Record Video",
+          onPress: async () => {
+            if (Platform.OS === "web") {
+              try {
+                const uri = await webFilePickerForCamera();
+                if (uri) {
+                  setCapturedPhotos((prev) => [...prev, uri]);
+                  setShowPhotoPreview(true);
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
+              return;
+            }
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Camera access is required to record video.");
+              return;
+            }
+            const result = await ImagePicker.launchCameraAsync({
+              mediaTypes: ["videos"],
+              quality: 1.0,
+              videoMaxDuration: 60,
+            });
+            if (!result.canceled && result.assets[0]) {
+              setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
+              setShowPhotoPreview(true);
+            }
+          },
+        },
+        {
+          text: "Choose from Gallery",
+          onPress: async () => {
+            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Gallery access is required.");
+              return;
+            }
+            const result = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ["images", "videos"],
+              quality: 1.0,
+              allowsMultipleSelection: true,
+            });
+            if (!result.canceled && result.assets.length > 0) {
+              setCapturedPhotos((prev) => [...prev, ...result.assets.map(a => a.uri)]);
+              setShowPhotoPreview(true);
+            }
+          },
+        },
+        { text: "Cancel", style: "cancel" },
+      ]
+    );
   }
 
-  async function handleAddMorePhoto() {
-    if (Platform.OS === "web") {
-      try {
-        const uri = await webFilePickerForCamera();
-        if (uri) {
-          setCapturedPhotos((prev) => [...prev, uri]);
-        }
-      } catch (e) {
-        Alert.alert("Camera Error", "Unable to open camera. Please try again.");
-      }
-      return;
-    }
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("Permission needed", "Camera access is required to take photos.");
-      return;
-    }
-    setShowPhotoPreview(false);
-    setTimeout(async () => {
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        quality: 1.0,
-        allowsEditing: false,
-      });
-      if (!result.canceled && result.assets[0]) {
-        const uri = result.assets[0].uri;
-        setCapturedPhotos((prev) => [...prev, uri]);
-      }
-      setShowPhotoPreview(true);
-    }, 500);
+  function handleAddMoreMedia() {
+    Alert.alert(
+      "Add More",
+      "Choose an option",
+      [
+        {
+          text: "Take Photo",
+          onPress: async () => {
+            if (Platform.OS === "web") {
+              try {
+                const uri = await webFilePickerForCamera();
+                if (uri) setCapturedPhotos((prev) => [...prev, uri]);
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
+              return;
+            }
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Camera access is required.");
+              return;
+            }
+            setShowPhotoPreview(false);
+            setTimeout(async () => {
+              const result = await ImagePicker.launchCameraAsync({
+                mediaTypes: ["images"],
+                quality: 1.0,
+                allowsEditing: false,
+              });
+              if (!result.canceled && result.assets[0]) {
+                setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
+              }
+              setShowPhotoPreview(true);
+            }, 500);
+          },
+        },
+        {
+          text: "Record Video",
+          onPress: async () => {
+            if (Platform.OS === "web") {
+              try {
+                const uri = await webFilePickerForCamera();
+                if (uri) setCapturedPhotos((prev) => [...prev, uri]);
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
+              return;
+            }
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Camera access is required.");
+              return;
+            }
+            setShowPhotoPreview(false);
+            setTimeout(async () => {
+              const result = await ImagePicker.launchCameraAsync({
+                mediaTypes: ["videos"],
+                quality: 1.0,
+                videoMaxDuration: 60,
+              });
+              if (!result.canceled && result.assets[0]) {
+                setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
+              }
+              setShowPhotoPreview(true);
+            }, 500);
+          },
+        },
+        {
+          text: "Choose from Gallery",
+          onPress: async () => {
+            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Permission needed", "Gallery access is required.");
+              return;
+            }
+            setShowPhotoPreview(false);
+            setTimeout(async () => {
+              const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ["images", "videos"],
+                quality: 1.0,
+                allowsMultipleSelection: true,
+              });
+              if (!result.canceled && result.assets.length > 0) {
+                setCapturedPhotos((prev) => [...prev, ...result.assets.map(a => a.uri)]);
+              }
+              setShowPhotoPreview(true);
+            }, 500);
+          },
+        },
+        { text: "Cancel", style: "cancel" },
+      ]
+    );
   }
 
   function itemUpdateToothDisplay(teeth: number[], types: Record<number, ToothType>) {
@@ -469,9 +592,9 @@ export default function CaseDetailScreen() {
 
     if (userType === "provider") {
       const parts: string[] = [];
-      parts.push(`${photoCount} photo${photoCount > 1 ? "s" : ""}`);
+      parts.push(`${photoCount} file${photoCount > 1 ? "s" : ""}`);
       if (hasNotes) parts.push("notes");
-      const notifTitle = "Provider Photos Added";
+      const notifTitle = "Provider Media Added";
       const notifMsg = `${currentUser || "Provider"} added ${parts.join(" and ")} to Case ${caseItem!.caseNumber}`;
       addNotification({
         title: notifTitle,
@@ -482,8 +605,8 @@ export default function CaseDetailScreen() {
     }
 
     const msg = hasNotes
-      ? `${photoCount} photo${photoCount > 1 ? "s" : ""} and notes added to case.`
-      : `${photoCount} photo${photoCount > 1 ? "s" : ""} added to case.`;
+      ? `${photoCount} file${photoCount > 1 ? "s" : ""} and notes added to case.`
+      : `${photoCount} file${photoCount > 1 ? "s" : ""} added to case.`;
     Alert.alert("Saved", msg);
     setCapturedPhotos([]);
     setPhotoNotes("");
@@ -759,31 +882,6 @@ export default function CaseDetailScreen() {
           )}
         </View>
 
-        {userType === "provider" && (
-        <Pressable
-          onPress={() => {
-            handleProviderAddMedia();
-            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          }}
-          style={({ pressed }) => [
-            {
-              flexDirection: "row" as const,
-              alignItems: "center" as const,
-              justifyContent: "center" as const,
-              gap: 8,
-              marginHorizontal: 16,
-              marginBottom: 16,
-              paddingVertical: 14,
-              borderRadius: 12,
-              backgroundColor: "#8B5CF6",
-            },
-            pressed && { opacity: 0.85 },
-          ]}
-        >
-          <Ionicons name="camera" size={18} color="#FFF" />
-          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Add Photo/Video</Text>
-        </Pressable>
-        )}
 
         {showPrice && (
         <Pressable
@@ -1175,7 +1273,7 @@ export default function CaseDetailScreen() {
               ]}
             >
               <Ionicons name="camera" size={20} color="#FFF" />
-              <Text style={styles.actionBtnText}>Add Picture</Text>
+              <Text style={styles.actionBtnText}>Add Picture/Video</Text>
             </Pressable>
 
             <Pressable
@@ -1450,7 +1548,7 @@ export default function CaseDetailScreen() {
           <View style={[styles.photoModal, { paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }]}>
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>
-              {capturedPhotos.length} Photo{capturedPhotos.length !== 1 ? "s" : ""} Captured
+              {capturedPhotos.length} File{capturedPhotos.length !== 1 ? "s" : ""} Captured
             </Text>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoStrip}>
@@ -1529,7 +1627,7 @@ export default function CaseDetailScreen() {
 
                 <View style={styles.photoActions}>
                   <Pressable
-                    onPress={handleAddMorePhoto}
+                    onPress={handleAddMoreMedia}
                     style={({ pressed }) => [
                       styles.photoActionBtn,
                       { backgroundColor: Colors.light.surface, borderWidth: 1, borderColor: Colors.light.border },
