@@ -602,12 +602,25 @@ export default function ScanScreen() {
       });
     } else {
       const FileSystem = require("expo-file-system");
+      let readableUri = uri;
+      try {
+        if (!uri.startsWith("file://") && !uri.startsWith("content://")) {
+          readableUri = `file://${uri}`;
+        }
+        if (uri.startsWith("content://") || uri.startsWith("ph://")) {
+          const destUri = FileSystem.cacheDirectory + "ai_compress_" + Date.now() + ".jpg";
+          await FileSystem.copyAsync({ from: uri, to: destUri });
+          readableUri = destUri;
+        }
+      } catch (copyErr: any) {
+        console.log("AI compress: URI normalization failed:", copyErr?.message);
+      }
       try {
         const ImageManipulator = require("expo-image-manipulator");
         const manipulated = await ImageManipulator.manipulateAsync(
-          uri,
+          readableUri,
           [{ resize: { width: 800 } }],
-          { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG }
+          { compress: 0.6, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
         );
         console.log("AI compress: resized to 800px, uri:", manipulated.uri);
         const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
@@ -616,11 +629,25 @@ export default function ScanScreen() {
         console.log("AI compress: base64 length:", fileBase64.length);
         return `data:image/jpeg;base64,${fileBase64}`;
       } catch (compressErr: any) {
-        console.log("AI compress fallback:", compressErr?.message);
-        const fileBase64 = await FileSystem.readAsStringAsync(uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        return `data:image/jpeg;base64,${fileBase64}`;
+        console.log("AI compress: manipulator failed, reading raw:", compressErr?.message);
+        try {
+          const fileBase64 = await FileSystem.readAsStringAsync(readableUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          console.log("AI compress: raw base64 length:", fileBase64.length);
+          return `data:image/jpeg;base64,${fileBase64}`;
+        } catch (readErr: any) {
+          console.log("AI compress: raw read also failed:", readErr?.message);
+          const info = await FileSystem.getInfoAsync(uri).catch(() => null);
+          console.log("AI compress: file info for original uri:", JSON.stringify(info));
+          if (info?.exists && info?.uri) {
+            const fileBase64 = await FileSystem.readAsStringAsync(info.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            return `data:image/jpeg;base64,${fileBase64}`;
+          }
+          throw new Error("Could not read image file: " + (readErr?.message || "unknown"));
+        }
       }
     }
   }
