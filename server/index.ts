@@ -178,6 +178,13 @@ function configureExpoAndLanding(app: express.Application) {
       return next();
     }
 
+    if (req.path === "/smile-preview") {
+      const smilePath = path.resolve(process.cwd(), "server", "templates", "smile-preview.html");
+      if (fs.existsSync(smilePath)) {
+        return res.sendFile(smilePath);
+      }
+    }
+
     if (req.path === "/app") {
       const devDomain = process.env.REPLIT_DEV_DOMAIN;
       if (devDomain) {
@@ -243,7 +250,11 @@ function setupSecurityHeaders(app: express.Application) {
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("X-Frame-Options", "DENY");
+    if (_req.path === "/smile-preview") {
+      res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    } else {
+      res.setHeader("X-Frame-Options", "DENY");
+    }
     res.setHeader("X-XSS-Protection", "1; mode=block");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
     res.setHeader("Permissions-Policy", "camera=(self), microphone=(), geolocation=()");

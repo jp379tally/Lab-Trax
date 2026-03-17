@@ -4507,6 +4507,32 @@ function ProviderDashboard() {
           </View>
         </LinearGradient>
 
+        <View style={{ paddingHorizontal: 20, marginTop: 16 }}>
+          <Pressable
+            onPress={() => router.push("/smile-preview")}
+            style={({ pressed }) => [
+              {
+                flexDirection: "row",
+                alignItems: "center",
+                backgroundColor: "#7C3AED",
+                borderRadius: 14,
+                padding: 16,
+                gap: 14,
+              },
+              pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+            ]}
+          >
+            <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="sparkles" size={22} color="#FFF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" }}>Smile Preview</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.7)", marginTop: 2 }}>AR teeth whitening visualization</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.6)" />
+          </Pressable>
+        </View>
+
         <View style={{ paddingHorizontal: 20, marginTop: 20 }}>
           <Text style={[styles.sectionTitle, { marginBottom: 12 }]}>Active Cases</Text>
           {activeCases.length === 0 ? (
