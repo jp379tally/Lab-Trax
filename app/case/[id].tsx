@@ -1458,13 +1458,21 @@ export default function CaseDetailScreen() {
                 <Pressable
                   onPress={handleFinishPhotos}
                   style={({ pressed }) => [
-                    styles.photoActionBtn,
-                    { backgroundColor: Colors.light.tint, marginTop: 6 },
+                    {
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
+                      paddingVertical: 14,
+                      borderRadius: 14,
+                      backgroundColor: Colors.light.tint,
+                      marginTop: 6,
+                    },
                     pressed && { opacity: 0.85 },
                   ]}
                 >
-                  <Ionicons name="checkmark" size={20} color="#FFF" />
-                  <Text style={[styles.photoActionText, { color: "#FFF" }]}>Done</Text>
+                  <Ionicons name="checkmark-circle" size={22} color="#FFF" />
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FFF" }}>Done</Text>
                 </Pressable>
               </>
             )}
