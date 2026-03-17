@@ -122,51 +122,23 @@ export default function NotificationsScreen() {
             {isProvider ? " (Provider) wants to join your group" : " wants to join your group"}
           </Text>
           <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4, marginBottom: 8 }}>
-            {isProvider ? "Accept this provider into your group?" : "Add user to group?"}
+            {isProvider ? "Accept this provider into your group?" : "Accept this lab into your group?"}
           </Text>
           <View style={styles.inviteBtns}>
-            {isProvider ? (
-              <>
-                <Pressable
-                  style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
-                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
-                >
-                  <Ionicons name="checkmark" size={16} color="#FFF" />
-                  <Text style={styles.acceptText}>Accept</Text>
-                </Pressable>
-                <Pressable
-                  style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
-                  onPress={() => setConfirmJoinRequest({ request, accept: false })}
-                >
-                  <Ionicons name="close" size={16} color={Colors.light.error} />
-                  <Text style={styles.declineText}>Decline</Text>
-                </Pressable>
-              </>
-            ) : (
-              <>
-                <Pressable
-                  style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
-                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
-                >
-                  <Ionicons name="checkmark" size={16} color="#FFF" />
-                  <Text style={styles.acceptText}>Yes, as User</Text>
-                </Pressable>
-                <Pressable
-                  style={({ pressed }) => [styles.acceptBtn, { backgroundColor: "#F59E0B" }, pressed && { opacity: 0.8 }]}
-                  onPress={() => setConfirmJoinRequest({ request, accept: true, role: "admin" })}
-                >
-                  <Ionicons name="shield-checkmark" size={16} color="#FFF" />
-                  <Text style={styles.acceptText}>Yes, as Admin</Text>
-                </Pressable>
-                <Pressable
-                  style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
-                  onPress={() => setConfirmJoinRequest({ request, accept: false })}
-                >
-                  <Ionicons name="close" size={16} color={Colors.light.error} />
-                  <Text style={styles.declineText}>No</Text>
-                </Pressable>
-              </>
-            )}
+            <Pressable
+              style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
+              onPress={() => setConfirmJoinRequest({ request, accept: true, role: "user" })}
+            >
+              <Ionicons name="checkmark" size={16} color="#FFF" />
+              <Text style={styles.acceptText}>Accept</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
+              onPress={() => setConfirmJoinRequest({ request, accept: false })}
+            >
+              <Ionicons name="close" size={16} color={Colors.light.error} />
+              <Text style={styles.declineText}>Reject</Text>
+            </Pressable>
           </View>
         </View>
       </View>
