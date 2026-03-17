@@ -22,7 +22,7 @@ import { apiRequest } from "@/lib/query-client";
 import { generateId, GroupJoinRequest, Group } from "@/lib/data";
 import Colors from "@/constants/colors";
 
-type SignUpStep = "credentials" | "user_type" | "lab_name" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
+type SignUpStep = "credentials" | "user_type" | "lab_name" | "lab_info" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
 
 function validatePassword(pw: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -81,6 +81,12 @@ export default function LoginScreen() {
   const [joinGroupAdminUsername, setJoinGroupAdminUsername] = useState("");
   const [joinGroupSent, setJoinGroupSent] = useState(false);
   const [labName, setLabName] = useState("");
+  const [labStreet, setLabStreet] = useState("");
+  const [labCity, setLabCity] = useState("");
+  const [labState, setLabState] = useState("");
+  const [labZip, setLabZip] = useState("");
+  const [labPhone, setLabPhone] = useState("");
+  const [labEmail, setLabEmail] = useState("");
   const [matchingLabGroup, setMatchingLabGroup] = useState<Group | null>(null);
   const [labJoinRequestSent, setLabJoinRequestSent] = useState(false);
   const [checkingLabName, setCheckingLabName] = useState(false);
@@ -370,13 +376,20 @@ export default function LoginScreen() {
         await apiRequest("POST", "/api/register", { username: signUpUsername.trim() });
       } catch {}
 
+      const isLab = (userType || "provider") === "lab";
+      const resolvedAddress = isLab
+        ? [labStreet.trim(), labCity.trim(), labState.trim(), labZip.trim()].filter(Boolean).join(", ")
+        : [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", ");
+      const resolvedPhone = isLab ? labPhone.trim() : practicePhone.trim();
+      const resolvedEmail = isLab ? (labEmail.trim() || signUpEmail.trim()) : signUpEmail.trim();
+
       if (selectedRole === "admin") {
         const now = Date.now();
         const newGroup = {
           id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
           name: signUpUsername.trim(),
-          type: (userType || "provider") === "lab" ? "lab" : "provider",
-          address: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
+          type: isLab ? "lab" : "provider",
+          address: resolvedAddress,
           members: [{
             userId: Date.now().toString() + Math.random().toString(36).substr(2, 9),
             username: signUpUsername.trim(),
@@ -393,16 +406,16 @@ export default function LoginScreen() {
         } catch {}
         await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
           name: signUpUsername.trim(),
-          type: (userType || "provider") === "lab" ? "lab" : "provider",
-          address: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
+          type: isLab ? "lab" : "provider",
+          address: resolvedAddress,
           username: signUpUsername.trim(),
           role: "admin",
         }));
       } else if (practiceName.trim() && streetAddress.trim()) {
         await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
           name: practiceName.trim(),
-          type: (userType || "provider") === "lab" ? "lab" : "provider",
-          address: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
+          type: isLab ? "lab" : "provider",
+          address: resolvedAddress,
           username: signUpUsername.trim(),
           role: selectedRole || "user",
         }));
@@ -423,15 +436,15 @@ export default function LoginScreen() {
       const result = await register({
         username: signUpUsername.trim(),
         password: signUpPassword,
-        email: signUpEmail.trim(),
+        email: resolvedEmail,
         phone: wantsUpdates ? signUpPhone.trim() : undefined,
         wantsUpdates,
         userType: userType || "provider",
         licenseNumber: licenseNumber.trim(),
-        practiceName: practiceName.trim(),
+        practiceName: isLab ? labName.trim() : practiceName.trim(),
         doctorName: doctorName.trim(),
-        practiceAddress: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
-        practicePhone: practicePhone.trim(),
+        practiceAddress: resolvedAddress,
+        practicePhone: resolvedPhone,
         phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
         role: selectedRole || "user",
         accountNumber: acctNum,
@@ -486,8 +499,10 @@ export default function LoginScreen() {
                   setMatchingLabGroup(null);
                   setLabJoinRequestSent(false);
                   setSignUpStep("user_type");
+                } else if (signUpStep === "lab_info") {
+                  setSignUpStep("lab_name");
                 } else if (signUpStep === "email_verify") {
-                  setSignUpStep(userType === "lab" ? "lab_name" : "practice_info");
+                  setSignUpStep(userType === "lab" ? "lab_info" : "practice_info");
                 } else if (signUpStep === "updates_opt_in") {
                   setSignUpStep("email_verify");
                 } else if (signUpStep === "phone_entry") {
@@ -530,6 +545,7 @@ export default function LoginScreen() {
                 {signUpStep === "credentials" && "Enter your details to get started"}
                 {signUpStep === "user_type" && "What type of account?"}
                 {signUpStep === "lab_name" && "Enter your lab name"}
+                {signUpStep === "lab_info" && "Enter your lab details"}
                 {signUpStep === "license" && (userType === "lab" ? "Enter your lab license number" : "Enter your dental license number")}
                 {signUpStep === "practice_info" && "Tell us about your practice"}
                 {signUpStep === "updates_opt_in" && "Stay connected with your lab"}
@@ -546,6 +562,7 @@ export default function LoginScreen() {
             {signUpStep === "credentials" && renderCredentialsStep()}
             {signUpStep === "user_type" && renderUserType()}
             {signUpStep === "lab_name" && renderLabName()}
+            {signUpStep === "lab_info" && renderLabInfo()}
             {signUpStep === "license" && renderLicense()}
             {signUpStep === "practice_info" && renderPracticeInfo()}
             {signUpStep === "email_verify" && renderEmailVerify()}
@@ -570,7 +587,7 @@ export default function LoginScreen() {
 
             <View style={styles.stepIndicator}>
               {(() => {
-                const labSteps: SignUpStep[] = ["credentials", "user_type", "lab_name", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
+                const labSteps: SignUpStep[] = ["credentials", "user_type", "lab_name", "lab_info", "email_verify", "updates_opt_in", "role_select", "join_group", "hipaa_disclaimer"];
                 const providerSteps: SignUpStep[] = wantsUpdates
                   ? ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "phone_entry", "phone_verify", "phone_contact_name", "join_group", "hipaa_disclaimer"]
                   : ["credentials", "user_type", "license", "practice_info", "email_verify", "updates_opt_in", "join_group", "hipaa_disclaimer"];
@@ -690,12 +707,12 @@ export default function LoginScreen() {
       } else {
         setMatchingLabGroup(null);
         setCheckingLabName(false);
-        sendEmailCode();
+        setSignUpStep("lab_info");
       }
     } catch {
       setMatchingLabGroup(null);
       setCheckingLabName(false);
-      sendEmailCode();
+      setSignUpStep("lab_info");
     }
   }
 
@@ -809,7 +826,7 @@ export default function LoginScreen() {
               onPress={() => {
                 setMatchingLabGroup(null);
                 setSignUpError(null);
-                sendEmailCode();
+                setSignUpStep("lab_info");
               }}
               style={({ pressed }) => [
                 {
@@ -852,6 +869,115 @@ export default function LoginScreen() {
             </Pressable>
           </View>
         )}
+      </View>
+    );
+  }
+
+  function renderLabInfo() {
+    const labInfoComplete = labStreet.trim() && labCity.trim() && labState.trim() && labZip.trim() && labPhone.trim() && labEmail.trim();
+    return (
+      <View style={styles.formSection}>
+        {signUpError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle" size={16} color={Colors.light.error} />
+            <Text style={styles.errorText}>{signUpError}</Text>
+          </View>
+        )}
+
+        <View style={styles.inputWrapper}>
+          <Ionicons name="location-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            value={labStreet}
+            onChangeText={(t) => { setLabStreet(t); setSignUpError(null); }}
+            placeholder="Street Address"
+            placeholderTextColor="rgba(255,255,255,0.3)"
+            autoCapitalize="words"
+          />
+        </View>
+
+        <View style={styles.inputWrapper}>
+          <Ionicons name="business-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            value={labCity}
+            onChangeText={(t) => { setLabCity(t); setSignUpError(null); }}
+            placeholder="City"
+            placeholderTextColor="rgba(255,255,255,0.3)"
+            autoCapitalize="words"
+          />
+        </View>
+
+        <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={[styles.inputWrapper, { flex: 1 }]}>
+            <TextInput
+              style={styles.input}
+              value={labState}
+              onChangeText={(t) => { setLabState(t); setSignUpError(null); }}
+              placeholder="State"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              autoCapitalize="characters"
+              maxLength={2}
+            />
+          </View>
+          <View style={[styles.inputWrapper, { flex: 1 }]}>
+            <TextInput
+              style={styles.input}
+              value={labZip}
+              onChangeText={(t) => { setLabZip(t); setSignUpError(null); }}
+              placeholder="ZIP Code"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              keyboardType="number-pad"
+              maxLength={5}
+            />
+          </View>
+        </View>
+
+        <View style={styles.inputWrapper}>
+          <Ionicons name="call-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            value={labPhone}
+            onChangeText={(t) => { setLabPhone(t); setSignUpError(null); }}
+            placeholder="Office Phone Number"
+            placeholderTextColor="rgba(255,255,255,0.3)"
+            keyboardType="phone-pad"
+          />
+        </View>
+
+        <View style={styles.inputWrapper}>
+          <Ionicons name="mail-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
+          <TextInput
+            style={styles.input}
+            value={labEmail}
+            onChangeText={(t) => { setLabEmail(t); setSignUpError(null); }}
+            placeholder="Lab Email Address"
+            placeholderTextColor="rgba(255,255,255,0.3)"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
+
+        <Pressable
+          onPress={() => {
+            if (!labStreet.trim() || !labCity.trim() || !labState.trim() || !labZip.trim() || !labPhone.trim() || !labEmail.trim()) {
+              setSignUpError("Please fill in all fields.");
+              return;
+            }
+            setSignUpError(null);
+            sendEmailCode();
+          }}
+          disabled={!labInfoComplete}
+          style={({ pressed }) => [
+            styles.loginBtn,
+            !labInfoComplete && { opacity: 0.5 },
+            pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+          ]}
+        >
+          <Text style={styles.loginBtnText}>Continue</Text>
+          <Ionicons name="arrow-forward" size={20} color="#FFF" />
+        </Pressable>
       </View>
     );
   }
