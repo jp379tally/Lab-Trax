@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useMemo } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  PanResponder,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -32,6 +33,8 @@ const INTENSITY_LEVELS = [
   { label: "Max", value: 0.6 },
 ];
 
+const DEFAULT_ZONE = { cx: 0.5, cy: 0.63, w: 0.52, h: 0.1 };
+
 export default function SmilePreviewScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -41,8 +44,65 @@ export default function SmilePreviewScreen() {
   const [whitenIntensity, setWhitenIntensity] = useState(0.3);
   const [selectedShade, setSelectedShade] = useState("#F5F5F0");
   const [effectOn, setEffectOn] = useState(true);
+  const [symmetryOn, setSymmetryOn] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [facing, setFacing] = useState<"front" | "back">("front");
+  const [teethZone, setTeethZone] = useState(DEFAULT_ZONE);
+  const teethZoneRef = useRef(DEFAULT_ZONE);
+  const [imgLayout, setImgLayout] = useState({ width: 0, height: 0 });
+  const imgLayoutRef = useRef({ width: 0, height: 0 });
+  const dragStartRef = useRef({ cx: 0, cy: 0 });
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, gs) =>
+          Math.abs(gs.dx) > 3 || Math.abs(gs.dy) > 3,
+        onPanResponderGrant: () => {
+          dragStartRef.current = {
+            cx: teethZoneRef.current.cx,
+            cy: teethZoneRef.current.cy,
+          };
+        },
+        onPanResponderMove: (_, gs) => {
+          const { width, height } = imgLayoutRef.current;
+          if (width === 0 || height === 0) return;
+          const newCx = Math.max(
+            0.15,
+            Math.min(0.85, dragStartRef.current.cx + gs.dx / width),
+          );
+          const newCy = Math.max(
+            0.1,
+            Math.min(0.9, dragStartRef.current.cy + gs.dy / height),
+          );
+          const next = { ...teethZoneRef.current, cx: newCx, cy: newCy };
+          teethZoneRef.current = next;
+          setTeethZone(next);
+        },
+      }),
+    [],
+  );
+
+  const zonePixels = useMemo(() => {
+    const imgW = imgLayout.width;
+    const imgH = imgLayout.height;
+    const zW = teethZone.w * imgW;
+    const zH = teethZone.h * imgH;
+    const zL = teethZone.cx * imgW - zW / 2;
+    const zT = teethZone.cy * imgH - zH / 2;
+    return { zW, zH, zL, zT, imgW, imgH };
+  }, [teethZone, imgLayout]);
+
+  function adjustZoneSize(delta: number) {
+    setTeethZone((prev) => {
+      const newW = Math.max(0.15, Math.min(0.9, prev.w + delta));
+      const newH = Math.max(0.04, Math.min(0.35, prev.h + delta * 0.25));
+      const next = { ...prev, w: newW, h: newH };
+      teethZoneRef.current = next;
+      return next;
+    });
+  }
 
   async function takePhoto() {
     if (!cameraRef.current || capturing) return;
@@ -53,7 +113,9 @@ export default function SmilePreviewScreen() {
         skipProcessing: false,
       });
       setCapturedPhoto(photo.uri);
-    } catch (err) {
+      teethZoneRef.current = DEFAULT_ZONE;
+      setTeethZone(DEFAULT_ZONE);
+    } catch {
       Alert.alert("Error", "Failed to take photo. Please try again.");
     } finally {
       setCapturing(false);
@@ -71,7 +133,15 @@ export default function SmilePreviewScreen() {
   if (!permission.granted) {
     return (
       <View style={styles.container}>
-        <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 8 : insets.top + 8 }]}>
+        <View
+          style={[
+            styles.header,
+            {
+              paddingTop:
+                Platform.OS === "web" ? 67 + 8 : insets.top + 8,
+            },
+          ]}
+        >
           <Pressable onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={24} color="#FFF" />
           </Pressable>
@@ -79,14 +149,22 @@ export default function SmilePreviewScreen() {
           <View style={{ width: 40 }} />
         </View>
         <View style={styles.permissionContainer}>
-          <Ionicons name="camera-outline" size={64} color="rgba(255,255,255,0.3)" />
+          <Ionicons
+            name="camera-outline"
+            size={64}
+            color="rgba(255,255,255,0.3)"
+          />
           <Text style={styles.permissionTitle}>Camera Access Needed</Text>
           <Text style={styles.permissionText}>
-            To use Smile Preview, please allow camera access. This lets you take a photo and preview teeth whitening effects.
+            To use Smile Preview, please allow camera access. This lets you
+            take a photo and preview teeth whitening effects.
           </Text>
           <Pressable
             onPress={requestPermission}
-            style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.8 }]}
+            style={({ pressed }) => [
+              styles.permissionBtn,
+              pressed && { opacity: 0.8 },
+            ]}
           >
             <Text style={styles.permissionBtnText}>Allow Camera</Text>
           </Pressable>
@@ -96,33 +174,189 @@ export default function SmilePreviewScreen() {
   }
 
   if (capturedPhoto) {
+    const { zW, zH, zL, zT, imgW, imgH } = zonePixels;
+    const showZone = imgW > 0 && imgH > 0;
+
     return (
       <View style={styles.container}>
-        <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 8 : insets.top + 8 }]}>
-          <Pressable onPress={() => setCapturedPhoto(null)} style={styles.backBtn}>
+        <View
+          style={[
+            styles.header,
+            {
+              paddingTop:
+                Platform.OS === "web" ? 67 + 8 : insets.top + 8,
+            },
+          ]}
+        >
+          <Pressable
+            onPress={() => setCapturedPhoto(null)}
+            style={styles.backBtn}
+          >
             <Ionicons name="arrow-back" size={24} color="#FFF" />
           </Pressable>
           <Text style={styles.headerTitle}>Preview</Text>
           <View style={{ width: 40 }} />
         </View>
 
-        <View style={styles.photoContainer}>
-          <Image source={{ uri: capturedPhoto }} style={styles.capturedImage} resizeMode="contain" />
-          {effectOn && (
+        <View
+          style={styles.photoContainer}
+          onLayout={(e) => {
+            const { width, height } = e.nativeEvent.layout;
+            imgLayoutRef.current = { width, height };
+            setImgLayout({ width, height });
+          }}
+        >
+          <Image
+            source={{ uri: capturedPhoto }}
+            style={styles.capturedImage}
+            resizeMode="cover"
+          />
+
+          {showZone && effectOn && (
             <View
-              style={[
-                styles.whiteningOverlay,
-                {
+              style={{
+                position: "absolute",
+                left: zL,
+                top: zT,
+                width: zW,
+                height: zH,
+                borderRadius: zH / 2,
+                overflow: "hidden",
+              }}
+              pointerEvents="none"
+            >
+              <View
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
                   backgroundColor: selectedShade,
                   opacity: whitenIntensity,
-                },
-              ]}
+                }}
+              />
+            </View>
+          )}
+
+          {showZone && symmetryOn && (
+            <View
+              style={{
+                position: "absolute",
+                left: zL,
+                top: zT,
+                width: zW,
+                height: zH,
+                borderRadius: zH / 2,
+                overflow: "hidden",
+              }}
               pointerEvents="none"
-            />
+            >
+              <Image
+                source={{ uri: capturedPhoto }}
+                style={{
+                  position: "absolute",
+                  width: imgW,
+                  height: imgH,
+                  left: zL + zW - imgW,
+                  top: -zT,
+                  transform: [{ scaleX: -1 }],
+                  opacity: 0.45,
+                }}
+                resizeMode="cover"
+              />
+            </View>
+          )}
+
+          {showZone && (
+            <View
+              {...panResponder.panHandlers}
+              style={{
+                position: "absolute",
+                left: zL - 12,
+                top: zT - 12,
+                width: zW + 24,
+                height: zH + 24,
+                borderRadius: (zH + 24) / 2,
+                borderWidth: 1.5,
+                borderColor:
+                  effectOn || symmetryOn
+                    ? "rgba(255,255,255,0.6)"
+                    : "rgba(255,255,255,0.25)",
+                borderStyle: "dashed",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <View
+                style={{
+                  position: "absolute",
+                  top: -22,
+                  backgroundColor: "rgba(0,0,0,0.55)",
+                  borderRadius: 8,
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
+                }}
+              >
+                <Text
+                  style={{
+                    color: "rgba(255,255,255,0.7)",
+                    fontSize: 10,
+                    fontFamily: "Inter_500Medium",
+                  }}
+                >
+                  Drag to position over teeth
+                </Text>
+              </View>
+            </View>
           )}
         </View>
 
-        <View style={[styles.controls, { paddingBottom: Platform.OS === "web" ? 34 + 16 : Math.max(insets.bottom, 16) + 16 }]}>
+        <View
+          style={[
+            styles.controls,
+            {
+              paddingBottom:
+                Platform.OS === "web"
+                  ? 34 + 12
+                  : Math.max(insets.bottom, 16) + 12,
+            },
+          ]}
+        >
+          <View style={styles.controlRow}>
+            <Text style={styles.controlLabel}>Zone</Text>
+            <Pressable
+              onPress={() => adjustZoneSize(-0.06)}
+              style={({ pressed }) => [
+                styles.sizeBtn,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons name="remove" size={16} color="#FFF" />
+            </Pressable>
+            <Pressable
+              onPress={() => adjustZoneSize(0.06)}
+              style={({ pressed }) => [
+                styles.sizeBtn,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons name="add" size={16} color="#FFF" />
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                teethZoneRef.current = DEFAULT_ZONE;
+                setTeethZone(DEFAULT_ZONE);
+              }}
+              style={({ pressed }) => [
+                styles.resetBtn,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={styles.resetBtnText}>Reset</Text>
+            </Pressable>
+          </View>
+
           <View style={styles.controlRow}>
             <Text style={styles.controlLabel}>Intensity</Text>
             <View style={styles.intensityRow}>
@@ -132,13 +366,17 @@ export default function SmilePreviewScreen() {
                   onPress={() => setWhitenIntensity(level.value)}
                   style={[
                     styles.intensityBtn,
-                    whitenIntensity === level.value && styles.intensityBtnActive,
+                    whitenIntensity === level.value &&
+                      styles.intensityBtnActive,
                   ]}
                 >
-                  <Text style={[
-                    styles.intensityBtnText,
-                    whitenIntensity === level.value && styles.intensityBtnTextActive,
-                  ]}>
+                  <Text
+                    style={[
+                      styles.intensityBtnText,
+                      whitenIntensity === level.value &&
+                        styles.intensityBtnTextActive,
+                    ]}
+                  >
                     {level.label}
                   </Text>
                 </Pressable>
@@ -148,7 +386,12 @@ export default function SmilePreviewScreen() {
 
           <View style={styles.controlRow}>
             <Text style={styles.controlLabel}>Shade</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 8, paddingRight: 8 }}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={{ flex: 1 }}
+              contentContainerStyle={{ gap: 8, paddingRight: 8 }}
+            >
               {SHADES.map((s) => (
                 <Pressable
                   key={s.name}
@@ -176,13 +419,37 @@ export default function SmilePreviewScreen() {
                 pressed && { opacity: 0.8 },
               ]}
             >
-              <Text style={styles.btnText}>{effectOn ? "✨ Effect ON" : "Effect OFF"}</Text>
+              <Text style={styles.btnText}>
+                {effectOn ? "✨ Whiten" : "Whiten"}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setSymmetryOn(!symmetryOn)}
+              style={({ pressed }) => [
+                styles.btn,
+                symmetryOn ? styles.btnSymmetryActive : styles.btnInactive,
+                pressed && { opacity: 0.8 },
+              ]}
+            >
+              <Ionicons
+                name="git-compare-outline"
+                size={15}
+                color="#FFF"
+                style={{ marginRight: 4 }}
+              />
+              <Text style={styles.btnText}>
+                {symmetryOn ? "Symmetry" : "Symmetry"}
+              </Text>
             </Pressable>
             <Pressable
               onPress={() => setCapturedPhoto(null)}
-              style={({ pressed }) => [styles.btn, styles.btnRetake, pressed && { opacity: 0.8 }]}
+              style={({ pressed }) => [
+                styles.btn,
+                styles.btnRetake,
+                pressed && { opacity: 0.8 },
+              ]}
             >
-              <Ionicons name="camera-reverse-outline" size={18} color="#FFF" />
+              <Ionicons name="camera-reverse-outline" size={16} color="#FFF" />
               <Text style={styles.btnText}>Retake</Text>
             </Pressable>
           </View>
@@ -193,12 +460,25 @@ export default function SmilePreviewScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 8 : insets.top + 8 }]}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop:
+              Platform.OS === "web" ? 67 + 8 : insets.top + 8,
+          },
+        ]}
+      >
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color="#FFF" />
         </Pressable>
         <Text style={styles.headerTitle}>Smile Preview</Text>
-        <Pressable onPress={() => setFacing(f => f === "front" ? "back" : "front")} style={styles.backBtn}>
+        <Pressable
+          onPress={() =>
+            setFacing((f) => (f === "front" ? "back" : "front"))
+          }
+          style={styles.backBtn}
+        >
           <Ionicons name="camera-reverse-outline" size={24} color="#FFF" />
         </Pressable>
       </View>
@@ -213,12 +493,26 @@ export default function SmilePreviewScreen() {
 
         <View style={styles.guideOverlay} pointerEvents="none">
           <View style={styles.guideOval} />
-          <Text style={styles.guideText}>Position face within the guide</Text>
+          <Text style={styles.guideText}>
+            Position face within the guide
+          </Text>
         </View>
       </View>
 
-      <View style={[styles.captureBar, { paddingBottom: Platform.OS === "web" ? 34 + 16 : Math.max(insets.bottom, 16) + 16 }]}>
-        <Text style={styles.captureHint}>Take a photo to preview teeth whitening</Text>
+      <View
+        style={[
+          styles.captureBar,
+          {
+            paddingBottom:
+              Platform.OS === "web"
+                ? 34 + 16
+                : Math.max(insets.bottom, 16) + 16,
+          },
+        ]}
+      >
+        <Text style={styles.captureHint}>
+          Take a photo to preview teeth whitening
+        </Text>
         <Pressable
           onPress={takePhoto}
           disabled={capturing}
@@ -354,41 +648,28 @@ const styles = StyleSheet.create({
   photoContainer: {
     flex: 1,
     position: "relative",
+    overflow: "hidden",
   },
   capturedImage: {
     flex: 1,
     width: "100%",
   },
-  whiteningOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
   controls: {
-    backgroundColor: "rgba(0,0,0,0.9)",
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    gap: 14,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    gap: 12,
   },
   controlRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
   },
   controlLabel: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: "rgba(255,255,255,0.8)",
-    minWidth: 64,
-  },
-  controlValue: {
-    fontSize: 13,
-    color: "rgba(255,255,255,0.6)",
-    minWidth: 36,
-    textAlign: "right" as const,
-    fontFamily: "Inter_500Medium",
+    minWidth: 58,
   },
   intensityRow: {
     flexDirection: "row" as const,
@@ -397,7 +678,7 @@ const styles = StyleSheet.create({
   },
   intensityBtn: {
     flex: 1,
-    paddingVertical: 8,
+    paddingVertical: 7,
     borderRadius: 8,
     backgroundColor: "rgba(255,255,255,0.1)",
     alignItems: "center" as const,
@@ -431,22 +712,45 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: "#333",
   },
+  sizeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  resetBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    marginLeft: 4,
+  },
+  resetBtnText: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.6)",
+  },
   btnRow: {
     flexDirection: "row" as const,
-    gap: 10,
+    gap: 8,
     justifyContent: "center" as const,
     marginTop: 2,
   },
   btn: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     borderRadius: 22,
     flexDirection: "row" as const,
     alignItems: "center" as const,
-    gap: 6,
+    gap: 4,
   },
   btnActive: {
     backgroundColor: "#10B981",
+  },
+  btnSymmetryActive: {
+    backgroundColor: "#7C3AED",
   },
   btnInactive: {
     backgroundColor: "rgba(255,255,255,0.15)",
@@ -456,7 +760,7 @@ const styles = StyleSheet.create({
   },
   btnText: {
     color: "#FFF",
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: "Inter_600SemiBold",
   },
 });
