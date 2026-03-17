@@ -14,10 +14,9 @@ import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 const DESKTOP_BREAKPOINT = 768;
 
 function NativeTabLayout() {
+  const { unreadCount } = useApp();
   const { userType } = useAuth();
   const isProvider = userType === "provider";
-  const filteredNotifs = useProviderFilteredNotifications();
-  const filteredUnread = filteredNotifs.filter(n => !n.read).length;
   return (
     <NativeTabs>
       <NativeTabs.Trigger name="index">
@@ -37,7 +36,7 @@ function NativeTabLayout() {
       <NativeTabs.Trigger name="notifications">
         <Icon sf={{ default: "bell", selected: "bell.fill" }} />
         <Label>Alerts</Label>
-        {filteredUnread > 0 && <Badge>{filteredUnread}</Badge>}
+        {unreadCount > 0 && <Badge>{unreadCount}</Badge>}
       </NativeTabs.Trigger>
     </NativeTabs>
   );
