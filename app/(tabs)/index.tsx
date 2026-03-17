@@ -4545,7 +4545,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels, sendGroupJoinRequest, groupJoinRequests } = useApp();
+  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
 
