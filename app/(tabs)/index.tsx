@@ -2651,7 +2651,7 @@ function AdminDashboard() {
           </View>
 
           <View style={{ borderBottomWidth: 1, borderBottomColor: "#333", paddingVertical: 12, paddingHorizontal: 16, alignItems: "center" }}>
-            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#C0392B", letterSpacing: 1 }}>DUE DATE</Text>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#C0392B", letterSpacing: 1 }}>CASE DUE BY</Text>
             <View style={{ marginTop: 6, borderWidth: 2, borderColor: "#333", paddingVertical: 8, paddingHorizontal: 24, borderRadius: 2 }}>
               <Text style={{ fontSize: 28, fontFamily: "Inter_700Bold", color: "#333" }}>{dueDateStr}</Text>
             </View>
