@@ -4837,7 +4837,7 @@ function ProviderDashboard() {
                   paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
                   opacity: pressed ? 0.85 : 1,
                 })}
-                onPress={() => { setLabSearchQuery(""); setShowAddLab(true); }}
+                onPress={() => { setLabSearchQuery(""); setShowSettings(false); setTimeout(() => setShowAddLab(true), 350); }}
               >
                 <Ionicons name="add" size={16} color={Colors.light.tint} />
                 <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Add a Lab</Text>
