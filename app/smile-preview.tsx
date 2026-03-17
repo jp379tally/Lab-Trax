@@ -49,6 +49,7 @@ export default function SmilePreviewScreen() {
   const [facing, setFacing] = useState<"front" | "back">("front");
   const [teethZone, setTeethZone] = useState(DEFAULT_ZONE);
   const teethZoneRef = useRef(DEFAULT_ZONE);
+  const [applied, setApplied] = useState(false);
   const [imgLayout, setImgLayout] = useState({ width: 0, height: 0 });
   const imgLayoutRef = useRef({ width: 0, height: 0 });
   const dragStartRef = useRef({ cx: 0, cy: 0 });
@@ -113,6 +114,7 @@ export default function SmilePreviewScreen() {
         skipProcessing: false,
       });
       setCapturedPhoto(photo.uri);
+      setApplied(false);
       teethZoneRef.current = DEFAULT_ZONE;
       setTeethZone(DEFAULT_ZONE);
     } catch {
@@ -243,11 +245,12 @@ export default function SmilePreviewScreen() {
             <View
               style={{
                 position: "absolute",
-                left: zL,
+                left: zL + zW / 2,
                 top: zT,
-                width: zW,
+                width: zW / 2,
                 height: zH,
-                borderRadius: zH / 2,
+                borderTopRightRadius: zH / 2,
+                borderBottomRightRadius: zH / 2,
                 overflow: "hidden",
               }}
               pointerEvents="none"
@@ -258,17 +261,17 @@ export default function SmilePreviewScreen() {
                   position: "absolute",
                   width: imgW,
                   height: imgH,
-                  left: zL + zW - imgW,
+                  left: -(zL + zW / 2),
                   top: -zT,
                   transform: [{ scaleX: -1 }],
-                  opacity: 0.45,
+                  opacity: 0.5,
                 }}
                 resizeMode="cover"
               />
             </View>
           )}
 
-          {showZone && (
+          {showZone && !applied && (
             <View
               {...panResponder.panHandlers}
               style={{
@@ -325,135 +328,179 @@ export default function SmilePreviewScreen() {
             },
           ]}
         >
-          <View style={styles.controlRow}>
-            <Text style={styles.controlLabel}>Zone</Text>
-            <Pressable
-              onPress={() => adjustZoneSize(-0.06)}
-              style={({ pressed }) => [
-                styles.sizeBtn,
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Ionicons name="remove" size={16} color="#FFF" />
-            </Pressable>
-            <Pressable
-              onPress={() => adjustZoneSize(0.06)}
-              style={({ pressed }) => [
-                styles.sizeBtn,
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Ionicons name="add" size={16} color="#FFF" />
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                teethZoneRef.current = DEFAULT_ZONE;
-                setTeethZone(DEFAULT_ZONE);
-              }}
-              style={({ pressed }) => [
-                styles.resetBtn,
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Text style={styles.resetBtnText}>Reset</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.controlRow}>
-            <Text style={styles.controlLabel}>Intensity</Text>
-            <View style={styles.intensityRow}>
-              {INTENSITY_LEVELS.map((level) => (
+          {!applied && (
+            <>
+              <View style={styles.controlRow}>
+                <Text style={styles.controlLabel}>Zone</Text>
                 <Pressable
-                  key={level.label}
-                  onPress={() => setWhitenIntensity(level.value)}
-                  style={[
-                    styles.intensityBtn,
-                    whitenIntensity === level.value &&
-                      styles.intensityBtnActive,
+                  onPress={() => adjustZoneSize(-0.06)}
+                  style={({ pressed }) => [
+                    styles.sizeBtn,
+                    pressed && { opacity: 0.7 },
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.intensityBtnText,
-                      whitenIntensity === level.value &&
-                        styles.intensityBtnTextActive,
-                    ]}
-                  >
-                    {level.label}
-                  </Text>
+                  <Ionicons name="remove" size={16} color="#FFF" />
                 </Pressable>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.controlRow}>
-            <Text style={styles.controlLabel}>Shade</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={{ flex: 1 }}
-              contentContainerStyle={{ gap: 8, paddingRight: 8 }}
-            >
-              {SHADES.map((s) => (
                 <Pressable
-                  key={s.name}
-                  onPress={() => setSelectedShade(s.color)}
-                  style={[
-                    styles.shadeBtn,
-                    { backgroundColor: s.color },
-                    selectedShade === s.color && styles.shadeBtnActive,
+                  onPress={() => adjustZoneSize(0.06)}
+                  style={({ pressed }) => [
+                    styles.sizeBtn,
+                    pressed && { opacity: 0.7 },
                   ]}
                 >
-                  {selectedShade === s.color && (
-                    <Text style={styles.shadeLabel}>{s.name}</Text>
-                  )}
+                  <Ionicons name="add" size={16} color="#FFF" />
                 </Pressable>
-              ))}
-            </ScrollView>
-          </View>
+                <Pressable
+                  onPress={() => {
+                    teethZoneRef.current = DEFAULT_ZONE;
+                    setTeethZone(DEFAULT_ZONE);
+                  }}
+                  style={({ pressed }) => [
+                    styles.resetBtn,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Text style={styles.resetBtnText}>Reset</Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.controlRow}>
+                <Text style={styles.controlLabel}>Intensity</Text>
+                <View style={styles.intensityRow}>
+                  {INTENSITY_LEVELS.map((level) => (
+                    <Pressable
+                      key={level.label}
+                      onPress={() => setWhitenIntensity(level.value)}
+                      style={[
+                        styles.intensityBtn,
+                        whitenIntensity === level.value &&
+                          styles.intensityBtnActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.intensityBtnText,
+                          whitenIntensity === level.value &&
+                            styles.intensityBtnTextActive,
+                        ]}
+                      >
+                        {level.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.controlRow}>
+                <Text style={styles.controlLabel}>Shade</Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={{ flex: 1 }}
+                  contentContainerStyle={{ gap: 8, paddingRight: 8 }}
+                >
+                  {SHADES.map((s) => (
+                    <Pressable
+                      key={s.name}
+                      onPress={() => setSelectedShade(s.color)}
+                      style={[
+                        styles.shadeBtn,
+                        { backgroundColor: s.color },
+                        selectedShade === s.color && styles.shadeBtnActive,
+                      ]}
+                    >
+                      {selectedShade === s.color && (
+                        <Text style={styles.shadeLabel}>{s.name}</Text>
+                      )}
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            </>
+          )}
 
           <View style={styles.btnRow}>
-            <Pressable
-              onPress={() => setEffectOn(!effectOn)}
-              style={({ pressed }) => [
-                styles.btn,
-                effectOn ? styles.btnActive : styles.btnInactive,
-                pressed && { opacity: 0.8 },
-              ]}
-            >
-              <Text style={styles.btnText}>
-                {effectOn ? "✨ Whiten" : "Whiten"}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setSymmetryOn(!symmetryOn)}
-              style={({ pressed }) => [
-                styles.btn,
-                symmetryOn ? styles.btnSymmetryActive : styles.btnInactive,
-                pressed && { opacity: 0.8 },
-              ]}
-            >
-              <Ionicons
-                name="git-compare-outline"
-                size={15}
-                color="#FFF"
-                style={{ marginRight: 4 }}
-              />
-              <Text style={styles.btnText}>
-                {symmetryOn ? "Symmetry" : "Symmetry"}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setCapturedPhoto(null)}
-              style={({ pressed }) => [
-                styles.btn,
-                styles.btnRetake,
-                pressed && { opacity: 0.8 },
-              ]}
-            >
-              <Ionicons name="camera-reverse-outline" size={16} color="#FFF" />
-              <Text style={styles.btnText}>Retake</Text>
-            </Pressable>
+            {!applied ? (
+              <>
+                <Pressable
+                  onPress={() => setEffectOn(!effectOn)}
+                  style={({ pressed }) => [
+                    styles.btn,
+                    effectOn ? styles.btnActive : styles.btnInactive,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <Text style={styles.btnText}>
+                    {effectOn ? "Whiten" : "Whiten"}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setSymmetryOn(!symmetryOn)}
+                  style={({ pressed }) => [
+                    styles.btn,
+                    symmetryOn ? styles.btnSymmetryActive : styles.btnInactive,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <Ionicons
+                    name="git-compare-outline"
+                    size={15}
+                    color="#FFF"
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text style={styles.btnText}>Symmetry</Text>
+                </Pressable>
+                {(effectOn || symmetryOn) && (
+                  <Pressable
+                    onPress={() => setApplied(true)}
+                    style={({ pressed }) => [
+                      styles.btn,
+                      { backgroundColor: "#10B981" },
+                      pressed && { opacity: 0.8 },
+                    ]}
+                  >
+                    <Ionicons name="checkmark-circle" size={16} color="#FFF" style={{ marginRight: 4 }} />
+                    <Text style={styles.btnText}>Apply</Text>
+                  </Pressable>
+                )}
+                <Pressable
+                  onPress={() => setCapturedPhoto(null)}
+                  style={({ pressed }) => [
+                    styles.btn,
+                    styles.btnRetake,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <Ionicons name="camera-reverse-outline" size={16} color="#FFF" />
+                  <Text style={styles.btnText}>Retake</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  onPress={() => setApplied(false)}
+                  style={({ pressed }) => [
+                    styles.btn,
+                    styles.btnInactive,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <Ionicons name="create-outline" size={16} color="#FFF" style={{ marginRight: 4 }} />
+                  <Text style={styles.btnText}>Edit</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => { setApplied(false); setCapturedPhoto(null); }}
+                  style={({ pressed }) => [
+                    styles.btn,
+                    styles.btnRetake,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <Ionicons name="camera-reverse-outline" size={16} color="#FFF" />
+                  <Text style={styles.btnText}>Retake</Text>
+                </Pressable>
+              </>
+            )}
           </View>
         </View>
       </View>
