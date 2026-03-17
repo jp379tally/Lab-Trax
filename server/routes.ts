@@ -285,30 +285,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const visionMessages = [
         {
           role: "system" as const,
-          content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read handwritten or printed dental prescription forms and extract ALL information. Read every word on the document carefully.
+          content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read dental prescription forms from ALL platforms (handwritten paper Rx, iTero, 3Shape, Medit, Carestream, Dentrix, EagleSoft, etc.) and extract ALL information. Read every word on the document carefully.
 
 Return ONLY valid JSON with these fields:
 {
-  "doctorName": "full doctor/dentist name including Dr. prefix - look for fields labeled Doctor, Dentist, DDS, DMD, or the practice/office name",
-  "patientName": "full patient name - look for fields labeled Patient, Patient Name, Pt, or similar",
-  "caseType": "one of: Restorative, Removable, Appliance, Temporary - determine from the type of work described (crowns/bridges/veneers = Restorative, dentures/partials = Removable, retainers/guards = Appliance, temps/provisionals = Temporary)",
-  "toothIndices": "tooth numbers in format #8, #9, #10 - look for tooth numbers, tooth chart markings, or FDI notation and convert to American numbering 1-32",
-  "shade": "dental shade like A1, A2, A3, B1, B2, C1, etc. - look for shade, color, or Vita shade references",
-  "material": "one of: Zirconia, E.max, PFM, Gold - determine from material descriptions like zirconia, lithium disilicate, porcelain fused to metal, full gold, etc.",
+  "doctorName": "full doctor/dentist name with Dr. prefix. ALWAYS output as: Dr. FirstName LastName",
+  "patientName": "full patient name. ALWAYS output as: FirstName LastName (first name first, last name last)",
+  "caseType": "one of: Restorative, Removable, Appliance, Temporary - determine from the type of work described (crowns/bridges/veneers/inlays/onlays = Restorative, dentures/partials = Removable, retainers/guards/splints = Appliance, temps/provisionals = Temporary)",
+  "toothIndices": "tooth numbers in format #8, #9, #10 - look for tooth numbers, tooth chart markings, tooth diagrams, Treatment Information tables, or FDI notation and convert to American numbering 1-32",
+  "shade": "dental shade like A1, A2, A3, B1, B2, C1, etc. - look for shade, color, Vita shade, or shade columns in treatment tables",
+  "material": "one of: Zirconia, E.max, PFM, Gold - determine from material descriptions like zirconia, ceramic translucent zirconia, lithium disilicate, porcelain fused to metal, full gold, etc.",
   "dueDate": "due date in MM/DD/YYYY format if visible - look for Due Date, Date Needed, Ship Date, Return By",
   "isRush": false,
-  "notes": "ALL other instructions, special notes, or comments written by the doctor including margin notes, preparation details, contact preferences, or any other text on the form",
+  "notes": "ALL other instructions, special notes, treatment specifications, procedure type (Fixed Restorative, etc.), practice name and address, and any other text on the form",
   "description": "brief summary of the prescription"
 }
 
+CRITICAL NAME FORMAT RULES:
+- Many digital platforms (iTero, 3Shape, etc.) list names as "LastName, FirstName" (e.g., "Patient: Lewis, Bradley" or "Doctor: Montalvo, Ray")
+- You MUST convert ALL names to FirstName LastName format (e.g., "Bradley Lewis", "Dr. Ray Montalvo")
+- If you see "Patient: Lewis, Bradley" → output patientName as "Bradley Lewis"
+- If you see "Doctor: Dr. Montalvo, Ray" → output doctorName as "Dr. Ray Montalvo"
+- If a name has a comma, the part BEFORE the comma is the last name, the part AFTER is the first name
+- Always add "Dr." prefix to the doctor name if not already present
+
 IMPORTANT RULES:
-- Read ALL handwritten text carefully, even if partially legible
+- Read ALL text carefully, including printed text, labels, headers, and table data
+- Look for Treatment Information tables that contain tooth numbers, materials, shades
 - If a field cannot be determined, use an empty string ""
-- For material, default to "Zirconia" if unclear
+- For material, default to "Zirconia" if unclear. "Ceramic Translucent Zirconia" = "Zirconia"
 - For isRush, set to true if you see RUSH, ASAP, URGENT, or similar urgency indicators
-- Include ALL notes and instructions in the notes field, even if they seem minor
-- Patient name is CRITICAL - look everywhere on the form for it
-- Tooth numbers should use American dental numbering (1-32)`,
+- Include ALL notes and instructions in the notes field
+- Patient name is CRITICAL - look for "Patient:" labels specifically
+- Doctor name is CRITICAL - look for "Doctor:" labels specifically
+- Tooth numbers should use American dental numbering (1-32)
+- Look at the ENTIRE document including headers, footers, tables, and sidebars`,
         },
         {
           role: "user" as const,
@@ -365,14 +376,47 @@ IMPORTANT RULES:
         };
       }
 
+      function flipLastFirst(name: string): string {
+        if (!name || !name.includes(",")) return name;
+        const parts = name.split(",").map(s => s.trim());
+        if (parts.length === 2 && parts[0] && parts[1]) {
+          return `${parts[1]} ${parts[0]}`;
+        }
+        return name;
+      }
+
+      let doctorName = parsed.doctorName || "";
+      let patientName = parsed.patientName || "";
+      doctorName = flipLastFirst(doctorName);
+      patientName = flipLastFirst(patientName);
+      if (doctorName && !doctorName.toLowerCase().startsWith("dr")) {
+        doctorName = "Dr. " + doctorName;
+      }
+
+      let toothStr = "";
+      if (parsed.toothIndices) {
+        if (Array.isArray(parsed.toothIndices)) {
+          toothStr = parsed.toothIndices.map((t: any) => `#${t}`).join(", ");
+        } else {
+          toothStr = String(parsed.toothIndices);
+        }
+      }
+
+      let caseType = parsed.caseType || "";
+      if (caseType === "Crown" || caseType === "Bridge" || caseType === "Veneer" || caseType === "Inlay" || caseType === "Onlay" || caseType.toLowerCase().includes("restorative") || caseType.toLowerCase().includes("crown")) {
+        caseType = "Restorative";
+      }
+
+      console.log("AI extracted - Doctor:", doctorName, "Patient:", patientName, "Teeth:", toothStr);
+
       res.json({
         success: true,
         data: {
-          doctorName: parsed.doctorName || "",
-          patientName: parsed.patientName || "",
+          doctorName,
+          patientName,
           patientInitials: parsed.patientInitials || "",
-          caseType: parsed.caseType || "",
-          toothIndices: parsed.toothIndices || "",
+          caseType,
+          toothIndices: toothStr,
           shade: parsed.shade || "",
           material: parsed.material || "Zirconia",
           dueDate: parsed.dueDate || "",
