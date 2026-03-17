@@ -18,7 +18,7 @@ export default function ChartHistoryScreen() {
   const { patient } = useLocalSearchParams<{ patient: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { cases, invoices, role, adminUnlocked } = useApp();
+  const { cases, invoices, role, adminUnlocked, customStationLabels } = useApp();
 
   const isAdmin = role === "admin" && adminUnlocked;
 
@@ -86,7 +86,7 @@ export default function ChartHistoryScreen() {
           </View>
         ) : (
           patientCases.map((c, idx) => {
-            const stationInfo = getStationInfo(c.status);
+            const stationInfo = getStationInfo(c.status, customStationLabels);
             const linkedInvoice = c.invoiceId
               ? invoices.find((inv) => inv.id === c.invoiceId)
               : invoices.find((inv) => inv.caseIds?.includes(c.id));
@@ -170,7 +170,7 @@ export default function ChartHistoryScreen() {
 
                 <View style={styles.timelinePreview}>
                   {c.routeHistory.slice(0, 5).map((rh, ri) => {
-                    const si = getStationInfo(rh.station);
+                    const si = getStationInfo(rh.station, customStationLabels);
                     return (
                       <View key={ri} style={styles.miniTimelineItem}>
                         <View style={[styles.miniDot, { backgroundColor: si.color }]} />

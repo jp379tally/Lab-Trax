@@ -272,7 +272,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels } = useApp();
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -365,7 +365,7 @@ function TechDashboard() {
     setBatchScanning(true);
     setBatchLocationSelect(false);
     batchScannedIdsRef.current.clear();
-    Alert.alert("Cases Located", `${batchScannedCases.length} case(s) moved to ${getStationInfo(station).label}.`);
+    Alert.alert("Cases Located", `${batchScannedCases.length} case(s) moved to ${getStationInfo(station, customStationLabels).label}.`);
   }
 
   function handleSignOut() {
@@ -770,7 +770,7 @@ function TechDashboard() {
           ) : (
             <View style={styles.caseList}>
               {(activeFilter === "intake" ? intakeCases : activeFilter === "progress" ? inProgressCases : shippedCases).map((c) => {
-                const si = getStationInfo(c.status);
+                const si = getStationInfo(c.status, customStationLabels);
                 return (
                   <Pressable
                     key={c.id}
@@ -837,7 +837,7 @@ function TechDashboard() {
             ) : (
               <View style={styles.caseList}>
                 {dueTodayCases.map((c) => {
-                  const stationInfo = getStationInfo(c.status);
+                  const stationInfo = getStationInfo(c.status, customStationLabels);
                   return (
                     <Pressable
                       key={c.id}
@@ -885,7 +885,7 @@ function TechDashboard() {
 
       <View style={styles.caseList}>
         {recentCases.map((c) => {
-          const stationInfo = getStationInfo(c.status);
+          const stationInfo = getStationInfo(c.status, customStationLabels);
           const userInit = currentUser ? currentUser.split(" ").map((w: string) => w.charAt(0).toUpperCase()).join("").slice(0, 2) : "??";
           return (
             <Pressable
@@ -987,7 +987,7 @@ function TechDashboard() {
               {batchScannedCases.length} case(s) scanned
             </Text>
             {STATIONS.map(({ id: station }) => {
-              const info = getStationInfo(station);
+              const info = getStationInfo(station, customStationLabels);
               return (
                 <Pressable
                   key={station}
@@ -1418,10 +1418,11 @@ type AdminView =
   | "inventory"
   | "create-group"
   | "lab-users"
-  | "payment-processing";
+  | "payment-processing"
+  | "edit-locations";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification } = useApp();
+  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification, customStationLabels, updateStationLabel } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -1655,6 +1656,7 @@ function AdminDashboard() {
       { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
       { icon: "cube", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items tracked`, view: "inventory" as AdminView },
       { icon: "card", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Payment Processing", sub: "Process payments & refunds", view: "payment-processing" as AdminView },
+      { icon: "location", iconSet: "ion", color: "#0D9488", bg: "#CCFBF1", title: "Edit Locations", sub: `${STATIONS.length} workflow stations`, view: "edit-locations" as AdminView },
       { icon: "add-circle", iconSet: "ion", color: "#059669", bg: "#ECFDF5", title: "Create Group", sub: "Create a new user group", view: "create-group" as AdminView },
       { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Add Users", sub: `${labPortalUsers.length} lab users · Assign to groups`, view: "lab-users" as AdminView },
     ];
@@ -4082,6 +4084,60 @@ function AdminDashboard() {
     );
   }
 
+  function renderEditLocations() {
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Edit Locations")}
+
+        <View style={{ paddingHorizontal: 20, marginBottom: 12 }}>
+          <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>
+            Rename workflow stations to match your lab. Changes apply everywhere in the app.
+          </Text>
+        </View>
+
+        {STATIONS.map((station) => {
+          const currentLabel = customStationLabels[station.id] || station.label;
+          return (
+            <View key={station.id} style={{ paddingHorizontal: 20, marginBottom: 10 }}>
+              <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, padding: 14 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: station.color }} />
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    {station.id.replace(/_/g, " ")}
+                  </Text>
+                </View>
+                <TextInput
+                  style={{
+                    fontSize: 15,
+                    fontFamily: "Inter_600SemiBold",
+                    color: Colors.light.text,
+                    backgroundColor: Colors.light.surfaceSecondary,
+                    borderRadius: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                    borderWidth: 1,
+                    borderColor: Colors.light.border,
+                  }}
+                  value={currentLabel}
+                  onChangeText={(text) => updateStationLabel(station.id, text)}
+                  placeholder={station.label}
+                  placeholderTextColor={Colors.light.textTertiary}
+                />
+              </View>
+            </View>
+          );
+        })}
+      </ScrollView>
+    );
+  }
+
   function renderPaymentProcessing() {
     const paymentCards = [
       { icon: "card-outline" as const, color: "#7C3AED", bg: "#F3E8FF", title: "Process Payment", sub: "Accept and process new payments" },
@@ -4412,6 +4468,7 @@ function AdminDashboard() {
     case "shipping": return renderShipping();
     case "inventory": return renderInventory();
     case "payment-processing": return renderPaymentProcessing();
+    case "edit-locations": return renderEditLocations();
     case "create-group": return renderCreateGroupAdmin();
     case "lab-users": return renderLabUsers();
     default: return renderHub();
@@ -4419,7 +4476,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups } = useApp();
+  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -4571,14 +4628,14 @@ function ProviderDashboard() {
                 style={({ pressed }) => [provStyles.caseCard, pressed && { opacity: 0.8 }]}
                 onPress={() => router.push(`/case/${c.id}`)}
               >
-                <View style={[provStyles.statusDot, { backgroundColor: getStationInfo(c.status).color }]} />
+                <View style={[provStyles.statusDot, { backgroundColor: getStationInfo(c.status, customStationLabels).color }]} />
                 <View style={{ flex: 1 }}>
                   <Text style={provStyles.caseName}>{c.patientName}</Text>
                   <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
-                  <Text style={[provStyles.caseStatus, { color: getStationInfo(c.status).color }]}>{getStationInfo(c.status).label}</Text>
+                  <Text style={[provStyles.caseStatus, { color: getStationInfo(c.status, customStationLabels).color }]}>{getStationInfo(c.status, customStationLabels).label}</Text>
                   {c.dueDate && <Text style={provStyles.caseDue}>Due: {c.dueDate}</Text>}
                 </View>
               </Pressable>

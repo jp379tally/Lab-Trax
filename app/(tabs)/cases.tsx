@@ -22,7 +22,7 @@ import { getStationInfo, STATIONS, CaseStatus, LabCase } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, getUserGroups, updateCaseStatus } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, getUserGroups, updateCaseStatus, customStationLabels } = useApp();
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");
@@ -106,7 +106,7 @@ export default function CasesScreen() {
   const showPrice = role === "admin" && adminUnlocked;
 
   function renderCaseItem({ item }: { item: LabCase }) {
-    const stationInfo = getStationInfo(item.status);
+    const stationInfo = getStationInfo(item.status, customStationLabels);
     const patientCaseCount = cases.filter(
       (c) => (c.patientName || "").toLowerCase() === (item.patientName || "").toLowerCase()
     ).length;
@@ -200,7 +200,7 @@ export default function CasesScreen() {
     { id: "ALL", label: "All" },
     ...STATIONS.map((s) => ({
       id: s.id,
-      label: s.label,
+      label: customStationLabels[s.id] || s.label,
     })),
   ];
 

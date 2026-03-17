@@ -114,6 +114,8 @@ interface AppContextValue {
   respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => void;
   addConversation: (conv: Conversation) => void;
   addNotification: (notif: Omit<Notification, "id" | "read" | "timestamp">) => void;
+  customStationLabels: Record<string, string>;
+  updateStationLabel: (stationId: CaseStatus, label: string) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -132,6 +134,7 @@ const GROUPS_KEY = "@drivesync_groups";
 const GROUP_INVITATIONS_KEY = "@drivesync_group_invitations";
 const GROUP_JOIN_REQUESTS_KEY = "@drivesync_group_join_requests";
 const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
+const STATION_LABELS_KEY = "@drivesync_station_labels";
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRoleState] = useState<UserRole>("user");
@@ -149,6 +152,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [groupInvitations, setGroupInvitations] = useState<GroupInvitation[]>([]);
   const [groupJoinRequests, setGroupJoinRequests] = useState<GroupJoinRequest[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>(sampleInventory);
+  const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -245,6 +249,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       if (savedGroupInvitations) {
         setGroupInvitations(JSON.parse(savedGroupInvitations));
+      }
+
+      const savedStationLabels = await AsyncStorage.getItem(STATION_LABELS_KEY);
+      if (savedStationLabels) {
+        setCustomStationLabels(JSON.parse(savedStationLabels));
       }
 
       const savedGroupJoinRequests = await AsyncStorage.getItem(GROUP_JOIN_REQUESTS_KEY);
@@ -422,7 +431,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   function updateCaseStatus(caseId: string, newStatus: CaseStatus, user?: string) {
     const now = Date.now();
-    const stationLabel = getStationInfo(newStatus).label;
+    const stationLabel = getStationInfo(newStatus, customStationLabels).label;
     const stationEntry: ActivityEntry = {
       id: generateId(),
       type: "station_change",
@@ -1239,6 +1248,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setInventory(prev => prev.filter(item => item.id !== id));
   }
 
+  function updateStationLabel(stationId: CaseStatus, label: string) {
+    setCustomStationLabels(prev => {
+      const updated = { ...prev, [stationId]: label };
+      AsyncStorage.setItem(STATION_LABELS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   function assignBarcodeToCase(caseId: string, barcode: string) {
     setCases((prev) => {
       const updated = prev.map((c) => {
@@ -1275,7 +1292,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   function batchLocateCases(caseIds: string[], newStatus: CaseStatus) {
     const now = Date.now();
-    const stationLabel = getStationInfo(newStatus).label;
+    const stationLabel = getStationInfo(newStatus, customStationLabels).label;
     setCases((prev) => {
       const updated = prev.map((c) => {
         if (caseIds.includes(c.id)) {
@@ -1439,8 +1456,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       respondToGroupJoinRequest,
       addConversation,
       addNotification,
+      customStationLabels,
+      updateStationLabel,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, groupJoinRequests, inventory],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, groupJoinRequests, inventory, customStationLabels],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

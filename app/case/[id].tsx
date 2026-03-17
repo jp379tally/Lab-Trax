@@ -29,7 +29,7 @@ import { logAudit } from "@/lib/audit";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels } = useApp();
   const { currentUser, userType } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
@@ -97,7 +97,7 @@ export default function CaseDetailScreen() {
     );
   }
 
-  const stationInfo = getStationInfo(caseItem.status);
+  const stationInfo = getStationInfo(caseItem.status, customStationLabels);
 
   const caseInvoice: Invoice = (() => {
     if (caseItem.invoiceId) {
@@ -148,7 +148,7 @@ export default function CaseDetailScreen() {
     }
     Alert.alert(
       "Routed",
-      `Case ${caseItem!.caseNumber} moved to ${getStationInfo(newStatus).label}`,
+      `Case ${caseItem!.caseNumber} moved to ${getStationInfo(newStatus, customStationLabels).label}`,
     );
   }
 
@@ -842,7 +842,7 @@ export default function CaseDetailScreen() {
                 id: String(rh.timestamp),
                 type: "station_change" as const,
                 timestamp: rh.timestamp,
-                description: `Case moved to ${getStationInfo(rh.station).label}`,
+                description: `Case moved to ${getStationInfo(rh.station, customStationLabels).label}`,
                 station: rh.station,
               }))
           ).map((entry, idx, arr) => {
@@ -851,7 +851,7 @@ export default function CaseDetailScreen() {
             const isStation = entry.type === "station_change" || entry.type === "created" || entry.type === "scan";
             const isNote = entry.type === "note";
             const isPhoto = entry.type === "photo";
-            const stationInfo = entry.station ? getStationInfo(entry.station) : null;
+            const stationInfo = entry.station ? getStationInfo(entry.station, customStationLabels) : null;
 
             let dotColor = Colors.light.textTertiary;
 
@@ -1088,7 +1088,7 @@ export default function CaseDetailScreen() {
           {userType !== "provider" && (
           <Pressable
             onPress={() => {
-              const stationInfo = getStationInfo(caseItem.status);
+              const stationInfo = getStationInfo(caseItem.status, customStationLabels);
               const msg = `Hello Dr. ${caseItem.doctorName}, this is a courtesy text to inform you that patient ${caseItem.patientName} has a case that was delayed in production. The case is currently in ${stationInfo.label}. If the patient is scheduled and you would like a more specific updated estimated delivery date and time please let us know.`;
               setCourtesyMessage(msg);
               setShowCourtesyModal(true);
@@ -2390,7 +2390,7 @@ export default function CaseDetailScreen() {
                   </View>
                   <View style={labSlipStyles.slipCol}>
                     <Text style={labSlipStyles.slipLabel}>Current Station</Text>
-                    <Text style={labSlipStyles.slipValue}>{getStationInfo(caseItem.status).label}</Text>
+                    <Text style={labSlipStyles.slipValue}>{getStationInfo(caseItem.status, customStationLabels).label}</Text>
                   </View>
                 </View>
 

@@ -184,8 +184,12 @@ export interface GroupJoinRequest {
   createdAt: number;
 }
 
-export function getStationInfo(status: CaseStatus) {
-  return STATIONS.find((s) => s.id === status) || STATIONS[0];
+export function getStationInfo(status: CaseStatus, customLabels?: Record<string, string>) {
+  const station = STATIONS.find((s) => s.id === status) || STATIONS[0];
+  if (customLabels && customLabels[station.id]) {
+    return { ...station, label: customLabels[station.id] };
+  }
+  return station;
 }
 
 export function generateId(): string {
