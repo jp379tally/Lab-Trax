@@ -754,7 +754,6 @@ export default function ScanScreen() {
 
   function handleManualEntry() {
     setCapturedUri(null);
-    setPhase("scanning");
     setCasePhotos([]);
     setActivityEntries([{
       id: generateId(),
@@ -763,6 +762,7 @@ export default function ScanScreen() {
       description: "Manual entry started",
       user: userInitials,
     }]);
+    setPhase("form");
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
