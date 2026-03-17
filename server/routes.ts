@@ -268,8 +268,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/analyze-prescription", async (req, res) => {
     try {
+      console.log("Prescription analysis request received, body keys:", Object.keys(req.body || {}), "content-type:", req.headers["content-type"]);
       const { imageBase64 } = req.body;
       if (!imageBase64) {
+        console.log("No image in body, body size:", JSON.stringify(req.body || {}).length);
         return res.status(400).json({ error: "No image provided" });
       }
 

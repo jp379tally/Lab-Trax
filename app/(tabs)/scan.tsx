@@ -598,81 +598,91 @@ export default function ScanScreen() {
       });
     } else {
       const FileSystem = require("expo-file-system");
-      const info = await FileSystem.getInfoAsync(uri);
-      const fileSize = info.size || 0;
-      if (fileSize > 500000) {
-        try {
-          const ImageManipulator = require("expo-image-manipulator");
-          const manipulated = await ImageManipulator.manipulateAsync(
-            uri,
-            [{ resize: { width: 1024 } }],
-            { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
-          );
-          const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          return `data:image/jpeg;base64,${fileBase64}`;
-        } catch {
-          const fileBase64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          return `data:image/jpeg;base64,${fileBase64}`;
-        }
+      try {
+        const ImageManipulator = require("expo-image-manipulator");
+        const manipulated = await ImageManipulator.manipulateAsync(
+          uri,
+          [{ resize: { width: 800 } }],
+          { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        console.log("AI compress: resized to 800px, uri:", manipulated.uri);
+        const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        console.log("AI compress: base64 length:", fileBase64.length);
+        return `data:image/jpeg;base64,${fileBase64}`;
+      } catch (compressErr: any) {
+        console.log("AI compress fallback:", compressErr?.message);
+        const fileBase64 = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        return `data:image/jpeg;base64,${fileBase64}`;
       }
-      const fileBase64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      return `data:image/jpeg;base64,${fileBase64}`;
     }
   }
 
   async function sendToAI(base64Data: string): Promise<{ success: boolean; data?: any }> {
     const { getApiUrl } = await import("@/lib/query-client");
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90000);
     const jsonBody = JSON.stringify({ imageBase64: base64Data });
-    console.log("AI: Sending request, body size:", jsonBody.length);
+    console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
 
     const urls: string[] = [];
     try {
       const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
       urls.push(primaryUrl);
-    } catch {}
+    } catch (e: any) {
+      console.log("AI: Primary URL construction failed:", e?.message);
+    }
     const host = process.env.EXPO_PUBLIC_DOMAIN;
-    if (host && host.includes(":")) {
+    if (host) {
       try {
-        const fallbackUrl = new URL("/api/analyze-prescription", `https://${host}`).toString();
+        const cleanHost = host.includes(":") ? host : host;
+        const fallbackUrl = new URL("/api/analyze-prescription", `https://${cleanHost}`).toString();
         if (!urls.includes(fallbackUrl)) urls.push(fallbackUrl);
-      } catch {}
+      } catch (e: any) {
+        console.log("AI: Fallback URL construction failed:", e?.message);
+      }
+    }
+
+    if (urls.length === 0) {
+      console.log("AI: No valid URLs constructed. EXPO_PUBLIC_DOMAIN:", host);
+      return { success: false };
     }
 
     let lastErr: any = null;
     for (const url of urls) {
       try {
         console.log("AI: Trying URL:", url);
-        const res = await globalThis.fetch(url, {
+        const fetchPromise = globalThis.fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
           body: jsonBody,
-          signal: controller.signal,
         });
-        clearTimeout(timeoutId);
+
+        const timeoutPromise = new Promise<Response>((_, reject) => {
+          setTimeout(() => reject(new Error("Request timeout after 90s")), 90000);
+        });
+
+        const res = await Promise.race([fetchPromise, timeoutPromise]);
         console.log("AI: Response status:", res.status);
         if (!res.ok) {
           const errText = await res.text().catch(() => "");
-          console.log("AI response error:", res.status, errText);
-          return { success: false };
+          console.log("AI response error:", res.status, errText.substring(0, 200));
+          lastErr = new Error(`HTTP ${res.status}: ${errText.substring(0, 100)}`);
+          continue;
         }
         const result = await res.json();
         console.log("AI: Parsed result success:", result?.success);
         return result;
       } catch (err: any) {
-        console.log("AI: URL failed:", url, err?.message || err);
+        console.log("AI: URL failed:", url, err?.message || String(err));
         lastErr = err;
       }
     }
-    clearTimeout(timeoutId);
-    console.log("AI: All URLs failed");
+    console.log("AI: All URLs failed. Last error:", lastErr?.message || String(lastErr));
     return { success: false };
   }
 
@@ -694,12 +704,27 @@ export default function ScanScreen() {
     let aiSuccess = false;
     if (analyzeUri) {
       setIsAnalyzing(true);
+      let failReason = "";
       try {
-        const base64Data = await compressImageForAI(analyzeUri);
-        console.log("AI: Sending image, base64 length:", base64Data.length);
+        let base64Data: string;
+        try {
+          base64Data = await compressImageForAI(analyzeUri);
+          console.log("AI: Compressed image, base64 length:", base64Data.length);
+        } catch (compErr: any) {
+          failReason = "Image compression failed";
+          console.log("AI: Compression error:", compErr?.message || compErr);
+          throw compErr;
+        }
 
-        const result = await sendToAI(base64Data);
-        console.log("AI: Response received, success:", result.success);
+        let result: { success: boolean; data?: any };
+        try {
+          result = await sendToAI(base64Data);
+          console.log("AI: Response received, success:", result.success);
+        } catch (sendErr: any) {
+          failReason = "Network request failed";
+          console.log("AI: Send error:", sendErr?.message || sendErr);
+          throw sendErr;
+        }
 
         if (result.success && result.data) {
           const d = result.data;
@@ -722,9 +747,12 @@ export default function ScanScreen() {
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
+        } else {
+          failReason = "AI could not parse the prescription";
         }
       } catch (err: any) {
-        console.log("AI analysis failed:", err?.message || err);
+        console.log("AI analysis failed:", failReason, err?.message || err);
+        if (!failReason) failReason = err?.message || "Unknown error";
       } finally {
         setIsAnalyzing(false);
       }
@@ -732,8 +760,8 @@ export default function ScanScreen() {
       if (!aiSuccess) {
         Alert.alert(
           "AI Analysis",
-          "Could not read the prescription automatically. Please fill in the fields manually.",
-          [{ text: "OK" }]
+          "Could not read the prescription automatically. Please fill in the fields manually." +
+          (failReason ? `\n\n(${failReason})` : "")
         );
       }
     }
