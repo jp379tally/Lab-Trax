@@ -2483,6 +2483,15 @@ export default function CaseDetailScreen() {
               facing="back"
               barcodeScannerSettings={{ barcodeTypes: ["code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "qr", "pdf417", "itf14", "codabar"] }}
               onBarcodeScanned={barcodeScanned ? undefined : (result) => {
+                if (Platform.OS !== "web" && result.bounds) {
+                  const bx = result.bounds.origin?.x ?? 0;
+                  const by = result.bounds.origin?.y ?? 0;
+                  const bw = result.bounds.size?.width ?? 0;
+                  const bh = result.bounds.size?.height ?? 0;
+                  const cx = bx + bw / 2;
+                  const cy = by + bh / 2;
+                  if (cx < 0.15 || cx > 0.85 || cy < 0.25 || cy > 0.75) return;
+                }
                 setBarcodeScanned(true);
                 const scannedBarcode = result.data;
                 const existingCase = findCaseByBarcode(scannedBarcode);

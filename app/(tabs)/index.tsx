@@ -323,15 +323,38 @@ function TechDashboard() {
     setTimeout(() => setShippingModalVisible(true), 300);
   }
 
-  function handleBatchBarcodeScan({ data }: { data: string }) {
+  const batchScannedIdsRef = useRef<Set<string>>(new Set());
+
+  function handleBatchBarcodeScan(result: { data: string; cornerPoints?: any; bounds?: any }) {
+    const data = result.data;
     if (data === lastBatchScanRef.current) return;
+
+    if (Platform.OS !== "web" && result.bounds) {
+      const bx = result.bounds.origin?.x ?? 0;
+      const by = result.bounds.origin?.y ?? 0;
+      const bw = result.bounds.size?.width ?? 0;
+      const bh = result.bounds.size?.height ?? 0;
+      const centerX = bx + bw / 2;
+      const centerY = by + bh / 2;
+      const scanMinX = 0.15;
+      const scanMaxX = 0.85;
+      const scanMinY = 0.25;
+      const scanMaxY = 0.75;
+      if (centerX < scanMinX || centerX > scanMaxX || centerY < scanMinY || centerY > scanMaxY) {
+        return;
+      }
+    }
+
     lastBatchScanRef.current = data;
-    setTimeout(() => { lastBatchScanRef.current = ""; }, 2000);
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setTimeout(() => { lastBatchScanRef.current = ""; }, 3000);
+
     const found = findCaseByBarcode(data) || cases.find(c => c.id === data || c.caseNumber === data);
-    if (found && !batchScannedCases.find(bc => bc.id === found.id)) {
+    if (found && !batchScannedIdsRef.current.has(found.id)) {
+      batchScannedIdsRef.current.add(found.id);
       setBatchScannedCases(prev => [...prev, { id: found.id, caseNumber: found.caseNumber, patientName: found.patientName }]);
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } else if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
   }
 
@@ -341,6 +364,7 @@ function TechDashboard() {
     setBatchScannedCases([]);
     setBatchScanning(true);
     setBatchLocationSelect(false);
+    batchScannedIdsRef.current.clear();
     Alert.alert("Cases Located", `${batchScannedCases.length} case(s) moved to ${getStationInfo(station).label}.`);
   }
 
@@ -942,14 +966,14 @@ function TechDashboard() {
       visible={batchLocateOpen}
       animationType="slide"
       statusBarTranslucent
-      onRequestClose={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); }}
+      onRequestClose={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); batchScannedIdsRef.current.clear(); }}
     >
       <View style={{ flex: 1, backgroundColor: batchLocationSelect ? Colors.light.background : "#000" }}>
         <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: batchLocationSelect ? Colors.light.surface : "rgba(0,0,0,0.8)" }}>
           <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: batchLocationSelect ? Colors.light.text : "#FFF" }}>
             {batchLocationSelect ? "Select Location" : "Batch Scan"}
           </Text>
-          <Pressable onPress={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); setBatchManualInput(""); lastBatchScanRef.current = ""; }}>
+          <Pressable onPress={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); setBatchManualInput(""); lastBatchScanRef.current = ""; batchScannedIdsRef.current.clear(); }}>
             <Ionicons name="close" size={28} color={batchLocationSelect ? Colors.light.text : "#FFF"} />
           </Pressable>
         </View>
