@@ -396,9 +396,10 @@ export default function LoginScreen() {
 
       if (selectedRole === "admin") {
         const now = Date.now();
+        const groupDisplayName = isLab ? labName.trim() : (practiceName.trim() || signUpUsername.trim());
         const newGroup = {
           id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-          name: signUpUsername.trim(),
+          name: groupDisplayName,
           type: isLab ? "lab" : "provider",
           address: resolvedAddress,
           members: [{
@@ -416,7 +417,7 @@ export default function LoginScreen() {
           await AsyncStorage.setItem("@drivesync_groups", JSON.stringify(existingGroups));
         } catch {}
         await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
-          name: signUpUsername.trim(),
+          name: groupDisplayName,
           type: isLab ? "lab" : "provider",
           address: resolvedAddress,
           username: signUpUsername.trim(),

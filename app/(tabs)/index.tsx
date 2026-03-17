@@ -5042,8 +5042,8 @@ function ProviderDashboard() {
         statusBarTranslucent
         onRequestClose={() => setShowAddLab(false)}
       >
-        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" }}>
-          <View style={{ backgroundColor: "#FFF", borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: "80%", paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }}>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-start" }}>
+          <View style={{ backgroundColor: "#FFF", borderBottomLeftRadius: 24, borderBottomRightRadius: 24, maxHeight: "70%", paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingBottom: 16 }}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 }}>
               <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Add a Lab</Text>
               <Pressable onPress={() => setShowAddLab(false)} hitSlop={12}>
@@ -5075,7 +5075,7 @@ function ProviderDashboard() {
                 const available = labGroups.filter(g => !myLabIds.has(g.id));
                 if (!labSearchQuery.trim()) return available;
                 const q = labSearchQuery.trim().toLowerCase();
-                return available.filter(g => g.name.toLowerCase().includes(q));
+                return available.filter(g => g.name.toLowerCase().includes(q) || (g.address && g.address.toLowerCase().includes(q)));
               })()}
               keyExtractor={item => item.id}
               contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 16 }}
