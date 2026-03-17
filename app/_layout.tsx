@@ -35,6 +35,10 @@ function RootLayoutNav() {
         name="settings"
         options={{ headerShown: false, presentation: "card" }}
       />
+      <Stack.Screen
+        name="chat"
+        options={{ headerShown: false }}
+      />
     </Stack>
   );
 }

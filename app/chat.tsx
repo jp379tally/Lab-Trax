@@ -7,9 +7,9 @@ import {
   TextInput,
   Pressable,
   Platform,
-  KeyboardAvoidingView,
   ActivityIndicator,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -115,11 +115,7 @@ export default function ChatScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      keyboardVerticalOffset={0}
-    >
+    <View style={styles.container}>
       <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -133,51 +129,57 @@ export default function ChatScreen() {
         <View style={{ width: 24 }} />
       </View>
 
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(item) => item.id}
-        renderItem={renderMessage}
-        inverted
-        contentContainerStyle={styles.messagesList}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="interactive"
-      />
-
-      {sending && (
-        <View style={styles.typingIndicator}>
-          <ActivityIndicator size="small" color={Colors.light.tint} />
-          <Text style={styles.typingText}>AI is thinking...</Text>
-        </View>
-      )}
-
-      <View style={[styles.inputBar, { paddingBottom: Platform.OS === "web" ? 34 + 8 : Math.max(insets.bottom, 8) + 8 }]}>
-        <TextInput
-          style={styles.textInput}
-          value={input}
-          onChangeText={setInput}
-          placeholder="Ask about a case..."
-          placeholderTextColor={Colors.light.textTertiary}
-          multiline
-          maxLength={500}
-          returnKeyType="send"
-          onSubmitEditing={handleSend}
-          blurOnSubmit={false}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior="padding"
+        keyboardVerticalOffset={0}
+      >
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          keyExtractor={(item) => item.id}
+          renderItem={renderMessage}
+          inverted
+          contentContainerStyle={styles.messagesList}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
         />
-        <Pressable
-          onPress={handleSend}
-          disabled={!input.trim() || sending}
-          style={({ pressed }) => [
-            styles.sendBtn,
-            (!input.trim() || sending) && styles.sendBtnDisabled,
-            pressed && { opacity: 0.7 },
-          ]}
-        >
-          <Ionicons name="send" size={18} color={!input.trim() || sending ? Colors.light.textTertiary : "#FFF"} />
-        </Pressable>
-      </View>
-    </KeyboardAvoidingView>
+
+        {sending && (
+          <View style={styles.typingIndicator}>
+            <ActivityIndicator size="small" color={Colors.light.tint} />
+            <Text style={styles.typingText}>AI is thinking...</Text>
+          </View>
+        )}
+
+        <View style={[styles.inputBar, { paddingBottom: Platform.OS === "web" ? 34 + 8 : Math.max(insets.bottom, 8) + 8 }]}>
+          <TextInput
+            style={styles.textInput}
+            value={input}
+            onChangeText={setInput}
+            placeholder="Ask about a case..."
+            placeholderTextColor={Colors.light.textTertiary}
+            multiline
+            maxLength={500}
+            returnKeyType="send"
+            onSubmitEditing={handleSend}
+            blurOnSubmit={false}
+          />
+          <Pressable
+            onPress={handleSend}
+            disabled={!input.trim() || sending}
+            style={({ pressed }) => [
+              styles.sendBtn,
+              (!input.trim() || sending) && styles.sendBtnDisabled,
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Ionicons name="send" size={18} color={!input.trim() || sending ? Colors.light.textTertiary : "#FFF"} />
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
