@@ -9,6 +9,8 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   ScrollView,
+  Keyboard,
+  TouchableWithoutFeedback,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -482,7 +484,9 @@ export default function LoginScreen() {
               },
             ]}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
+            onScrollBeginDrag={Keyboard.dismiss}
           >
             <Pressable
               onPress={() => {
@@ -1977,14 +1981,19 @@ export default function LoginScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.flex}
       >
-        <View
-          style={[
+        <ScrollView
+          contentContainerStyle={[
             styles.content,
             {
               paddingTop: Platform.OS === "web" ? 67 + 40 : insets.top + 40,
               paddingBottom: Platform.OS === "web" ? 34 + 20 : insets.bottom + 20,
+              flexGrow: 1,
             },
           ]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+          onScrollBeginDrag={Keyboard.dismiss}
         >
           <View style={styles.logoSection}>
             <View style={styles.logoContainer}>
@@ -2106,7 +2115,7 @@ export default function LoginScreen() {
               <Ionicons name="shield-checkmark" size={14} color="rgba(255,255,255,0.25)" />
             </View>
           </View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </View>
   );
