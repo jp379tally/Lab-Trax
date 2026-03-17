@@ -74,7 +74,7 @@ interface LabelData {
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { addCase, cases, clients, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode } = useApp();
+  const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode } = useApp();
   const { currentUser } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const showPrice = role === "admin" && adminUnlocked;
@@ -124,6 +124,10 @@ export default function ScanScreen() {
   const [newPatientLast, setNewPatientLast] = useState("");
   const [addingNewDoctor, setAddingNewDoctor] = useState(false);
   const [newDoctorInput, setNewDoctorInput] = useState("");
+  const [newDoctorPractice, setNewDoctorPractice] = useState("");
+  const [newDoctorAddress, setNewDoctorAddress] = useState("");
+  const [newDoctorPhone, setNewDoctorPhone] = useState("");
+  const [newDoctorEmail, setNewDoctorEmail] = useState("");
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [barcodeScanned, setBarcodeScanned] = useState(false);
   const [barcodeScanForCase, setBarcodeScanForCase] = useState<string | null>(null);
@@ -1305,6 +1309,10 @@ export default function ScanScreen() {
                       onPress={() => {
                         setAddingNewDoctor(true);
                         setNewDoctorInput("");
+                        setNewDoctorPractice("");
+                        setNewDoctorAddress("");
+                        setNewDoctorPhone("");
+                        setNewDoctorEmail("");
                         if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       }}
                       style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
@@ -1353,7 +1361,7 @@ export default function ScanScreen() {
                     </ScrollView>
                   </>
                 ) : (
-                  <View style={styles.addNewPatientPanel}>
+                  <ScrollView style={styles.addNewPatientPanel} nestedScrollEnabled keyboardShouldPersistTaps="handled">
                     <Text style={styles.addNewPatientTitle}>New Doctor</Text>
                     <View style={styles.dropdownSearchWrap}>
                       <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
@@ -1361,14 +1369,67 @@ export default function ScanScreen() {
                         style={styles.dropdownSearchInput}
                         value={newDoctorInput}
                         onChangeText={setNewDoctorInput}
-                        placeholder="Enter doctor name..."
+                        placeholder="Doctor name..."
                         placeholderTextColor={Colors.light.textTertiary}
+                        autoCapitalize="words"
                         autoFocus
+                      />
+                    </View>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="business-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorPractice}
+                        onChangeText={setNewDoctorPractice}
+                        placeholder="Practice name..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoCapitalize="words"
+                      />
+                    </View>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="location-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorAddress}
+                        onChangeText={setNewDoctorAddress}
+                        placeholder="Address..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoCapitalize="words"
+                      />
+                    </View>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="call-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorPhone}
+                        onChangeText={setNewDoctorPhone}
+                        placeholder="Phone number..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        keyboardType="phone-pad"
+                      />
+                    </View>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="mail-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorEmail}
+                        onChangeText={setNewDoctorEmail}
+                        placeholder="Email address..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        keyboardType="email-address"
+                        autoCapitalize="none"
                       />
                     </View>
                     <View style={styles.addNewPatientActions}>
                       <Pressable
-                        onPress={() => { setAddingNewDoctor(false); setNewDoctorInput(""); }}
+                        onPress={() => {
+                          setAddingNewDoctor(false);
+                          setNewDoctorInput("");
+                          setNewDoctorPractice("");
+                          setNewDoctorAddress("");
+                          setNewDoctorPhone("");
+                          setNewDoctorEmail("");
+                        }}
                         style={({ pressed }) => [styles.addNewPatientCancelBtn, pressed && { opacity: 0.7 }]}
                       >
                         <Text style={styles.addNewPatientCancelText}>Cancel</Text>
@@ -1376,10 +1437,24 @@ export default function ScanScreen() {
                       <Pressable
                         onPress={() => {
                           if (!newDoctorInput.trim()) return;
-                          setDoctorName(newDoctorInput.trim());
+                          const drName = newDoctorInput.trim().startsWith("Dr.") ? newDoctorInput.trim() : `Dr. ${newDoctorInput.trim()}`;
+                          setDoctorName(drName);
+                          addClient({
+                            practiceName: newDoctorPractice.trim() || drName,
+                            leadDoctor: drName,
+                            phone: newDoctorPhone.trim(),
+                            email: newDoctorEmail.trim(),
+                            address: newDoctorAddress.trim(),
+                            tier: "Standard",
+                            discountRate: 0,
+                          });
                           setDoctorDropdownOpen(false);
                           setAddingNewDoctor(false);
                           setNewDoctorInput("");
+                          setNewDoctorPractice("");
+                          setNewDoctorAddress("");
+                          setNewDoctorPhone("");
+                          setNewDoctorEmail("");
                           if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
                         style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
@@ -1387,7 +1462,7 @@ export default function ScanScreen() {
                         <Text style={styles.addNewPatientConfirmText}>Add</Text>
                       </Pressable>
                     </View>
-                  </View>
+                  </ScrollView>
                 )}
               </View>
             )}
