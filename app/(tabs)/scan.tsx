@@ -11,6 +11,7 @@ import {
   Modal,
   Animated as RNAnimated,
   ActivityIndicator,
+  Dimensions,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -333,12 +334,12 @@ export default function ScanScreen() {
         RNAnimated.sequence([
           RNAnimated.timing(scanAnim, {
             toValue: 1,
-            duration: 1500,
+            duration: 2500,
             useNativeDriver: true,
           }),
           RNAnimated.timing(scanAnim, {
             toValue: 0,
-            duration: 1500,
+            duration: 2500,
             useNativeDriver: true,
           }),
         ]),
@@ -623,29 +624,53 @@ export default function ScanScreen() {
   }
 
   async function sendToAI(base64Data: string): Promise<{ success: boolean; data?: any }> {
-    const { resilientFetch } = await import("@/lib/query-client");
+    const { getApiUrl } = await import("@/lib/query-client");
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 90000);
+    const jsonBody = JSON.stringify({ imageBase64: base64Data });
+    console.log("AI: Sending request, body size:", jsonBody.length);
 
+    const urls: string[] = [];
     try {
-      const res = await resilientFetch("/api/analyze-prescription", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: base64Data }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        console.log("AI response error:", res.status, errText);
-        return { success: false };
-      }
-      return await res.json();
-    } catch (err: any) {
-      clearTimeout(timeoutId);
-      console.log("AI fetch error:", err?.message || err);
-      return { success: false };
+      const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
+      urls.push(primaryUrl);
+    } catch {}
+    const host = process.env.EXPO_PUBLIC_DOMAIN;
+    if (host && host.includes(":")) {
+      try {
+        const fallbackUrl = new URL("/api/analyze-prescription", `https://${host}`).toString();
+        if (!urls.includes(fallbackUrl)) urls.push(fallbackUrl);
+      } catch {}
     }
+
+    let lastErr: any = null;
+    for (const url of urls) {
+      try {
+        console.log("AI: Trying URL:", url);
+        const res = await globalThis.fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonBody,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        console.log("AI: Response status:", res.status);
+        if (!res.ok) {
+          const errText = await res.text().catch(() => "");
+          console.log("AI response error:", res.status, errText);
+          return { success: false };
+        }
+        const result = await res.json();
+        console.log("AI: Parsed result success:", result?.success);
+        return result;
+      } catch (err: any) {
+        console.log("AI: URL failed:", url, err?.message || err);
+        lastErr = err;
+      }
+    }
+    clearTimeout(timeoutId);
+    console.log("AI: All URLs failed");
+    return { success: false };
   }
 
   async function handleFinishedReview() {
@@ -1116,9 +1141,10 @@ export default function ScanScreen() {
     scanAnim.setValue(0);
   }
 
+  const screenHeight = Dimensions.get("window").height;
   const scanTranslateY = scanAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, 280],
+    outputRange: [0, screenHeight],
   });
 
   if (phase === "form") {
