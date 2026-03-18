@@ -141,6 +141,7 @@ export default function ScanScreen() {
   const [barcodeCameraLayout, setBarcodeCameraLayout] = useState({ width: 0, height: 0 });
   const [shadeOpen, setShadeOpen] = useState(false);
   const [isSavingPdf, setIsSavingPdf] = useState(false);
+  const [selectedPrinter, setSelectedPrinter] = useState<{ name: string; url: string } | null>(null);
 
   const SHADE_OPTIONS = ["A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
   const [customShadePhotos, setCustomShadePhotos] = useState<string[]>([]);
@@ -1078,6 +1079,24 @@ export default function ScanScreen() {
     }
   }
 
+  async function handleSelectPrinter() {
+    if (Platform.OS === "ios") {
+      try {
+        const printer = await Print.selectPrinterAsync();
+        if (printer) {
+          setSelectedPrinter({ name: printer.name, url: printer.url });
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      } catch (e: any) {
+        if (!e?.message?.includes("cancelled")) {
+          Alert.alert("Printer Error", "Could not select printer. Please try again.");
+        }
+      }
+    } else {
+      Alert.alert("Printer Selection", "Printer selection is handled in the print dialog on this platform.");
+    }
+  }
+
   async function printCaseLabel(label: LabelData) {
     const toothRows = label.toothDiagram && label.toothDiagram.length > 0 ? `
       <div style="margin-top:8px;text-align:center;">
@@ -1135,7 +1154,11 @@ export default function ScanScreen() {
     `;
 
     try {
-      await Print.printAsync({ html });
+      const printOptions: Print.PrintOptions = { html };
+      if (selectedPrinter?.url && Platform.OS === "ios") {
+        (printOptions as any).printerUrl = selectedPrinter.url;
+      }
+      await Print.printAsync(printOptions);
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
       const msg = e?.message || "";
@@ -3182,6 +3205,29 @@ export default function ScanScreen() {
               </ScrollView>
             )}
 
+            {Platform.OS === "ios" && (
+              <Pressable
+                style={({ pressed }) => ({
+                  flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                  paddingVertical: 10, paddingHorizontal: 16, marginHorizontal: 20, marginBottom: 8,
+                  borderRadius: 12, borderWidth: 1,
+                  borderColor: selectedPrinter ? "rgba(34,197,94,0.4)" : "rgba(255,255,255,0.2)",
+                  backgroundColor: selectedPrinter ? "rgba(34,197,94,0.1)" : "rgba(255,255,255,0.06)",
+                  opacity: pressed ? 0.7 : 1,
+                })}
+                onPress={handleSelectPrinter}
+              >
+                <Ionicons name="wifi" size={18} color={selectedPrinter ? "#22C55E" : "#9CA3AF"} />
+                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 13, color: selectedPrinter ? "#22C55E" : "#9CA3AF" }}>
+                  {selectedPrinter ? selectedPrinter.name : "Select Network Printer"}
+                </Text>
+                {selectedPrinter && (
+                  <Pressable onPress={() => setSelectedPrinter(null)} hitSlop={8}>
+                    <Ionicons name="close-circle" size={16} color="rgba(255,255,255,0.4)" />
+                  </Pressable>
+                )}
+              </Pressable>
+            )}
             <View style={labelStyles.actions}>
               <Pressable
                 style={({ pressed }) => [labelStyles.printBtn, pressed && { opacity: 0.8 }]}
