@@ -20,6 +20,9 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
+import * as FileSystem from "expo-file-system";
+import { Share } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
@@ -137,6 +140,7 @@ export default function ScanScreen() {
   const [barcodeAttachScanned, setBarcodeAttachScanned] = useState(false);
   const [barcodeCameraLayout, setBarcodeCameraLayout] = useState({ width: 0, height: 0 });
   const [shadeOpen, setShadeOpen] = useState(false);
+  const [isSavingPdf, setIsSavingPdf] = useState(false);
 
   const SHADE_OPTIONS = ["A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
   const [customShadePhotos, setCustomShadePhotos] = useState<string[]>([]);
@@ -411,8 +415,12 @@ export default function ScanScreen() {
       });
       if (resp.ok) {
         const data = await resp.json();
-        if (data.documentDetected && data.croppedImageBase64) {
-          console.log("Document detected and cropped, type:", data.documentType);
+        if (data.croppedImageBase64) {
+          if (data.documentDetected) {
+            console.log("Document detected and cropped, type:", data.documentType);
+          } else {
+            console.log("No document detected, using EXIF-corrected image");
+          }
           return data.croppedImageBase64;
         }
       }
@@ -858,6 +866,72 @@ export default function ScanScreen() {
     }
     console.log("AI: All URLs failed. Last error:", lastErr?.message || String(lastErr));
     return { success: false };
+  }
+
+  async function handleSavePDF() {
+    if (casePhotos.length === 0) {
+      Alert.alert("No Photos", "Take at least one photo before saving as PDF.");
+      return;
+    }
+    setIsSavingPdf(true);
+    try {
+      const normalizedImages: string[] = [];
+      for (const photo of casePhotos) {
+        if (photo.startsWith("data:")) {
+          normalizedImages.push(photo);
+        } else if (Platform.OS !== "web") {
+          try {
+            const FSystem = await import("expo-file-system");
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
+            normalizedImages.push(`data:image/jpeg;base64,${b64}`);
+          } catch {
+            console.log("Could not read file URI for PDF:", photo);
+          }
+        }
+      }
+      if (normalizedImages.length === 0) {
+        Alert.alert("Error", "Could not process photos for PDF.");
+        setIsSavingPdf(false);
+        return;
+      }
+      const apiUrl = new URL("/api/document-to-pdf", getApiUrl()).toString();
+      const resp = await globalThis.fetch(apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ images: normalizedImages }),
+      });
+      if (!resp.ok) throw new Error("PDF generation failed");
+      const data = await resp.json();
+      if (!data.success || !data.pdfBase64) throw new Error("No PDF returned");
+
+      const b64 = data.pdfBase64.replace(/^data:application\/pdf;base64,/, "");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const fileName = `Scan_${timestamp}.pdf`;
+
+      if (Platform.OS !== "web") {
+        const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, { mimeType: "application/pdf", UTI: "com.adobe.pdf" });
+        } else {
+          Alert.alert("PDF Saved", `PDF saved to: ${fileUri}`);
+        }
+      } else {
+        const link = document.createElement("a");
+        link.href = data.pdfBase64;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        Alert.alert("PDF Downloaded", `${data.pageCount} page PDF saved as ${fileName}`);
+      }
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err: any) {
+      console.log("PDF save error:", err?.message || err);
+      Alert.alert("PDF Error", "Failed to generate PDF. Please try again.");
+    } finally {
+      setIsSavingPdf(false);
+    }
   }
 
   async function handleFinishedReview() {
@@ -2853,6 +2927,23 @@ export default function ScanScreen() {
               <Text style={styles.actionBtnText}>Add Photo</Text>
             </Pressable>
             <Pressable
+              onPress={handleSavePDF}
+              disabled={isSavingPdf || isAnalyzing}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(139,92,246,0.25)", borderWidth: 1, borderColor: "rgba(139,92,246,0.6)" },
+                pressed && { opacity: 0.7 },
+                (isSavingPdf || isAnalyzing) && { opacity: 0.5 },
+              ]}
+            >
+              {isSavingPdf ? (
+                <ActivityIndicator size="small" color="#A78BFA" />
+              ) : (
+                <Ionicons name="document-text" size={22} color="#A78BFA" />
+              )}
+              <Text style={[styles.actionBtnText, { color: "#A78BFA" }]}>{isSavingPdf ? "Saving..." : "Save PDF"}</Text>
+            </Pressable>
+            <Pressable
               onPress={handleFinishedReview}
               disabled={isAnalyzing}
               style={({ pressed }) => [
@@ -3421,12 +3512,13 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.3)",
   },
   reviewActionBtn: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: "40%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    paddingVertical: 16,
+    gap: 6,
+    paddingVertical: 14,
     borderRadius: 16,
   },
   detectedViewText: {
@@ -3538,8 +3630,9 @@ const styles = StyleSheet.create({
   },
   detectedActions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: 16,
+    gap: 10,
     paddingHorizontal: 20,
   },
   actionBtn: {

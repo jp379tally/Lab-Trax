@@ -617,58 +617,64 @@ Be helpful, concise, and professional. If asked about a specific case, reference
         return res.status(400).json({ error: "No image provided" });
       }
 
-      const dataUrl = imageBase64.startsWith("data:")
-        ? imageBase64
-        : `data:image/jpeg;base64,${imageBase64}`;
+      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+      const rawBuffer = Buffer.from(base64Data, "base64");
+      const rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 95 }).toBuffer();
+      const rotatedBase64 = rotatedBuffer.toString("base64");
+      const rotatedDataUrl = `data:image/jpeg;base64,${rotatedBase64}`;
 
       const response = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: [
           {
             role: "system",
-            content: `You are a document detection system. Analyze the image and determine if there is a document (paper, form, prescription, letter, card, etc.) visible in the photo.
+            content: `You are a document scanner system like OneDrive or Adobe Scan. Analyze the image and determine if there is a document (paper, form, prescription, letter, card, receipt, etc.) visible in the photo.
 
-If a document IS detected, return the crop coordinates as percentages (0-100) of the image dimensions that tightly frame ONLY the document, excluding any background, desk, hands, etc. Add a small 1-2% margin around the document edges.
+If a document IS detected:
+1. Return the crop coordinates as percentages (0-100) of the image dimensions that tightly frame ONLY the document, excluding any background, desk, hands, etc. Add a small 1-2% margin.
+2. Determine the rotation needed to make the document upright and readable. Most documents are portrait orientation (taller than wide). If the text appears sideways or upside down, specify the rotation degrees needed.
 
 Return ONLY valid JSON:
 {
   "documentDetected": true,
   "crop": { "left": 10, "top": 5, "right": 90, "bottom": 95 },
+  "rotation": 0,
   "documentType": "prescription" | "form" | "letter" | "card" | "receipt" | "other"
 }
 
-If NO document is detected (e.g., the image is a face, scenery, random object):
+rotation values: 0 = already upright, 90 = rotate 90° clockwise, 180 = upside down, 270 = rotate 90° counter-clockwise.
+
+If NO document is detected:
 {
   "documentDetected": false,
   "crop": null,
+  "rotation": 0,
   "documentType": null
 }`
           },
           {
             role: "user",
             content: [
-              { type: "text", text: "Detect and locate the document in this image. Return crop coordinates as percentages." },
-              { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+              { type: "text", text: "Detect the document in this image. Return crop coordinates and rotation needed to make it upright." },
+              { type: "image_url", image_url: { url: rotatedDataUrl, detail: "low" } },
             ],
           },
         ],
-        max_tokens: 200,
+        max_tokens: 250,
       });
 
       const text = response.choices?.[0]?.message?.content || "";
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        return res.json({ documentDetected: false, croppedImageBase64: null });
+        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
       }
 
       const result = JSON.parse(jsonMatch[0]);
       if (!result.documentDetected || !result.crop) {
-        return res.json({ documentDetected: false, croppedImageBase64: null });
+        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
       }
 
-      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-      const imgBuffer = Buffer.from(base64Data, "base64");
-      const metadata = await sharp(imgBuffer).metadata();
+      const metadata = await sharp(rotatedBuffer).metadata();
       const imgW = metadata.width || 1;
       const imgH = metadata.height || 1;
 
@@ -679,16 +685,139 @@ If NO document is detected (e.g., the image is a face, scenery, random object):
       const cropW = Math.max(1, right - left);
       const cropH = Math.max(1, bottom - top);
 
-      const croppedBuffer = await sharp(imgBuffer)
-        .extract({ left, top, width: cropW, height: cropH })
-        .jpeg({ quality: 90 })
+      let pipeline = sharp(rotatedBuffer).extract({ left, top, width: cropW, height: cropH });
+
+      const rotation = result.rotation || 0;
+      if (rotation === 90 || rotation === 180 || rotation === 270) {
+        pipeline = pipeline.rotate(rotation);
+      }
+
+      const croppedBuffer = await pipeline
+        .sharpen({ sigma: 1.2 })
+        .normalize()
+        .jpeg({ quality: 92 })
         .toBuffer();
 
       const croppedBase64 = `data:image/jpeg;base64,${croppedBuffer.toString("base64")}`;
+      console.log(`[Crop] Document detected: ${result.documentType}, rotation: ${rotation}°, crop: ${cropW}x${cropH}`);
       res.json({ documentDetected: true, croppedImageBase64: croppedBase64, documentType: result.documentType });
     } catch (err: any) {
       console.error("[Crop Document] Error:", err?.message || err);
+      try {
+        const base64Data = req.body.imageBase64?.replace(/^data:image\/\w+;base64,/, "") || "";
+        if (base64Data) {
+          const fixedBuffer = await sharp(Buffer.from(base64Data, "base64")).rotate().jpeg({ quality: 90 }).toBuffer();
+          return res.json({ documentDetected: false, croppedImageBase64: `data:image/jpeg;base64,${fixedBuffer.toString("base64")}` });
+        }
+      } catch {}
       res.json({ documentDetected: false, croppedImageBase64: null });
+    }
+  });
+
+  app.post("/api/document-to-pdf", async (req, res) => {
+    try {
+      const { images } = req.body;
+      if (!images || !Array.isArray(images) || images.length === 0) {
+        return res.status(400).json({ error: "No images provided" });
+      }
+
+      const pageImages: { buffer: Buffer; width: number; height: number }[] = [];
+      for (const img of images) {
+        try {
+          if (typeof img !== "string" || (!img.startsWith("data:") && img.length < 100)) continue;
+          const b64 = img.replace(/^data:image\/\w+;base64,/, "");
+          const buf = Buffer.from(b64, "base64");
+          if (buf.length < 100) continue;
+          const rotated = await sharp(buf).rotate().jpeg({ quality: 95 }).toBuffer();
+          const meta = await sharp(rotated).metadata();
+          pageImages.push({ buffer: rotated, width: meta.width || 612, height: meta.height || 792 });
+        } catch (imgErr: any) {
+          console.log("[PDF] Skipping invalid image:", imgErr?.message);
+        }
+      }
+      if (pageImages.length === 0) {
+        return res.status(400).json({ error: "No valid images could be processed" });
+      }
+
+      const PDF_W = 612;
+      const PDF_H = 792;
+      const MARGIN = 18;
+
+      let objCount = 0;
+      const newObj = () => { objCount++; return objCount; };
+
+      const catalogId = newObj();
+      const pagesId = newObj();
+
+      const pageObjIds: number[] = [];
+      const imgObjIds: number[] = [];
+      const contentObjIds: number[] = [];
+
+      for (const _pg of pageImages) {
+        pageObjIds.push(newObj());
+        imgObjIds.push(newObj());
+        contentObjIds.push(newObj());
+      }
+
+      const objStrs: { id: number; str: string }[] = [];
+
+      objStrs.push({ id: catalogId, str: `${catalogId} 0 obj\n<< /Type /Catalog /Pages ${pagesId} 0 R >>\nendobj\n` });
+
+      const kidsStr = pageObjIds.map(id => `${id} 0 R`).join(" ");
+      objStrs.push({ id: pagesId, str: `${pagesId} 0 obj\n<< /Type /Pages /Kids [${kidsStr}] /Count ${pageObjIds.length} >>\nendobj\n` });
+
+      for (let i = 0; i < pageImages.length; i++) {
+        const pg = pageImages[i];
+        const scale = Math.min((PDF_W - MARGIN * 2) / pg.width, (PDF_H - MARGIN * 2) / pg.height);
+        const drawW = Math.round(pg.width * scale);
+        const drawH = Math.round(pg.height * scale);
+        const drawX = Math.round((PDF_W - drawW) / 2);
+        const drawY = Math.round((PDF_H - drawH) / 2);
+
+        const contentStr = `q\n${drawW} 0 0 ${drawH} ${drawX} ${drawY} cm\n/Img${i} Do\nQ\n`;
+        objStrs.push({ id: contentObjIds[i], str: `${contentObjIds[i]} 0 obj\n<< /Length ${contentStr.length} >>\nstream\n${contentStr}endstream\nendobj\n` });
+
+        objStrs.push({ id: pageObjIds[i], str: `${pageObjIds[i]} 0 obj\n<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${PDF_W} ${PDF_H}] /Contents ${contentObjIds[i]} 0 R /Resources << /XObject << /Img${i} ${imgObjIds[i]} 0 R >> >> >>\nendobj\n` });
+
+        objStrs.push({ id: imgObjIds[i], str: `${imgObjIds[i]} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${pg.width} /Height ${pg.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${pg.buffer.length} >>\nstream\n` });
+      }
+
+      const sortedObjs = objStrs.sort((a, b) => a.id - b.id);
+      let output = Buffer.from("%PDF-1.4\n");
+      const xrefOffsets: number[] = new Array(objCount + 1).fill(0);
+
+      for (const obj of sortedObjs) {
+        xrefOffsets[obj.id] = output.length;
+        if (obj.str.includes("/DCTDecode")) {
+          const imgIdx = imgObjIds.indexOf(obj.id);
+          if (imgIdx >= 0) {
+            const headerBuf = Buffer.from(obj.str);
+            const imgBuf = pageImages[imgIdx].buffer;
+            const endBuf = Buffer.from("\nendstream\nendobj\n");
+            output = Buffer.concat([output, headerBuf, imgBuf, endBuf]);
+          } else {
+            output = Buffer.concat([output, Buffer.from(obj.str)]);
+          }
+        } else {
+          output = Buffer.concat([output, Buffer.from(obj.str)]);
+        }
+      }
+
+      const xrefOffset = output.length;
+      let xrefStr = `xref\n0 ${objCount + 1}\n0000000000 65535 f \n`;
+      for (let i = 1; i <= objCount; i++) {
+        xrefStr += `${String(xrefOffsets[i]).padStart(10, "0")} 00000 n \n`;
+      }
+      xrefStr += `trailer\n<< /Size ${objCount + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+
+      output = Buffer.concat([output, Buffer.from(xrefStr)]);
+
+      const pdfBase64 = `data:application/pdf;base64,${output.toString("base64")}`;
+      console.log(`[PDF] Generated ${pageImages.length}-page PDF, size: ${(output.length / 1024).toFixed(1)}KB`);
+      res.json({ success: true, pdfBase64, pageCount: pageImages.length });
+    } catch (err: any) {
+      console.error("[Document to PDF] Error:", err?.message || err);
+      res.status(500).json({ error: "PDF generation failed" });
     }
   });
 
