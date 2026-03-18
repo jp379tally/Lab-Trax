@@ -488,7 +488,7 @@ export default function ScanScreen() {
       try {
         const FileSystem = await import("expo-file-system");
         const b64 = await FileSystem.readAsStringAsync(rawUri, {
-          encoding: FileSystem.EncodingType.Base64,
+          encoding: (FileSystem.EncodingType?.Base64 as any) ?? "base64",
         });
         dataUri = `data:image/jpeg;base64,${b64}`;
         setCapturedUri(dataUri);
@@ -791,7 +791,7 @@ export default function ScanScreen() {
             );
             console.log("AI compress: manipulator succeeded with:", tryUri);
             const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
-              encoding: FileSystem.EncodingType.Base64,
+              encoding: (FileSystem.EncodingType?.Base64 as any) ?? "base64",
             });
             console.log("AI compress: base64 length:", fileBase64.length);
             return `data:image/jpeg;base64,${fileBase64}`;
@@ -802,7 +802,7 @@ export default function ScanScreen() {
 
         try {
           const fileBase64 = await FileSystem.readAsStringAsync(tryUri, {
-            encoding: FileSystem.EncodingType.Base64,
+            encoding: (FileSystem.EncodingType?.Base64 as any) ?? "base64",
           });
           if (fileBase64 && fileBase64.length > 100) {
             console.log("AI compress: raw read succeeded for", tryUri, "length:", fileBase64.length);
@@ -818,7 +818,7 @@ export default function ScanScreen() {
       if (info?.exists && info?.uri) {
         try {
           const fileBase64 = await FileSystem.readAsStringAsync(info.uri, {
-            encoding: FileSystem.EncodingType.Base64,
+            encoding: (FileSystem.EncodingType?.Base64 as any) ?? "base64",
           });
           if (fileBase64 && fileBase64.length > 100) {
             console.log("AI compress: read via getInfoAsync uri succeeded, length:", fileBase64.length);
@@ -940,7 +940,7 @@ export default function ScanScreen() {
 
       if (Platform.OS !== "web") {
         const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
-        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: (FileSystem.EncodingType?.Base64 as any) ?? "base64" });
         if (await Sharing.isAvailableAsync()) {
           await Sharing.shareAsync(fileUri, { mimeType: "application/pdf", UTI: "com.adobe.pdf" });
         } else {
@@ -999,7 +999,7 @@ export default function ScanScreen() {
 
       if (Platform.OS !== "web") {
         const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
-        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: (FileSystem.EncodingType?.Base64 as any) ?? "base64" });
         console.log("Auto PDF: saved to", fileUri);
         return fileUri;
       } else {

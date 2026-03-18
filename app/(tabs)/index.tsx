@@ -4664,7 +4664,7 @@ function AdminDashboard() {
           let base64Data = asset.base64;
           if (!base64Data && asset.uri) {
             const FileSystem = await import("expo-file-system");
-            const fileData = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+            const fileData = await FileSystem.readAsStringAsync(asset.uri, { encoding: (FileSystem.EncodingType?.Base64 as any) ?? "base64" });
             base64Data = fileData;
           }
           if (!base64Data) continue;
