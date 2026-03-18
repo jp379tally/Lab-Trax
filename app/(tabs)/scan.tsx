@@ -950,13 +950,16 @@ export default function ScanScreen() {
     try {
       await Print.printAsync({ html });
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      promptAttachBarcode();
     } catch (e: any) {
-      if (e?.message?.includes("cancelled") || e?.code === "ERR_CANCELLED") {
-        return;
+      const msg = e?.message || "";
+      if (!msg.includes("cancelled") && e?.code !== "ERR_CANCELLED") {
+        Alert.alert("Print Error", "Unable to print. Please try again.");
       }
-      Alert.alert("Print Error", "Unable to print. Please try again.");
     }
+    setLabelModalVisible(false);
+    setTimeout(() => {
+      promptAttachBarcode();
+    }, 500);
   }
 
   function promptAttachBarcode() {
@@ -968,11 +971,8 @@ export default function ScanScreen() {
     Alert.alert("Attach Barcode", "Scan a barcode to attach to this case for tracking.", [
       { text: "Skip", onPress: proceedAfterLabel },
       { text: "Scan Barcode", onPress: () => {
-        setLabelModalVisible(false);
-        setTimeout(() => {
-          setBarcodeAttachScanned(false);
-          setBarcodeScanForCase(latestCase.id);
-        }, 400);
+        setBarcodeAttachScanned(false);
+        setBarcodeScanForCase(latestCase.id);
       }},
     ]);
   }
@@ -2993,13 +2993,9 @@ export default function ScanScreen() {
                 style={({ pressed }) => [labelStyles.doneBtn, pressed && { opacity: 0.8 }]}
                 onPress={() => {
                   setLabelModalVisible(false);
-                  if (pendingRemakeCheck) {
-                    const { caseId, patientName: pName } = pendingRemakeCheck;
-                    setPendingRemakeCheck(null);
-                    startRemakeCheck(caseId, pName);
-                  } else {
-                    router.push("/(tabs)/cases");
-                  }
+                  setTimeout(() => {
+                    promptAttachBarcode();
+                  }, 500);
                 }}
               >
                 <Text style={labelStyles.doneBtnText}>Done</Text>
