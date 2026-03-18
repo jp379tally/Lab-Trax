@@ -61,7 +61,7 @@ Preferred communication style: Simple, everyday language.
 ### Environment Variables
 - `DATABASE_URL`: PostgreSQL connection string.
 - `REPLIT_DEV_DOMAIN`: Replit development domain for CORS and API URL construction.
-- `EXPO_PUBLIC_DOMAIN`: Public domain for client-side API requests (port is stripped by `getApiUrl()` so all requests use default HTTPS port 443).
+- `EXPO_PUBLIC_DOMAIN`: Public domain for client-side API requests (set to `$REPLIT_DEV_DOMAIN:5000` so API requests go directly to the Express backend). `resilientFetch` tries the primary URL first and falls back to portless URL if the response is not JSON.
 - `REPLIT_INTERNAL_APP_DOMAIN`: Replit deployment domain for production builds.
 
 ### API Proxy (Development)

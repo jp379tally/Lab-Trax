@@ -651,15 +651,42 @@ export default function ScanScreen() {
 
     if (!result.canceled && result.assets[0]) {
       const asset = result.assets[0];
-      if (asset.base64) {
-        setCapturedUri(`data:image/jpeg;base64,${asset.base64}`);
-      } else {
-        setCapturedUri(asset.uri);
-      }
+      let rawUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+
+      cropDoneRef.current = false;
+      setCapturedUri(rawUri);
       setPhase("scanning");
       if (Platform.OS !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
+
+      let dataUri = rawUri;
+      if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
+        try {
+          const FSystem = await import("expo-file-system");
+          const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: FSystem.EncodingType.Base64 });
+          dataUri = `data:image/jpeg;base64,${b64}`;
+          setCapturedUri(dataUri);
+        } catch (e: any) {
+          console.log("Gallery crop: could not read file:", e?.message);
+        }
+      }
+
+      if (dataUri.startsWith("data:")) {
+        const cropped = await cropDocumentIfNeeded(dataUri);
+        const finalUri = cropped !== dataUri ? cropped : dataUri;
+        setCapturedUri(finalUri);
+        setCasePhotos((prev) => {
+          if (prev.includes(finalUri)) return prev;
+          return [...prev, finalUri];
+        });
+      } else {
+        setCasePhotos((prev) => {
+          if (prev.includes(rawUri)) return prev;
+          return [...prev, rawUri];
+        });
+      }
+      cropDoneRef.current = true;
     }
   }
 
@@ -936,6 +963,60 @@ export default function ScanScreen() {
     }
   }
 
+  async function autoGeneratePdf(photos: string[]): Promise<string | null> {
+    if (photos.length === 0) return null;
+    try {
+      const normalizedImages: string[] = [];
+      for (const photo of photos) {
+        if (photo.startsWith("data:")) {
+          normalizedImages.push(photo);
+        } else if (Platform.OS !== "web") {
+          try {
+            const FSystem = await import("expo-file-system");
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
+            normalizedImages.push(`data:image/jpeg;base64,${b64}`);
+          } catch {
+            console.log("Auto PDF: could not read file URI:", photo);
+          }
+        }
+      }
+      if (normalizedImages.length === 0) return null;
+
+      const apiUrl = new URL("/api/document-to-pdf", getApiUrl()).toString();
+      const resp = await globalThis.fetch(apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ images: normalizedImages }),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      if (!data.success || !data.pdfBase64) return null;
+
+      const b64 = data.pdfBase64.replace(/^data:application\/pdf;base64,/, "");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const fileName = `Rx_${timestamp}.pdf`;
+
+      if (Platform.OS !== "web") {
+        const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+        console.log("Auto PDF: saved to", fileUri);
+        return fileUri;
+      } else {
+        const link = document.createElement("a");
+        link.href = data.pdfBase64;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        console.log("Auto PDF: downloaded", fileName);
+        return fileName;
+      }
+    } catch (err: any) {
+      console.log("Auto PDF generation failed (non-blocking):", err?.message);
+      return null;
+    }
+  }
+
   async function handleFinishedReview() {
     const entries: ActivityEntry[] = [];
     casePhotos.forEach((uri) => {
@@ -955,6 +1036,22 @@ export default function ScanScreen() {
     if (analyzeUri) {
       setIsAnalyzing(true);
       let failReason = "";
+
+      autoGeneratePdf(casePhotos).then((pdfUri) => {
+        if (pdfUri) {
+          setActivityEntries((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "document",
+              timestamp: Date.now(),
+              description: "Prescription auto-converted to PDF",
+              user: userInitials,
+            },
+          ]);
+        }
+      });
+
       try {
         let base64Data: string;
         try {
@@ -1060,6 +1157,7 @@ export default function ScanScreen() {
       user: userInitials,
     };
     entries.push(scanEntry);
+
     setActivityEntries(entries);
     setPhase("form");
   }

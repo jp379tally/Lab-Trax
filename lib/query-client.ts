@@ -13,15 +13,16 @@ export function getApiUrl(): string {
   }
 
   let url = new URL(`https://${host}`);
-  url.port = "";
 
   return url.href;
 }
 
-function getApiUrlWithPort(): string | null {
+function getApiUrlWithoutPort(): string | null {
   let host = process.env.EXPO_PUBLIC_DOMAIN;
   if (!host || !host.includes(":")) return null;
-  return new URL(`https://${host}`).href;
+  let url = new URL(`https://${host}`);
+  url.port = "";
+  return url.href;
 }
 
 async function resilientFetch(
@@ -33,10 +34,30 @@ async function resilientFetch(
 
   try {
     const res = await fetch(primaryFullUrl, options);
+    if (res.ok) {
+      cachedBaseUrl = primaryUrl;
+      return res;
+    }
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      cachedBaseUrl = primaryUrl;
+      return res;
+    }
+    const fallbackUrl = getApiUrlWithoutPort();
+    if (fallbackUrl && fallbackUrl !== primaryUrl) {
+      try {
+        const fallbackFullUrl = new URL(path, fallbackUrl).toString();
+        const fallbackRes = await fetch(fallbackFullUrl, options);
+        if (fallbackRes.ok || (fallbackRes.headers.get("content-type") || "").includes("application/json")) {
+          cachedBaseUrl = fallbackUrl;
+          return fallbackRes;
+        }
+      } catch {}
+    }
     cachedBaseUrl = primaryUrl;
     return res;
   } catch (primaryError) {
-    const fallbackUrl = getApiUrlWithPort();
+    const fallbackUrl = getApiUrlWithoutPort();
     if (fallbackUrl && fallbackUrl !== primaryUrl) {
       try {
         const fallbackFullUrl = new URL(path, fallbackUrl).toString();
