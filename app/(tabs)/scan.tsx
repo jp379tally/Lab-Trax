@@ -19,6 +19,7 @@ import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
+import * as Print from "expo-print";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
@@ -887,6 +888,74 @@ export default function ScanScreen() {
     setPhase("form");
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+  }
+
+  async function printCaseLabel(label: LabelData) {
+    const toothRows = label.toothDiagram && label.toothDiagram.length > 0 ? `
+      <div style="margin-top:8px;text-align:center;">
+        <div style="font-size:8px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Tooth Diagram</div>
+        <div style="display:flex;justify-content:center;gap:1px;margin-bottom:2px;">
+          ${[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(t => {
+            const active = label.toothDiagram!.includes(t);
+            return `<div style="width:16px;height:16px;border:1px solid ${active ? '#3B82F6' : '#DDD'};border-radius:2px;background:${active ? '#3B82F6' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:6px;color:${active ? '#FFF' : '#CCC'};font-weight:${active ? '700' : '400'};">${t}</div>`;
+          }).join('')}
+        </div>
+        <div style="width:90%;height:1px;background:#DDD;margin:2px auto;"></div>
+        <div style="display:flex;justify-content:center;gap:1px;">
+          ${[32,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17].map(t => {
+            const active = label.toothDiagram!.includes(t);
+            return `<div style="width:16px;height:16px;border:1px solid ${active ? '#3B82F6' : '#DDD'};border-radius:2px;background:${active ? '#3B82F6' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:6px;color:${active ? '#FFF' : '#CCC'};font-weight:${active ? '700' : '400'};">${t}</div>`;
+          }).join('')}
+        </div>
+      </div>` : '';
+
+    const html = `
+      <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 0; padding: 16px; }
+          .label { border: 2px solid #333; border-radius: 8px; padding: 12px; max-width: 380px; margin: 0 auto; }
+          .lab-name { font-size: 14px; font-weight: 800; color: #1E3A5F; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px; }
+          .rush { display: inline-block; background: #FEE2E2; color: #DC2626; font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-left: 8px; }
+          .divider { height: 1px; background: #E5E7EB; margin: 6px 0; }
+          .row { display: flex; justify-content: space-between; padding: 3px 0; }
+          .key { font-size: 11px; color: #6B7280; font-weight: 500; }
+          .val { font-size: 11px; color: #111; font-weight: 600; text-align: right; }
+          .notes-title { font-size: 9px; color: #3B82F6; font-weight: 600; text-transform: uppercase; margin-top: 4px; }
+          .notes-text { font-size: 10px; color: #374151; margin-top: 2px; line-height: 1.4; }
+        </style>
+      </head>
+      <body>
+        <div class="label">
+          <div class="lab-name">DRIVESYNC LAB ${label.isRush ? '<span class="rush">RUSH</span>' : ''}</div>
+          <div class="divider"></div>
+          <div class="row"><span class="key">Case #</span><span class="val">${label.caseNumber}</span></div>
+          <div class="row"><span class="key">Patient</span><span class="val">${label.patientName}</span></div>
+          <div class="row"><span class="key">Doctor</span><span class="val">${label.doctorName}</span></div>
+          ${label.caseType ? `<div class="row"><span class="key">Case Type</span><span class="val">${label.caseType}</span></div>` : ''}
+          ${label.toothIndices ? `<div class="row"><span class="key">Tooth #</span><span class="val">${label.toothIndices}</span></div>` : ''}
+          ${label.shade ? `<div class="row"><span class="key">Shade</span><span class="val">${label.shade}</span></div>` : ''}
+          <div class="row"><span class="key">Material</span><span class="val">${label.material}</span></div>
+          ${label.dueDate ? `<div class="row"><span class="key">Due Date</span><span class="val">${label.dueDate}</span></div>` : ''}
+          <div class="row"><span class="key">Created</span><span class="val">${label.createdAt}</span></div>
+          ${label.notes ? `<div class="divider"></div><div class="notes-title">Notes</div><div class="notes-text">${label.notes}</div>` : ''}
+          ${toothRows ? `<div class="divider"></div>${toothRows}` : ''}
+        </div>
+      </body>
+      </html>
+    `;
+
+    try {
+      await Print.printAsync({ html });
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      promptAttachBarcode();
+    } catch (e: any) {
+      if (e?.message?.includes("cancelled") || e?.code === "ERR_CANCELLED") {
+        return;
+      }
+      Alert.alert("Print Error", "Unable to print. Please try again.");
     }
   }
 
@@ -2914,12 +2983,7 @@ export default function ScanScreen() {
               <Pressable
                 style={({ pressed }) => [labelStyles.printBtn, pressed && { opacity: 0.8 }]}
                 onPress={() => {
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  Alert.alert("Print", "Label sent to printer.", [
-                    { text: "OK", onPress: () => {
-                      promptAttachBarcode();
-                    }},
-                  ]);
+                  if (labelData) printCaseLabel(labelData);
                 }}
               >
                 <Ionicons name="print-outline" size={20} color="#FFF" />
