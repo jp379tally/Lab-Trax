@@ -1284,6 +1284,10 @@ export default function ScanScreen() {
 
   function proceedAfterLabel() {
     setLabelModalVisible(false);
+    setBarcodeScanForCase(null);
+    setShowBarcodeScanner(false);
+    setBarcodeAttachScanned(false);
+    barcodeAttachProcessingRef.current = false;
     lastCreatedCaseIdRef.current = null;
     setTimeout(() => {
       if (pendingRemakeCheck) {
@@ -1327,25 +1331,32 @@ export default function ScanScreen() {
     return true;
   }
 
+  const barcodeAttachProcessingRef = useRef(false);
   function handleBarcodeAttachScanned({ data }: { data: string }) {
-    if (barcodeAttachScanned) return;
+    if (barcodeAttachScanned || barcodeAttachProcessingRef.current) return;
+    barcodeAttachProcessingRef.current = true;
     setBarcodeAttachScanned(true);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     const caseId = barcodeScanForCase;
-    if (!caseId) return;
-
-    setBarcodeScanForCase(null);
+    if (!caseId) {
+      barcodeAttachProcessingRef.current = false;
+      return;
+    }
 
     const existingCase = findCaseByBarcode(data);
     const isShared = existingCase && existingCase.id !== caseId;
 
     assignBarcodeToCase(caseId, data);
+
+    setBarcodeScanForCase(null);
+    setShowBarcodeScanner(false);
     setLabelModalVisible(false);
     setPendingRemakeCheck(null);
     lastCreatedCaseIdRef.current = null;
 
     setTimeout(() => {
+      barcodeAttachProcessingRef.current = false;
       Alert.alert(
         isShared ? "Barcode Shared" : "Barcode Assigned",
         isShared
@@ -1353,11 +1364,11 @@ export default function ScanScreen() {
           : `Barcode "${data}" has been assigned to this case.`,
         [{ text: "OK", onPress: () => router.replace("/(tabs)/cases") }]
       );
-    }, 400);
+    }, 600);
   }
 
   function handleBarcodeScanned({ data }: { data: string }) {
-    if (barcodeScanned) return;
+    if (barcodeScanned || barcodeAttachProcessingRef.current || barcodeScanForCase) return;
     setBarcodeScanned(true);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -1628,6 +1639,10 @@ export default function ScanScreen() {
   function resetForm() {
     setPhase("camera");
     setCapturedUri(null);
+    setShowBarcodeScanner(false);
+    setBarcodeScanned(false);
+    setBarcodeAttachScanned(false);
+    barcodeAttachProcessingRef.current = false;
     setDoctorName("");
     setPatientName("");
     setPatientDropdownOpen(false);
