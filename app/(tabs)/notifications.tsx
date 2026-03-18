@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import {
   StyleSheet,
   View,
@@ -12,6 +12,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useFocusEffect } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
@@ -45,12 +46,18 @@ function formatTime(ts: number) {
 }
 
 export default function NotificationsScreen() {
-  const { markNotificationRead, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
+  const { markNotificationRead, markAllNotificationsRead, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [confirmInvite, setConfirmInvite] = useState<{ invitation: GroupInvitation; accept: boolean } | null>(null);
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
   const filteredNotifications = useProviderFilteredNotifications();
+
+  useFocusEffect(
+    useCallback(() => {
+      markAllNotificationsRead();
+    }, [])
+  );
 
   const pendingInvitations = groupInvitations.filter(
     inv => inv.invitedUsername.toLowerCase() === (currentUser || "").toLowerCase() && inv.status === "pending"

@@ -61,6 +61,7 @@ interface AppContextValue {
   addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
+  markAllNotificationsRead: () => void;
   unreadCount: number;
   activeCaseCount: number;
   rushCaseCount: number;
@@ -965,6 +966,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
   }
 
+  function markAllNotificationsRead() {
+    const hasUnread = notifications.some((n) => !n.read);
+    if (!hasUnread) return;
+    const updated = notifications.map((n) => ({ ...n, read: true }));
+    setNotifications(updated);
+    AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
+  }
+
   function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) {
     const maxNum = clients.reduce((max, cl) => Math.max(max, cl.clientNumber || 0), 0);
     const newClient: Client = { ...c, id: generateId(), clientNumber: maxNum + 1, accountNumber: "DS-" + Date.now().toString().slice(-6), createdAt: Date.now() };
@@ -1505,6 +1514,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addCaseItem,
       notifications,
       markNotificationRead,
+      markAllNotificationsRead,
       unreadCount,
       activeCaseCount,
       rushCaseCount,
