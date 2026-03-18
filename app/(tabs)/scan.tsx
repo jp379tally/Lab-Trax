@@ -86,6 +86,7 @@ export default function ScanScreen() {
   const [labelModalVisible, setLabelModalVisible] = useState(false);
   const [labelData, setLabelData] = useState<LabelData | null>(null);
   const [pendingRemakeCheck, setPendingRemakeCheck] = useState<{caseId: string, patientName: string} | null>(null);
+  const lastCreatedCaseIdRef = useRef<string | null>(null);
   const [phase, setPhase] = useState<ScanPhase>("camera");
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
@@ -1160,20 +1161,21 @@ export default function ScanScreen() {
       }
       await Print.printAsync(printOptions);
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setLabelModalVisible(false);
+      setTimeout(() => {
+        promptAttachBarcode();
+      }, 500);
     } catch (e: any) {
       const msg = e?.message || "";
       if (!msg.includes("cancelled") && e?.code !== "ERR_CANCELLED") {
         Alert.alert("Print Error", "Unable to print. Please try again.");
       }
     }
-    setLabelModalVisible(false);
-    setTimeout(() => {
-      promptAttachBarcode();
-    }, 500);
   }
 
   function promptAttachBarcode() {
-    const latestCase = cases[0];
+    const caseId = lastCreatedCaseIdRef.current;
+    const latestCase = caseId ? cases.find(c => c.id === caseId) : cases[0];
     if (!latestCase) {
       proceedAfterLabel();
       return;
@@ -1189,13 +1191,16 @@ export default function ScanScreen() {
 
   function proceedAfterLabel() {
     setLabelModalVisible(false);
-    if (pendingRemakeCheck) {
-      const { caseId, patientName: pName } = pendingRemakeCheck;
-      setPendingRemakeCheck(null);
-      startRemakeCheck(caseId, pName);
-    } else {
-      router.push("/(tabs)/cases");
-    }
+    lastCreatedCaseIdRef.current = null;
+    setTimeout(() => {
+      if (pendingRemakeCheck) {
+        const { caseId, patientName: pName } = pendingRemakeCheck;
+        setPendingRemakeCheck(null);
+        startRemakeCheck(caseId, pName);
+      } else {
+        router.replace("/(tabs)/cases");
+      }
+    }, 300);
   }
 
   const SCAN_TARGET_WIDTH = 260;
@@ -1255,10 +1260,10 @@ export default function ScanScreen() {
                         assignBarcodeToCase(caseId, data);
                         setLabelModalVisible(false);
                         setPendingRemakeCheck(null);
-                        resetForm();
+                        lastCreatedCaseIdRef.current = null;
                         setTimeout(() => {
                           Alert.alert("Barcode Shared", `Barcode "${data}" is now assigned to both cases.`, [
-                            { text: "OK", onPress: () => router.push("/(tabs)") },
+                            { text: "OK", onPress: () => router.replace("/(tabs)/cases") },
                           ]);
                         }, 400);
                       },
@@ -1270,8 +1275,8 @@ export default function ScanScreen() {
                         setBarcodeAttachScanned(false);
                         setLabelModalVisible(false);
                         setPendingRemakeCheck(null);
-                        resetForm();
-                        router.push("/(tabs)/cases");
+                        lastCreatedCaseIdRef.current = null;
+                        router.replace("/(tabs)/cases");
                       },
                     },
                   ]
@@ -1280,10 +1285,10 @@ export default function ScanScreen() {
                 assignBarcodeToCase(caseId, data);
                 setLabelModalVisible(false);
                 setPendingRemakeCheck(null);
-                resetForm();
+                lastCreatedCaseIdRef.current = null;
                 setTimeout(() => {
                   Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
-                    { text: "OK", onPress: () => router.push("/(tabs)") },
+                    { text: "OK", onPress: () => router.replace("/(tabs)/cases") },
                   ]);
                 }, 400);
               }
@@ -1296,8 +1301,8 @@ export default function ScanScreen() {
               setBarcodeAttachScanned(false);
               setLabelModalVisible(false);
               setPendingRemakeCheck(null);
-              resetForm();
-              router.push("/(tabs)/cases");
+              lastCreatedCaseIdRef.current = null;
+              router.replace("/(tabs)/cases");
             },
           },
         ]
@@ -1476,6 +1481,8 @@ export default function ScanScreen() {
       toothDiagram: diagramTeeth.length > 0 ? diagramTeeth : undefined,
     };
 
+    lastCreatedCaseIdRef.current = newCase.id;
+
     if (isDuplicate) {
       setPendingRemakeCheck({ caseId: newCase.id, patientName: savedPatientName });
     }
@@ -1487,10 +1494,11 @@ export default function ScanScreen() {
       [
         { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
         { text: "Done", onPress: () => {
+          lastCreatedCaseIdRef.current = null;
           if (isDuplicate) {
             startRemakeCheck(newCase.id, savedPatientName);
           } else {
-            router.push("/(tabs)");
+            router.replace("/(tabs)/cases");
           }
         }},
       ],
