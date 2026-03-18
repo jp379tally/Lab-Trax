@@ -29,7 +29,7 @@ export const STATIONS: { id: CaseStatus; label: string; color: string }[] = [
   { id: "HOLD", label: "On Hold", color: "#94A3B8" },
 ];
 
-export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created" | "courtesy_text" | "barcode_assigned" | "barcode_unassigned" | "invoice_paid" | "invoice_attached" | "tracking_added";
+export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created" | "courtesy_text" | "barcode_assigned" | "barcode_unassigned" | "invoice_paid" | "invoice_attached" | "tracking_added" | "exocad_linked" | "exocad_shared";
 
 export type CourtesyTextStatus = "sent" | "date_requested" | "date_proposed" | "accepted" | "declined";
 
@@ -113,6 +113,7 @@ export interface LabCase {
   invoiceId?: string;
   remakeReason?: string;
   assignedBarcode?: string;
+  exocadWebviewUrl?: string;
 }
 
 export interface Notification {

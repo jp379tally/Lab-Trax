@@ -11,6 +11,8 @@ import {
   TextInput,
   Image,
   KeyboardAvoidingView,
+  Share,
+  Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -66,6 +68,8 @@ export default function CaseDetailScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const [showCourtesyModal, setShowCourtesyModal] = useState(false);
+  const [showExocadModal, setShowExocadModal] = useState(false);
+  const [exocadUrlInput, setExocadUrlInput] = useState("");
   const [courtesyMessage, setCourtesyMessage] = useState("");
   const [showDateProposalModal, setShowDateProposalModal] = useState(false);
   const [proposalDate, setProposalDate] = useState("");
@@ -1009,7 +1013,8 @@ export default function CaseDetailScreen() {
             const isInvoice = entry.type === "invoice_paid" || entry.type === "invoice_attached";
             const isTracking = entry.type === "tracking_added";
             const isCourtesy = entry.type === "courtesy_text";
-            const isEvent = isBarcode || isInvoice || isTracking || isCourtesy;
+            const isExocad = entry.type === "exocad_linked" || entry.type === "exocad_shared";
+            const isEvent = isBarcode || isInvoice || isTracking || isCourtesy || isExocad;
             const stationInfo = entry.station ? getStationInfo(entry.station, customStationLabels) : null;
 
             let dotColor = Colors.light.textTertiary;
@@ -1028,6 +1033,8 @@ export default function CaseDetailScreen() {
               dotColor = "#6366F1";
             } else if (isCourtesy) {
               dotColor = "#EC4899";
+            } else if (isExocad) {
+              dotColor = "#7C3AED";
             }
 
             const entryUserName = entry.user
@@ -1346,6 +1353,90 @@ export default function CaseDetailScreen() {
             <Text style={styles.actionBtnText}>Reprint Lab Slip</Text>
           </Pressable>
           )}
+
+          {caseItem.exocadWebviewUrl ? (
+            <View style={exoStyles.exocadCard}>
+              <View style={exoStyles.exocadHeader}>
+                <View style={exoStyles.exocadTitleRow}>
+                  <Ionicons name="cube-outline" size={20} color="#7C3AED" />
+                  <Text style={exoStyles.exocadTitle}>ExoCAD WebView</Text>
+                </View>
+                {userType !== "provider" && (
+                  <Pressable
+                    onPress={() => {
+                      Alert.alert(
+                        "Remove ExoCAD Link",
+                        "Are you sure you want to remove this ExoCAD WebView link?",
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Remove",
+                            style: "destructive",
+                            onPress: () => {
+                              updateCase(caseItem.id, { exocadWebviewUrl: undefined });
+                              addCaseNote(caseItem.id, "ExoCAD WebView link removed");
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                  >
+                    <Ionicons name="trash-outline" size={18} color={Colors.light.error} />
+                  </Pressable>
+                )}
+              </View>
+              <Text style={exoStyles.exocadUrl} numberOfLines={1}>{caseItem.exocadWebviewUrl}</Text>
+              <View style={exoStyles.exocadActions}>
+                <Pressable
+                  onPress={() => Linking.openURL(caseItem.exocadWebviewUrl!)}
+                  style={({ pressed }) => [exoStyles.exocadActionBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
+                >
+                  <Ionicons name="open-outline" size={16} color="#FFF" />
+                  <Text style={exoStyles.exocadActionText}>Open 3D View</Text>
+                </Pressable>
+                <Pressable
+                  onPress={async () => {
+                    try {
+                      await Share.share({
+                        message: `View the 3D design for patient ${caseItem.patientName} (Case ${caseItem.caseNumber}):\n${caseItem.exocadWebviewUrl}`,
+                        title: "ExoCAD WebView Design",
+                      });
+                      const entry = {
+                        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                        type: "exocad_shared" as const,
+                        timestamp: Date.now(),
+                        description: `ExoCAD design shared for ${caseItem.patientName}`,
+                        user: userInitials,
+                      };
+                      updateCase(caseItem.id, {
+                        activityLog: [...(caseItem.activityLog || []), entry],
+                      });
+                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    } catch {}
+                  }}
+                  style={({ pressed }) => [exoStyles.exocadActionBtn, { backgroundColor: "#0EA5E9" }, pressed && { opacity: 0.85 }]}
+                >
+                  <Ionicons name="share-outline" size={16} color="#FFF" />
+                  <Text style={exoStyles.exocadActionText}>Share with Provider</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : userType !== "provider" ? (
+            <Pressable
+              onPress={() => {
+                setExocadUrlInput(caseItem.exocadWebviewUrl || "");
+                setShowExocadModal(true);
+              }}
+              style={({ pressed }) => [
+                styles.actionBtn,
+                { backgroundColor: "#7C3AED" },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Ionicons name="cube-outline" size={20} color="#FFF" />
+              <Text style={styles.actionBtnText}>Link ExoCAD Design</Text>
+            </Pressable>
+          ) : null}
 
           {userType !== "provider" && caseItem.status !== "COMPLETE" && (
           <Pressable
@@ -2538,6 +2629,102 @@ export default function CaseDetailScreen() {
             >
               <Ionicons name="send" size={20} color="#FFF" />
               <Text style={ctStyles.sendBtnText}>Send Courtesy Text</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showExocadModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowExocadModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={ctStyles.modalOverlay}
+        >
+          <View style={ctStyles.modalCard}>
+            <View style={ctStyles.modalHeader}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Ionicons name="cube-outline" size={22} color="#7C3AED" />
+                <Text style={ctStyles.modalTitle}>Link ExoCAD Design</Text>
+              </View>
+              <Pressable onPress={() => setShowExocadModal(false)}>
+                <Ionicons name="close" size={24} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={ctStyles.modalSubtitle}>
+              Paste the ExoCAD WebView URL to share the 3D design with the provider.
+            </Text>
+            <TextInput
+              style={[ctStyles.dateInput, { marginBottom: 12 }]}
+              value={exocadUrlInput}
+              onChangeText={setExocadUrlInput}
+              placeholder="https://webview.exocad.com/..."
+              placeholderTextColor="#94A3B8"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+            />
+            <Pressable
+              onPress={() => {
+                const url = exocadUrlInput.trim();
+                if (!url) {
+                  Alert.alert("Please enter an ExoCAD WebView URL");
+                  return;
+                }
+                if (!url.startsWith("http")) {
+                  Alert.alert("Invalid URL", "Please enter a valid URL starting with http:// or https://");
+                  return;
+                }
+                const entry = {
+                  id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                  type: "exocad_linked" as const,
+                  timestamp: Date.now(),
+                  description: `ExoCAD WebView design linked`,
+                  user: userInitials,
+                };
+                updateCase(caseItem.id, {
+                  exocadWebviewUrl: url,
+                  activityLog: [...(caseItem.activityLog || []), entry],
+                });
+                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                setShowExocadModal(false);
+                setExocadUrlInput("");
+                Alert.alert(
+                  "ExoCAD Design Linked",
+                  "Would you like to share this design with the provider now?",
+                  [
+                    { text: "Later", style: "cancel" },
+                    {
+                      text: "Share Now",
+                      onPress: async () => {
+                        try {
+                          await Share.share({
+                            message: `View the 3D design for patient ${caseItem.patientName} (Case ${caseItem.caseNumber}):\n${url}`,
+                            title: "ExoCAD WebView Design",
+                          });
+                          const shareEntry = {
+                            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                            type: "exocad_shared" as const,
+                            timestamp: Date.now(),
+                            description: `ExoCAD design shared for ${caseItem.patientName}`,
+                            user: userInitials,
+                          };
+                          updateCase(caseItem.id, {
+                            activityLog: [...(caseItem.activityLog || []), entry, shareEntry],
+                          });
+                        } catch {}
+                      },
+                    },
+                  ]
+                );
+              }}
+              style={({ pressed }) => [ctStyles.sendBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="link" size={20} color="#FFF" />
+              <Text style={ctStyles.sendBtnText}>Link Design</Text>
             </Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -4139,6 +4326,55 @@ const labSlipStyles = StyleSheet.create({
   },
   printBtnText: {
     fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+});
+
+const exoStyles = StyleSheet.create({
+  exocadCard: {
+    backgroundColor: "#F5F3FF",
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: "#DDD6FE",
+    gap: 10,
+  },
+  exocadHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  exocadTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  exocadTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    color: "#7C3AED",
+  },
+  exocadUrl: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: "#6B7280",
+  },
+  exocadActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  exocadActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  exocadActionText: {
+    fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: "#FFF",
   },
