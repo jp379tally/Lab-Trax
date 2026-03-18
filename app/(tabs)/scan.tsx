@@ -338,6 +338,8 @@ export default function ScanScreen() {
     }, [])
   );
 
+  const cropDoneRef = useRef(false);
+
   useEffect(() => {
     if (phase === "scanning") {
       RNAnimated.loop(
@@ -355,23 +357,49 @@ export default function ScanScreen() {
         ]),
       ).start();
 
-      const timer = setTimeout(() => {
-        if (capturedUri) {
-          setCasePhotos((prev) => {
-            if (prev.includes(capturedUri)) return prev;
-            return [...prev, capturedUri];
-          });
+      let cancelled = false;
+      const waitAndTransition = async () => {
+        const start = Date.now();
+        while (!cropDoneRef.current && Date.now() - start < 15000) {
+          await new Promise(r => setTimeout(r, 300));
+          if (cancelled) return;
         }
+        await new Promise(r => setTimeout(r, 800));
+        if (cancelled) return;
         setPhase("review");
         if (Platform.OS !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }
-      }, 2500);
-      return () => clearTimeout(timer);
+      };
+      waitAndTransition();
+      return () => { cancelled = true; };
     }
   }, [phase]);
 
+  async function cropDocumentIfNeeded(imageDataUri: string): Promise<string> {
+    try {
+      const apiUrl = new URL("/api/crop-document", getApiUrl()).toString();
+      const resp = await globalThis.fetch(apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: imageDataUri }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.documentDetected && data.croppedImageBase64) {
+          console.log("Document detected and cropped, type:", data.documentType);
+          return data.croppedImageBase64;
+        }
+      }
+    } catch (e: any) {
+      console.log("Document crop failed, using original:", e?.message);
+    }
+    return imageDataUri;
+  }
+
   async function handleTakePhoto() {
+    let rawUri: string | null = null;
+
     if (cameraRef.current) {
       try {
         if (!cameraReady) {
@@ -379,18 +407,12 @@ export default function ScanScreen() {
         }
         const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, base64: true });
         if (photo?.uri) {
-          if (photo.base64) {
-            setCapturedUri(`data:image/jpeg;base64,${photo.base64}`);
-          } else {
-            setCapturedUri(photo.uri);
-          }
-          setPhase("scanning");
-          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          return;
+          rawUri = photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri;
         }
       } catch {}
     }
-    if (Platform.OS === "web") {
+
+    if (!rawUri && Platform.OS === "web") {
       try {
         const videoEl = document.querySelector("video");
         if (videoEl) {
@@ -400,28 +422,60 @@ export default function ScanScreen() {
           const ctx = canvas.getContext("2d");
           if (ctx) {
             ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-            const dataUri = canvas.toDataURL("image/jpeg", 0.8);
-            setCapturedUri(dataUri);
-            setPhase("scanning");
-            return;
+            rawUri = canvas.toDataURL("image/jpeg", 0.8);
           }
         }
       } catch {}
     }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      quality: 0.8,
-      base64: true,
-    });
-    if (!result.canceled && result.assets[0]) {
-      const asset = result.assets[0];
-      if (asset.base64) {
-        setCapturedUri(`data:image/jpeg;base64,${asset.base64}`);
-      } else {
-        setCapturedUri(asset.uri);
+
+    if (!rawUri) {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+        base64: true,
+      });
+      if (!result.canceled && result.assets[0]) {
+        const asset = result.assets[0];
+        rawUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
       }
-      setPhase("scanning");
     }
+
+    if (!rawUri) return;
+
+    cropDoneRef.current = false;
+    setCapturedUri(rawUri);
+    setPhase("scanning");
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    let dataUri = rawUri;
+    if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
+      try {
+        const FileSystem = await import("expo-file-system");
+        const b64 = await FileSystem.readAsStringAsync(rawUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        dataUri = `data:image/jpeg;base64,${b64}`;
+        setCapturedUri(dataUri);
+      } catch (e: any) {
+        console.log("Could not read file for cropping:", e?.message);
+      }
+    }
+
+    if (dataUri.startsWith("data:")) {
+      const cropped = await cropDocumentIfNeeded(dataUri);
+      const finalUri = cropped !== dataUri ? cropped : dataUri;
+      setCapturedUri(finalUri);
+      setCasePhotos((prev) => {
+        if (prev.includes(finalUri)) return prev;
+        return [...prev, finalUri];
+      });
+    } else {
+      setCasePhotos((prev) => {
+        if (prev.includes(rawUri)) return prev;
+        return [...prev, rawUri];
+      });
+    }
+    cropDoneRef.current = true;
   }
 
   async function handleTakeRegularPhoto() {

@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "node:http";
 import OpenAI from "openai";
 import nodemailer from "nodemailer";
+import sharp from "sharp";
 import { storage } from "./storage";
 
 const openai = new OpenAI({
@@ -601,6 +602,88 @@ Be helpful, concise, and professional. If asked about a specific case, reference
         console.error("[SMS] Error sending text:", err?.message || err);
         res.status(500).json({ error: "Failed to send text", details: err?.message });
       });
+  });
+
+  app.post("/api/crop-document", async (req, res) => {
+    try {
+      const { imageBase64 } = req.body;
+      if (!imageBase64) {
+        return res.status(400).json({ error: "No image provided" });
+      }
+
+      const dataUrl = imageBase64.startsWith("data:")
+        ? imageBase64
+        : `data:image/jpeg;base64,${imageBase64}`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `You are a document detection system. Analyze the image and determine if there is a document (paper, form, prescription, letter, card, etc.) visible in the photo.
+
+If a document IS detected, return the crop coordinates as percentages (0-100) of the image dimensions that tightly frame ONLY the document, excluding any background, desk, hands, etc. Add a small 1-2% margin around the document edges.
+
+Return ONLY valid JSON:
+{
+  "documentDetected": true,
+  "crop": { "left": 10, "top": 5, "right": 90, "bottom": 95 },
+  "documentType": "prescription" | "form" | "letter" | "card" | "receipt" | "other"
+}
+
+If NO document is detected (e.g., the image is a face, scenery, random object):
+{
+  "documentDetected": false,
+  "crop": null,
+  "documentType": null
+}`
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Detect and locate the document in this image. Return crop coordinates as percentages." },
+              { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+            ],
+          },
+        ],
+        max_tokens: 200,
+      });
+
+      const text = response.choices?.[0]?.message?.content || "";
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return res.json({ documentDetected: false, croppedImageBase64: null });
+      }
+
+      const result = JSON.parse(jsonMatch[0]);
+      if (!result.documentDetected || !result.crop) {
+        return res.json({ documentDetected: false, croppedImageBase64: null });
+      }
+
+      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+      const imgBuffer = Buffer.from(base64Data, "base64");
+      const metadata = await sharp(imgBuffer).metadata();
+      const imgW = metadata.width || 1;
+      const imgH = metadata.height || 1;
+
+      const left = Math.max(0, Math.round((result.crop.left / 100) * imgW));
+      const top = Math.max(0, Math.round((result.crop.top / 100) * imgH));
+      const right = Math.min(imgW, Math.round((result.crop.right / 100) * imgW));
+      const bottom = Math.min(imgH, Math.round((result.crop.bottom / 100) * imgH));
+      const cropW = Math.max(1, right - left);
+      const cropH = Math.max(1, bottom - top);
+
+      const croppedBuffer = await sharp(imgBuffer)
+        .extract({ left, top, width: cropW, height: cropH })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+
+      const croppedBase64 = `data:image/jpeg;base64,${croppedBuffer.toString("base64")}`;
+      res.json({ documentDetected: true, croppedImageBase64: croppedBase64, documentType: result.documentType });
+    } catch (err: any) {
+      console.error("[Crop Document] Error:", err?.message || err);
+      res.json({ documentDetected: false, croppedImageBase64: null });
+    }
   });
 
   app.post("/api/smile-process", async (req, res) => {
