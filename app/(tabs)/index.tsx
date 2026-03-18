@@ -37,6 +37,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group, formatAcctNum, formatInvNum, cleanDoctorDisplay } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 
 function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
@@ -1455,10 +1456,11 @@ type AdminView =
   | "create-group"
   | "lab-users"
   | "payment-processing"
-  | "edit-locations";
+  | "edit-locations"
+  | "integrations";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification, customStationLabels, updateStationLabel } = useApp();
+  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification, customStationLabels, updateStationLabel } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -1559,6 +1561,28 @@ function AdminDashboard() {
   const [newGroupTypeAdmin, setNewGroupTypeAdmin] = useState<"provider" | "lab">("lab");
   const [selectedLabGroup, setSelectedLabGroup] = useState<Group | null>(null);
   const [labUserSearchQuery, setLabUserSearchQuery] = useState("");
+
+  const [iteroEmail, setIteroEmail] = useState("");
+  const [iteroPassword, setIteroPassword] = useState("");
+  const [iteroConnected, setIteroConnected] = useState(false);
+  const [iteroShowPassword, setIteroShowPassword] = useState(false);
+  const [iteroSaving, setIteroSaving] = useState(false);
+  const [iteroImporting, setIteroImporting] = useState(false);
+  const [iteroImportResults, setIteroImportResults] = useState<{ doctor: string; teeth: string; shade: string; material: string; notes: string }[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const email = await SecureStore.getItemAsync("itero_email");
+        const pass = await SecureStore.getItemAsync("itero_password");
+        if (email && pass) {
+          setIteroEmail(email);
+          setIteroPassword(pass);
+          setIteroConnected(true);
+        }
+      } catch {}
+    })();
+  }, []);
 
   const labPortalUsers = registeredUsers.filter(u => (u.userType === "lab" || (!u.userType && u.username !== "JPPhillips")) && u.username !== "JPPhillips");
 
@@ -1699,6 +1723,7 @@ function AdminDashboard() {
       { icon: "location", iconSet: "ion", color: "#0D9488", bg: "#CCFBF1", title: "Edit Locations", sub: `${STATIONS.length} workflow stations`, view: "edit-locations" as AdminView },
       { icon: "add-circle", iconSet: "ion", color: "#059669", bg: "#ECFDF5", title: "Create Group", sub: "Create a new user group", view: "create-group" as AdminView },
       { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Add Users", sub: `${labPortalUsers.length} lab users · Assign to groups`, view: "lab-users" as AdminView },
+      { icon: "cloud-upload", iconSet: "ion", color: "#2563EB", bg: "#DBEAFE", title: "Integrations", sub: "iTero · Scanner connections", view: "integrations" as AdminView },
     ];
 
     return (
@@ -4582,6 +4607,353 @@ function AdminDashboard() {
     );
   }
 
+  async function handleSaveIteroCredentials() {
+    if (!iteroEmail.trim() || !iteroPassword.trim()) {
+      Alert.alert("Required", "Email and password are required.");
+      return;
+    }
+    setIteroSaving(true);
+    try {
+      await SecureStore.setItemAsync("itero_email", iteroEmail.trim());
+      await SecureStore.setItemAsync("itero_password", iteroPassword.trim());
+      setIteroConnected(true);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Saved", "iTero credentials stored securely on this device.");
+    } catch (err) {
+      Alert.alert("Error", "Failed to save credentials securely.");
+    }
+    setIteroSaving(false);
+  }
+
+  async function handleDisconnectItero() {
+    Alert.alert("Disconnect iTero", "Remove stored credentials from this device?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Disconnect",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await SecureStore.deleteItemAsync("itero_email");
+            await SecureStore.deleteItemAsync("itero_password");
+          } catch {}
+          setIteroEmail("");
+          setIteroPassword("");
+          setIteroConnected(false);
+          setIteroImportResults([]);
+          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        },
+      },
+    ]);
+  }
+
+  async function handleImportRxPhotos() {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        allowsMultipleSelection: true,
+        mediaTypes: ["images"],
+        quality: 0.9,
+        base64: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+
+      setIteroImporting(true);
+      const imported: typeof iteroImportResults = [];
+
+      for (const asset of result.assets) {
+        try {
+          let base64Data = asset.base64;
+          if (!base64Data && asset.uri) {
+            const FileSystem = await import("expo-file-system");
+            const fileData = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+            base64Data = fileData;
+          }
+          if (!base64Data) continue;
+
+          const dataUri = `data:image/jpeg;base64,${base64Data}`;
+          const resp = await apiRequest("POST", "/api/analyze-prescription", { imageBase64: dataUri });
+          const data = await resp.json();
+
+          if (data.success && data.data) {
+            const rx = data.data;
+            imported.push({
+              doctor: rx.doctorName || "",
+              teeth: rx.toothNumbers || "",
+              shade: rx.shade || "",
+              material: rx.material || "",
+              notes: rx.notes || "",
+            });
+          }
+        } catch (err) {
+          console.log("RX import error for one image:", err);
+        }
+      }
+
+      setIteroImportResults(imported);
+      setIteroImporting(false);
+
+      if (imported.length === 0) {
+        Alert.alert("No Data Found", "Could not extract prescription data from the selected images.");
+      } else {
+        Alert.alert("Import Complete", `Extracted data from ${imported.length} prescription${imported.length > 1 ? "s" : ""}. Review below and create cases.`);
+      }
+    } catch (err) {
+      setIteroImporting(false);
+      Alert.alert("Error", "Failed to import prescriptions.");
+    }
+  }
+
+  function handleCreateCaseFromImport(rx: typeof iteroImportResults[0], idx: number) {
+    const currentYear = new Date().getFullYear();
+    const yy = String(currentYear).slice(-2);
+    const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
+    const maxN = yearCases.reduce((max, c) => {
+      const parts = c.caseNumber.split("-");
+      const n = parseInt(parts[1]) || 0;
+      return n > max ? n : max;
+    }, 0);
+    const caseNumber = `${yy}-${maxN + 1}`;
+
+    const patientName = "iTero Import";
+    const initials = "IT";
+
+    addCase({
+      caseNumber,
+      doctorName: rx.doctor || "Unknown Provider",
+      patientName,
+      patientInitials: initials,
+      toothIndices: rx.teeth || "",
+      shade: rx.shade || "",
+      material: rx.material || "",
+      status: "INTAKE",
+      isRush: false,
+      notes: rx.notes ? `[iTero Import] ${rx.notes}` : "[iTero Import]",
+      price: 0,
+      dueDate: "",
+      photos: [],
+      activityLog: [],
+    });
+
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    const updated = [...iteroImportResults];
+    updated.splice(idx, 1);
+    setIteroImportResults(updated);
+
+    Alert.alert("Case Created", `Case ${caseNumber} created for ${rx.doctor || "Unknown Provider"}.`);
+  }
+
+  function renderIntegrations() {
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Integrations")}
+
+        <View style={{ marginHorizontal: 20, marginBottom: 16 }}>
+          <LinearGradient
+            colors={["#1E3A8A", "#2563EB"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ borderRadius: 16, padding: 20, marginBottom: 20 }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.15)", justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name="cloud-upload" size={24} color="#FFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>iTero Scanner</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.7)", marginTop: 2 }}>Align Technology Integration</Text>
+              </View>
+              <View style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: iteroConnected ? "rgba(34,197,94,0.25)" : "rgba(255,255,255,0.15)" }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: iteroConnected ? "#86EFAC" : "rgba(255,255,255,0.6)" }}>
+                  {iteroConnected ? "LINKED" : "NOT LINKED"}
+                </Text>
+              </View>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", lineHeight: 18 }}>
+              Link your iTero account to import prescriptions. Credentials are encrypted and stored securely on this device only.
+            </Text>
+          </LinearGradient>
+
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, padding: 16, marginBottom: 16 }}>
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 14 }}>Account Credentials</Text>
+
+            <View style={{ marginBottom: 12 }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Email</Text>
+              <TextInput
+                style={[adm.input, { backgroundColor: "#F8FAFC" }]}
+                value={iteroEmail}
+                onChangeText={setIteroEmail}
+                placeholder="your-email@example.com"
+                placeholderTextColor={Colors.light.textTertiary}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+
+            <View style={{ marginBottom: 16 }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Password</Text>
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <TextInput
+                  style={[adm.input, { flex: 1, backgroundColor: "#F8FAFC" }]}
+                  value={iteroPassword}
+                  onChangeText={setIteroPassword}
+                  placeholder="Enter password"
+                  placeholderTextColor={Colors.light.textTertiary}
+                  secureTextEntry={!iteroShowPassword}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Pressable onPress={() => setIteroShowPassword(!iteroShowPassword)} style={{ position: "absolute", right: 12 }}>
+                  <Ionicons name={iteroShowPassword ? "eye-off" : "eye"} size={20} color={Colors.light.textTertiary} />
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable
+                onPress={handleSaveIteroCredentials}
+                disabled={iteroSaving}
+                style={({ pressed }) => ({
+                  flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                  backgroundColor: Colors.light.tint, borderRadius: 12, paddingVertical: 13,
+                  opacity: pressed || iteroSaving ? 0.7 : 1,
+                })}
+              >
+                {iteroSaving ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Ionicons name="shield-checkmark" size={18} color="#FFF" />
+                )}
+                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
+                  {iteroConnected ? "Update Credentials" : "Save & Link"}
+                </Text>
+              </Pressable>
+              {iteroConnected && (
+                <Pressable
+                  onPress={handleDisconnectItero}
+                  style={({ pressed }) => ({
+                    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+                    backgroundColor: Colors.light.errorLight, borderRadius: 12, paddingVertical: 13, paddingHorizontal: 16,
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                >
+                  <Ionicons name="unlink" size={16} color={Colors.light.error} />
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.error }}>Unlink</Text>
+                </Pressable>
+              )}
+            </View>
+          </View>
+
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, padding: 16, marginBottom: 16 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: "#FEF3C7", justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name="document-text" size={16} color="#F59E0B" />
+              </View>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Import Prescriptions</Text>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginBottom: 14, lineHeight: 18 }}>
+              Upload prescription images exported from iTero. AI will extract provider name, tooth numbers, shade, material, and notes to create new cases.
+            </Text>
+
+            <Pressable
+              onPress={handleImportRxPhotos}
+              disabled={iteroImporting}
+              style={({ pressed }) => ({
+                flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                backgroundColor: "#F59E0B", borderRadius: 12, paddingVertical: 13,
+                opacity: pressed || iteroImporting ? 0.7 : 1,
+              })}
+            >
+              {iteroImporting ? (
+                <>
+                  <ActivityIndicator size="small" color="#FFF" />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Analyzing Prescriptions...</Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="images" size={18} color="#FFF" />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Select RX Images</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+
+          {iteroImportResults.length > 0 && (
+            <View style={{ marginBottom: 16 }}>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 12 }}>
+                Extracted Prescriptions ({iteroImportResults.length})
+              </Text>
+              {iteroImportResults.map((rx, idx) => (
+                <View key={idx} style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, padding: 14, marginBottom: 10 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                    <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: Colors.light.tintLight, justifyContent: "center", alignItems: "center" }}>
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: Colors.light.tint }}>{idx + 1}</Text>
+                    </View>
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text, flex: 1 }}>{rx.doctor || "Unknown Provider"}</Text>
+                  </View>
+                  <View style={{ gap: 6 }}>
+                    {rx.teeth ? (
+                      <View style={{ flexDirection: "row", gap: 8 }}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, width: 60 }}>Teeth</Text>
+                        <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>{rx.teeth}</Text>
+                      </View>
+                    ) : null}
+                    {rx.shade ? (
+                      <View style={{ flexDirection: "row", gap: 8 }}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, width: 60 }}>Shade</Text>
+                        <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>{rx.shade}</Text>
+                      </View>
+                    ) : null}
+                    {rx.material ? (
+                      <View style={{ flexDirection: "row", gap: 8 }}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, width: 60 }}>Material</Text>
+                        <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>{rx.material}</Text>
+                      </View>
+                    ) : null}
+                    {rx.notes ? (
+                      <View style={{ flexDirection: "row", gap: 8 }}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, width: 60 }}>Notes</Text>
+                        <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.text, flex: 1 }}>{rx.notes}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Pressable
+                    onPress={() => handleCreateCaseFromImport(rx, idx)}
+                    style={({ pressed }) => ({
+                      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+                      backgroundColor: Colors.light.success, borderRadius: 10, paddingVertical: 10, marginTop: 12,
+                      opacity: pressed ? 0.7 : 1,
+                    })}
+                  >
+                    <Ionicons name="add-circle" size={18} color="#FFF" />
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Create Case</Text>
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          )}
+
+          <View style={{ backgroundColor: "#F0F9FF", borderRadius: 14, borderWidth: 1, borderColor: "#BAE6FD", padding: 16 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <Ionicons name="information-circle" size={20} color="#0EA5E9" />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#0369A1" }}>API Integration</Text>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#0369A1", lineHeight: 18 }}>
+              Direct API sync with iTero requires official API access from Align Technology. Contact your Align representative to obtain API credentials for automatic prescription syncing.
+            </Text>
+          </View>
+        </View>
+      </ScrollView>
+    );
+  }
+
   switch (adminView) {
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();
@@ -4603,6 +4975,7 @@ function AdminDashboard() {
     case "edit-locations": return renderEditLocations();
     case "create-group": return renderCreateGroupAdmin();
     case "lab-users": return renderLabUsers();
+    case "integrations": return renderIntegrations();
     default: return renderHub();
   }
 }
