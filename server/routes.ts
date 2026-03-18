@@ -603,6 +603,46 @@ Be helpful, concise, and professional. If asked about a specific case, reference
       });
   });
 
+  app.post("/api/smile-process", async (req, res) => {
+    try {
+      const { imageBase64, mode } = req.body;
+      if (!imageBase64) {
+        return res.status(400).json({ error: "No image provided" });
+      }
+
+      let prompt = "";
+      if (mode === "whiten") {
+        prompt = "Edit this photo to whiten and brighten the person's teeth to a natural, beautiful Hollywood-white shade. Make the teeth look naturally white and healthy — NOT cartoon-like or overly artificial. Keep absolutely everything else in the photo exactly the same: face, skin, hair, eyes, background, clothing, lighting. Only change the color of the visible teeth to be whiter and brighter. The result must look like a real photograph, not digitally manipulated.";
+      } else if (mode === "symmetry") {
+        prompt = "Edit this photo to make the person's visible teeth perfectly symmetrical and even. Straighten any crooked teeth, even out spacing, and make the teeth appear uniform and aligned — as if the person had perfect orthodontic work done. Keep absolutely everything else in the photo exactly the same: face, skin, hair, eyes, background, clothing, lighting. Only modify the teeth alignment and symmetry. The result must look like a real photograph.";
+      } else if (mode === "both") {
+        prompt = "Edit this photo to: 1) Whiten and brighten the person's teeth to a natural Hollywood-white shade, AND 2) Make the teeth perfectly symmetrical, even, and straight — as if they had perfect orthodontic work and professional whitening. Keep absolutely everything else in the photo exactly the same: face, skin, hair, eyes, background, clothing, lighting. Only change the teeth color and alignment. The result must look like a real photograph, not digitally manipulated.";
+      } else {
+        return res.status(400).json({ error: "Invalid mode. Use 'whiten', 'symmetry', or 'both'." });
+      }
+
+      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+      const imgBuffer = Buffer.from(base64Data, "base64");
+
+      const response = await openai.images.edit({
+        model: "gpt-image-1",
+        image: imgBuffer,
+        prompt,
+        size: "1024x1024",
+      });
+
+      const outputBase64 = response.data?.[0]?.b64_json;
+      if (!outputBase64) {
+        return res.status(500).json({ error: "AI did not return an image." });
+      }
+
+      res.json({ imageBase64: `data:image/png;base64,${outputBase64}` });
+    } catch (err: any) {
+      console.error("[Smile Process] Error:", err?.message || err);
+      res.status(500).json({ error: "Failed to process image", details: err?.message });
+    }
+  });
+
   const httpServer = createServer(app);
 
   return httpServer;
