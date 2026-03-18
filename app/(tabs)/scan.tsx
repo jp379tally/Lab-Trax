@@ -921,6 +921,40 @@ export default function ScanScreen() {
           if (Platform.OS !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
+
+          if (d.doctorName) {
+            const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
+            const drNameNorm = stripDr(d.doctorName);
+            const existingClient = clients.find(
+              (c) => stripDr(c.leadDoctor) === drNameNorm
+            );
+            if (!existingClient) {
+              setTimeout(() => {
+                Alert.alert(
+                  "New Provider Detected",
+                  `"${d.doctorName}" is not in your active provider list. Would you like to add them?`,
+                  [
+                    {
+                      text: "No",
+                      style: "cancel",
+                    },
+                    {
+                      text: "Yes, Add Provider",
+                      onPress: () => {
+                        setAddingNewDoctor(true);
+                        setNewDoctorInput(d.doctorName.replace(/^Dr\.\s*/i, "") || "");
+                        setNewDoctorPractice(d.practiceName || "");
+                        setNewDoctorAddress(d.practiceAddress || "");
+                        setNewDoctorPhone(d.practicePhone || "");
+                        setNewDoctorEmail("");
+                        setDoctorDropdownOpen(true);
+                      },
+                    },
+                  ]
+                );
+              }, 600);
+            }
+          }
         } else {
           failReason = "AI could not parse the prescription";
         }

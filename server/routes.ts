@@ -318,6 +318,9 @@ Return ONLY valid JSON with these fields:
   "dueDate": "due date in MM/DD/YYYY format if visible - look for Due Date, Date Needed, Ship Date, Return By",
   "isRush": false,
   "toothDiagram": "array of tooth numbers (1-32) that are marked, circled, highlighted, crossed out, or indicated on ANY tooth diagram/chart on the prescription. Example: [10, 11]. If no tooth diagram is present, use empty array []",
+  "practiceName": "dental practice/office/group name if visible (e.g., 'CWD Dental Group', 'Sunshine Dental'). Look for letterhead, logo text, From: field, or footer branding.",
+  "practiceAddress": "full practice/office address if visible (street, city, state, zip). Look for letterhead, From: field, or printed address block.",
+  "practicePhone": "practice/office phone number if visible. Look for letterhead, contact info, or printed phone number.",
   "notes": "ONLY clinical instructions, special notes, treatment specifications, and procedure type (Fixed Restorative, etc.). Do NOT include practice name, practice address, doctor address, phone numbers, fax numbers, license numbers, or any contact/office information in notes.",
   "description": "brief summary of the prescription"
 }
@@ -443,6 +446,9 @@ IMPORTANT RULES:
           dueDate: parsed.dueDate || "",
           isRush: parsed.isRush || false,
           notes: parsed.notes || "",
+          practiceName: parsed.practiceName || "",
+          practiceAddress: parsed.practiceAddress || "",
+          practicePhone: parsed.practicePhone || "",
           description: parsed.description || "Prescription analyzed",
         },
       });
