@@ -1295,7 +1295,7 @@ export default function ScanScreen() {
         setPendingRemakeCheck(null);
         startRemakeCheck(caseId, pName);
       } else {
-        router.replace("/(tabs)/cases");
+        router.navigate("/(tabs)/cases");
       }
     }, 300);
   }
@@ -1362,7 +1362,9 @@ export default function ScanScreen() {
         isShared
           ? `Barcode "${data}" is now shared with case ${existingCase.caseNumber || existingCase.id}.`
           : `Barcode "${data}" has been assigned to this case.`,
-        [{ text: "OK", onPress: () => router.replace("/(tabs)/cases") }]
+        [{ text: "OK", onPress: () => {
+          setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+        }}]
       );
     }, 600);
   }
@@ -1555,7 +1557,7 @@ export default function ScanScreen() {
           if (isDuplicate) {
             startRemakeCheck(newCase.id, savedPatientName);
           } else {
-            router.replace("/(tabs)/cases");
+            setTimeout(() => router.navigate("/(tabs)/cases"), 100);
           }
         }},
       ],
