@@ -295,6 +295,7 @@ export default function ScanScreen() {
     setDueDate(`${yyyy}-${mm}-${dd}`);
     setCalendarMonth(d.getMonth());
     setCalendarYear(d.getFullYear());
+    setDueDateOpen(false);
   };
 
   const selectCalendarDay = (day: number) => {
