@@ -316,7 +316,7 @@ Return ONLY valid JSON with these fields:
   "material": "one of: Zirconia, E.max, PFM, Gold, Semi Precious, Full Cast - determine from material descriptions (zirconia/ceramic translucent zirconia = Zirconia, lithium disilicate/emax = E.max, porcelain fused to metal = PFM, full gold/high noble = Gold, semi precious/noble metal = Semi Precious, full cast/base metal = Full Cast). If material cannot be determined from the main fields, check the notes section for material clues.",
   "dueDate": "due date in MM/DD/YYYY format if visible - look for Due Date, Date Needed, Ship Date, Return By",
   "isRush": false,
-  "notes": "ALL other instructions, special notes, treatment specifications, procedure type (Fixed Restorative, etc.), practice name and address, and any other text on the form",
+  "notes": "ONLY clinical instructions, special notes, treatment specifications, and procedure type (Fixed Restorative, etc.). Do NOT include practice name, practice address, doctor address, phone numbers, fax numbers, license numbers, or any contact/office information in notes.",
   "description": "brief summary of the prescription"
 }
 
