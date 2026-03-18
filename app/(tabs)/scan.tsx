@@ -1337,74 +1337,23 @@ export default function ScanScreen() {
 
     setBarcodeScanForCase(null);
 
+    const existingCase = findCaseByBarcode(data);
+    const isShared = existingCase && existingCase.id !== caseId;
+
+    assignBarcodeToCase(caseId, data);
+    setLabelModalVisible(false);
+    setPendingRemakeCheck(null);
+    lastCreatedCaseIdRef.current = null;
+
     setTimeout(() => {
       Alert.alert(
-        "Confirm Barcode",
-        `Detected barcode: "${data}". Assign this barcode to the case?`,
-        [
-          {
-            text: "Yes",
-            onPress: () => {
-              const existingCase = findCaseByBarcode(data);
-              if (existingCase && existingCase.id !== caseId) {
-                Alert.alert(
-                  "Barcode Already Assigned",
-                  `This barcode is already assigned to case ${existingCase.caseNumber || existingCase.id}. Do you wish to add another case to this barcode?`,
-                  [
-                    {
-                      text: "Yes",
-                      onPress: () => {
-                        assignBarcodeToCase(caseId, data);
-                        setLabelModalVisible(false);
-                        setPendingRemakeCheck(null);
-                        lastCreatedCaseIdRef.current = null;
-                        setTimeout(() => {
-                          Alert.alert("Barcode Shared", `Barcode "${data}" is now assigned to both cases.`, [
-                            { text: "OK", onPress: () => router.replace("/(tabs)/cases") },
-                          ]);
-                        }, 400);
-                      },
-                    },
-                    {
-                      text: "No",
-                      style: "cancel",
-                      onPress: () => {
-                        setBarcodeAttachScanned(false);
-                        setLabelModalVisible(false);
-                        setPendingRemakeCheck(null);
-                        lastCreatedCaseIdRef.current = null;
-                        router.replace("/(tabs)/cases");
-                      },
-                    },
-                  ]
-                );
-              } else {
-                assignBarcodeToCase(caseId, data);
-                setLabelModalVisible(false);
-                setPendingRemakeCheck(null);
-                lastCreatedCaseIdRef.current = null;
-                setTimeout(() => {
-                  Alert.alert("Barcode Attached", `Barcode "${data}" has been assigned to this case.`, [
-                    { text: "OK", onPress: () => router.replace("/(tabs)/cases") },
-                  ]);
-                }, 400);
-              }
-            },
-          },
-          {
-            text: "No",
-            style: "cancel",
-            onPress: () => {
-              setBarcodeAttachScanned(false);
-              setLabelModalVisible(false);
-              setPendingRemakeCheck(null);
-              lastCreatedCaseIdRef.current = null;
-              router.replace("/(tabs)/cases");
-            },
-          },
-        ]
+        isShared ? "Barcode Shared" : "Barcode Assigned",
+        isShared
+          ? `Barcode "${data}" is now shared with case ${existingCase.caseNumber || existingCase.id}.`
+          : `Barcode "${data}" has been assigned to this case.`,
+        [{ text: "OK", onPress: () => router.replace("/(tabs)/cases") }]
       );
-    }, 500);
+    }, 400);
   }
 
   function handleBarcodeScanned({ data }: { data: string }) {
