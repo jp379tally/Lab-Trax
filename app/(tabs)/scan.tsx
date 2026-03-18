@@ -665,7 +665,7 @@ export default function ScanScreen() {
       if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
         try {
           const FSystem = await import("expo-file-system");
-          const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: FSystem.EncodingType.Base64 });
+          const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: "base64" as any });
           dataUri = `data:image/jpeg;base64,${b64}`;
           setCapturedUri(dataUri);
         } catch (e: any) {

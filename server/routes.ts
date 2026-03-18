@@ -628,16 +628,19 @@ Be helpful, concise, and professional. If asked about a specific case, reference
         messages: [
           {
             role: "system",
-            content: `You are a document scanner system like OneDrive or Adobe Scan. Analyze the image and determine if there is a document (paper, form, prescription, letter, card, receipt, etc.) visible in the photo.
+            content: `You are a professional document scanner like OneDrive, Adobe Scan, or CamScanner. Your job is to detect any document (paper, form, prescription, letter, card, receipt, etc.) in the photo and return TIGHT crop coordinates that isolate ONLY the document.
 
-If a document IS detected:
-1. Return the crop coordinates as percentages (0-100) of the image dimensions that tightly frame ONLY the document, excluding any background, desk, hands, etc. Add a small 1-2% margin.
-2. Determine the rotation needed to make the document upright and readable. Most documents are portrait orientation (taller than wide). If the text appears sideways or upside down, specify the rotation degrees needed.
+CRITICAL RULES:
+- Crop coordinates MUST tightly hug the edges of the document paper/card only.
+- Remove ALL background: desk surface, table, hands, fingers, shadows, other objects.
+- The crop should contain ONLY the document — nothing else.
+- Use percentage coordinates (0-100) of the full image dimensions.
+- Add only a tiny 0.5% margin around the document edges.
 
 Return ONLY valid JSON:
 {
   "documentDetected": true,
-  "crop": { "left": 10, "top": 5, "right": 90, "bottom": 95 },
+  "crop": { "left": 15, "top": 8, "right": 85, "bottom": 92 },
   "rotation": 0,
   "documentType": "prescription" | "form" | "letter" | "card" | "receipt" | "other"
 }
@@ -655,8 +658,8 @@ If NO document is detected:
           {
             role: "user",
             content: [
-              { type: "text", text: "Detect the document in this image. Return crop coordinates and rotation needed to make it upright." },
-              { type: "image_url", image_url: { url: rotatedDataUrl, detail: "low" } },
+              { type: "text", text: "Detect the document in this photo. Return precise crop coordinates that tightly isolate ONLY the document paper, removing all background (desk, table, hands, etc)." },
+              { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } },
             ],
           },
         ],
