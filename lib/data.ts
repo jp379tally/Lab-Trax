@@ -561,6 +561,7 @@ export interface Client {
   accountNumber: string;
   practiceName: string;
   leadDoctor: string;
+  additionalProviders?: string[];
   phone: string;
   email: string;
   address: string;

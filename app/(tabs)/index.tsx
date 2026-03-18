@@ -1469,6 +1469,7 @@ function AdminDashboard() {
 
   const [newClientName, setNewClientName] = useState("");
   const [newClientDoctor, setNewClientDoctor] = useState("");
+  const [newClientAdditionalProviders, setNewClientAdditionalProviders] = useState<string[]>(["", "", "", "", ""]);
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
   const [doctorSearch, setDoctorSearch] = useState("");
   const [newClientPhone, setNewClientPhone] = useState("");
@@ -1564,6 +1565,7 @@ function AdminDashboard() {
   function resetClientForm() {
     setNewClientName("");
     setNewClientDoctor("");
+    setNewClientAdditionalProviders(["", "", "", "", ""]);
     setDoctorDropdownOpen(false);
     setDoctorSearch("");
     setNewClientPhone("");
@@ -1601,12 +1603,14 @@ function AdminDashboard() {
 
   function handleAddClient() {
     if (!newClientName.trim() || !newClientDoctor.trim()) {
-      Alert.alert("Required", "Practice name and lead doctor are required.");
+      Alert.alert("Required", "Practice name and main provider are required.");
       return;
     }
+    const filteredProviders = newClientAdditionalProviders.map(p => p.trim()).filter(p => p.length > 0);
     addClient({
       practiceName: newClientName.trim(),
       leadDoctor: newClientDoctor.trim(),
+      additionalProviders: filteredProviders.length > 0 ? filteredProviders : undefined,
       phone: newClientPhone.trim(),
       email: newClientEmail.trim(),
       address: newClientAddress.trim(),
@@ -1878,7 +1882,7 @@ function AdminDashboard() {
             <TextInput style={adm.input} value={newClientName} onChangeText={setNewClientName} placeholder="Elite Dental Group" placeholderTextColor={Colors.light.textTertiary} />
           </View>
           <View style={[adm.field, { zIndex: 10 }]}>
-            <Text style={adm.fieldLabel}>Lead Doctor</Text>
+            <Text style={adm.fieldLabel}>Main Provider</Text>
             <Pressable
               style={[adm.input, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}
               onPress={() => setDoctorDropdownOpen(!doctorDropdownOpen)}
@@ -1933,6 +1937,23 @@ function AdminDashboard() {
                 </ScrollView>
               </View>
             )}
+          </View>
+          <View style={adm.field}>
+            <Text style={adm.fieldLabel}>Additional Providers</Text>
+            {newClientAdditionalProviders.map((prov, idx) => (
+              <TextInput
+                key={idx}
+                style={[adm.input, { marginBottom: idx < 4 ? 8 : 0 }]}
+                value={prov}
+                onChangeText={(v) => {
+                  const updated = [...newClientAdditionalProviders];
+                  updated[idx] = v;
+                  setNewClientAdditionalProviders(updated);
+                }}
+                placeholder={`Provider ${idx + 2}`}
+                placeholderTextColor={Colors.light.textTertiary}
+              />
+            ))}
           </View>
           <View style={adm.fieldRow}>
             <View style={[adm.field, { flex: 1 }]}>
@@ -2003,8 +2024,30 @@ function AdminDashboard() {
               <TextInput style={adm.input} value={editingClient.practiceName} onChangeText={(v) => setEditingClient({ ...editingClient, practiceName: v })} />
             </View>
             <View style={adm.field}>
-              <Text style={adm.fieldLabel}>Lead Doctor</Text>
+              <Text style={adm.fieldLabel}>Main Provider</Text>
               <TextInput style={adm.input} value={editingClient.leadDoctor} onChangeText={(v) => setEditingClient({ ...editingClient, leadDoctor: v })} />
+            </View>
+            <View style={adm.field}>
+              <Text style={adm.fieldLabel}>Additional Providers</Text>
+              {(editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
+                ? editingClient.additionalProviders
+                : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")]
+              ).map((prov: string, idx: number) => (
+                <TextInput
+                  key={idx}
+                  style={[adm.input, { marginBottom: idx < 4 ? 8 : 0 }]}
+                  value={prov}
+                  onChangeText={(v) => {
+                    const current = editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
+                      ? [...editingClient.additionalProviders]
+                      : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")];
+                    current[idx] = v;
+                    setEditingClient({ ...editingClient, additionalProviders: current });
+                  }}
+                  placeholder={`Provider ${idx + 2}`}
+                  placeholderTextColor={Colors.light.textTertiary}
+                />
+              ))}
             </View>
             <View style={adm.fieldRow}>
               <View style={[adm.field, { flex: 1 }]}>
