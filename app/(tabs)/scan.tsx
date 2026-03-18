@@ -98,6 +98,7 @@ export default function ScanScreen() {
   const [toothIndices, setToothIndices] = useState("");
   const [selectedTeeth, setSelectedTeeth] = useState<number[]>([]);
   const [toothTypes, setToothTypes] = useState<Record<number, ToothType>>({});
+  const [toothConnectors, setToothConnectors] = useState<Record<string, boolean>>({});
   const [toothChartOpen, setToothChartOpen] = useState(false);
   const [shade, setShade] = useState("");
   const [material, setMaterial] = useState("Zirconia");
@@ -201,6 +202,14 @@ export default function ScanScreen() {
           updateToothDisplay(sorted, updated);
           return updated;
         });
+        setToothConnectors((prev) => {
+          const updated = { ...prev };
+          Object.keys(updated).forEach(k => {
+            const [a, b] = k.split("-").map(Number);
+            if (a === num || b === num) delete updated[k];
+          });
+          return updated;
+        });
       }
       return sorted;
     });
@@ -236,6 +245,14 @@ export default function ScanScreen() {
               updateToothDisplay(teeth, updated);
               return updated;
             });
+            setToothConnectors((prev) => {
+              const updated = { ...prev };
+              Object.keys(updated).forEach(k => {
+                const [a, b] = k.split("-").map(Number);
+                if (a === num || b === num) delete updated[k];
+              });
+              return updated;
+            });
           },
         },
         {
@@ -246,6 +263,14 @@ export default function ScanScreen() {
               delete updated[num];
               const teeth = selectedTeeth.includes(num) ? selectedTeeth : [...selectedTeeth, num].sort((a, b) => a - b);
               updateToothDisplay(teeth, updated);
+              return updated;
+            });
+            setToothConnectors((prev) => {
+              const updated = { ...prev };
+              Object.keys(updated).forEach(k => {
+                const [a, b] = k.split("-").map(Number);
+                if (a === num || b === num) delete updated[k];
+              });
               return updated;
             });
           },
@@ -1431,6 +1456,7 @@ export default function ScanScreen() {
     setToothIndices("");
     setSelectedTeeth([]);
     setToothTypes({});
+    setToothConnectors({});
     setToothChartOpen(false);
     setShade("");
     setCustomShadePhotos([]);
@@ -2128,6 +2154,7 @@ export default function ScanScreen() {
                       onPress={() => {
                         setSelectedTeeth([]);
                         setToothTypes({});
+                        setToothConnectors({});
                         setToothIndices("");
                       }}
                       style={({ pressed }) => [pressed && { opacity: 0.6 }]}
@@ -2200,8 +2227,63 @@ export default function ScanScreen() {
                     const ponticColor = "#EAB308";
                     const missingColor = "#EF4444";
 
+                    const upperAdj = [[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],[7,8],[8,9],[9,10],[10,11],[11,12],[12,13],[13,14],[14,15],[15,16]];
+                    const lowerAdj = [[17,18],[18,19],[19,20],[20,21],[21,22],[22,23],[23,24],[24,25],[25,26],[26,27],[27,28],[28,29],[29,30],[30,31],[31,32]];
+                    const allAdj = [...upperAdj, ...lowerAdj];
+
+                    const posMap: Record<number, { x: number; y: number }> = {};
+                    toothPositions.forEach(p => { posMap[p.num] = { x: p.x, y: p.y }; });
+
+                    const connectorDots: { key: string; x: number; y: number; a: number; b: number }[] = [];
+                    const archCenterY = CHART_H / 2;
+                    allAdj.forEach(([a, b]) => {
+                      const aSelected = selectedTeeth.includes(a);
+                      const bSelected = selectedTeeth.includes(b);
+                      if (!aSelected || !bSelected) return;
+                      const aType = toothTypes[a] || "normal";
+                      const bType = toothTypes[b] || "normal";
+                      if (aType !== "bridge" && bType !== "bridge") return;
+                      const pa = posMap[a];
+                      const pb = posMap[b];
+                      if (!pa || !pb) return;
+                      const mx = (pa.x + pb.x) / 2;
+                      const my = (pa.y + pb.y) / 2 + TOOTH_SZ / 2;
+                      const dx = mx - CX;
+                      const dy = my - archCenterY;
+                      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                      const outOffset = 20;
+                      const ox = mx + (dx / dist) * outOffset;
+                      const oy = my + (dy / dist) * outOffset;
+                      const cKey = `${Math.min(a,b)}-${Math.max(a,b)}`;
+                      connectorDots.push({ key: cKey, x: ox, y: oy, a, b });
+                    });
+
+                    const DOT_SZ = 16;
+
                     return (
                       <View style={{ width: CHART_W, height: CHART_H + 10, position: "relative" }}>
+                        {connectorDots.map(({ key, x, y }) => {
+                          const isActive = !!toothConnectors[key];
+                          return (
+                            <Pressable
+                              key={`conn-${key}`}
+                              testID={`connector-${key}`}
+                              accessibilityLabel={`Connector ${key} ${isActive ? "connected" : "disconnected"}`}
+                              accessibilityRole="button"
+                              onPress={() => setToothConnectors(prev => ({ ...prev, [key]: !prev[key] }))}
+                              style={{
+                                position: "absolute",
+                                left: x - DOT_SZ / 2,
+                                top: y - DOT_SZ / 2,
+                                width: DOT_SZ,
+                                height: DOT_SZ,
+                                borderRadius: DOT_SZ / 2,
+                                backgroundColor: isActive ? normalColor : "#EF4444",
+                                zIndex: 15,
+                              }}
+                            />
+                          );
+                        })}
                         {toothPositions.map(({ num, x, y }) => {
                           const isSelected = selectedTeeth.includes(num);
                           const tType = toothTypes[num] || "normal";
@@ -2231,6 +2313,7 @@ export default function ScanScreen() {
                                 borderColor: borderCol,
                                 alignItems: "center" as const,
                                 justifyContent: "center" as const,
+                                zIndex: 10,
                               }}
                             >
                               {isSelected && tType === "missing" ? (
