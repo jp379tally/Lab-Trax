@@ -1180,13 +1180,8 @@ export default function ScanScreen() {
       proceedAfterLabel();
       return;
     }
-    Alert.alert("Attach Barcode", "Scan a barcode to attach to this case for tracking.", [
-      { text: "Skip", onPress: proceedAfterLabel },
-      { text: "Scan Barcode", onPress: () => {
-        setBarcodeAttachScanned(false);
-        setBarcodeScanForCase(latestCase.id);
-      }},
-    ]);
+    setBarcodeAttachScanned(false);
+    setBarcodeScanForCase(latestCase.id);
   }
 
   function proceedAfterLabel() {
@@ -1203,28 +1198,32 @@ export default function ScanScreen() {
     }, 300);
   }
 
-  const SCAN_TARGET_WIDTH = 260;
-  const SCAN_TARGET_HEIGHT = 160;
+  const SCAN_TARGET_WIDTH = 280;
+  const SCAN_TARGET_HEIGHT = 180;
 
   function isBarcodeInTargetArea(bounds: any, cornerPoints: any, cameraWidth: number, cameraHeight: number): boolean {
     if (!cameraWidth || !cameraHeight) return true;
+
     const targetLeft = (cameraWidth - SCAN_TARGET_WIDTH) / 2;
     const targetTop = (cameraHeight - SCAN_TARGET_HEIGHT) / 2;
-    const targetRight = targetLeft + SCAN_TARGET_WIDTH;
-    const targetBottom = targetTop + SCAN_TARGET_HEIGHT;
+    const targetRight = (cameraWidth + SCAN_TARGET_WIDTH) / 2;
+    const targetBottom = (cameraHeight + SCAN_TARGET_HEIGHT) / 2;
 
     if (cornerPoints && cornerPoints.length >= 4) {
-      const xs = cornerPoints.map((p: any) => p.x);
-      const ys = cornerPoints.map((p: any) => p.y);
-      const centerX = xs.reduce((a: number, b: number) => a + b, 0) / xs.length;
-      const centerY = ys.reduce((a: number, b: number) => a + b, 0) / ys.length;
-      return centerX >= targetLeft && centerX <= targetRight && centerY >= targetTop && centerY <= targetBottom;
+      for (const p of cornerPoints) {
+        if (p.x < targetLeft || p.x > targetRight || p.y < targetTop || p.y > targetBottom) {
+          return false;
+        }
+      }
+      return true;
     }
 
     if (bounds && bounds.origin) {
-      const centerX = bounds.origin.x + (bounds.size?.width || 0) / 2;
-      const centerY = bounds.origin.y + (bounds.size?.height || 0) / 2;
-      return centerX >= targetLeft && centerX <= targetRight && centerY >= targetTop && centerY <= targetBottom;
+      const bLeft = bounds.origin.x;
+      const bTop = bounds.origin.y;
+      const bRight = bLeft + (bounds.size?.width || 0);
+      const bBottom = bTop + (bounds.size?.height || 0);
+      return bLeft >= targetLeft && bTop >= targetTop && bRight <= targetRight && bBottom <= targetBottom;
     }
 
     return true;
@@ -2715,7 +2714,7 @@ export default function ScanScreen() {
               <CameraView
                 style={{ flex: 1 }}
                 facing="back"
-                barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
+                barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
                 onBarcodeScanned={barcodeScanned ? undefined : (e) => {
                   if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
                   handleBarcodeScanned(e);
@@ -2726,14 +2725,21 @@ export default function ScanScreen() {
                 }}
               >
                 <View style={{ flex: 1 }} pointerEvents="none">
-                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                   <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
-                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
-                    <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 16, borderStyle: "dashed" }} />
-                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
+                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                    <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
+                      <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
+                      <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
+                      <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
+                      <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                      <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
+                    </View>
+                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                   </View>
-                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", paddingTop: 16 }}>
-                    <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_500Medium" }}>Point camera at barcode</Text>
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
+                    <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                    <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
                   </View>
                 </View>
               </CameraView>
@@ -3024,7 +3030,7 @@ export default function ScanScreen() {
             <CameraView
               style={{ flex: 1 }}
               facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
+              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
               onBarcodeScanned={barcodeScanned ? undefined : (e) => {
                 if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
                 handleBarcodeScanned(e);
@@ -3035,14 +3041,21 @@ export default function ScanScreen() {
               }}
             >
               <View style={{ flex: 1 }} pointerEvents="none">
-                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
+                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                 <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
-                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
-                  <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 16, borderStyle: "dashed" }} />
-                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                  <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
+                    <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                    <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
+                  </View>
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                 </View>
-                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", paddingTop: 16 }}>
-                  <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_500Medium" }}>Point camera at barcode</Text>
+                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
+                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
                 </View>
               </View>
             </CameraView>
@@ -3266,12 +3279,12 @@ export default function ScanScreen() {
         visible={!!barcodeScanForCase}
         animationType="slide"
         statusBarTranslucent
-        onRequestClose={() => { setBarcodeScanForCase(null); router.push("/(tabs)/cases"); }}
+        onRequestClose={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
       >
         <View style={{ flex: 1, backgroundColor: "#000" }}>
           <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
-            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode to Attach</Text>
-            <Pressable onPress={() => { setBarcodeScanForCase(null); router.push("/(tabs)/cases"); }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Attach Barcode</Text>
+            <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}>
               <Ionicons name="close" size={28} color="#FFF" />
             </Pressable>
           </View>
@@ -3290,36 +3303,59 @@ export default function ScanScreen() {
                   if (val) handleBarcodeAttachScanned({ data: val });
                 }}
               />
-              <Pressable onPress={() => { setBarcodeScanForCase(null); router.push("/(tabs)/cases"); }} style={{ marginTop: 20, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 }}>
+              <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }} style={{ marginTop: 20, backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 28, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}>
                 <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip</Text>
               </Pressable>
             </View>
           ) : (
-            <CameraView
-              style={{ flex: 1 }}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a"] }}
-              onBarcodeScanned={barcodeAttachScanned ? undefined : (e) => {
-                if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
-                handleBarcodeAttachScanned(e);
-              }}
-              onLayout={(e) => {
-                const { width, height } = e.nativeEvent.layout;
-                setBarcodeCameraLayout({ width, height });
-              }}
-            >
-              <View style={{ flex: 1 }} pointerEvents="none">
-                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
-                <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
-                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
-                  <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 16, borderStyle: "dashed" }} />
-                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }} />
+            <View style={{ flex: 1 }}>
+              <CameraView
+                style={{ flex: 1 }}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
+                onBarcodeScanned={barcodeAttachScanned ? undefined : (e) => {
+                  if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
+                  handleBarcodeAttachScanned(e);
+                }}
+                onLayout={(e) => {
+                  const { width, height } = e.nativeEvent.layout;
+                  setBarcodeCameraLayout({ width, height });
+                }}
+              >
+                <View style={{ flex: 1 }} pointerEvents="none">
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                  <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
+                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                    <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
+                      <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
+                      <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
+                      <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
+                      <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                      <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
+                    </View>
+                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                  </View>
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
+                    <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                    <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
+                  </View>
                 </View>
-                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", paddingTop: 16 }}>
-                  <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_500Medium" }}>Point camera at barcode</Text>
-                </View>
+              </CameraView>
+              <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, paddingTop: 12, backgroundColor: "rgba(0,0,0,0.85)" }}>
+                <Pressable
+                  onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
+                  style={({ pressed }) => ({
+                    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                    paddingVertical: 14, borderRadius: 14,
+                    backgroundColor: "rgba(255,255,255,0.12)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)",
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                >
+                  <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip — No Barcode</Text>
+                </Pressable>
               </View>
-            </CameraView>
+            </View>
           )}
         </View>
       </Modal>
