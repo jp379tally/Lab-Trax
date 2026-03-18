@@ -309,7 +309,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
 Return ONLY valid JSON with these fields:
 {
-  "doctorName": "full doctor/dentist name with Dr. prefix. ALWAYS output as: Dr. FirstName LastName",
+  "doctorName": "full doctor/dentist/provider name with Dr. prefix. ALWAYS output as: Dr. FirstName LastName. Look for Provider, Doctor, Dentist, or Clinician fields.",
   "patientName": "full patient name. ALWAYS output as: FirstName LastName (first name first, last name last)",
   "caseType": "one of: Restorative, Removable, Appliance, Temporary - determine from the type of work described (crowns/bridges/veneers/inlays/onlays = Restorative, dentures/partials = Removable, retainers/guards/splints = Appliance, temps/provisionals = Temporary)",
   "toothIndices": "tooth numbers in format #8, #9, #10 - look for tooth numbers, tooth chart markings, tooth diagrams, Treatment Information tables, or FDI notation and convert to American numbering 1-32",
@@ -337,8 +337,8 @@ IMPORTANT RULES:
 - For material, default to "Zirconia" if unclear. "Ceramic Translucent Zirconia" = "Zirconia"
 - For isRush, set to true if you see RUSH, ASAP, URGENT, or similar urgency indicators
 - Include ALL notes and instructions in the notes field
-- Patient name is CRITICAL - look for "Patient:" labels specifically
-- Doctor name is CRITICAL - look for "Doctor:" labels specifically
+- Patient name is CRITICAL - look for "Patient:", "Patient Name:" labels specifically
+- Doctor name is CRITICAL - look for "Doctor:", "Provider:", "Dentist:", "Clinician:", "Referring Doctor:" labels specifically. The "Provider" field on a prescription IS the doctor's name.
 - Tooth numbers should use American dental numbering (1-32)
 - Look at the ENTIRE document including headers, footers, tables, and sidebars`,
         },
