@@ -1259,27 +1259,26 @@ export default function ScanScreen() {
       }
       await Print.printAsync(printOptions);
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setLabelModalVisible(false);
-      setTimeout(() => {
-        promptAttachBarcode();
-      }, 500);
     } catch (e: any) {
       const msg = e?.message || "";
       if (!msg.includes("cancelled") && e?.code !== "ERR_CANCELLED") {
-        Alert.alert("Print Error", "Unable to print. Please try again.");
+        Alert.alert("Print Notice", "Print may not have completed. You can reprint from the case details later.");
       }
     }
+    setLabelModalVisible(false);
+    setTimeout(() => {
+      promptAttachBarcode();
+    }, 500);
   }
 
   function promptAttachBarcode() {
     const caseId = lastCreatedCaseIdRef.current;
-    const latestCase = caseId ? cases.find(c => c.id === caseId) : cases[0];
-    if (!latestCase) {
+    if (!caseId) {
       proceedAfterLabel();
       return;
     }
     setBarcodeAttachScanned(false);
-    setBarcodeScanForCase(latestCase.id);
+    setBarcodeScanForCase(caseId);
   }
 
   function proceedAfterLabel() {
