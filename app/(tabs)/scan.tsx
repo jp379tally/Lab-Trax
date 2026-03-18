@@ -69,6 +69,7 @@ interface LabelData {
   notes: string;
   price: number;
   createdAt: string;
+  toothDiagram?: number[];
 }
 
 export default function ScanScreen() {
@@ -1173,6 +1174,13 @@ export default function ScanScreen() {
     const now = new Date();
     const createdStr = `${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getDate().toString().padStart(2, "0")}/${now.getFullYear()}`;
 
+    const diagramTeeth: number[] = [];
+    const tiStr = toothIndices.trim();
+    if (tiStr) {
+      const nums = tiStr.match(/\d+/g);
+      if (nums) nums.forEach(n => { const v = parseInt(n, 10); if (v >= 1 && v <= 32) diagramTeeth.push(v); });
+    }
+
     const savedLabel: LabelData = {
       caseNumber,
       doctorName: doctorName.trim(),
@@ -1186,6 +1194,7 @@ export default function ScanScreen() {
       notes: notes.trim(),
       price: calculatedPrice,
       createdAt: createdStr,
+      toothDiagram: diagramTeeth.length > 0 ? diagramTeeth : undefined,
     };
 
     if (isDuplicate) {
@@ -2868,8 +2877,35 @@ export default function ScanScreen() {
                     </>
                   ) : null}
 
-                  <View style={labelStyles.divider} />
-                  <Text style={labelStyles.labelFooter}>Station: INTAKE</Text>
+                  {labelData.toothDiagram && labelData.toothDiagram.length > 0 ? (
+                    <>
+                      <View style={labelStyles.divider} />
+                      <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textTransform: "uppercase", marginBottom: 6, letterSpacing: 0.5 }}>Tooth Diagram</Text>
+                      <View style={{ alignItems: "center" }}>
+                        <View style={{ flexDirection: "row", marginBottom: 2 }}>
+                          {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(t => {
+                            const active = labelData.toothDiagram!.includes(t);
+                            return (
+                              <View key={t} style={{ width: 18, height: 18, borderRadius: 3, borderWidth: 1, borderColor: active ? Colors.light.tint : "#E0E0E0", backgroundColor: active ? Colors.light.tint : "transparent", justifyContent: "center", alignItems: "center", marginHorizontal: 0.5 }}>
+                                <Text style={{ fontSize: 7, fontFamily: active ? "Inter_700Bold" : "Inter_400Regular", color: active ? "#FFF" : "#BBB" }}>{t}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                        <View style={{ width: "90%", height: 1, backgroundColor: "#DDD", marginVertical: 2 }} />
+                        <View style={{ flexDirection: "row" }}>
+                          {[32,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17].map(t => {
+                            const active = labelData.toothDiagram!.includes(t);
+                            return (
+                              <View key={t} style={{ width: 18, height: 18, borderRadius: 3, borderWidth: 1, borderColor: active ? Colors.light.tint : "#E0E0E0", backgroundColor: active ? Colors.light.tint : "transparent", justifyContent: "center", alignItems: "center", marginHorizontal: 0.5 }}>
+                                <Text style={{ fontSize: 7, fontFamily: active ? "Inter_700Bold" : "Inter_400Regular", color: active ? "#FFF" : "#BBB" }}>{t}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    </>
+                  ) : null}
                 </View>
               </ScrollView>
             )}

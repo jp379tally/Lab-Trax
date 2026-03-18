@@ -316,6 +316,7 @@ Return ONLY valid JSON with these fields:
   "material": "one of: Zirconia, E.max, PFM, Gold, Semi Precious, Full Cast - determine from material descriptions (zirconia/ceramic translucent zirconia = Zirconia, lithium disilicate/emax = E.max, porcelain fused to metal = PFM, full gold/high noble = Gold, semi precious/noble metal = Semi Precious, full cast/base metal = Full Cast). If material cannot be determined from the main fields, check the notes section for material clues.",
   "dueDate": "due date in MM/DD/YYYY format if visible - look for Due Date, Date Needed, Ship Date, Return By",
   "isRush": false,
+  "toothDiagram": "array of tooth numbers (1-32) that are marked, circled, highlighted, crossed out, or indicated on ANY tooth diagram/chart on the prescription. Example: [10, 11]. If no tooth diagram is present, use empty array []",
   "notes": "ONLY clinical instructions, special notes, treatment specifications, and procedure type (Fixed Restorative, etc.). Do NOT include practice name, practice address, doctor address, phone numbers, fax numbers, license numbers, or any contact/office information in notes.",
   "description": "brief summary of the prescription"
 }
