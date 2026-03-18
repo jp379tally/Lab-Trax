@@ -2778,6 +2778,7 @@ export default function ScanScreen() {
               <CameraView
                 style={{ flex: 1 }}
                 facing="back"
+                autofocus="on"
                 barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
                 onBarcodeScanned={barcodeScanned ? undefined : (e) => {
                   if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
@@ -3094,6 +3095,7 @@ export default function ScanScreen() {
             <CameraView
               style={{ flex: 1 }}
               facing="back"
+              autofocus="on"
               barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
               onBarcodeScanned={barcodeScanned ? undefined : (e) => {
                 if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
@@ -3376,6 +3378,7 @@ export default function ScanScreen() {
               <CameraView
                 style={{ flex: 1 }}
                 facing="back"
+                autofocus="on"
                 barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
                 onBarcodeScanned={barcodeAttachScanned ? undefined : (e) => {
                   if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
