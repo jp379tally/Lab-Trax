@@ -28,7 +28,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
-import { getApiUrl } from "@/lib/query-client";
+import { getApiUrl, resilientFetch } from "@/lib/query-client";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -410,8 +410,7 @@ export default function ScanScreen() {
 
   async function cropDocumentIfNeeded(imageDataUri: string): Promise<string> {
     try {
-      const apiUrl = new URL("/api/crop-document", getApiUrl()).toString();
-      const resp = await globalThis.fetch(apiUrl, {
+      const resp = await resilientFetch("/api/crop-document", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageBase64: imageDataUri }),
@@ -488,7 +487,7 @@ export default function ScanScreen() {
       try {
         const FileSystem = await import("expo-file-system");
         const b64 = await FileSystem.readAsStringAsync(rawUri, {
-          encoding: "base64" as any,
+          encoding: FileSystem.EncodingType.Base64,
         });
         dataUri = `data:image/jpeg;base64,${b64}`;
         setCapturedUri(dataUri);
@@ -665,7 +664,7 @@ export default function ScanScreen() {
       if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
         try {
           const FSystem = await import("expo-file-system");
-          const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: "base64" as any });
+          const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: FSystem.EncodingType.Base64 });
           dataUri = `data:image/jpeg;base64,${b64}`;
           setCapturedUri(dataUri);
         } catch (e: any) {
@@ -791,7 +790,7 @@ export default function ScanScreen() {
             );
             console.log("AI compress: manipulator succeeded with:", tryUri);
             const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
-              encoding: "base64" as any,
+              encoding: FileSystem.EncodingType.Base64,
             });
             console.log("AI compress: base64 length:", fileBase64.length);
             return `data:image/jpeg;base64,${fileBase64}`;
@@ -802,7 +801,7 @@ export default function ScanScreen() {
 
         try {
           const fileBase64 = await FileSystem.readAsStringAsync(tryUri, {
-            encoding: "base64" as any,
+            encoding: FileSystem.EncodingType.Base64,
           });
           if (fileBase64 && fileBase64.length > 100) {
             console.log("AI compress: raw read succeeded for", tryUri, "length:", fileBase64.length);
@@ -818,7 +817,7 @@ export default function ScanScreen() {
       if (info?.exists && info?.uri) {
         try {
           const fileBase64 = await FileSystem.readAsStringAsync(info.uri, {
-            encoding: "base64" as any,
+            encoding: FileSystem.EncodingType.Base64,
           });
           if (fileBase64 && fileBase64.length > 100) {
             console.log("AI compress: read via getInfoAsync uri succeeded, length:", fileBase64.length);
@@ -912,7 +911,7 @@ export default function ScanScreen() {
         } else if (Platform.OS !== "web") {
           try {
             const FSystem = await import("expo-file-system");
-            const b64 = await FSystem.readAsStringAsync(photo, { encoding: "base64" as any });
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
             normalizedImages.push(`data:image/jpeg;base64,${b64}`);
           } catch {
             console.log("Could not read file URI for PDF:", photo);
@@ -924,8 +923,7 @@ export default function ScanScreen() {
         setIsSavingPdf(false);
         return;
       }
-      const apiUrl = new URL("/api/document-to-pdf", getApiUrl()).toString();
-      const resp = await globalThis.fetch(apiUrl, {
+      const resp = await resilientFetch("/api/document-to-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ images: normalizedImages }),
@@ -939,8 +937,10 @@ export default function ScanScreen() {
       const fileName = `Scan_${timestamp}.pdf`;
 
       if (Platform.OS !== "web") {
-        const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
-        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: "base64" as any });
+        const cacheDir = FileSystem.cacheDirectory;
+        if (!cacheDir) throw new Error("Cache directory unavailable");
+        const fileUri = `${cacheDir}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
         if (await Sharing.isAvailableAsync()) {
           await Sharing.shareAsync(fileUri, { mimeType: "application/pdf", UTI: "com.adobe.pdf" });
         } else {
@@ -974,7 +974,7 @@ export default function ScanScreen() {
         } else if (Platform.OS !== "web") {
           try {
             const FSystem = await import("expo-file-system");
-            const b64 = await FSystem.readAsStringAsync(photo, { encoding: "base64" as any });
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
             normalizedImages.push(`data:image/jpeg;base64,${b64}`);
           } catch {
             console.log("Auto PDF: could not read file URI:", photo);
@@ -983,8 +983,7 @@ export default function ScanScreen() {
       }
       if (normalizedImages.length === 0) return null;
 
-      const apiUrl = new URL("/api/document-to-pdf", getApiUrl()).toString();
-      const resp = await globalThis.fetch(apiUrl, {
+      const resp = await resilientFetch("/api/document-to-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ images: normalizedImages }),
@@ -998,8 +997,10 @@ export default function ScanScreen() {
       const fileName = `Rx_${timestamp}.pdf`;
 
       if (Platform.OS !== "web") {
-        const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
-        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: "base64" as any });
+        const cacheDir = FileSystem.cacheDirectory;
+        if (!cacheDir) return null;
+        const fileUri = `${cacheDir}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
         console.log("Auto PDF: saved to", fileUri);
         return fileUri;
       } else {
