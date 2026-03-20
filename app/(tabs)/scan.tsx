@@ -1283,6 +1283,7 @@ export default function ScanScreen() {
   }
 
   function proceedAfterLabel() {
+    resetForm();
     setLabelModalVisible(false);
     setBarcodeScanForCase(null);
     setShowBarcodeScanner(false);
@@ -1349,6 +1350,7 @@ export default function ScanScreen() {
 
     assignBarcodeToCase(caseId, data);
 
+    resetForm();
     setBarcodeScanForCase(null);
     setShowBarcodeScanner(false);
     setLabelModalVisible(false);
@@ -1546,13 +1548,13 @@ export default function ScanScreen() {
       setPendingRemakeCheck({ caseId: newCase.id, patientName: savedPatientName });
     }
 
-    resetForm();
     Alert.alert(
       "Case Added",
       `Case ${caseNumber} has been created and is now in Intake.`,
       [
         { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
         { text: "Done", onPress: () => {
+          resetForm();
           lastCreatedCaseIdRef.current = null;
           if (isDuplicate) {
             startRemakeCheck(newCase.id, savedPatientName);
