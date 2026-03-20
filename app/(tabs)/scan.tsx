@@ -1088,7 +1088,14 @@ export default function ScanScreen() {
           }
           if (d.shade) setShade(d.shade);
           if (d.material) setMaterial(d.material);
-          if (d.dueDate) setDueDate(d.dueDate);
+          if (d.dueDate) {
+            let normalizedDate = d.dueDate;
+            const slashMatch = d.dueDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+            if (slashMatch) {
+              normalizedDate = `${slashMatch[3]}-${slashMatch[1].padStart(2, "0")}-${slashMatch[2].padStart(2, "0")}`;
+            }
+            setDueDate(normalizedDate);
+          }
           if (d.isRush !== undefined) setIsRush(d.isRush);
           if (d.notes) setNotes(d.notes);
           aiSuccess = true;
@@ -1555,13 +1562,9 @@ export default function ScanScreen() {
       [
         { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
         { text: "Done", onPress: () => {
-          resetForm();
-          lastCreatedCaseIdRef.current = null;
-          if (isDuplicate) {
-            startRemakeCheck(newCase.id, savedPatientName);
-          } else {
-            setTimeout(() => router.navigate("/(tabs)/cases"), 100);
-          }
+          setTimeout(() => {
+            promptAttachBarcode();
+          }, 300);
         }},
       ],
     );
@@ -3158,13 +3161,7 @@ export default function ScanScreen() {
         statusBarTranslucent
         onRequestClose={() => {
           setLabelModalVisible(false);
-          if (pendingRemakeCheck) {
-            const { caseId, patientName: pName } = pendingRemakeCheck;
-            setPendingRemakeCheck(null);
-            startRemakeCheck(caseId, pName);
-          } else {
-            router.push("/(tabs)/cases");
-          }
+          setTimeout(() => { promptAttachBarcode(); }, 500);
         }}
       >
         <View style={labelStyles.overlay}>
@@ -3173,13 +3170,7 @@ export default function ScanScreen() {
               <Text style={labelStyles.headerTitle}>Case Label</Text>
               <Pressable onPress={() => {
                 setLabelModalVisible(false);
-                if (pendingRemakeCheck) {
-                  const { caseId, patientName: pName } = pendingRemakeCheck;
-                  setPendingRemakeCheck(null);
-                  startRemakeCheck(caseId, pName);
-                } else {
-                  router.push("/(tabs)/cases");
-                }
+                setTimeout(() => { promptAttachBarcode(); }, 500);
               }} hitSlop={12}>
                 <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
               </Pressable>
