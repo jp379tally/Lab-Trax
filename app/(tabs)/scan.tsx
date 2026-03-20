@@ -912,7 +912,7 @@ export default function ScanScreen() {
         } else if (Platform.OS !== "web") {
           try {
             const FSystem = await import("expo-file-system");
-            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: "base64" as any });
             normalizedImages.push(`data:image/jpeg;base64,${b64}`);
           } catch {
             console.log("Could not read file URI for PDF:", photo);
@@ -974,7 +974,7 @@ export default function ScanScreen() {
         } else if (Platform.OS !== "web") {
           try {
             const FSystem = await import("expo-file-system");
-            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: "base64" as any });
             normalizedImages.push(`data:image/jpeg;base64,${b64}`);
           } catch {
             console.log("Auto PDF: could not read file URI:", photo);
