@@ -87,6 +87,7 @@ export default function ScanScreen() {
   const [labelData, setLabelData] = useState<LabelData | null>(null);
   const [pendingRemakeCheck, setPendingRemakeCheck] = useState<{caseId: string, patientName: string} | null>(null);
   const lastCreatedCaseIdRef = useRef<string | null>(null);
+  const barcodeAlreadyAttachedRef = useRef(false);
   const [phase, setPhase] = useState<ScanPhase>("camera");
   const [capturedUri, setCapturedUri] = useState<string | null>(null);
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
@@ -139,6 +140,8 @@ export default function ScanScreen() {
   const [barcodeScanned, setBarcodeScanned] = useState(false);
   const [barcodeScanForCase, setBarcodeScanForCase] = useState<string | null>(null);
   const [barcodeAttachScanned, setBarcodeAttachScanned] = useState(false);
+  const [pendingBarcode, setPendingBarcode] = useState<string | null>(null);
+  const [webBarcodeInput, setWebBarcodeInput] = useState("");
   const [barcodeCameraLayout, setBarcodeCameraLayout] = useState({ width: 0, height: 0 });
   const [shadeOpen, setShadeOpen] = useState(false);
   const [isSavingPdf, setIsSavingPdf] = useState(false);
@@ -1398,12 +1401,26 @@ export default function ScanScreen() {
       }, 400);
     } else {
       setShowBarcodeScanner(false);
-      setTimeout(() => {
-        Alert.alert("Case Not Found", `No case found with ID: ${data}`, [
-          { text: "Scan Again", onPress: () => { setBarcodeScanned(false); setShowBarcodeScanner(true); } },
-          { text: "Close", onPress: () => setBarcodeScanned(false) },
-        ]);
-      }, 500);
+      if (Platform.OS === "web") {
+        setBarcodeScanned(false);
+        setPendingBarcode(data);
+        handleManualEntry();
+      } else {
+        setTimeout(() => {
+          Alert.alert("No Case Found", `No case matches barcode: ${data}`, [
+            { text: "Scan Again", onPress: () => { setBarcodeScanned(false); setShowBarcodeScanner(true); } },
+            {
+              text: "Create New Case",
+              onPress: () => {
+                setBarcodeScanned(false);
+                setPendingBarcode(data);
+                handleManualEntry();
+              },
+            },
+            { text: "Cancel", style: "cancel", onPress: () => setBarcodeScanned(false) },
+          ]);
+        }, 500);
+      }
     }
   }
 
@@ -1537,6 +1554,7 @@ export default function ScanScreen() {
   }
 
   function createCase(isDuplicate?: boolean) {
+    try {
     const currentYear = new Date().getFullYear();
     const yy = String(currentYear).slice(-2);
     const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
@@ -1610,18 +1628,48 @@ export default function ScanScreen() {
       setPendingRemakeCheck({ caseId: newCase.id, patientName: savedPatientName });
     }
 
-    Alert.alert(
-      "Case Added",
-      `Case ${caseNumber} has been created and is now in Intake.`,
-      [
-        { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
-        { text: "Done", onPress: () => {
-          setTimeout(() => {
-            promptAttachBarcode();
-          }, 300);
-        }},
-      ],
-    );
+    if (pendingBarcode) {
+      assignBarcodeToCase(newCase.id, pendingBarcode);
+      setPendingBarcode(null);
+      barcodeAlreadyAttachedRef.current = true;
+      if (Platform.OS === "web") {
+        setLabelData(savedLabel);
+        setLabelModalVisible(true);
+      } else {
+        Alert.alert(
+          "Case Added",
+          `Case ${caseNumber} has been created and barcode has been attached.`,
+          [
+            { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
+            { text: "Done", onPress: () => {
+              if (isDuplicate) {
+                startRemakeCheck(newCase.id, savedPatientName);
+              } else {
+                resetForm();
+                setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+              }
+            }},
+          ],
+        );
+      }
+    } else {
+      Alert.alert(
+        "Case Added",
+        `Case ${caseNumber} has been created and is now in Intake.`,
+        [
+          { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
+          { text: "Done", onPress: () => {
+            setTimeout(() => {
+              promptAttachBarcode();
+            }, 300);
+          }},
+        ],
+      );
+    }
+    } catch (err) {
+      console.error("[createCase] ERROR:", err);
+      Alert.alert("Error", "Failed to create case: " + String(err));
+    }
   }
 
   function startRemakeCheck(caseId: string, pName: string) {
@@ -1705,6 +1753,8 @@ export default function ScanScreen() {
     setBarcodeScanned(false);
     setBarcodeAttachScanned(false);
     barcodeAttachProcessingRef.current = false;
+    barcodeAlreadyAttachedRef.current = false;
+    setPendingBarcode(null);
     setDoctorName("");
     setPatientName("");
     setPatientDropdownOpen(false);
@@ -1755,7 +1805,13 @@ export default function ScanScreen() {
         statusBarTranslucent
         onRequestClose={() => {
           setLabelModalVisible(false);
-          setTimeout(() => { promptAttachBarcode(); }, 500);
+          if (barcodeAlreadyAttachedRef.current) {
+            barcodeAlreadyAttachedRef.current = false;
+            resetForm();
+            setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+          } else {
+            setTimeout(() => { promptAttachBarcode(); }, 500);
+          }
         }}
       >
         <View style={labelStyles.overlay}>
@@ -1764,7 +1820,13 @@ export default function ScanScreen() {
               <Text style={labelStyles.headerTitle}>Case Label</Text>
               <Pressable onPress={() => {
                 setLabelModalVisible(false);
-                setTimeout(() => { promptAttachBarcode(); }, 500);
+                if (barcodeAlreadyAttachedRef.current) {
+                  barcodeAlreadyAttachedRef.current = false;
+                  resetForm();
+                  setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+                } else {
+                  setTimeout(() => { promptAttachBarcode(); }, 500);
+                }
               }} hitSlop={12}>
                 <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
               </Pressable>
@@ -1904,10 +1966,17 @@ export default function ScanScreen() {
                 style={({ pressed }) => [labelStyles.doneBtn, pressed && { opacity: 0.8 }]}
                 onPress={() => {
                   setLabelModalVisible(false);
-                  setTimeout(() => {
-                    promptAttachBarcode();
-                  }, 500);
+                  if (barcodeAlreadyAttachedRef.current) {
+                    barcodeAlreadyAttachedRef.current = false;
+                    resetForm();
+                    setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+                  } else {
+                    setTimeout(() => {
+                      promptAttachBarcode();
+                    }, 500);
+                  }
                 }}
+                testID="label-done-btn"
               >
                 <Text style={labelStyles.doneBtnText}>Done</Text>
               </Pressable>
@@ -2023,8 +2092,12 @@ export default function ScanScreen() {
               styles.submitBtn,
               pressed && { opacity: 0.8 },
             ]}
+            testID="submit-case-btn"
+            accessibilityLabel="Submit Case"
           >
-            <Ionicons name="checkmark" size={22} color="#FFF" />
+            <View pointerEvents="none">
+              <Ionicons name="checkmark" size={22} color="#FFF" />
+            </View>
           </Pressable>
         </View>
         <ScrollView
@@ -2034,6 +2107,17 @@ export default function ScanScreen() {
           }}
           showsVerticalScrollIndicator={false}
         >
+          {pendingBarcode && (
+            <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "rgba(139,92,246,0.1)", borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "rgba(139,92,246,0.3)" }}>
+              <Ionicons name="barcode-outline" size={20} color="#8B5CF6" />
+              <Text style={{ marginLeft: 8, fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#8B5CF6", flex: 1 }}>
+                Barcode "{pendingBarcode}" will be attached to this case
+              </Text>
+              <Pressable onPress={() => setPendingBarcode(null)} hitSlop={8}>
+                <Ionicons name="close-circle" size={18} color="rgba(139,92,246,0.5)" />
+              </Pressable>
+            </View>
+          )}
           {casePhotos.length > 0 ? (
             <View style={styles.photoStripSection}>
               <View style={styles.photoStripHeader}>
@@ -2095,6 +2179,7 @@ export default function ScanScreen() {
                 setDoctorSearch("");
               }}
               style={[styles.formInput, styles.dropdownTrigger]}
+              testID="doctor-dropdown-trigger"
             >
               <Text style={[styles.dropdownTriggerText, !doctorName && { color: Colors.light.textTertiary }]}>
                 {doctorName ? cleanDoctorDisplay(doctorName) : "Select Doctor"}
@@ -2136,6 +2221,7 @@ export default function ScanScreen() {
                         if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       }}
                       style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
+                      testID="add-new-doctor-btn"
                     >
                       <Ionicons name="person-add-outline" size={18} color={Colors.light.tint} />
                       <Text style={styles.addNewPatientBtnText}>Add New Doctor</Text>
@@ -2194,6 +2280,7 @@ export default function ScanScreen() {
                         placeholderTextColor={Colors.light.textTertiary}
                         autoCapitalize="words"
                         autoFocus
+                        testID="new-doctor-name-input"
                       />
                     </View>
                     <View style={styles.dropdownSearchWrap}>
@@ -2279,6 +2366,7 @@ export default function ScanScreen() {
                           if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
                         style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
+                        testID="confirm-add-doctor-btn"
                       >
                         <Text style={styles.addNewPatientConfirmText}>Add</Text>
                       </Pressable>
@@ -2299,6 +2387,7 @@ export default function ScanScreen() {
                 setNewPatientInput("");
               }}
               style={[styles.formInput, styles.dropdownTrigger]}
+              testID="patient-dropdown-trigger"
             >
               <Text style={[styles.dropdownTriggerText, !patientName && { color: Colors.light.textTertiary }]}>
                 {patientName || "Select Patient"}
@@ -2336,6 +2425,7 @@ export default function ScanScreen() {
                         if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       }}
                       style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
+                      testID="add-new-patient-btn"
                     >
                       <Ionicons name="person-add-outline" size={18} color={Colors.light.tint} />
                       <Text style={styles.addNewPatientBtnText}>Add New Patient</Text>
@@ -2399,6 +2489,7 @@ export default function ScanScreen() {
                         placeholder="First name"
                         placeholderTextColor={Colors.light.textTertiary}
                         autoFocus
+                        testID="new-patient-first-input"
                       />
                     </View>
                     <View style={[styles.dropdownSearchWrap, { marginTop: 8 }]}>
@@ -2419,6 +2510,7 @@ export default function ScanScreen() {
                         onChangeText={setNewPatientLast}
                         placeholder="Last name"
                         placeholderTextColor={Colors.light.textTertiary}
+                        testID="new-patient-last-input"
                       />
                     </View>
                     <View style={styles.addNewPatientActions}>
@@ -2448,8 +2540,11 @@ export default function ScanScreen() {
                           if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
                         style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
+                        testID="confirm-add-patient-btn"
                       >
-                        <Ionicons name="checkmark" size={18} color="#FFF" />
+                        <View pointerEvents="none">
+                          <Ionicons name="checkmark" size={18} color="#FFF" />
+                        </View>
                         <Text style={styles.addNewPatientConfirmText}>Add</Text>
                       </Pressable>
                     </View>
@@ -3080,6 +3175,7 @@ export default function ScanScreen() {
           <Pressable
             onPress={handleManualEntry}
             style={({ pressed }) => [styles.permissionSkipBtn, pressed && { opacity: 0.6 }]}
+            testID="manual-entry-btn"
           >
             <Text style={styles.permissionSkipText}>Enter manually instead</Text>
           </Pressable>
@@ -3136,12 +3232,28 @@ export default function ScanScreen() {
                   style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
                   placeholder="Enter barcode..."
                   placeholderTextColor="#666"
-                  onSubmitEditing={(e) => {
-                    const val = e.nativeEvent.text.trim();
-                    if (val) handleBarcodeScanned({ data: val });
+                  value={webBarcodeInput}
+                  onChangeText={setWebBarcodeInput}
+                  onSubmitEditing={() => {
+                    const val = webBarcodeInput.trim();
+                    if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
                   }}
+                  testID="barcode-manual-input"
                   autoFocus
                 />
+                <Pressable
+                  onPress={() => {
+                    const val = webBarcodeInput.trim();
+                    if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
+                  }}
+                  style={({ pressed }) => ({
+                    marginTop: 16, backgroundColor: Colors.light.tint, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 12,
+                    opacity: pressed ? 0.85 : 1,
+                  })}
+                  testID="barcode-submit-btn"
+                >
+                  <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Look Up Barcode</Text>
+                </Pressable>
               </View>
             )}
             <View style={{ padding: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>

@@ -64,7 +64,7 @@ export default function SmilePreviewScreen() {
         });
       } else {
         const b64 = await FileSystem.readAsStringAsync(capturedPhoto, {
-          encoding: FileSystem.EncodingType.Base64,
+          encoding: "base64" as any,
         });
         base64 = `data:image/jpeg;base64,${b64}`;
       }

@@ -36,6 +36,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isAuthLoading: boolean;
   currentUser: string | null;
+  currentUserId: string | null;
   userType: "provider" | "lab" | "master_admin" | null;
   profilePicUri: string | null;
   setProfilePicUri: (uri: string | null) => void;
@@ -374,6 +375,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated,
       isAuthLoading,
       currentUser,
+      currentUserId,
       userType,
       profilePicUri,
       setProfilePicUri,

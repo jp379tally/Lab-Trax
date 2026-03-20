@@ -564,15 +564,13 @@ function TechDashboard() {
         </View>
 
         {!userIsAffiliated && (
-          <View style={{ marginTop: 24, padding: 24, backgroundColor: isDarkMode ? "#1E293B" : "#F8FAFC", borderRadius: 16, alignItems: "center" }}>
-            <Ionicons name="business-outline" size={48} color={isDarkMode ? "#64748B" : "#94A3B8"} />
-            <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 18, color: themeColors.text, marginTop: 16, textAlign: "center" }}>No Lab Affiliation</Text>
-            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 14, color: themeColors.textSecondary, marginTop: 8, textAlign: "center", lineHeight: 20 }}>
-              Your account is not yet affiliated with a lab. Ask your lab administrator to invite you, or join an existing lab to see cases and data.
+          <View style={{ marginTop: 16, padding: 14, backgroundColor: isDarkMode ? "#1E293B" : "#FFF7ED", borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: isDarkMode ? "#334155" : "#FDE68A" }}>
+            <Ionicons name="information-circle-outline" size={22} color={isDarkMode ? "#FBBF24" : "#D97706"} />
+            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: isDarkMode ? "#E2E8F0" : "#92400E", flex: 1, lineHeight: 18 }}>
+              Join a lab group to collaborate with your team and access shared features.
             </Text>
           </View>
         )}
-        {userIsAffiliated && (
         <View style={styles.headerQuickActions}>
           <Pressable
             style={({ pressed }) => [
@@ -611,7 +609,6 @@ function TechDashboard() {
             <Text style={[styles.quickLabel, { color: themeColors.text }]}>Batch Locate</Text>
           </Pressable>
         </View>
-        )}
       </View>
 
       <Modal
@@ -681,8 +678,6 @@ function TechDashboard() {
         </Pressable>
       </Modal>
 
-      {userIsAffiliated && (
-      <>
       <View style={styles.headerRow}>
         <View>
           <Text style={[styles.greeting, { color: themeColors.textSecondary }]}>Lab Floor</Text>
@@ -988,8 +983,6 @@ function TechDashboard() {
         </View>
         <Ionicons name="chevron-forward" size={20} color={Colors.light.textTertiary} />
       </Pressable>
-      </>
-      )}
     </ScrollView>
 
     <Modal
@@ -4664,7 +4657,7 @@ function AdminDashboard() {
           let base64Data = asset.base64;
           if (!base64Data && asset.uri) {
             const FileSystem = await import("expo-file-system");
-            const fileData = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+            const fileData = await FileSystem.readAsStringAsync(asset.uri, { encoding: "base64" as any });
             base64Data = fileData;
           }
           if (!base64Data) continue;
@@ -5093,17 +5086,14 @@ function ProviderDashboard() {
         </View>
 
         {!userIsAffiliated && (
-          <View style={{ margin: 20, padding: 24, backgroundColor: "#F8FAFC", borderRadius: 16, alignItems: "center" }}>
-            <Ionicons name="business-outline" size={48} color="#94A3B8" />
-            <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 18, color: Colors.light.text, marginTop: 16, textAlign: "center" }}>No Practice Affiliation</Text>
-            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 14, color: Colors.light.textSecondary, marginTop: 8, textAlign: "center", lineHeight: 20 }}>
-              Your account is not yet affiliated with a practice. Ask your practice administrator to invite you, or join an existing practice to see cases and data.
+          <View style={{ marginHorizontal: 20, marginTop: 12, padding: 14, backgroundColor: "#FFF7ED", borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: "#FDE68A" }}>
+            <Ionicons name="information-circle-outline" size={22} color="#D97706" />
+            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: "#92400E", flex: 1, lineHeight: 18 }}>
+              Join a practice group to collaborate with your team.
             </Text>
           </View>
         )}
 
-        {userIsAffiliated && (
-        <>
         <LinearGradient
           colors={["#1E40AF", "#3B82F6"]}
           start={{ x: 0, y: 0 }}
@@ -5197,8 +5187,6 @@ function ProviderDashboard() {
             ))}
           </View>
         )}
-      </>
-      )}
       </ScrollView>
 
       <Modal
