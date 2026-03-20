@@ -1442,7 +1442,44 @@ export default function ScanScreen() {
     }
   }
 
-  async function handleAddPhotoFromCamera() {
+  function handleTakePhotoPrompt() {
+    Alert.alert("Add Photo", "Choose a source", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Photo Library", onPress: () => handlePickPhotoFromLibrary() },
+      { text: "Camera", onPress: () => handleCapturePhotoFromCamera() },
+    ]);
+  }
+
+  async function handlePickPhotoFromLibrary() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Gallery Permission", "Gallery access is needed to select photos.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      const newUris = result.assets.map((a) => a.uri);
+      setCasePhotos((prev) => [...prev, ...newUris]);
+      const newEntries: ActivityEntry[] = newUris.map((uri) => ({
+        id: generateId(),
+        type: "photo" as const,
+        timestamp: Date.now(),
+        description: "Photo added from library",
+        imageUri: uri,
+        user: userInitials,
+      }));
+      setActivityEntries((prev) => [...newEntries, ...prev]);
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+    }
+  }
+
+  async function handleCapturePhotoFromCamera() {
     if (cameraRef.current) {
       try {
         const photo = await cameraRef.current.takePictureAsync();
@@ -1460,26 +1497,37 @@ export default function ScanScreen() {
           if (Platform.OS !== "web") {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }
+          return;
         }
-      } catch {
-        const result = await ImagePicker.launchCameraAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          quality: 0.8,
-        });
-        if (!result.canceled && result.assets[0]) {
-          const uri = result.assets[0].uri;
-          setCasePhotos((prev) => [...prev, uri]);
-          const entry: ActivityEntry = {
-            id: generateId(),
-            type: "photo",
-            timestamp: Date.now(),
-            description: "Photo captured from camera",
-            imageUri: uri,
-            user: userInitials,
-          };
-          setActivityEntries((prev) => [entry, ...prev]);
-        }
+      } catch {}
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const uri = result.assets[0].uri;
+      setCasePhotos((prev) => [...prev, uri]);
+      const entry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: Date.now(),
+        description: "Photo captured from camera",
+        imageUri: uri,
+        user: userInitials,
+      };
+      setActivityEntries((prev) => [entry, ...prev]);
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
+    }
+  }
+
+  function handleAddPrescription() {
+    setPhase("camera");
+    setCapturedUri(null);
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
   }
 
@@ -1742,7 +1790,7 @@ export default function ScanScreen() {
                     </Pressable>
                   </View>
                 ))}
-                <Pressable onPress={handleAddMorePhotos} style={styles.addPhotoThumb}>
+                <Pressable onPress={handleTakePhotoPrompt} style={styles.addPhotoThumb}>
                   <Ionicons name="add" size={28} color={Colors.light.tint} />
                 </Pressable>
               </ScrollView>
@@ -1760,14 +1808,14 @@ export default function ScanScreen() {
 
           <View style={styles.addPhotoBtnRow}>
             <Pressable
-              onPress={handleAddMorePhotos}
+              onPress={handleAddPrescription}
               style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
             >
-              <Ionicons name="images-outline" size={18} color={Colors.light.tint} />
-              <Text style={styles.addMorePhotosBtnText}>Add Pictures</Text>
+              <Ionicons name="scan-outline" size={18} color={Colors.light.tint} />
+              <Text style={styles.addMorePhotosBtnText}>Add Prescription</Text>
             </Pressable>
             <Pressable
-              onPress={handleAddPhotoFromCamera}
+              onPress={handleTakePhotoPrompt}
               style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
             >
               <Ionicons name="camera-outline" size={18} color={Colors.light.tint} />
