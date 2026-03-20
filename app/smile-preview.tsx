@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as FileSystem from "expo-file-system";
-import { getApiUrl } from "@/lib/query-client";
+import { resilientFetch } from "@/lib/query-client";
 
 export default function SmilePreviewScreen() {
   const router = useRouter();
@@ -64,13 +64,12 @@ export default function SmilePreviewScreen() {
         });
       } else {
         const b64 = await FileSystem.readAsStringAsync(capturedPhoto, {
-          encoding: "base64" as any,
+          encoding: FileSystem.EncodingType.Base64,
         });
         base64 = `data:image/jpeg;base64,${b64}`;
       }
 
-      const apiUrl = new URL("/api/smile-process", getApiUrl()).toString();
-      const resp = await fetch(apiUrl, {
+      const resp = await resilientFetch("/api/smile-process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageBase64: base64, mode }),

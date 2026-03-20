@@ -1358,11 +1358,11 @@ export default function ScanScreen() {
 
     assignBarcodeToCase(caseId, data);
 
+    const savedPendingRemake = pendingRemakeCheck;
     resetForm();
     setBarcodeScanForCase(null);
     setShowBarcodeScanner(false);
     setLabelModalVisible(false);
-    setPendingRemakeCheck(null);
     lastCreatedCaseIdRef.current = null;
 
     setTimeout(() => {
@@ -1373,7 +1373,12 @@ export default function ScanScreen() {
           ? `Barcode "${data}" is now shared with case ${existingCase.caseNumber || existingCase.id}.`
           : `Barcode "${data}" has been assigned to this case.`,
         [{ text: "OK", onPress: () => {
-          setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+          if (savedPendingRemake) {
+            setPendingRemakeCheck(null);
+            startRemakeCheck(savedPendingRemake.caseId, savedPendingRemake.patientName);
+          } else {
+            setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+          }
         }}]
       );
     }, 600);
@@ -1420,7 +1425,7 @@ export default function ScanScreen() {
 
   async function handleAddMorePhotos() {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ["images"],
       allowsMultipleSelection: true,
       quality: 0.8,
     });
@@ -1555,6 +1560,7 @@ export default function ScanScreen() {
       doctorName: doctorName.trim(),
       patientName: savedPatientName,
       patientInitials: savedPatientName.split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
+      caseType: (caseType || "") as any,
       toothIndices: toothIndices.trim(),
       shade: shade.trim(),
       material,

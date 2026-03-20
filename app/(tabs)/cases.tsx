@@ -61,10 +61,6 @@ export default function CasesScreen() {
   const baseCases = useMemo(() => {
     let result = cases;
     if (userType === "provider") {
-      const myGroups = getUserGroups(currentUser || "");
-      if (myGroups.length === 0) {
-        return [];
-      }
       const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
       const myDoctorName = currentUserData?.doctorName || currentUser || "";
       result = result.filter(c =>
