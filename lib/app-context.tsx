@@ -169,9 +169,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const cases = useMemo(() => {
     if (!currentUserId) return [];
-    if (!userIsAffiliated) return [];
     return allCases.filter((c) => c.ownerId === currentUserId);
-  }, [allCases, currentUserId, userIsAffiliated]);
+  }, [allCases, currentUserId]);
 
   function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
     setAllCases(updater);
