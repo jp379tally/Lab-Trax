@@ -1673,6 +1673,10 @@ function AdminDashboard() {
     }
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert("Saved", showEditClientPricing ? "Client record and pricing updated." : "Client record updated.");
+    if (selectedClient && selectedClient.id === editingClient.id) {
+      setSelectedClient(editingClient);
+      setAdminView("client-detail");
+    }
     setEditingClient(null);
     setShowEditClientPricing(false);
   }
@@ -3165,6 +3169,25 @@ function AdminDashboard() {
             <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{selectedClient.practiceName}</Text>
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Dr. {selectedClient.leadDoctor}</Text>
           </View>
+          <Pressable
+            onPress={() => {
+              setEditingClient(selectedClient);
+              setAdminView("edit-client");
+            }}
+            style={({ pressed }) => ({
+              flexDirection: "row",
+              alignItems: "center",
+              backgroundColor: Colors.light.tint,
+              paddingHorizontal: 14,
+              paddingVertical: 8,
+              borderRadius: 10,
+              gap: 6,
+              opacity: pressed ? 0.8 : 1,
+            })}
+          >
+            <Ionicons name="create-outline" size={16} color="#FFF" />
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Edit</Text>
+          </Pressable>
         </View>
 
         <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, padding: 16, marginBottom: 12, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
