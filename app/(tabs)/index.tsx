@@ -1450,7 +1450,8 @@ type AdminView =
   | "lab-users"
   | "payment-processing"
   | "edit-locations"
-  | "integrations";
+  | "integrations"
+  | "client-stats";
 
 function AdminDashboard() {
   const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification, customStationLabels, updateStationLabel } = useApp();
@@ -3244,21 +3245,50 @@ function AdminDashboard() {
           </View>
         </View>
 
-        {openBalance > 0 && (
+        <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
           <Pressable
-            onPress={() => {
-              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              const invoiceDetails = openInvoices.map((inv) => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
-              const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(openBalance)}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
-              sendStatementEmail(selectedClient.practiceName, selectedClient.email, `Billing Statement - ${selectedClient.practiceName}`, emailBody);
-              Alert.alert("Statement Generated & Emailed", `Statement for ${selectedClient.practiceName} with open balance of ${formatCurrency(openBalance)} has been generated and emailed to ${selectedClient.email} and admin.`);
-            }}
-            style={{ marginHorizontal: 16, marginBottom: 16, backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8 }}
+            onPress={() => setAdminView("client-stats")}
+            style={({ pressed }) => ({
+              flex: 1,
+              backgroundColor: "#EDE9FE",
+              borderRadius: 14,
+              paddingVertical: 14,
+              alignItems: "center",
+              flexDirection: "row",
+              justifyContent: "center",
+              gap: 8,
+              opacity: pressed ? 0.8 : 1,
+            })}
           >
-            <Ionicons name="document-text" size={20} color="#fff" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Generate Statement</Text>
+            <Ionicons name="bar-chart" size={20} color="#7C3AED" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Account Stats</Text>
           </Pressable>
-        )}
+          {openBalance > 0 && (
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                const invoiceDetails = openInvoices.map((inv) => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
+                const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(openBalance)}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
+                sendStatementEmail(selectedClient.practiceName, selectedClient.email, `Billing Statement - ${selectedClient.practiceName}`, emailBody);
+                Alert.alert("Statement Generated & Emailed", `Statement for ${selectedClient.practiceName} with open balance of ${formatCurrency(openBalance)} has been generated and emailed to ${selectedClient.email} and admin.`);
+              }}
+              style={({ pressed }) => ({
+                flex: 1,
+                backgroundColor: Colors.light.tint,
+                borderRadius: 14,
+                paddingVertical: 14,
+                alignItems: "center",
+                flexDirection: "row",
+                justifyContent: "center",
+                gap: 8,
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Ionicons name="document-text" size={20} color="#fff" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Statement</Text>
+            </Pressable>
+          )}
+        </View>
 
         {openInvoices.length > 0 && (
           <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
@@ -3306,6 +3336,215 @@ function AdminDashboard() {
             ))}
           </View>
         )}
+      </ScrollView>
+    );
+  }
+
+  function renderClientStats() {
+    if (!selectedClient) return renderClients();
+
+    const clientInvoices = invoices.filter((inv) => inv.clientName === selectedClient.practiceName);
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+    const currentDay = now.getDate();
+    const priorYear = currentYear - 1;
+
+    const getInvoicesByYear = (year: number) => clientInvoices.filter((inv) => new Date(inv.issuedAt).getFullYear() === year);
+    const currentYearInvoices = getInvoicesByYear(currentYear);
+    const priorYearInvoices = getInvoicesByYear(priorYear);
+
+    const todayStart = new Date(currentYear, currentMonth, currentDay).getTime();
+    const todayEnd = todayStart + 86400000;
+    const dailySales = clientInvoices.filter((inv) => inv.issuedAt >= todayStart && inv.issuedAt < todayEnd).reduce((s, inv) => s + inv.amount, 0);
+
+    const monthStart = new Date(currentYear, currentMonth, 1).getTime();
+    const mtdSales = currentYearInvoices.filter((inv) => inv.issuedAt >= monthStart).reduce((s, inv) => s + inv.amount, 0);
+
+    const yearStart = new Date(currentYear, 0, 1).getTime();
+    const ytdSales = currentYearInvoices.reduce((s, inv) => s + inv.amount, 0);
+
+    const priorYtdCutoff = new Date(priorYear, currentMonth, currentDay).getTime();
+    const priorYtdSales = priorYearInvoices.filter((inv) => inv.issuedAt <= priorYtdCutoff).reduce((s, inv) => s + inv.amount, 0);
+    const priorFullYear = priorYearInvoices.reduce((s, inv) => s + inv.amount, 0);
+
+    const priorMonthStart = new Date(priorYear, currentMonth, 1).getTime();
+    const priorMonthEnd = new Date(priorYear, currentMonth, currentDay).getTime();
+    const priorMtdSales = priorYearInvoices.filter((inv) => inv.issuedAt >= priorMonthStart && inv.issuedAt <= priorMonthEnd).reduce((s, inv) => s + inv.amount, 0);
+
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const monthlyCurrentYear = Array.from({ length: 12 }, (_, i) => {
+      const mStart = new Date(currentYear, i, 1).getTime();
+      const mEnd = new Date(currentYear, i + 1, 1).getTime();
+      return currentYearInvoices.filter((inv) => inv.issuedAt >= mStart && inv.issuedAt < mEnd).reduce((s, inv) => s + inv.amount, 0);
+    });
+    const monthlyPriorYear = Array.from({ length: 12 }, (_, i) => {
+      const mStart = new Date(priorYear, i, 1).getTime();
+      const mEnd = new Date(priorYear, i + 1, 1).getTime();
+      return priorYearInvoices.filter((inv) => inv.issuedAt >= mStart && inv.issuedAt < mEnd).reduce((s, inv) => s + inv.amount, 0);
+    });
+
+    const allMonthlyValues = [...monthlyCurrentYear, ...monthlyPriorYear];
+    const maxMonthly = Math.max(...allMonthlyValues, 1);
+    const BAR_MAX_H = 120;
+
+    const ytdChange = priorYtdSales > 0 ? ((ytdSales - priorYtdSales) / priorYtdSales * 100) : (ytdSales > 0 ? 100 : 0);
+
+    return (
+      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingBottom: 40 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
+          <Pressable onPress={() => setAdminView("client-detail")} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Account Stats</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>{selectedClient.practiceName}</Text>
+          </View>
+        </View>
+
+        <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
+          <View style={{ flex: 1, backgroundColor: "#EDE9FE", borderRadius: 14, padding: 14 }}>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#6D28D9" }}>Today</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#7C3AED", marginTop: 4 }}>{formatCurrency(dailySales)}</Text>
+          </View>
+          <View style={{ flex: 1, backgroundColor: "#DBEAFE", borderRadius: 14, padding: 14 }}>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#1E40AF" }}>Month to Date</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 4 }}>{formatCurrency(mtdSales)}</Text>
+          </View>
+        </View>
+
+        <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
+          <View style={{ flex: 1, backgroundColor: "#D1FAE5", borderRadius: 14, padding: 14 }}>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#065F46" }}>Year to Date ({currentYear})</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#059669", marginTop: 4 }}>{formatCurrency(ytdSales)}</Text>
+          </View>
+          <View style={{ flex: 1, backgroundColor: "#FEF3C7", borderRadius: 14, padding: 14 }}>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#92400E" }}>Prior YTD ({priorYear})</Text>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#D97706", marginTop: 4 }}>{formatCurrency(priorYtdSales)}</Text>
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 16, marginBottom: 16, backgroundColor: "#fff", borderRadius: 14, padding: 16, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
+          <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 4 }}>YTD Comparison</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 }}>
+            <Ionicons name={ytdChange >= 0 ? "trending-up" : "trending-down"} size={18} color={ytdChange >= 0 ? "#059669" : "#DC2626"} />
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: ytdChange >= 0 ? "#059669" : "#DC2626" }}>
+              {ytdChange >= 0 ? "+" : ""}{ytdChange.toFixed(1)}% vs prior year
+            </Text>
+          </View>
+
+          <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: "#7C3AED" }} />
+              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>{currentYear}</Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: "#D4C5F9" }} />
+              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>{priorYear}</Text>
+            </View>
+          </View>
+
+          <View style={{ flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", height: BAR_MAX_H + 20 }}>
+            {monthNames.map((name, i) => {
+              const curH = maxMonthly > 0 ? (monthlyCurrentYear[i] / maxMonthly) * BAR_MAX_H : 0;
+              const priH = maxMonthly > 0 ? (monthlyPriorYear[i] / maxMonthly) * BAR_MAX_H : 0;
+              const isFuture = i > currentMonth;
+              return (
+                <View key={name} style={{ alignItems: "center", flex: 1, opacity: isFuture ? 0.3 : 1 }}>
+                  <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 1, height: BAR_MAX_H }}>
+                    <View style={{ width: 6, height: Math.max(curH, curH > 0 ? 3 : 0), backgroundColor: "#7C3AED", borderRadius: 2 }} />
+                    <View style={{ width: 6, height: Math.max(priH, priH > 0 ? 3 : 0), backgroundColor: "#D4C5F9", borderRadius: 2 }} />
+                  </View>
+                  <Text style={{ fontSize: 8, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 4 }}>{name}</Text>
+                </View>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 16, marginBottom: 16, backgroundColor: "#fff", borderRadius: 14, padding: 16, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
+          <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 12 }}>MTD Comparison</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>
+              {monthNames[currentMonth]} {currentYear}: <Text style={{ fontFamily: "Inter_700Bold", color: "#2563EB" }}>{formatCurrency(mtdSales)}</Text>
+            </Text>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>
+              {monthNames[currentMonth]} {priorYear}: <Text style={{ fontFamily: "Inter_700Bold", color: "#D97706" }}>{formatCurrency(priorMtdSales)}</Text>
+            </Text>
+          </View>
+          {(() => {
+            const mtdMax = Math.max(mtdSales, priorMtdSales, 1);
+            return (
+              <View style={{ gap: 8 }}>
+                <View>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText, width: 32 }}>{currentYear}</Text>
+                    <View style={{ flex: 1, height: 24, backgroundColor: Colors.light.surfaceAlt, borderRadius: 6, overflow: "hidden" }}>
+                      <View style={{ height: 24, width: `${(mtdSales / mtdMax) * 100}%` as any, backgroundColor: "#2563EB", borderRadius: 6, minWidth: mtdSales > 0 ? 4 : 0 }} />
+                    </View>
+                  </View>
+                </View>
+                <View>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText, width: 32 }}>{priorYear}</Text>
+                    <View style={{ flex: 1, height: 24, backgroundColor: Colors.light.surfaceAlt, borderRadius: 6, overflow: "hidden" }}>
+                      <View style={{ height: 24, width: `${(priorMtdSales / mtdMax) * 100}%` as any, backgroundColor: "#D97706", borderRadius: 6, minWidth: priorMtdSales > 0 ? 4 : 0 }} />
+                    </View>
+                  </View>
+                </View>
+              </View>
+            );
+          })()}
+        </View>
+
+        <View style={{ marginHorizontal: 16, marginBottom: 16, backgroundColor: "#fff", borderRadius: 14, padding: 16, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
+          <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 12 }}>Full Year Totals</Text>
+          {(() => {
+            const fyMax = Math.max(ytdSales, priorFullYear, 1);
+            return (
+              <View style={{ gap: 8 }}>
+                <View>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>{currentYear} (YTD)</Text>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#059669" }}>{formatCurrency(ytdSales)}</Text>
+                  </View>
+                  <View style={{ height: 28, backgroundColor: Colors.light.surfaceAlt, borderRadius: 6, overflow: "hidden" }}>
+                    <View style={{ height: 28, width: `${(ytdSales / fyMax) * 100}%` as any, backgroundColor: "#059669", borderRadius: 6, minWidth: ytdSales > 0 ? 4 : 0 }} />
+                  </View>
+                </View>
+                <View>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.subText }}>{priorYear} (Full Year)</Text>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#D97706" }}>{formatCurrency(priorFullYear)}</Text>
+                  </View>
+                  <View style={{ height: 28, backgroundColor: Colors.light.surfaceAlt, borderRadius: 6, overflow: "hidden" }}>
+                    <View style={{ height: 28, width: `${(priorFullYear / fyMax) * 100}%` as any, backgroundColor: "#D97706", borderRadius: 6, minWidth: priorFullYear > 0 ? 4 : 0 }} />
+                  </View>
+                </View>
+              </View>
+            );
+          })()}
+        </View>
+
+        <View style={{ marginHorizontal: 16, marginBottom: 16, backgroundColor: "#fff", borderRadius: 14, padding: 16, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
+          <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 12 }}>Invoice Count</Text>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <View style={{ flex: 1, backgroundColor: Colors.light.surfaceAlt, borderRadius: 10, padding: 12, alignItems: "center" }}>
+              <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{currentYearInvoices.length}</Text>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 2 }}>{currentYear}</Text>
+            </View>
+            <View style={{ flex: 1, backgroundColor: Colors.light.surfaceAlt, borderRadius: 10, padding: 12, alignItems: "center" }}>
+              <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{priorYearInvoices.length}</Text>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 2 }}>{priorYear}</Text>
+            </View>
+            <View style={{ flex: 1, backgroundColor: Colors.light.surfaceAlt, borderRadius: 10, padding: 12, alignItems: "center" }}>
+              <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{clientInvoices.length}</Text>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 2 }}>All Time</Text>
+            </View>
+          </View>
+        </View>
       </ScrollView>
     );
   }
@@ -4978,6 +5217,7 @@ function AdminDashboard() {
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();
     case "client-detail": return renderClientDetail();
+    case "client-stats": return renderClientStats();
     case "add-client": return renderAddClient();
     case "edit-client": return renderEditClient();
     case "edit-price-list": return renderEditPriceList();
