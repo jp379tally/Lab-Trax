@@ -2046,6 +2046,10 @@ function AdminDashboard() {
               <TextInput style={adm.input} value={editingClient.practiceName} onChangeText={(v) => setEditingClient({ ...editingClient, practiceName: v })} />
             </View>
             <View style={adm.field}>
+              <Text style={adm.fieldLabel}>Account Number</Text>
+              <TextInput style={adm.input} value={editingClient.accountNumber || ""} onChangeText={(v) => setEditingClient({ ...editingClient, accountNumber: v })} placeholder="e.g. DS-066707" placeholderTextColor={Colors.light.textTertiary} autoCapitalize="characters" />
+            </View>
+            <View style={adm.field}>
               <Text style={adm.fieldLabel}>Main Provider</Text>
               <TextInput style={adm.input} value={editingClient.leadDoctor} onChangeText={(v) => setEditingClient({ ...editingClient, leadDoctor: v })} />
             </View>
