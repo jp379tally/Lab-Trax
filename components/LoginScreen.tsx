@@ -2147,7 +2147,6 @@ export default function LoginScreen() {
             {
               paddingTop: Platform.OS === "web" ? 67 + 40 : insets.top + 40,
               paddingBottom: Platform.OS === "web" ? 34 + 20 : insets.bottom + 20,
-              flexGrow: 1,
             },
           ]}
           keyboardShouldPersistTaps="handled"
@@ -2289,8 +2288,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    flex: 1,
-    justifyContent: "space-between",
+    flexGrow: 1,
+    justifyContent: "center",
     paddingHorizontal: 28,
     ...(Platform.OS === "web" ? { maxWidth: 480, alignSelf: "center" as const, width: "100%" as any } : {}),
   },

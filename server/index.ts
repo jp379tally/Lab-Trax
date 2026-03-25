@@ -1,6 +1,7 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
+import { DatabaseStorage } from "./storage";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -264,6 +265,27 @@ function setupSecurityHeaders(app: express.Application) {
   });
 }
 
+async function seedDemoAccount() {
+  const storage = new DatabaseStorage();
+  const demoUsername = "phillipsjohnpaul@yahoo.com";
+  const demoPassword = "Jp#14482726";
+  try {
+    const existing = await storage.getUserByUsername(demoUsername);
+    if (!existing) {
+      await storage.createUser({
+        username: demoUsername,
+        password: demoPassword,
+        email: demoUsername,
+        userType: "lab",
+        role: "admin",
+      });
+      log("Demo account seeded successfully");
+    }
+  } catch (err: any) {
+    console.error("Demo account seed error:", err?.message || err);
+  }
+}
+
 (async () => {
   setupCors(app);
   setupSecurityHeaders(app);
@@ -275,6 +297,8 @@ function setupSecurityHeaders(app: express.Application) {
   const server = await registerRoutes(app);
 
   setupErrorHandler(app);
+
+  await seedDemoAccount();
 
   const port = parseInt(process.env.PORT || "5000", 10);
   server.listen(
