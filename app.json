@@ -14,8 +14,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": false,
-      "bundleIdentifier": "com.myapp"
+      "supportsTablet": true,
+      "bundleIdentifier": "com.myapp",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app uses the camera to capture photos of dental cases and scans for case tracking, documentation, and communication with the dental lab."
+      }
     },
     "android": {
       "package": "com.myapp",
