@@ -28,7 +28,6 @@ import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseT
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { logAudit } from "@/lib/audit";
-import { CameraPermissionModal } from "@/components/CameraPermissionPrompt";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -67,27 +66,27 @@ export default function CaseDetailScreen() {
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [barcodeScanned, setBarcodeScanned] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const [showCameraPrompt, setShowCameraPrompt] = useState(false);
-  const cameraPromptCallbackRef = useRef<(() => void) | null>(null);
 
-  async function requestCameraWithPrompt(onGranted: () => void) {
-    const perm = await ImagePicker.getCameraPermissionsAsync();
-    if (perm.granted) {
-      onGranted();
-      return;
-    }
-    cameraPromptCallbackRef.current = onGranted;
-    setShowCameraPrompt(true);
-  }
-
-  async function handleCameraPromptContinue() {
-    setShowCameraPrompt(false);
-    const cb = cameraPromptCallbackRef.current;
-    cameraPromptCallbackRef.current = null;
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status === "granted" && cb) {
-      cb();
-    }
+  function requestCameraWithPrompt(onGranted: () => void) {
+    ImagePicker.getCameraPermissionsAsync().then((perm) => {
+      if (perm.granted) {
+        onGranted();
+        return;
+      }
+      Alert.alert(
+        "Camera Access",
+        "This feature uses your camera to capture dental case photos.",
+        [{
+          text: "Continue",
+          onPress: async () => {
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status === "granted") {
+              onGranted();
+            }
+          },
+        }]
+      );
+    });
   }
 
   const [showCourtesyModal, setShowCourtesyModal] = useState(false);
@@ -3085,12 +3084,6 @@ export default function CaseDetailScreen() {
           </View>
         </View>
       </Modal>
-
-      <CameraPermissionModal
-        visible={showCameraPrompt}
-        onContinue={handleCameraPromptContinue}
-        onCancel={() => { setShowCameraPrompt(false); cameraPromptCallbackRef.current = null; }}
-      />
 
     </View>
   );

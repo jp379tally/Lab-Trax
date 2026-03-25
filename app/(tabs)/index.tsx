@@ -36,7 +36,6 @@ import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group, formatAcctNum, formatInvNum, cleanDoctorDisplay } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
-import { CameraPermissionModal } from "@/components/CameraPermissionPrompt";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 
@@ -294,27 +293,6 @@ function TechDashboard() {
   const [confirmJoinReq, setConfirmJoinReq] = useState<{ requestId: string; username: string; accept: boolean } | null>(null);
   const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
-  const [showCameraPrompt, setShowCameraPrompt] = useState(false);
-  const cameraPromptCallbackRef = useRef<(() => void) | null>(null);
-
-  async function requestCameraWithPrompt(onGranted: () => void) {
-    if (camPermission?.granted) {
-      onGranted();
-      return;
-    }
-    cameraPromptCallbackRef.current = onGranted;
-    setShowCameraPrompt(true);
-  }
-
-  async function handleCameraPromptContinue() {
-    setShowCameraPrompt(false);
-    const cb = cameraPromptCallbackRef.current;
-    cameraPromptCallbackRef.current = null;
-    const result = await requestCamPermission();
-    if (result.granted && cb) {
-      cb();
-    }
-  }
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isLabAdmin = currentUserData?.role === "admin";
@@ -449,20 +427,25 @@ function TechDashboard() {
 
     const permCheck = await ImagePicker.getCameraPermissionsAsync();
     if (!permCheck.granted) {
-      return new Promise<void>((resolve) => {
-        requestCameraWithPrompt(async () => {
-          const { status } = await ImagePicker.requestCameraPermissionsAsync();
-          if (status !== "granted") {
-            Alert.alert("Camera Permission", "Camera access is needed to take a profile photo.");
-          } else {
+      Alert.alert(
+        "Camera Access",
+        "This feature uses your camera to capture dental case photos.",
+        [{
+          text: "Continue",
+          onPress: async () => {
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== "granted") {
+              Alert.alert("Camera Permission", "Camera access is needed to take a profile photo.");
+              return;
+            }
             try {
               const r = await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.8 });
               if (!r.canceled && r.assets[0]) { setProfilePicUri(r.assets[0].uri); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); }
             } catch { Alert.alert("Camera Error", "Unable to open camera. Please try again."); }
-          }
-          resolve();
-        });
-      });
+          },
+        }]
+      );
+      return;
     }
     try {
       const result = await ImagePicker.launchCameraAsync({
@@ -1320,12 +1303,6 @@ function TechDashboard() {
         </View>
       </View>
     </Modal>
-
-    <CameraPermissionModal
-      visible={showCameraPrompt}
-      onContinue={handleCameraPromptContinue}
-      onCancel={() => { setShowCameraPrompt(false); cameraPromptCallbackRef.current = null; }}
-    />
 
     </>
   );

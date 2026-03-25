@@ -29,7 +29,6 @@ import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
 import { getApiUrl, resilientFetch } from "@/lib/query-client";
-import CameraPermissionPrompt from "@/components/CameraPermissionPrompt";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -3137,11 +3136,35 @@ export default function ScanScreen() {
   if (!permission.granted && phase === "camera") {
     return (
       <View style={[styles.container, styles.permissionContainer]}>
-        <CameraPermissionPrompt
-          onContinue={requestPermission}
-          onSkip={handleManualEntry}
-          skipLabel="Enter manually instead"
-        />
+        <View style={styles.permissionContent}>
+          <View style={styles.permissionIconWrap}>
+            <Ionicons name="camera" size={48} color={Colors.light.tint} />
+          </View>
+          <Text style={styles.permissionTitle}>Camera Access Required</Text>
+          <Text style={styles.permissionDesc}>
+            This feature uses your camera to capture dental case photos.
+          </Text>
+          <Pressable
+            onPress={() => {
+              Alert.alert(
+                "Camera Access",
+                "This feature uses your camera to capture dental case photos.",
+                [{ text: "Continue", onPress: () => requestPermission() }]
+              );
+            }}
+            style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Ionicons name="camera" size={20} color="#FFF" />
+            <Text style={styles.permissionBtnText}>Enable Camera</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleManualEntry}
+            style={({ pressed }) => [styles.permissionSkipBtn, pressed && { opacity: 0.6 }]}
+            testID="manual-entry-btn"
+          >
+            <Text style={styles.permissionSkipText}>Enter manually instead</Text>
+          </Pressable>
+        </View>
 
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>
