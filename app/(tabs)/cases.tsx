@@ -20,6 +20,7 @@ import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
+import { CameraPermissionModal } from "@/components/CameraPermissionPrompt";
 
 export default function CasesScreen() {
   const { cases, role, adminUnlocked, findCaseByBarcode, getUserGroups, updateCaseStatus, customStationLabels } = useApp();
@@ -32,6 +33,26 @@ export default function CasesScreen() {
   const [locateCaseId, setLocateCaseId] = useState<string | null>(null);
   const locateCase = locateCaseId ? cases.find(c => c.id === locateCaseId) : null;
   const [permission, requestPermission] = useCameraPermissions();
+  const [showCameraPrompt, setShowCameraPrompt] = useState(false);
+  const cameraPromptCallbackRef = React.useRef<(() => void) | null>(null);
+
+  async function requestCameraWithPrompt(onGranted: () => void) {
+    if (permission?.granted) {
+      onGranted();
+      return;
+    }
+    cameraPromptCallbackRef.current = onGranted;
+    setShowCameraPrompt(true);
+  }
+
+  async function handleCameraPromptContinue() {
+    setShowCameraPrompt(false);
+    const result = await requestPermission();
+    if (result.granted && cameraPromptCallbackRef.current) {
+      cameraPromptCallbackRef.current();
+    }
+    cameraPromptCallbackRef.current = null;
+  }
 
   function handleBarcodeLocateScanned({ data }: { data: string }) {
     if (barcodeLocateScanned) return;
@@ -241,16 +262,16 @@ export default function CasesScreen() {
           {userType !== "provider" && (
             <Pressable
               style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
-              onPress={async () => {
-                if (Platform.OS !== "web" && !permission?.granted) {
-                  const result = await requestPermission();
-                  if (!result.granted) {
-                    Alert.alert("Camera Permission", "Camera access is needed to scan barcodes.");
-                    return;
-                  }
+              onPress={() => {
+                if (Platform.OS === "web") {
+                  setShowBarcodeLocate(true);
+                  setBarcodeLocateScanned(false);
+                  return;
                 }
-                setShowBarcodeLocate(true);
-                setBarcodeLocateScanned(false);
+                requestCameraWithPrompt(() => {
+                  setShowBarcodeLocate(true);
+                  setBarcodeLocateScanned(false);
+                });
               }}
             >
               <Ionicons name="barcode-outline" size={18} color={Colors.light.tint} />
@@ -311,6 +332,12 @@ export default function CasesScreen() {
             <Text style={styles.emptyText}>No cases found</Text>
           </View>
         }
+      />
+
+      <CameraPermissionModal
+        visible={showCameraPrompt}
+        onContinue={handleCameraPromptContinue}
+        onCancel={() => { setShowCameraPrompt(false); cameraPromptCallbackRef.current = null; }}
       />
 
       <Modal

@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as FileSystem from "expo-file-system";
 import { resilientFetch } from "@/lib/query-client";
+import CameraPermissionPrompt from "@/components/CameraPermissionPrompt";
 
 export default function SmilePreviewScreen() {
   const router = useRouter();
@@ -109,16 +110,11 @@ export default function SmilePreviewScreen() {
           <Text style={styles.headerTitle}>Smile Preview</Text>
           <View style={{ width: 40 }} />
         </View>
-        <View style={styles.permissionContainer}>
-          <Ionicons name="camera-outline" size={64} color="rgba(255,255,255,0.3)" />
-          <Text style={styles.permissionTitle}>Camera Access Needed</Text>
-          <Text style={styles.permissionText}>
-            To use Smile Preview, please allow camera access. This lets you take a photo and preview AI teeth enhancements.
-          </Text>
-          <Pressable onPress={requestPermission} style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.8 }]}>
-            <Text style={styles.permissionBtnText}>Allow Camera</Text>
-          </Pressable>
-        </View>
+        <CameraPermissionPrompt
+          onContinue={requestPermission}
+          onSkip={() => router.back()}
+          skipLabel="Go back"
+        />
       </View>
     );
   }

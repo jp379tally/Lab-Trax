@@ -29,6 +29,7 @@ import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
 import { getApiUrl, resilientFetch } from "@/lib/query-client";
+import CameraPermissionPrompt from "@/components/CameraPermissionPrompt";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -3136,50 +3137,11 @@ export default function ScanScreen() {
   if (!permission.granted && phase === "camera") {
     return (
       <View style={[styles.container, styles.permissionContainer]}>
-        <View style={styles.permissionContent}>
-          <View style={styles.permissionIconWrap}>
-            <Ionicons name="camera" size={48} color={Colors.light.tint} />
-          </View>
-          <Text style={styles.permissionTitle}>Camera Access Required</Text>
-          <Text style={styles.permissionDesc}>
-            To scan prescriptions, the app needs access to your camera.
-          </Text>
-          <Pressable
-            onPress={requestPermission}
-            style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.85 }]}
-          >
-            <Ionicons name="camera" size={20} color="#FFF" />
-            <Text style={styles.permissionBtnText}>Enable Camera</Text>
-          </Pressable>
-          <Pressable
-            onPress={openBarcodeScanner}
-            style={({ pressed }) => [
-              {
-                flexDirection: "row" as const,
-                alignItems: "center" as const,
-                gap: 8,
-                marginTop: 16,
-                paddingVertical: 14,
-                paddingHorizontal: 24,
-                borderRadius: 14,
-                backgroundColor: Colors.light.surfaceSecondary,
-                borderWidth: 1,
-                borderColor: Colors.light.border,
-              },
-              pressed && { opacity: 0.7 },
-            ]}
-          >
-            <Ionicons name="barcode-outline" size={20} color={Colors.light.tint} />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Scan Barcode</Text>
-          </Pressable>
-          <Pressable
-            onPress={handleManualEntry}
-            style={({ pressed }) => [styles.permissionSkipBtn, pressed && { opacity: 0.6 }]}
-            testID="manual-entry-btn"
-          >
-            <Text style={styles.permissionSkipText}>Enter manually instead</Text>
-          </Pressable>
-        </View>
+        <CameraPermissionPrompt
+          onContinue={requestPermission}
+          onSkip={handleManualEntry}
+          skipLabel="Enter manually instead"
+        />
 
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>

@@ -28,6 +28,7 @@ import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseT
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { logAudit } from "@/lib/audit";
+import { CameraPermissionModal } from "@/components/CameraPermissionPrompt";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -66,6 +67,28 @@ export default function CaseDetailScreen() {
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [barcodeScanned, setBarcodeScanned] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [showCameraPrompt, setShowCameraPrompt] = useState(false);
+  const cameraPromptCallbackRef = useRef<(() => void) | null>(null);
+
+  async function requestCameraWithPrompt(onGranted: () => void) {
+    const perm = await ImagePicker.getCameraPermissionsAsync();
+    if (perm.granted) {
+      onGranted();
+      return;
+    }
+    cameraPromptCallbackRef.current = onGranted;
+    setShowCameraPrompt(true);
+  }
+
+  async function handleCameraPromptContinue() {
+    setShowCameraPrompt(false);
+    const cb = cameraPromptCallbackRef.current;
+    cameraPromptCallbackRef.current = null;
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status === "granted" && cb) {
+      cb();
+    }
+  }
 
   const [showCourtesyModal, setShowCourtesyModal] = useState(false);
   const [showExocadModal, setShowExocadModal] = useState(false);
@@ -211,20 +234,21 @@ export default function CaseDetailScreen() {
               }
               return;
             }
-            const { status } = await ImagePicker.requestCameraPermissionsAsync();
-            if (status !== "granted") {
-              Alert.alert("Permission needed", "Camera access is required to take photos.");
-              return;
-            }
-            const result = await ImagePicker.launchCameraAsync({
-              mediaTypes: ["images"],
-              quality: 1.0,
-              allowsEditing: false,
+            requestCameraWithPrompt(async () => {
+              try {
+                const result = await ImagePicker.launchCameraAsync({
+                  mediaTypes: ["images"],
+                  quality: 1.0,
+                  allowsEditing: false,
+                });
+                if (!result.canceled && result.assets[0]) {
+                  setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
+                  setShowPhotoPreview(true);
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
             });
-            if (!result.canceled && result.assets[0]) {
-              setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
-              setShowPhotoPreview(true);
-            }
           },
         },
         {
@@ -242,20 +266,21 @@ export default function CaseDetailScreen() {
               }
               return;
             }
-            const { status } = await ImagePicker.requestCameraPermissionsAsync();
-            if (status !== "granted") {
-              Alert.alert("Permission needed", "Camera access is required to record video.");
-              return;
-            }
-            const result = await ImagePicker.launchCameraAsync({
-              mediaTypes: ["videos"],
-              quality: 1.0,
-              videoMaxDuration: 60,
+            requestCameraWithPrompt(async () => {
+              try {
+                const result = await ImagePicker.launchCameraAsync({
+                  mediaTypes: ["videos"],
+                  quality: 1.0,
+                  videoMaxDuration: 60,
+                });
+                if (!result.canceled && result.assets[0]) {
+                  setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
+                  setShowPhotoPreview(true);
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
             });
-            if (!result.canceled && result.assets[0]) {
-              setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
-              setShowPhotoPreview(true);
-            }
           },
         },
         {
@@ -299,23 +324,25 @@ export default function CaseDetailScreen() {
               }
               return;
             }
-            const { status } = await ImagePicker.requestCameraPermissionsAsync();
-            if (status !== "granted") {
-              Alert.alert("Permission needed", "Camera access is required.");
-              return;
-            }
-            setShowPhotoPreview(false);
-            setTimeout(async () => {
-              const result = await ImagePicker.launchCameraAsync({
-                mediaTypes: ["images"],
-                quality: 1.0,
-                allowsEditing: false,
-              });
-              if (!result.canceled && result.assets[0]) {
-                setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
-              }
-              setShowPhotoPreview(true);
-            }, 500);
+            requestCameraWithPrompt(() => {
+              setShowPhotoPreview(false);
+              setTimeout(async () => {
+                try {
+                  const result = await ImagePicker.launchCameraAsync({
+                    mediaTypes: ["images"],
+                    quality: 1.0,
+                    allowsEditing: false,
+                  });
+                  if (!result.canceled && result.assets[0]) {
+                    setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
+                  }
+                  setShowPhotoPreview(true);
+                } catch {
+                  Alert.alert("Camera Error", "Unable to open camera.");
+                  setShowPhotoPreview(true);
+                }
+              }, 500);
+            });
           },
         },
         {
@@ -330,23 +357,25 @@ export default function CaseDetailScreen() {
               }
               return;
             }
-            const { status } = await ImagePicker.requestCameraPermissionsAsync();
-            if (status !== "granted") {
-              Alert.alert("Permission needed", "Camera access is required.");
-              return;
-            }
-            setShowPhotoPreview(false);
-            setTimeout(async () => {
-              const result = await ImagePicker.launchCameraAsync({
-                mediaTypes: ["videos"],
-                quality: 1.0,
-                videoMaxDuration: 60,
-              });
-              if (!result.canceled && result.assets[0]) {
-                setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
-              }
-              setShowPhotoPreview(true);
-            }, 500);
+            requestCameraWithPrompt(() => {
+              setShowPhotoPreview(false);
+              setTimeout(async () => {
+                try {
+                  const result = await ImagePicker.launchCameraAsync({
+                    mediaTypes: ["videos"],
+                    quality: 1.0,
+                    videoMaxDuration: 60,
+                  });
+                  if (!result.canceled && result.assets[0]) {
+                    setCapturedPhotos((prev) => [...prev, result.assets[0].uri]);
+                  }
+                  setShowPhotoPreview(true);
+                } catch {
+                  Alert.alert("Camera Error", "Unable to open camera.");
+                  setShowPhotoPreview(true);
+                }
+              }, 500);
+            });
           },
         },
         {
@@ -640,19 +669,20 @@ export default function CaseDetailScreen() {
       }
       return;
     }
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("Permission needed", "Camera access is required to take photos.");
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      quality: 1.0,
-      allowsEditing: false,
+    requestCameraWithPrompt(async () => {
+      try {
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          quality: 1.0,
+          allowsEditing: false,
+        });
+        if (!result.canceled && result.assets[0]) {
+          setEntryPhotos((prev) => [...prev, result.assets[0].uri]);
+        }
+      } catch {
+        Alert.alert("Camera Error", "Unable to open camera.");
+      }
     });
-    if (!result.canceled && result.assets[0]) {
-      setEntryPhotos((prev) => [...prev, result.assets[0].uri]);
-    }
   }
 
   function handleEntrySavePhotos() {
@@ -712,20 +742,21 @@ export default function CaseDetailScreen() {
               }
               return;
             }
-            const { status } = await ImagePicker.requestCameraPermissionsAsync();
-            if (status !== "granted") {
-              Alert.alert("Permission needed", "Camera access is required to take photos.");
-              return;
-            }
-            const result = await ImagePicker.launchCameraAsync({
-              mediaTypes: ["images"],
-              quality: 1.0,
+            requestCameraWithPrompt(async () => {
+              try {
+                const result = await ImagePicker.launchCameraAsync({
+                  mediaTypes: ["images"],
+                  quality: 1.0,
+                });
+                if (!result.canceled && result.assets[0]) {
+                  addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert("Photo Added", "Photo has been attached to this case.");
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
             });
-            if (!result.canceled && result.assets[0]) {
-              addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
-              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert("Photo Added", "Photo has been attached to this case.");
-            }
           },
         },
         {
@@ -743,21 +774,22 @@ export default function CaseDetailScreen() {
               }
               return;
             }
-            const { status } = await ImagePicker.requestCameraPermissionsAsync();
-            if (status !== "granted") {
-              Alert.alert("Permission needed", "Camera access is required to record video.");
-              return;
-            }
-            const result = await ImagePicker.launchCameraAsync({
-              mediaTypes: ["videos"],
-              quality: 1.0,
-              videoMaxDuration: 60,
+            requestCameraWithPrompt(async () => {
+              try {
+                const result = await ImagePicker.launchCameraAsync({
+                  mediaTypes: ["videos"],
+                  quality: 1.0,
+                  videoMaxDuration: 60,
+                });
+                if (!result.canceled && result.assets[0]) {
+                  addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert("Video Added", "Video has been attached to this case.");
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
             });
-            if (!result.canceled && result.assets[0]) {
-              addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
-              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert("Video Added", "Video has been attached to this case.");
-            }
           },
         },
         {
@@ -3053,6 +3085,12 @@ export default function CaseDetailScreen() {
           </View>
         </View>
       </Modal>
+
+      <CameraPermissionModal
+        visible={showCameraPrompt}
+        onContinue={handleCameraPromptContinue}
+        onCancel={() => { setShowCameraPrompt(false); cameraPromptCallbackRef.current = null; }}
+      />
 
     </View>
   );
