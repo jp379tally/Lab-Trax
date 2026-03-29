@@ -20,94 +20,78 @@ export default function PrivacyPolicyScreen() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: Platform.OS === "web" ? 84 + 40 : 120 }}
+        contentContainerStyle={{ padding: 24, paddingBottom: Platform.OS === "web" ? 84 + 40 : 120 }}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={[styles.lastUpdated, { color: colors.textSecondary }]}>Last Updated: March 29, 2026</Text>
+        <View style={[styles.iconContainer, { backgroundColor: colors.tintLight }]}>
+          <Ionicons name="shield-checkmark" size={40} color={colors.tint} />
+        </View>
 
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>1. Introduction</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          Allied Dental Lab ("we," "our," or "us") operates the LabTrax mobile application (the "App"). This Privacy Policy describes how we collect, use, disclose, and protect your personal information when you use our App. We are committed to safeguarding your privacy and complying with all applicable laws, including the Health Insurance Portability and Accountability Act (HIPAA).
-        </Text>
+        <Text style={[styles.title, { color: colors.text }]}>Your Privacy Matters</Text>
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>Last Updated: March 29, 2026</Text>
 
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>2. Information We Collect</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          We collect the following categories of information:{"\n\n"}
-          <Text style={{ fontFamily: "Inter_600SemiBold" }}>Account Information:</Text> Name, email address, phone number, practice or lab name, license number, and address when you create an account.{"\n\n"}
-          <Text style={{ fontFamily: "Inter_600SemiBold" }}>Case Data:</Text> Dental case details including patient identifiers, prescriptions, photos, notes, status updates, tracking numbers, and barcode information.{"\n\n"}
-          <Text style={{ fontFamily: "Inter_600SemiBold" }}>Device Information:</Text> Camera access for scanning prescriptions and documenting cases, photo library access for attaching images, location data for address auto-fill during setup, and biometric data (Face ID/Touch ID) for secure authentication.{"\n\n"}
-          <Text style={{ fontFamily: "Inter_600SemiBold" }}>Usage Data:</Text> App interaction logs, feature usage patterns, and error reports to improve service quality.
-        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+          <View style={styles.cardRow}>
+            <View style={[styles.bullet, { backgroundColor: "#DBEAFE" }]}>
+              <Ionicons name="person" size={18} color="#2563EB" />
+            </View>
+            <View style={styles.cardContent}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>Information We Collect</Text>
+              <Text style={[styles.cardBody, { color: colors.textSecondary }]}>We collect user info to manage dental cases. This includes your name, email, and case-related data you enter into the app.</Text>
+            </View>
+          </View>
+        </View>
 
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>3. How We Use Your Information</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          We use the information we collect to:{"\n\n"}
-          • Provide and maintain the LabTrax case management service{"\n"}
-          • Facilitate communication between dental labs and providers{"\n"}
-          • Generate invoices, labels, and case documentation{"\n"}
-          • Process prescription scans using AI-assisted technology{"\n"}
-          • Authenticate your identity and secure access to the App{"\n"}
-          • Improve our services and develop new features{"\n"}
-          • Comply with legal and regulatory requirements
-        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+          <View style={styles.cardRow}>
+            <View style={[styles.bullet, { backgroundColor: "#FEE2E2" }]}>
+              <Ionicons name="close-circle" size={18} color="#DC2626" />
+            </View>
+            <View style={styles.cardContent}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>We Do Not Sell Data</Text>
+              <Text style={[styles.cardBody, { color: colors.textSecondary }]}>Your personal information and case data are never sold to third parties. Your data stays between you and your connected dental lab or provider.</Text>
+            </View>
+          </View>
+        </View>
 
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>4. HIPAA Compliance</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          LabTrax is designed to support HIPAA technical safeguard requirements. We implement the following protections:{"\n\n"}
-          • 256-bit TLS encryption for all data in transit{"\n"}
-          • Role-based access control (RBAC) limiting data visibility{"\n"}
-          • Automatic session lock with biometric re-authentication{"\n"}
-          • Comprehensive audit trail for all PHI (Protected Health Information) access{"\n"}
-          • Secure credential storage using device-level encryption{"\n\n"}
-          Dental practices and labs using LabTrax should execute a Business Associate Agreement (BAA) with Allied Dental Lab if required by their HIPAA compliance program.
-        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+          <View style={styles.cardRow}>
+            <View style={[styles.bullet, { backgroundColor: "#D1FAE5" }]}>
+              <Ionicons name="checkmark-circle" size={18} color="#059669" />
+            </View>
+            <View style={styles.cardContent}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>Data Used for App Functionality Only</Text>
+              <Text style={[styles.cardBody, { color: colors.textSecondary }]}>All data collected is used solely to provide and improve the LabTrax case management experience. We use it for case tracking, communication, and invoicing.</Text>
+            </View>
+          </View>
+        </View>
 
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>5. Data Sharing and Disclosure</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          We do not sell your personal information to third parties. We may share information:{"\n\n"}
-          • With dental labs and providers you are connected to through the App for case management purposes{"\n"}
-          • With service providers who assist in operating our services (e.g., cloud hosting, AI processing), bound by confidentiality agreements{"\n"}
-          • When required by law, regulation, or legal process{"\n"}
-          • To protect the rights, safety, or property of Allied Dental Lab, our users, or the public
-        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+          <View style={styles.cardRow}>
+            <View style={[styles.bullet, { backgroundColor: "#EDE9FE" }]}>
+              <Ionicons name="lock-closed" size={18} color="#7C3AED" />
+            </View>
+            <View style={styles.cardContent}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>Security</Text>
+              <Text style={[styles.cardBody, { color: colors.textSecondary }]}>We use encryption, biometric authentication, and role-based access controls to keep your data safe and HIPAA-compliant.</Text>
+            </View>
+          </View>
+        </View>
 
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>6. Data Retention</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          We retain your account and case data for as long as your account is active or as needed to provide services. You may request deletion of your account and associated data at any time through the Settings screen. Upon account deletion, we will remove your personal data within 30 days, except where retention is required by law or for legitimate business purposes.
-        </Text>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
+          <View style={styles.cardRow}>
+            <View style={[styles.bullet, { backgroundColor: "#FEF3C7" }]}>
+              <Ionicons name="trash" size={18} color="#D97706" />
+            </View>
+            <View style={styles.cardContent}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>Account Deletion</Text>
+              <Text style={[styles.cardBody, { color: colors.textSecondary }]}>You can delete your account and all associated data at any time from the Settings screen.</Text>
+            </View>
+          </View>
+        </View>
 
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>7. Your Rights</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          You have the right to:{"\n\n"}
-          • Access the personal information we hold about you{"\n"}
-          • Request correction of inaccurate information{"\n"}
-          • Request deletion of your account and data{"\n"}
-          • Export your case data{"\n"}
-          • Withdraw consent for optional data processing{"\n\n"}
-          To exercise these rights, contact us at privacy@allieddl.com or use the in-app settings.
-        </Text>
-
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>8. Security</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          We implement industry-standard security measures to protect your information, including encryption, secure authentication, access controls, and regular security assessments. However, no method of electronic transmission or storage is 100% secure, and we cannot guarantee absolute security.
-        </Text>
-
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>9. Children's Privacy</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          LabTrax is not intended for use by individuals under the age of 18. We do not knowingly collect personal information from children.
-        </Text>
-
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>10. Changes to This Policy</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          We may update this Privacy Policy from time to time. We will notify you of material changes through the App or via email. Your continued use of the App after changes are posted constitutes acceptance of the updated policy.
-        </Text>
-
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>11. Contact Us</Text>
-        <Text style={[styles.body, { color: colors.textSecondary }]}>
-          If you have questions about this Privacy Policy or our data practices, contact us at:{"\n\n"}
-          Allied Dental Lab{"\n"}
-          Email: privacy@allieddl.com{"\n"}
-          Website: www.AlliedDL.com
+        <Text style={[styles.contact, { color: colors.textTertiary }]}>
+          Questions? Contact us at privacy@allieddl.com
         </Text>
       </ScrollView>
     </View>
@@ -128,20 +112,64 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontFamily: "Inter_600SemiBold",
   },
-  lastUpdated: {
+  iconContainer: {
+    width: 72,
+    height: 72,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    alignSelf: "center",
+    marginTop: 12,
+    marginBottom: 16,
+  },
+  title: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    textAlign: "center",
+    marginBottom: 4,
+  },
+  subtitle: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    marginBottom: 20,
+    textAlign: "center",
+    marginBottom: 28,
   },
-  sectionTitle: {
-    fontSize: 16,
-    fontFamily: "Inter_700Bold",
-    marginTop: 20,
-    marginBottom: 8,
+  card: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: 12,
   },
-  body: {
+  cardRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 14,
+  },
+  bullet: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  cardContent: {
+    flex: 1,
+  },
+  cardTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    marginBottom: 4,
+  },
+  cardBody: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    lineHeight: 22,
+    lineHeight: 20,
+  },
+  contact: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    marginTop: 20,
   },
 });
