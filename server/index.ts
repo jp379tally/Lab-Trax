@@ -281,22 +281,20 @@ function setupSecurityHeaders(app: express.Application) {
 
 async function seedDemoAccount() {
   const storage = new DatabaseStorage();
-  const demoUsername = "phillipsjohnpaul@yahoo.com";
-  const demoPassword = "Jp#14482726";
-  try {
-    const existing = await storage.getUserByUsername(demoUsername);
-    if (!existing) {
-      await storage.createUser({
-        username: demoUsername,
-        password: demoPassword,
-        email: demoUsername,
-        userType: "lab",
-        role: "admin",
-      });
-      log("Demo account seeded successfully");
+  const accounts = [
+    { username: "phillipsjohnpaul@yahoo.com", password: "Jp#14482726", email: "phillipsjohnpaul@yahoo.com", userType: "lab" as const, role: "admin" as const },
+    { username: "test@allieddl.com", password: "Test1234", email: "test@allieddl.com", userType: "lab" as const, role: "admin" as const },
+  ];
+  for (const acct of accounts) {
+    try {
+      const existing = await storage.getUserByUsername(acct.username);
+      if (!existing) {
+        await storage.createUser(acct);
+        log(`Demo account ${acct.username} seeded successfully`);
+      }
+    } catch (err: any) {
+      console.error(`Demo account seed error (${acct.username}):`, err?.message || err);
     }
-  } catch (err: any) {
-    console.error("Demo account seed error:", err?.message || err);
   }
 }
 
