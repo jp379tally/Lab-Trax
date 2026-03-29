@@ -619,7 +619,29 @@ function TechDashboard() {
               styles.headerQuickBtn,
               pressed && styles.quickBtnPressed,
             ]}
-            onPress={() => setBatchLocateOpen(true)}
+            onPress={async () => {
+              if (Platform.OS === "web") {
+                setBatchLocateOpen(true);
+                return;
+              }
+              if (!camPermission?.granted) {
+                Alert.alert(
+                  "Camera Access",
+                  "This feature uses your camera to scan barcodes for batch case location.",
+                  [{
+                    text: "Continue",
+                    onPress: async () => {
+                      const result = await requestCamPermission();
+                      if (result.granted) {
+                        setBatchLocateOpen(true);
+                      }
+                    },
+                  }]
+                );
+                return;
+              }
+              setBatchLocateOpen(true);
+            }}
           >
             <View style={[styles.quickIcon, { backgroundColor: "#FEF3C7" }]}>
               <MaterialCommunityIcons name="barcode-scan" size={22} color="#D97706" />
@@ -1099,7 +1121,7 @@ function TechDashboard() {
                   </Pressable>
                 </View>
               </View>
-            ) : (
+            ) : camPermission?.granted ? (
               <CameraView
                 style={{ flex: 1 }}
                 facing="back"
@@ -1116,6 +1138,22 @@ function TechDashboard() {
                   </Text>
                 </View>
               </CameraView>
+            ) : (
+              <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name="camera-outline" size={48} color="rgba(255,255,255,0.4)" />
+                <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 15, fontFamily: "Inter_500Medium", marginTop: 12, textAlign: "center", paddingHorizontal: 40 }}>Camera permission is required to scan barcodes.</Text>
+                <Pressable
+                  onPress={async () => {
+                    const result = await requestCamPermission();
+                    if (!result.granted) {
+                      Alert.alert("Permission Denied", "Please enable camera access in your device settings.");
+                    }
+                  }}
+                  style={({ pressed }) => ({ marginTop: 16, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, opacity: pressed ? 0.8 : 1 })}
+                >
+                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Grant Camera Access</Text>
+                </Pressable>
+              </View>
             )}
             <View style={{ backgroundColor: "rgba(0,0,0,0.85)", paddingHorizontal: 20, paddingVertical: 16, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16 }}>
               <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_600SemiBold", marginBottom: 8 }}>

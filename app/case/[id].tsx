@@ -3020,37 +3020,57 @@ export default function CaseDetailScreen() {
             </Pressable>
           </View>
           <View style={{ flex: 1, overflow: "hidden" }}>
-            <CameraView
-              style={{ flex: 1 }}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ["code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "qr", "pdf417", "itf14", "codabar"] }}
-              onBarcodeScanned={barcodeScanned ? undefined : (result) => {
-                setBarcodeScanned(true);
-                const scannedBarcode = result.data;
-                const existingCase = findCaseByBarcode(scannedBarcode);
-                if (existingCase && existingCase.id !== id) {
-                  Alert.alert(
-                    "Barcode In Use",
-                    `This barcode is already assigned to case ${existingCase.caseNumber}. Please scan a different barcode.`,
-                    [{ text: "OK", onPress: () => setBarcodeScanned(false) }]
-                  );
-                } else {
-                  assignBarcodeToCase(id!, scannedBarcode);
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  Alert.alert(
-                    "Barcode Assigned",
-                    `Barcode ${scannedBarcode} has been assigned to this case.`,
-                    [{ text: "OK", onPress: () => setShowBarcodeScanner(false) }]
-                  );
-                }
-              }}
-            />
-            <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "center", alignItems: "center" }} pointerEvents="none">
-              <View style={{ width: 260, height: 100, borderWidth: 2, borderColor: "rgba(79,142,247,0.6)", borderRadius: 12, borderStyle: "dashed" }} />
-              <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 8 }}>
-                Align barcode in the box
-              </Text>
-            </View>
+            {cameraPermission?.granted ? (
+              <>
+                <CameraView
+                  style={{ flex: 1 }}
+                  facing="back"
+                  barcodeScannerSettings={{ barcodeTypes: ["code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "qr", "pdf417", "itf14", "codabar"] }}
+                  onBarcodeScanned={barcodeScanned ? undefined : (result) => {
+                    setBarcodeScanned(true);
+                    const scannedBarcode = result.data;
+                    const existingCase = findCaseByBarcode(scannedBarcode);
+                    if (existingCase && existingCase.id !== id) {
+                      Alert.alert(
+                        "Barcode In Use",
+                        `This barcode is already assigned to case ${existingCase.caseNumber}. Please scan a different barcode.`,
+                        [{ text: "OK", onPress: () => setBarcodeScanned(false) }]
+                      );
+                    } else {
+                      assignBarcodeToCase(id!, scannedBarcode);
+                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      Alert.alert(
+                        "Barcode Assigned",
+                        `Barcode ${scannedBarcode} has been assigned to this case.`,
+                        [{ text: "OK", onPress: () => setShowBarcodeScanner(false) }]
+                      );
+                    }
+                  }}
+                />
+                <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "center", alignItems: "center" }} pointerEvents="none">
+                  <View style={{ width: 260, height: 100, borderWidth: 2, borderColor: "rgba(79,142,247,0.6)", borderRadius: 12, borderStyle: "dashed" }} />
+                  <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 8 }}>
+                    Align barcode in the box
+                  </Text>
+                </View>
+              </>
+            ) : (
+              <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name="camera-outline" size={48} color="rgba(255,255,255,0.4)" />
+                <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 15, fontFamily: "Inter_500Medium", marginTop: 12, textAlign: "center", paddingHorizontal: 40 }}>Camera permission is required to scan barcodes.</Text>
+                <Pressable
+                  onPress={async () => {
+                    const result = await requestCameraPermission();
+                    if (!result.granted) {
+                      Alert.alert("Permission Denied", "Please enable camera access in your device settings.");
+                    }
+                  }}
+                  style={({ pressed }) => ({ marginTop: 16, backgroundColor: "#4F8EF7", paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, opacity: pressed ? 0.8 : 1 })}
+                >
+                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Grant Camera Access</Text>
+                </Pressable>
+              </View>
+            )}
           </View>
           <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, paddingTop: 16, alignItems: "center" }}>
             <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>

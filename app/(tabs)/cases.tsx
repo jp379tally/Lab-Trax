@@ -350,7 +350,7 @@ export default function CasesScreen() {
                 <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Close</Text>
               </Pressable>
             </View>
-          ) : (
+          ) : permission?.granted ? (
             <CameraView
               style={{ flex: 1 }}
               facing="back"
@@ -362,6 +362,22 @@ export default function CasesScreen() {
                 <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 16 }}>Point camera at barcode</Text>
               </View>
             </CameraView>
+          ) : (
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+              <Ionicons name="camera-outline" size={48} color="rgba(255,255,255,0.4)" />
+              <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 15, fontFamily: "Inter_500Medium", marginTop: 12, textAlign: "center", paddingHorizontal: 40 }}>Camera permission is required to scan barcodes.</Text>
+              <Pressable
+                onPress={async () => {
+                  const result = await requestPermission();
+                  if (!result.granted) {
+                    Alert.alert("Permission Denied", "Please enable camera access in your device settings.");
+                  }
+                }}
+                style={({ pressed }) => ({ marginTop: 16, backgroundColor: Colors.light.tint, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, opacity: pressed ? 0.8 : 1 })}
+              >
+                <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Grant Camera Access</Text>
+              </Pressable>
+            </View>
           )}
         </View>
       </Modal>
