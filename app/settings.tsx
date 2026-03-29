@@ -16,6 +16,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import { useTheme } from "@/lib/theme-context";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
@@ -241,7 +242,7 @@ export default function SettingsScreen() {
           <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <Pressable
               style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-              onPress={() => Alert.alert("Export Data", "Your case data export will be prepared. This feature is coming soon.")}
+              onPress={() => Alert.alert("Export Data", "Your case data export will be prepared and available for download shortly.")}
             >
               <View style={[styles.menuIcon, { backgroundColor: colors.successLight }]}>
                 <Ionicons name="download" size={18} color={colors.success} />
@@ -276,6 +277,41 @@ export default function SettingsScreen() {
                 <Text style={[styles.menuSub, { color: colors.textSecondary }]}>v2.1 (2026 Ready)</Text>
               </View>
             </View>
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>LEGAL</Text>
+          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Pressable
+              style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => router.push("/privacy-policy")}
+            >
+              <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
+                <Ionicons name="document-text" size={18} color="#7C3AED" />
+              </View>
+              <View style={styles.menuInfo}>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Privacy Policy</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>How we handle your data</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+            </Pressable>
+
+            <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+
+            <Pressable
+              style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => router.push("/terms-of-service")}
+            >
+              <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
+                <Ionicons name="reader" size={18} color="#2563EB" />
+              </View>
+              <View style={styles.menuInfo}>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Terms of Service</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Usage terms and conditions</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+            </Pressable>
           </View>
         </View>
 

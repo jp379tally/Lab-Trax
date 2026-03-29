@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as Location from "expo-location";
@@ -1737,6 +1738,13 @@ export default function LoginScreen() {
             </>
           )}
         </Pressable>
+
+        <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 16, lineHeight: 18 }}>
+          By creating an account, you agree to our{" "}
+          <Text onPress={() => router.push("/terms-of-service")} style={{ color: "#60A5FA", textDecorationLine: "underline" }}>Terms of Service</Text>
+          {" "}and{" "}
+          <Text onPress={() => router.push("/privacy-policy")} style={{ color: "#60A5FA", textDecorationLine: "underline" }}>Privacy Policy</Text>.
+        </Text>
       </View>
     );
   }
@@ -2267,6 +2275,14 @@ export default function LoginScreen() {
               <Text style={styles.switchText}>Don't have an account?</Text>
               <Pressable onPress={switchToSignUp} style={({ pressed }) => [pressed && { opacity: 0.7 }]} testID="switch-mode-btn">
                 <Text style={styles.switchLink}>Sign Up</Text>
+              </Pressable>
+            </View>
+            <View style={{ flexDirection: "row", justifyContent: "center", gap: 16, marginBottom: 8 }}>
+              <Pressable onPress={() => router.push("/privacy-policy")} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#60A5FA", textDecorationLine: "underline" }}>Privacy Policy</Text>
+              </Pressable>
+              <Pressable onPress={() => router.push("/terms-of-service")} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#60A5FA", textDecorationLine: "underline" }}>Terms of Service</Text>
               </Pressable>
             </View>
             <View style={styles.footer}>
