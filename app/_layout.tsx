@@ -1,8 +1,8 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect, useRef, useMemo } from "react";
-import { View, ActivityIndicator, StyleSheet, PanResponder, Platform } from "react-native";
+import React, { useEffect, useMemo } from "react";
+import { View, ActivityIndicator, StyleSheet, PanResponder } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import {
@@ -42,6 +42,14 @@ function RootLayoutNav() {
       <Stack.Screen
         name="smile-preview"
         options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="privacy-policy"
+        options={{ headerShown: false, presentation: "modal" }}
+      />
+      <Stack.Screen
+        name="terms-of-service"
+        options={{ headerShown: false, presentation: "modal" }}
       />
     </Stack>
   );
@@ -122,13 +130,6 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError]);
 
-  useEffect(() => {
-    if (Platform.OS === "ios") {
-      import("expo-tracking-transparency").then(({ requestTrackingPermissionsAsync }) => {
-        requestTrackingPermissionsAsync();
-      }).catch(() => {});
-    }
-  }, []);
 
   if (!fontsLoaded && !fontError) {
     return null;

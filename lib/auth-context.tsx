@@ -281,7 +281,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const apiUrl = getApiUrl();
       const url = new URL(`/api/auth/users/${currentUserId}`, apiUrl);
-      const resp = await resilientFetch(url.toString(), { method: "DELETE" });
+      const resp = await resilientFetch(url.toString(), { method: "DELETE", headers: { "x-user-id": currentUserId } });
       const data = await resp.json();
       if (data.success) {
         logAudit("DELETE_ACCOUNT", currentUser || "unknown", "User deleted their account");

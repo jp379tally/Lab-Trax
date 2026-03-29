@@ -21,8 +21,7 @@
         "NSPhotoLibraryUsageDescription": "This app accesses your photo library to attach images of dental cases, prescriptions, and documents for case tracking and communication.",
         "NSMicrophoneUsageDescription": "This app uses the microphone to record video of dental cases for documentation and lab communication.",
         "NSLocationWhenInUseUsageDescription": "This app uses your location to auto-fill your practice or lab address during account setup.",
-        "NSFaceIDUsageDescription": "This app uses Face ID to securely unlock access to patient case data and HIPAA-protected information.",
-        "NSUserTrackingUsageDescription": "This app does not track you across other apps or websites. This permission is requested to comply with App Store requirements."
+        "NSFaceIDUsageDescription": "This app uses Face ID to securely unlock access to patient case data and HIPAA-protected information."
       }
     },
     "android": {
@@ -45,8 +44,7 @@
         }
       ],
       "expo-font",
-      "expo-web-browser",
-      "expo-tracking-transparency"
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

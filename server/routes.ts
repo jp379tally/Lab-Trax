@@ -175,6 +175,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/auth/users/:id", async (req, res) => {
     try {
       const { id } = req.params;
+      const authUser = req.headers["x-user-id"] as string;
+      if (!authUser || authUser !== id) {
+        return res.status(403).json({ error: "You can only delete your own account." });
+      }
       const user = await storage.getUser(id);
       if (!user) return res.status(404).json({ error: "User not found" });
       const deleted = await storage.deleteUser(id);
