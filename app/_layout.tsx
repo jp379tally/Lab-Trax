@@ -2,7 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useRef, useMemo } from "react";
-import { View, ActivityIndicator, StyleSheet, PanResponder } from "react-native";
+import { View, ActivityIndicator, StyleSheet, PanResponder, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import {
@@ -121,6 +121,14 @@ export default function RootLayout() {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, fontError]);
+
+  useEffect(() => {
+    if (Platform.OS === "ios") {
+      import("expo-tracking-transparency").then(({ requestTrackingPermissionsAsync }) => {
+        requestTrackingPermissionsAsync();
+      }).catch(() => {});
+    }
+  }, []);
 
   if (!fontsLoaded && !fontError) {
     return null;
