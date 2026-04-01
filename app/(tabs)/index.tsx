@@ -1929,7 +1929,7 @@ function AdminDashboard() {
             <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.subText, marginBottom: 12 }}>Groups</Text>
             {groups.map((g) => (
               <View key={g.id} style={{ backgroundColor: "#fff", borderRadius: 14, marginBottom: 10, padding: 14, shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 1 }, elevation: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
                   <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: g.type === "lab" ? "#EDE9FE" : "#E0F2FE", justifyContent: "center", alignItems: "center" }}>
                     <Ionicons name={g.type === "lab" ? "flask" : "business"} size={16} color={g.type === "lab" ? "#8B5CF6" : "#0EA5E9"} />
                   </View>
@@ -1938,6 +1938,20 @@ function AdminDashboard() {
                     <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""} · {g.type}</Text>
                   </View>
                 </View>
+                {g.members.map((m) => {
+                  const regUser = registeredUsers.find(u => u.username.toLowerCase() === m.username.toLowerCase());
+                  return (
+                    <View key={m.userId} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 8, paddingHorizontal: 4, borderTopWidth: 1, borderTopColor: "#F3F4F6" }}>
+                      <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: m.role === "admin" ? "#DBEAFE" : "#F3E8FF", justifyContent: "center", alignItems: "center", marginRight: 10 }}>
+                        <Ionicons name={m.role === "admin" ? "shield" : "person"} size={14} color={m.role === "admin" ? "#2563EB" : "#8B5CF6"} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{regUser?.practiceName || m.username}</Text>
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>{m.username} · {m.role}</Text>
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             ))}
           </View>

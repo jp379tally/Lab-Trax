@@ -137,7 +137,7 @@ const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 const STATION_LABELS_KEY = "@drivesync_station_labels";
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const { currentUserId, currentUser, userType } = useAuth();
+  const { currentUserId, currentUser, userType, registeredUsers } = useAuth();
   const [role, setRoleState] = useState<UserRole>("user");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [allCases, setAllCases] = useState<LabCase[]>([]);
@@ -161,10 +161,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return groups.some(g => g.members.some(m => m.username.toLowerCase() === currentUser.toLowerCase()));
   }, [groups, currentUser]);
 
+  const groupMemberIds = useMemo(() => {
+    if (!currentUser) return new Set<string>();
+    const ids = new Set<string>();
+    if (currentUserId) ids.add(currentUserId);
+    const myGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === currentUser.toLowerCase()));
+    for (const g of myGroups) {
+      for (const m of g.members) {
+        if (m.userId) ids.add(m.userId);
+        const regUser = registeredUsers.find(u => u.username.toLowerCase() === m.username.toLowerCase());
+        if (regUser?.id) ids.add(regUser.id);
+      }
+    }
+    return ids;
+  }, [currentUser, currentUserId, groups, registeredUsers]);
+
   const cases = useMemo(() => {
     if (!currentUserId) return [];
-    return allCases.filter((c) => c.ownerId === currentUserId);
-  }, [allCases, currentUserId]);
+    return allCases.filter((c) => c.ownerId && groupMemberIds.has(c.ownerId));
+  }, [allCases, currentUserId, groupMemberIds]);
 
   function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
     setAllCases(updater);
@@ -1121,6 +1136,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   function createGroup(name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "user"): Group {
     const now = Date.now();
+    const creatorReg = registeredUsers.find(u => u.username.toLowerCase() === creatorUsername.toLowerCase());
     const newGroup: Group = {
       id: generateId(),
       name,
@@ -1128,7 +1144,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       address,
       members: [
         {
-          userId: generateId(),
+          userId: creatorReg?.id || generateId(),
           username: creatorUsername,
           role: creatorRole,
           joinedAt: now,
@@ -1144,8 +1160,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   function addUserToGroup(groupId: string, username: string, role: "admin" | "user") {
     const now = Date.now();
+    const regUser = registeredUsers.find(u => u.username.toLowerCase() === username.toLowerCase());
     const newMember: GroupMember = {
-      userId: generateId(),
+      userId: regUser?.id || generateId(),
       username,
       role,
       joinedAt: now,
