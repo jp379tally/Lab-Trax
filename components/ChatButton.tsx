@@ -252,6 +252,21 @@ export function ChatButton() {
     }
   }
 
+  async function handleChatCamera() {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Camera access is required to take a photo.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setChatImageUri(result.assets[0].uri);
+    }
+  }
+
   function handleSend() {
     if (!activeConversationId) return;
     const trimmed = chatInput.trim();
@@ -635,7 +650,7 @@ export function ChatButton() {
             <Ionicons name="add-circle" size={28} color={MESSENGER_BLUE} />
           </Pressable>
           <Pressable
-            onPress={handleChatPickImage}
+            onPress={handleChatCamera}
             style={({ pressed }) => [s.inputCircleBtn, { opacity: pressed ? 0.6 : 1 }]}
           >
             <Ionicons name="camera" size={22} color={MESSENGER_BLUE} />
