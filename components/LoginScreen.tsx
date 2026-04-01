@@ -368,8 +368,8 @@ export default function LoginScreen() {
       setCodeResendTimer(60);
       setSignUpStep("phone_verify");
       setPhoneCode("");
-    } catch {
-      setSignUpStep("phone_contact_name");
+    } catch (e: any) {
+      setSignUpError(e?.message || "Failed to send verification code. Please try again.");
     }
     setCodeSending(false);
   }
@@ -406,8 +406,8 @@ export default function LoginScreen() {
       setCodeResendTimer(60);
       setSignUpStep("email_verify");
       setEmailCode("");
-    } catch {
-      setSignUpStep("updates_opt_in");
+    } catch (e: any) {
+      setSignUpError(e?.message || "Failed to send verification code. Please try again.");
     }
     setCodeSending(false);
   }

@@ -219,7 +219,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ entries: auditLog.slice(-100) });
   });
 
-  app.post("/api/send-phone-code", (req, res) => {
+  app.post("/api/send-phone-code", async (req, res) => {
     const { phone } = req.body;
     if (!phone || typeof phone !== "string") {
       return res.status(400).json({ error: "Phone number required" });
@@ -227,8 +227,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const code = generateCode();
     const key = `phone:${phone.trim()}`;
     verificationCodes.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
-    console.log(`[SMS VERIFICATION] Code for ${phone}: ${code}`);
-    res.json({ success: true, message: "Verification code sent via SMS.", demoCode: code });
+
+    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+
+    if (twilioSid && twilioToken && twilioFrom) {
+      try {
+        const authHeader = "Basic " + Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
+        const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`;
+        const params = new URLSearchParams();
+        params.append("To", phone.trim());
+        params.append("From", twilioFrom);
+        params.append("Body", `Your LabTrax verification code is: ${code}. It expires in 10 minutes.`);
+        const twilioResp = await globalThis.fetch(twilioUrl, {
+          method: "POST",
+          headers: { "Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded" },
+          body: params.toString(),
+        });
+        const twilioData = await twilioResp.json() as any;
+        if (twilioData.error_code) {
+          console.error(`[SMS VERIFICATION] Twilio error: ${twilioData.message}`);
+          return res.status(500).json({ error: "Failed to send verification code. Please try again." });
+        }
+        console.log(`[SMS VERIFICATION] Code sent to ${phone}`);
+      } catch (err: any) {
+        console.error(`[SMS VERIFICATION] Failed to send SMS:`, err?.message || err);
+        return res.status(500).json({ error: "Failed to send verification code. Please try again." });
+      }
+    } else {
+      console.log(`[SMS VERIFICATION] Twilio not configured. Code for ${phone}: ${code}`);
+    }
+
+    const isDev = process.env.NODE_ENV === "development";
+    res.json({ success: true, message: "Verification code sent via SMS.", ...(isDev && (!twilioSid || !twilioToken || !twilioFrom) ? { demoCode: code } : {}) });
   });
 
   app.post("/api/verify-phone-code", (req, res) => {
@@ -252,7 +284,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ verified: true });
   });
 
-  app.post("/api/send-email-code", (req, res) => {
+  app.post("/api/send-email-code", async (req, res) => {
     const { email } = req.body;
     if (!email || typeof email !== "string") {
       return res.status(400).json({ error: "Email required" });
@@ -260,8 +292,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const code = generateCode();
     const key = `email:${email.trim().toLowerCase()}`;
     verificationCodes.set(key, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
-    console.log(`[EMAIL VERIFICATION] Code for ${email}: ${code}`);
-    res.json({ success: true, message: "Verification code sent to your email.", demoCode: code });
+
+    const smtpHost = process.env.SMTP_HOST;
+    const smtpUser = process.env.SMTP_USER;
+    const smtpPass = process.env.SMTP_PASS;
+    const smtpPort = process.env.SMTP_PORT;
+    const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@labtrax.com";
+
+    if (smtpHost && smtpUser && smtpPass) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: parseInt(smtpPort || "587"),
+          secure: (smtpPort || "587") === "465",
+          auth: { user: smtpUser, pass: smtpPass },
+        });
+        await transporter.sendMail({
+          from: smtpFrom,
+          to: email.trim(),
+          subject: "LabTrax - Email Verification Code",
+          html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+              <h2 style="margin: 0;">LabTrax</h2>
+              <p style="margin: 4px 0 0; opacity: 0.85;">Email Verification</p>
+            </div>
+            <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+              <p>Your verification code is:</p>
+              <p style="text-align: center; margin: 24px 0;">
+                <span style="display: inline-block; background: #F0F4FF; padding: 16px 40px; border-radius: 8px; font-size: 28px; font-weight: bold; color: #4A6CF7; letter-spacing: 6px;">${code}</span>
+              </p>
+              <p style="color: #666; font-size: 13px;">This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
+            </div>
+          </div>`,
+        });
+        console.log(`[EMAIL VERIFICATION] Code sent to ${email}`);
+      } catch (err: any) {
+        console.error(`[EMAIL VERIFICATION] Failed to send email:`, err?.message || err);
+        return res.status(500).json({ error: "Failed to send verification code. Please try again." });
+      }
+    } else {
+      console.log(`[EMAIL VERIFICATION] SMTP not configured. Code for ${email}: ${code}`);
+    }
+
+    const isDev = process.env.NODE_ENV === "development";
+    res.json({ success: true, message: "Verification code sent to your email.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoCode: code } : {}) });
   });
 
   app.post("/api/verify-email-code", (req, res) => {
