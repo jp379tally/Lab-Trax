@@ -50,6 +50,7 @@ interface AuthContextValue {
   unlockWithBiometric: () => Promise<{ success: boolean; error?: string }>;
   unlockWithPassword: (password: string) => { success: boolean; error?: string };
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  updateUserProfile: (updates: { practiceName?: string; practiceAddress?: string; practicePhone?: string; email?: string; phone?: string }) => Promise<{ success: boolean; error?: string }>;
   resetInactivityTimer: () => void;
 }
 
@@ -360,6 +361,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function updateUserProfile(updates: { practiceName?: string; practiceAddress?: string; practicePhone?: string; email?: string; phone?: string }): Promise<{ success: boolean; error?: string }> {
+    if (!currentUser || !currentUserId) return { success: false, error: "Not logged in" };
+    try {
+      const res = await resilientFetch(`/api/auth/users/${currentUserId}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-user-id": currentUserId },
+        body: JSON.stringify(updates),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || "Failed to update profile" };
+      }
+      setRegisteredUsers((prev) =>
+        prev.map((u) =>
+          u.id === currentUserId || u.username.toLowerCase() === currentUser.toLowerCase()
+            ? { ...u, ...updates }
+            : u,
+        ),
+      );
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: "Connection error. Please try again." };
+    }
+  }
+
   function unlockWithPassword(password: string): { success: boolean; error?: string } {
     if (!currentUser) return { success: false, error: "No user session found." };
     if (!currentPassword || currentPassword !== password) {
@@ -389,6 +415,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       unlockWithBiometric,
       unlockWithPassword,
       changePassword,
+      updateUserProfile,
       resetInactivityTimer,
     }),
     [isAuthenticated, isAuthLoading, currentUser, userType, registeredUsers, profilePicUri, isLocked, resetInactivityTimer, currentPassword, currentUserId],

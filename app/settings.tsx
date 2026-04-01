@@ -28,8 +28,13 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
   const { sendGroupJoinRequest, groups } = useApp();
-  const { currentUser, userType, registeredUsers, deleteAccount } = useAuth();
+  const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
+  const [showEditLab, setShowEditLab] = useState(false);
+  const [editLabName, setEditLabName] = useState("");
+  const [editLabAddress, setEditLabAddress] = useState("");
+  const [editLabPhone, setEditLabPhone] = useState("");
+  const [editLabSaving, setEditLabSaving] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
   const [showAddLabModal, setShowAddLabModal] = useState(false);
   const [labSearchName, setLabSearchName] = useState("");
@@ -190,7 +195,15 @@ export default function SettingsScreen() {
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MY LAB</Text>
             <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <View style={styles.menuItem}>
+              <Pressable
+                style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                onPress={() => {
+                  setEditLabName(currentUserData?.practiceName || "");
+                  setEditLabAddress(currentUserData?.practiceAddress || "");
+                  setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
+                  setShowEditLab(true);
+                }}
+              >
                 {companyLogoUri ? (
                   <Image
                     source={{ uri: companyLogoUri }}
@@ -213,7 +226,8 @@ export default function SettingsScreen() {
                     <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practicePhone || currentUserData?.phone || "Phone not set"}</Text>
                   </View>
                 </View>
-              </View>
+                <Ionicons name="create-outline" size={20} color={colors.textTertiary} />
+              </Pressable>
             </View>
           </View>
         ) : (
@@ -538,6 +552,73 @@ export default function SettingsScreen() {
                 </ScrollView>
               </View>
             )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal transparent visible={showEditLab} animationType="slide" onRequestClose={() => setShowEditLab(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
+          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: insets.bottom + 24 }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.text }}>Edit My Lab</Text>
+                <Pressable onPress={() => setShowEditLab(false)}>
+                  <Ionicons name="close" size={24} color={colors.textSecondary} />
+                </Pressable>
+              </View>
+
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Lab Name</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                value={editLabName}
+                onChangeText={setEditLabName}
+                placeholder="Enter lab name"
+                placeholderTextColor={colors.textTertiary}
+              />
+
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Address</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                value={editLabAddress}
+                onChangeText={setEditLabAddress}
+                placeholder="Enter address"
+                placeholderTextColor={colors.textTertiary}
+              />
+
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Phone</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                value={editLabPhone}
+                onChangeText={setEditLabPhone}
+                placeholder="Enter phone number"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="phone-pad"
+              />
+
+              <Pressable
+                style={({ pressed }) => [styles.sendBtn, editLabSaving && { opacity: 0.6 }, pressed && { opacity: 0.8 }]}
+                disabled={editLabSaving}
+                onPress={async () => {
+                  setEditLabSaving(true);
+                  const result = await updateUserProfile({
+                    practiceName: editLabName,
+                    practiceAddress: editLabAddress,
+                    practicePhone: editLabPhone,
+                  });
+                  setEditLabSaving(false);
+                  if (result.success) {
+                    if (Platform.OS !== "web") {
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    }
+                    setShowEditLab(false);
+                  } else {
+                    Alert.alert("Error", result.error || "Failed to save changes");
+                  }
+                }}
+              >
+                <Text style={styles.sendBtnText}>{editLabSaving ? "Saving..." : "Save Changes"}</Text>
+              </Pressable>
+            </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>

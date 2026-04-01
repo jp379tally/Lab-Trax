@@ -161,6 +161,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.put("/api/auth/users/:id/profile", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const authUser = req.headers["x-user-id"] as string;
+      if (!authUser || authUser !== id) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+      const user = await storage.getUser(id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      const { practiceName, practiceAddress, practicePhone, email, phone } = req.body;
+      const updates: Partial<typeof user> = {};
+      if (practiceName !== undefined) updates.practiceName = practiceName;
+      if (practiceAddress !== undefined) updates.practiceAddress = practiceAddress;
+      if (practicePhone !== undefined) updates.practicePhone = practicePhone;
+      if (email !== undefined) updates.email = email;
+      if (phone !== undefined) updates.phone = phone;
+      const updated = await storage.updateUser(id, updates);
+      res.json({ success: true, user: updated });
+    } catch (error: any) {
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+
   app.put("/api/auth/users/:id/password", async (req, res) => {
     try {
       const { id } = req.params;
