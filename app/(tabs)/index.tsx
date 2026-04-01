@@ -34,7 +34,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group, formatAcctNum, formatInvNum, cleanDoctorDisplay } from "@/lib/data";
+import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
@@ -1507,10 +1507,11 @@ type AdminView =
   | "payment-processing"
   | "edit-locations"
   | "integrations"
-  | "client-stats";
+  | "client-stats"
+  | "delete-cases";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification, customStationLabels, updateStationLabel } = useApp();
+  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification, customStationLabels, updateStationLabel, removeCase } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -1539,6 +1540,8 @@ function AdminDashboard() {
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [showEditClientPricing, setShowEditClientPricing] = useState(false);
   const [editingUser, setEditingUser] = useState<LabUser | null>(null);
+  const [deleteCaseTarget, setDeleteCaseTarget] = useState<LabCase | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [newShipCompany, setNewShipCompany] = useState("");
   const [newShipAccount, setNewShipAccount] = useState("");
 
@@ -1778,6 +1781,7 @@ function AdminDashboard() {
       { icon: "add-circle", iconSet: "ion", color: "#059669", bg: "#ECFDF5", title: "Create Group", sub: "Create a new user group", view: "create-group" as AdminView },
       { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Add Users", sub: `${labPortalUsers.length} lab users · Assign to groups`, view: "lab-users" as AdminView },
       { icon: "cloud-upload", iconSet: "ion", color: "#2563EB", bg: "#DBEAFE", title: "Integrations", sub: "iTero · Scanner connections", view: "integrations" as AdminView },
+      { icon: "trash", iconSet: "ion", color: "#EF4444", bg: "#FEE2E2", title: "Delete Case", sub: "Remove an active case", view: "delete-cases" as AdminView },
     ];
 
     return (
@@ -5269,7 +5273,91 @@ function AdminDashboard() {
     );
   }
 
+  function renderDeleteCases() {
+    const activeCases = cases.filter((c) => c.status !== "COMPLETE");
+
+    return (
+      <View style={{ flex: 1, backgroundColor: "#F8FAFC" }}>
+        <ScrollView
+          style={styles.container}
+          contentContainerStyle={{
+            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          }}
+          showsVerticalScrollIndicator={false}
+        >
+          {renderBackHeader("Delete Case")}
+          {activeCases.length === 0 ? (
+            <View style={{ alignItems: "center", paddingTop: 60 }}>
+              <Ionicons name="checkmark-circle-outline" size={48} color={Colors.light.textTertiary} />
+              <Text style={{ fontSize: 16, color: Colors.light.textSecondary, marginTop: 12 }}>No active cases</Text>
+            </View>
+          ) : (
+            <View style={adm.menuSection}>
+              {activeCases.map((c) => {
+                const stationInfo = getStationInfo(c.status, customStationLabels);
+                return (
+                  <Pressable
+                    key={c.id}
+                    style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+                    onPress={() => { setDeleteCaseTarget(c); setShowDeleteConfirm(true); }}
+                  >
+                    <View style={[adm.menuIcon, { backgroundColor: "#FEE2E2" }]}>
+                      <Ionicons name="document-text" size={20} color="#EF4444" />
+                    </View>
+                    <View style={adm.menuInfo}>
+                      <Text style={adm.menuTitle}>Case #{c.caseNumber}</Text>
+                      <Text style={adm.menuSub} numberOfLines={1}>
+                        {c.patientName || "No patient"} · {c.doctorName || "No doctor"} · {stationInfo.label}
+                      </Text>
+                    </View>
+                    <Ionicons name="trash-outline" size={18} color="#EF4444" />
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </ScrollView>
+
+        {showDeleteConfirm && deleteCaseTarget && (
+          <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", zIndex: 999 }}>
+            <View style={{ backgroundColor: "#fff", borderRadius: 16, padding: 24, marginHorizontal: 32, width: "90%", maxWidth: 400 }}>
+              <Text style={{ fontSize: 18, fontWeight: "700" as const, color: "#0F172A", marginBottom: 8 }}>Delete Case</Text>
+              <Text style={{ fontSize: 15, color: Colors.light.textSecondary, marginBottom: 20 }}>
+                Are you sure you want to delete Case #{deleteCaseTarget.caseNumber}
+                {deleteCaseTarget.patientName ? ` (${deleteCaseTarget.patientName})` : ""}? This action cannot be undone.
+              </Text>
+              <View style={{ flexDirection: "row", gap: 12 }}>
+                <Pressable
+                  onPress={() => { setShowDeleteConfirm(false); setDeleteCaseTarget(null); }}
+                  style={({ pressed }) => ({
+                    flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: "#F1F5F9", alignItems: "center" as const, opacity: pressed ? 0.7 : 1,
+                  })}
+                >
+                  <Text style={{ fontSize: 15, fontWeight: "600" as const, color: Colors.light.textSecondary }}>No</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    removeCase(deleteCaseTarget.id);
+                    setShowDeleteConfirm(false);
+                    setDeleteCaseTarget(null);
+                  }}
+                  style={({ pressed }) => ({
+                    flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: "#EF4444", alignItems: "center" as const, opacity: pressed ? 0.7 : 1,
+                  })}
+                >
+                  <Text style={{ fontSize: 15, fontWeight: "600" as const, color: "#fff" }}>Yes</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        )}
+      </View>
+    );
+  }
+
   switch (adminView) {
+    case "delete-cases": return renderDeleteCases();
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();
     case "client-detail": return renderClientDetail();

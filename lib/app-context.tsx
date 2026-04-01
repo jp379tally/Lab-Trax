@@ -90,6 +90,7 @@ interface AppContextValue {
   getGroupByNameAndAddress: (name: string, address: string) => Group | undefined;
   findOrCreateGroup: (name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "user") => Group;
   updateCase: (caseId: string, updates: Partial<LabCase>) => void;
+  removeCase: (caseId: string) => void;
   removeInvoice: (invoiceId: string) => void;
   attachCaseToInvoice: (caseId: string, invoiceId: string) => void;
   sendCourtesyText: (caseId: string, message: string, sentBy: string) => void;
@@ -684,6 +685,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         return c;
       });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function removeCase(caseId: string) {
+    setCases((prev) => {
+      const updated = prev.filter((c) => c.id !== caseId);
       AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
       return updated;
     });
@@ -1531,6 +1540,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       getGroupByNameAndAddress,
       findOrCreateGroup,
       updateCase,
+      removeCase,
       removeInvoice,
       attachCaseToInvoice,
       sendCourtesyText,
