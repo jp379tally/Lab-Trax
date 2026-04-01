@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import {
   StyleSheet,
   View,
@@ -8,6 +8,8 @@ import {
   Platform,
   Alert,
   Modal,
+  Animated as RNAnimated,
+  PanResponder,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -45,8 +47,61 @@ function formatTime(ts: number) {
   return `${days}d ago`;
 }
 
+function SwipeableNotifRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
+  const translateX = useRef(new RNAnimated.Value(0)).current;
+  const deleteThreshold = -80;
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
+      },
+      onPanResponderMove: (_, gestureState) => {
+        if (gestureState.dx < 0) {
+          translateX.setValue(Math.max(gestureState.dx, -120));
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (gestureState.dx < deleteThreshold) {
+          RNAnimated.timing(translateX, { toValue: -120, duration: 150, useNativeDriver: true }).start();
+        } else {
+          RNAnimated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 8 }).start();
+        }
+      },
+    })
+  ).current;
+
+  const resetSwipe = () => {
+    RNAnimated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 8 }).start();
+  };
+
+  const handleDelete = () => {
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    }
+    RNAnimated.timing(translateX, { toValue: -500, duration: 200, useNativeDriver: true }).start(() => onDelete());
+  };
+
+  return (
+    <View style={{ overflow: "hidden" }}>
+      <View style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 120, flexDirection: "row", justifyContent: "flex-end" }}>
+        <Pressable
+          onPress={handleDelete}
+          style={{ width: 120, backgroundColor: "#EF4444", justifyContent: "center", alignItems: "center" }}
+        >
+          <Ionicons name="trash" size={22} color="#FFF" />
+          <Text style={{ color: "#FFF", fontSize: 12, fontWeight: "500" as const, marginTop: 4 }}>Delete</Text>
+        </Pressable>
+      </View>
+      <RNAnimated.View style={{ transform: [{ translateX }], backgroundColor: "#fff" }} {...panResponder.panHandlers}>
+        {children}
+      </RNAnimated.View>
+    </View>
+  );
+}
+
 export default function NotificationsScreen() {
-  const { markNotificationRead, markAllNotificationsRead, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
+  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [confirmInvite, setConfirmInvite] = useState<{ invitation: GroupInvitation; accept: boolean } | null>(null);
@@ -186,36 +241,38 @@ export default function NotificationsScreen() {
   function renderNotification({ item }: { item: Notification }) {
     const icon = getNotifIcon(item.type);
     return (
-      <Pressable
-        style={({ pressed }) => [
-          styles.notifCard,
-          !item.read && styles.notifCardUnread,
-          pressed && { opacity: 0.7 },
-        ]}
-        onPress={() => {
-          markNotificationRead(item.id);
-          if (item.caseId) {
-            router.push({
-              pathname: "/case/[id]",
-              params: { id: item.caseId },
-            });
-          }
-        }}
-      >
-        <View style={[styles.notifIcon, { backgroundColor: icon.bg }]}>
-          <Ionicons name={icon.name} size={20} color={icon.color} />
-        </View>
-        <View style={styles.notifContent}>
-          <View style={styles.notifHeader}>
-            <Text style={styles.notifTitle}>{item.title}</Text>
-            <Text style={styles.notifTime}>{formatTime(item.timestamp)}</Text>
+      <SwipeableNotifRow onDelete={() => removeNotification(item.id)}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.notifCard,
+            !item.read && styles.notifCardUnread,
+            pressed && { opacity: 0.7 },
+          ]}
+          onPress={() => {
+            markNotificationRead(item.id);
+            if (item.caseId) {
+              router.push({
+                pathname: "/case/[id]",
+                params: { id: item.caseId },
+              });
+            }
+          }}
+        >
+          <View style={[styles.notifIcon, { backgroundColor: icon.bg }]}>
+            <Ionicons name={icon.name} size={20} color={icon.color} />
           </View>
-          <Text style={styles.notifMessage} numberOfLines={2}>
-            {item.message}
-          </Text>
-        </View>
-        {!item.read && <View style={styles.unreadDot} />}
-      </Pressable>
+          <View style={styles.notifContent}>
+            <View style={styles.notifHeader}>
+              <Text style={styles.notifTitle}>{item.title}</Text>
+              <Text style={styles.notifTime}>{formatTime(item.timestamp)}</Text>
+            </View>
+            <Text style={styles.notifMessage} numberOfLines={2}>
+              {item.message}
+            </Text>
+          </View>
+          {!item.read && <View style={styles.unreadDot} />}
+        </Pressable>
+      </SwipeableNotifRow>
     );
   }
 
