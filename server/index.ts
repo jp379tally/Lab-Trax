@@ -186,6 +186,13 @@ function configureExpoAndLanding(app: express.Application) {
       }
     }
 
+    if (req.path === "/reset-password") {
+      const resetPath = path.resolve(process.cwd(), "server", "templates", "reset-password.html");
+      if (fs.existsSync(resetPath)) {
+        return res.sendFile(resetPath);
+      }
+    }
+
     if (req.path === "/privacy-policy" || req.path === "/privacy") {
       const privacyPath = path.resolve(process.cwd(), "server", "templates", "privacy-policy.html");
       if (fs.existsSync(privacyPath)) {

@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: Partial<User> & { username: string; password: string }): Promise<User>;
   getAllUsers(): Promise<User[]>;
   updateUser(id: string, data: Partial<User>): Promise<User | undefined>;
@@ -20,6 +21,11 @@ export class DatabaseStorage implements IStorage {
   async getUserByUsername(username: string): Promise<User | undefined> {
     const allUsers = await db.select().from(users);
     return allUsers.find(u => u.username.toLowerCase() === username.toLowerCase());
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const allUsers = await db.select().from(users);
+    return allUsers.find(u => u.email?.toLowerCase() === email.toLowerCase());
   }
 
   async createUser(userData: Partial<User> & { username: string; password: string }): Promise<User> {

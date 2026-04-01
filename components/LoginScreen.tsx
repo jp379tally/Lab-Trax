@@ -11,6 +11,8 @@ import {
   ScrollView,
   Keyboard,
   TouchableWithoutFeedback,
+  Modal,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -48,6 +50,14 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricType, setBiometricType] = useState<string>("Biometric");
+
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [showForgotUsername, setShowForgotUsername] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotSuccess, setForgotSuccess] = useState<string | null>(null);
+  const [forgotError, setForgotError] = useState<string | null>(null);
+  const [demoResetInfo, setDemoResetInfo] = useState<string | null>(null);
 
   const [signUpStep, setSignUpStep] = useState<SignUpStep>("credentials");
   const [signUpUsername, setSignUpUsername] = useState("");
@@ -206,6 +216,68 @@ export default function LoginScreen() {
     const result = await login(username.trim(), password.trim());
     setIsLoggingIn(false);
     if (!result.success) setError(result.error || "Login failed.");
+  }
+
+  function openForgotPassword() {
+    setForgotEmail("");
+    setForgotSuccess(null);
+    setForgotError(null);
+    setDemoResetInfo(null);
+    setShowForgotPassword(true);
+  }
+
+  function openForgotUsername() {
+    setForgotEmail("");
+    setForgotSuccess(null);
+    setForgotError(null);
+    setDemoResetInfo(null);
+    setShowForgotUsername(true);
+  }
+
+  async function handleForgotPassword() {
+    if (!forgotEmail.trim()) {
+      setForgotError("Please enter your email address.");
+      return;
+    }
+    setForgotLoading(true);
+    setForgotError(null);
+    setForgotSuccess(null);
+    setDemoResetInfo(null);
+    try {
+      const resp = await apiRequest("POST", "/api/forgot-password", { email: forgotEmail.trim() });
+      const data = await resp.json();
+      setForgotSuccess(data.message || "If an account with that email exists, a password reset link has been sent.");
+      if (data.demoResetLink) {
+        setDemoResetInfo(`Demo reset link: ${data.demoResetLink}`);
+      }
+    } catch (e: any) {
+      setForgotError(e?.message || "Failed to process request. Please try again.");
+    } finally {
+      setForgotLoading(false);
+    }
+  }
+
+  async function handleForgotUsername() {
+    if (!forgotEmail.trim()) {
+      setForgotError("Please enter your email address.");
+      return;
+    }
+    setForgotLoading(true);
+    setForgotError(null);
+    setForgotSuccess(null);
+    setDemoResetInfo(null);
+    try {
+      const resp = await apiRequest("POST", "/api/forgot-username", { email: forgotEmail.trim() });
+      const data = await resp.json();
+      setForgotSuccess(data.message || "If an account with that email exists, your username has been sent.");
+      if (data.demoUsername) {
+        setDemoResetInfo(`Your username is: ${data.demoUsername}`);
+      }
+    } catch (e: any) {
+      setForgotError(e?.message || "Failed to process request. Please try again.");
+    } finally {
+      setForgotLoading(false);
+    }
   }
 
   async function handleCredentialsNext() {
@@ -2224,6 +2296,15 @@ export default function LoginScreen() {
               </View>
             </View>
 
+            <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 4, marginTop: 4, marginBottom: 12 }}>
+              <Pressable onPress={openForgotPassword} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>Forgot Password?</Text>
+              </Pressable>
+              <Pressable onPress={openForgotUsername} style={({ pressed }) => [pressed && { opacity: 0.7 }]}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#60A5FA" }}>Forgot Username?</Text>
+              </Pressable>
+            </View>
+
             <Pressable
               onPress={handleLogin}
               disabled={isLoggingIn}
@@ -2292,6 +2373,142 @@ export default function LoginScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal visible={showForgotPassword} transparent animationType="fade" onRequestClose={() => setShowForgotPassword(false)}>
+        <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 24 }} onPress={() => setShowForgotPassword(false)}>
+          <Pressable style={{ backgroundColor: "#1E293B", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400 }} onPress={() => {}}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#FFF" }}>Forgot Password</Text>
+              <Pressable onPress={() => setShowForgotPassword(false)} hitSlop={12}>
+                <Ionicons name="close" size={24} color="#94A3B8" />
+              </Pressable>
+            </View>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: "#94A3B8", marginBottom: 20, lineHeight: 20 }}>
+              Enter the email address associated with your account. We'll send you a link to reset your password.
+            </Text>
+            {forgotError && (
+              <View style={{ backgroundColor: "rgba(239,68,68,0.15)", borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+                <Text style={{ color: "#FCA5A5", fontSize: 13, fontFamily: "Inter_500Medium" }}>{forgotError}</Text>
+              </View>
+            )}
+            {forgotSuccess && (
+              <View style={{ backgroundColor: "rgba(34,197,94,0.15)", borderWidth: 1, borderColor: "rgba(34,197,94,0.3)", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+                <Text style={{ color: "#86EFAC", fontSize: 13, fontFamily: "Inter_500Medium" }}>{forgotSuccess}</Text>
+              </View>
+            )}
+            {demoResetInfo && (
+              <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderWidth: 1, borderColor: "rgba(245,158,11,0.3)", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+                <Text style={{ color: "#FCD34D", fontSize: 12, fontFamily: "Inter_500Medium" }}>{demoResetInfo}</Text>
+              </View>
+            )}
+            {!forgotSuccess && (
+              <>
+                <View style={{ backgroundColor: "#0F172A", borderRadius: 12, borderWidth: 1, borderColor: "#334155", flexDirection: "row", alignItems: "center", paddingHorizontal: 14, marginBottom: 20 }}>
+                  <Ionicons name="mail-outline" size={18} color="rgba(255,255,255,0.4)" />
+                  <TextInput
+                    style={{ flex: 1, color: "#FFF", fontSize: 15, fontFamily: "Inter_500Medium", paddingVertical: 14, paddingLeft: 10 }}
+                    value={forgotEmail}
+                    onChangeText={(t) => { setForgotEmail(t); setForgotError(null); }}
+                    placeholder="Email address"
+                    placeholderTextColor="rgba(255,255,255,0.3)"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!forgotLoading}
+                  />
+                </View>
+                <Pressable
+                  onPress={handleForgotPassword}
+                  disabled={forgotLoading}
+                  style={({ pressed }) => ({ backgroundColor: "#4A6CF7", borderRadius: 12, paddingVertical: 14, alignItems: "center", justifyContent: "center", opacity: pressed ? 0.85 : forgotLoading ? 0.6 : 1 })}
+                >
+                  {forgotLoading ? (
+                    <ActivityIndicator size="small" color="#FFF" />
+                  ) : (
+                    <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Send Reset Link</Text>
+                  )}
+                </Pressable>
+              </>
+            )}
+            {forgotSuccess && (
+              <Pressable
+                onPress={() => setShowForgotPassword(false)}
+                style={({ pressed }) => ({ backgroundColor: "#334155", borderRadius: 12, paddingVertical: 14, alignItems: "center", opacity: pressed ? 0.85 : 1 })}
+              >
+                <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Back to Sign In</Text>
+              </Pressable>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={showForgotUsername} transparent animationType="fade" onRequestClose={() => setShowForgotUsername(false)}>
+        <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", padding: 24 }} onPress={() => setShowForgotUsername(false)}>
+          <Pressable style={{ backgroundColor: "#1E293B", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400 }} onPress={() => {}}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#FFF" }}>Forgot Username</Text>
+              <Pressable onPress={() => setShowForgotUsername(false)} hitSlop={12}>
+                <Ionicons name="close" size={24} color="#94A3B8" />
+              </Pressable>
+            </View>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: "#94A3B8", marginBottom: 20, lineHeight: 20 }}>
+              Enter the email address associated with your account. We'll send your username to that email.
+            </Text>
+            {forgotError && (
+              <View style={{ backgroundColor: "rgba(239,68,68,0.15)", borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+                <Text style={{ color: "#FCA5A5", fontSize: 13, fontFamily: "Inter_500Medium" }}>{forgotError}</Text>
+              </View>
+            )}
+            {forgotSuccess && (
+              <View style={{ backgroundColor: "rgba(34,197,94,0.15)", borderWidth: 1, borderColor: "rgba(34,197,94,0.3)", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+                <Text style={{ color: "#86EFAC", fontSize: 13, fontFamily: "Inter_500Medium" }}>{forgotSuccess}</Text>
+              </View>
+            )}
+            {demoResetInfo && (
+              <View style={{ backgroundColor: "rgba(245,158,11,0.15)", borderWidth: 1, borderColor: "rgba(245,158,11,0.3)", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+                <Text style={{ color: "#FCD34D", fontSize: 12, fontFamily: "Inter_500Medium" }}>{demoResetInfo}</Text>
+              </View>
+            )}
+            {!forgotSuccess && (
+              <>
+                <View style={{ backgroundColor: "#0F172A", borderRadius: 12, borderWidth: 1, borderColor: "#334155", flexDirection: "row", alignItems: "center", paddingHorizontal: 14, marginBottom: 20 }}>
+                  <Ionicons name="mail-outline" size={18} color="rgba(255,255,255,0.4)" />
+                  <TextInput
+                    style={{ flex: 1, color: "#FFF", fontSize: 15, fontFamily: "Inter_500Medium", paddingVertical: 14, paddingLeft: 10 }}
+                    value={forgotEmail}
+                    onChangeText={(t) => { setForgotEmail(t); setForgotError(null); }}
+                    placeholder="Email address"
+                    placeholderTextColor="rgba(255,255,255,0.3)"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!forgotLoading}
+                  />
+                </View>
+                <Pressable
+                  onPress={handleForgotUsername}
+                  disabled={forgotLoading}
+                  style={({ pressed }) => ({ backgroundColor: "#4A6CF7", borderRadius: 12, paddingVertical: 14, alignItems: "center", justifyContent: "center", opacity: pressed ? 0.85 : forgotLoading ? 0.6 : 1 })}
+                >
+                  {forgotLoading ? (
+                    <ActivityIndicator size="small" color="#FFF" />
+                  ) : (
+                    <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Send Username</Text>
+                  )}
+                </Pressable>
+              </>
+            )}
+            {forgotSuccess && (
+              <Pressable
+                onPress={() => setShowForgotUsername(false)}
+                style={({ pressed }) => ({ backgroundColor: "#334155", borderRadius: 12, paddingVertical: 14, alignItems: "center", opacity: pressed ? 0.85 : 1 })}
+              >
+                <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Back to Sign In</Text>
+              </Pressable>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }

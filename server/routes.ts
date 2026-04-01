@@ -11,9 +11,14 @@ const openai = new OpenAI({
 });
 
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
+const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
 
 function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+function generateResetToken(): string {
+  return require("crypto").randomBytes(32).toString("hex");
 }
 
 const DEFAULT_USERS = [
@@ -278,6 +283,161 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     verificationCodes.delete(key);
     res.json({ verified: true });
+  });
+
+  app.post("/api/forgot-password", async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email || typeof email !== "string") {
+        return res.status(400).json({ error: "Email address is required." });
+      }
+      const user = await storage.getUserByEmail(email.trim().toLowerCase());
+      if (!user) {
+        return res.json({ success: true, message: "If an account with that email exists, a password reset link has been sent." });
+      }
+      const token = generateResetToken();
+      passwordResetTokens.set(token, { userId: user.id, expiresAt: Date.now() + 30 * 60 * 1000 });
+
+      const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_INTERNAL_APP_DOMAIN || "localhost:5000";
+      const protocol = domain.includes("localhost") ? "http" : "https";
+      const resetLink = `${protocol}://${domain}/reset-password?token=${token}`;
+
+      const smtpHost = process.env.SMTP_HOST;
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASS;
+      const smtpPort = process.env.SMTP_PORT;
+      const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@labtrax.com";
+
+      const htmlBody = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+          <h2 style="margin: 0;">LabTrax</h2>
+          <p style="margin: 4px 0 0; opacity: 0.85;">Password Reset</p>
+        </div>
+        <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+          <p>Hi ${user.username},</p>
+          <p>We received a request to reset your password. Click the link below to set a new password:</p>
+          <p style="text-align: center; margin: 24px 0;">
+            <a href="${resetLink}" style="display: inline-block; background: #4A6CF7; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">Reset Password</a>
+          </p>
+          <p style="color: #666; font-size: 13px;">This link expires in 30 minutes. If you didn't request this, you can safely ignore this email.</p>
+          <p style="color: #666; font-size: 13px;">Your username is: <strong>${user.username}</strong></p>
+        </div>
+      </div>`;
+
+      if (smtpHost && smtpUser && smtpPass) {
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: parseInt(smtpPort || "587"),
+          secure: (smtpPort || "587") === "465",
+          auth: { user: smtpUser, pass: smtpPass },
+        });
+        await transporter.sendMail({
+          from: smtpFrom,
+          to: user.email!,
+          subject: "LabTrax - Password Reset",
+          html: htmlBody,
+        });
+        console.log(`[EMAIL] Password reset email sent to ${user.email}`);
+      } else {
+        console.log(`[EMAIL] SMTP not configured. Password reset link for ${user.email}: ${resetLink}`);
+      }
+
+      const isDev = process.env.NODE_ENV === "development";
+      res.json({ success: true, message: "If an account with that email exists, a password reset link has been sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoResetLink: resetLink } : {}) });
+    } catch (error: any) {
+      console.error("Forgot password error:", error?.message || error);
+      res.status(500).json({ error: "Failed to process request. Please try again." });
+    }
+  });
+
+  app.post("/api/forgot-username", async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email || typeof email !== "string") {
+        return res.status(400).json({ error: "Email address is required." });
+      }
+      const user = await storage.getUserByEmail(email.trim().toLowerCase());
+      if (!user) {
+        return res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
+      }
+
+      const smtpHost = process.env.SMTP_HOST;
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASS;
+      const smtpPort = process.env.SMTP_PORT;
+      const smtpFrom = process.env.SMTP_FROM || smtpUser || "noreply@labtrax.com";
+
+      const htmlBody = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+          <h2 style="margin: 0;">LabTrax</h2>
+          <p style="margin: 4px 0 0; opacity: 0.85;">Username Recovery</p>
+        </div>
+        <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+          <p>Hi,</p>
+          <p>You requested your username for the account associated with this email address.</p>
+          <p style="text-align: center; margin: 24px 0;">
+            <span style="display: inline-block; background: #F0F4FF; padding: 12px 32px; border-radius: 8px; font-size: 18px; font-weight: bold; color: #4A6CF7;">${user.username}</span>
+          </p>
+          <p style="color: #666; font-size: 13px;">If you didn't request this, you can safely ignore this email.</p>
+        </div>
+      </div>`;
+
+      if (smtpHost && smtpUser && smtpPass) {
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: parseInt(smtpPort || "587"),
+          secure: (smtpPort || "587") === "465",
+          auth: { user: smtpUser, pass: smtpPass },
+        });
+        await transporter.sendMail({
+          from: smtpFrom,
+          to: user.email!,
+          subject: "LabTrax - Username Recovery",
+          html: htmlBody,
+        });
+        console.log(`[EMAIL] Username recovery email sent to ${user.email}`);
+      } else {
+        console.log(`[EMAIL] SMTP not configured. Username for ${user.email}: ${user.username}`);
+      }
+
+      const isDev = process.env.NODE_ENV === "development";
+      res.json({ success: true, message: "If an account with that email exists, your username has been sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoUsername: user.username } : {}) });
+    } catch (error: any) {
+      console.error("Forgot username error:", error?.message || error);
+      res.status(500).json({ error: "Failed to process request. Please try again." });
+    }
+  });
+
+  app.post("/api/reset-password", async (req, res) => {
+    try {
+      const { token, newPassword } = req.body;
+      if (!token || !newPassword) {
+        return res.status(400).json({ error: "Token and new password are required." });
+      }
+      if (typeof newPassword !== "string" || newPassword.length < 8 || !/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || !/[0-9]/.test(newPassword) || !/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(newPassword)) {
+        return res.status(400).json({ error: "Password must be at least 8 characters with uppercase, lowercase, number, and special character." });
+      }
+      const resetData = passwordResetTokens.get(token);
+      if (!resetData) {
+        return res.status(400).json({ error: "Invalid or expired reset link. Please request a new one." });
+      }
+      if (Date.now() > resetData.expiresAt) {
+        passwordResetTokens.delete(token);
+        return res.status(400).json({ error: "Reset link has expired. Please request a new one." });
+      }
+      const user = await storage.getUser(resetData.userId);
+      if (!user) {
+        passwordResetTokens.delete(token);
+        return res.status(400).json({ error: "Account not found." });
+      }
+      await storage.updateUser(user.id, { password: newPassword });
+      passwordResetTokens.delete(token);
+      console.log(`[AUTH] Password reset successful for user: ${user.username}`);
+      res.json({ success: true, message: "Password has been reset successfully. You can now sign in with your new password." });
+    } catch (error: any) {
+      console.error("Reset password error:", error?.message || error);
+      res.status(500).json({ error: "Failed to reset password. Please try again." });
+    }
   });
 
   app.post("/api/register", async (req, res) => {
