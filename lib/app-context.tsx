@@ -30,14 +30,6 @@ import {
   CourtesyTextRequest,
   CourtesyTextResponse,
   InventoryItem,
-  sampleInventory,
-  SAMPLE_CASES,
-  SAMPLE_NOTIFICATIONS,
-  SAMPLE_CLIENTS,
-  SAMPLE_USERS,
-  SAMPLE_INVOICES,
-  SAMPLE_CONVERSATIONS,
-  SAMPLE_CHAT_MESSAGES,
   PricingTier,
   DEFAULT_PRICING_TIERS,
   Group,
@@ -158,7 +150,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupInvitations, setGroupInvitations] = useState<GroupInvitation[]>([]);
   const [groupJoinRequests, setGroupJoinRequests] = useState<GroupJoinRequest[]>([]);
-  const [inventory, setInventory] = useState<InventoryItem[]>(sampleInventory);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
 
@@ -198,13 +190,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (savedCases) {
         const parsedCases: LabCase[] = JSON.parse(savedCases);
         setAllCases(parsedCases);
-      } else if (currentUserId) {
-        const stampedCases = SAMPLE_CASES.map((c) => ({ ...c, ownerId: currentUserId }));
-        setAllCases(stampedCases);
-        await AsyncStorage.setItem(CASES_KEY, JSON.stringify(stampedCases));
       } else {
-        setAllCases(SAMPLE_CASES);
-        await AsyncStorage.setItem(CASES_KEY, JSON.stringify(SAMPLE_CASES));
+        setAllCases([]);
       }
 
       if (savedRole) {
@@ -214,29 +201,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (savedNotifs) {
         setNotifications(JSON.parse(savedNotifs));
       } else {
-        setNotifications(SAMPLE_NOTIFICATIONS);
-        await AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(SAMPLE_NOTIFICATIONS));
+        setNotifications([]);
       }
 
       if (savedClients) {
         setClients(JSON.parse(savedClients));
       } else {
-        setClients(SAMPLE_CLIENTS);
-        await AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(SAMPLE_CLIENTS));
+        setClients([]);
       }
 
       if (savedUsers) {
         setUsers(JSON.parse(savedUsers));
       } else {
-        setUsers(SAMPLE_USERS);
-        await AsyncStorage.setItem(USERS_KEY, JSON.stringify(SAMPLE_USERS));
+        setUsers([]);
       }
 
       if (savedInvoices) {
         setInvoices(JSON.parse(savedInvoices));
       } else {
-        setInvoices(SAMPLE_INVOICES);
-        await AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(SAMPLE_INVOICES));
+        setInvoices([]);
       }
 
       if (savedShipping) {
@@ -246,15 +229,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (savedConversations) {
         setConversations(JSON.parse(savedConversations));
       } else {
-        setConversations(SAMPLE_CONVERSATIONS);
-        await AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(SAMPLE_CONVERSATIONS));
+        setConversations([]);
       }
 
       if (savedChatMessages) {
         setChatMessages(JSON.parse(savedChatMessages));
       } else {
-        setChatMessages(SAMPLE_CHAT_MESSAGES);
-        await AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(SAMPLE_CHAT_MESSAGES));
+        setChatMessages([]);
       }
 
       if (savedPricingTiers) {
@@ -321,7 +302,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         try {
           const pc = JSON.parse(pendingClientRaw);
           const freshClients = await AsyncStorage.getItem(CLIENTS_KEY);
-          const loadedClients: Client[] = freshClients ? JSON.parse(freshClients) : SAMPLE_CLIENTS;
+          const loadedClients: Client[] = freshClients ? JSON.parse(freshClients) : [];
           const alreadyExists = loadedClients.some(
             (c) => c.leadDoctor?.toLowerCase() === pc.leadDoctor?.toLowerCase() && c.practiceName?.toLowerCase() === pc.practiceName?.toLowerCase()
           );
@@ -348,13 +329,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         AsyncStorage.removeItem("@drivesync_pending_client");
       }
     } catch (e) {
-      setAllCases(currentUserId ? SAMPLE_CASES.map((c) => ({ ...c, ownerId: currentUserId })) : SAMPLE_CASES);
-      setNotifications(SAMPLE_NOTIFICATIONS);
-      setClients(SAMPLE_CLIENTS);
-      setUsers(SAMPLE_USERS);
-      setInvoices(SAMPLE_INVOICES);
-      setConversations(SAMPLE_CONVERSATIONS);
-      setChatMessages(SAMPLE_CHAT_MESSAGES);
+      setAllCases([]);
+      setNotifications([]);
+      setClients([]);
+      setUsers([]);
+      setInvoices([]);
+      setConversations([]);
+      setChatMessages([]);
     } finally {
       setIsLoading(false);
     }
