@@ -268,7 +268,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ]);
 
       if (savedGroups) {
-        setGroups(JSON.parse(savedGroups));
+        const parsedGroups: Group[] = JSON.parse(savedGroups);
+        let groupsRepaired = false;
+        const repairedGroups = parsedGroups.map(g => {
+          const repairedMembers = g.members.map(m => {
+            const regUser = registeredUsers.find(u => u.username.toLowerCase() === m.username.toLowerCase());
+            if (regUser?.id && m.userId !== regUser.id) {
+              groupsRepaired = true;
+              return { ...m, userId: regUser.id };
+            }
+            return m;
+          });
+          return { ...g, members: repairedMembers };
+        });
+        setGroups(repairedGroups);
+        if (groupsRepaired) {
+          AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(repairedGroups));
+        }
       }
 
       if (savedGroupInvitations) {
@@ -290,10 +306,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const pg = JSON.parse(pendingGroupRaw);
           const loadedGroups: Group[] = savedGroups ? JSON.parse(savedGroups) : [];
           const existing = loadedGroups.find(g => g.name.toLowerCase() === pg.name.toLowerCase() && g.address.toLowerCase() === pg.address.toLowerCase());
+          const pgRegUser = registeredUsers.find(u => u.username.toLowerCase() === pg.username.toLowerCase());
+          const pgUserId = pgRegUser?.id || currentUserId || Date.now().toString();
           if (existing) {
             const alreadyMember = existing.members.some((m: any) => m.username === pg.username);
             if (!alreadyMember) {
-              existing.members.push({ userId: Date.now().toString(), username: pg.username, role: pg.role, joinedAt: Date.now() });
+              existing.members.push({ userId: pgUserId, username: pg.username, role: pg.role, joinedAt: Date.now() });
               setGroups([...loadedGroups]);
               AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(loadedGroups));
             }
@@ -303,7 +321,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               name: pg.name,
               type: pg.type,
               address: pg.address,
-              members: [{ userId: Date.now().toString(), username: pg.username, role: pg.role, joinedAt: Date.now() }],
+              members: [{ userId: pgUserId, username: pg.username, role: pg.role, joinedAt: Date.now() }],
               createdAt: Date.now(),
             };
             const updatedGroups = [...loadedGroups, newGroup];
