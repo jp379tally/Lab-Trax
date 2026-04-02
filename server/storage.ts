@@ -1,6 +1,6 @@
-import { type User, type InsertUser, users } from "../shared/schema";
+import { type User, type InsertUser, users, labCases } from "../shared/schema";
 import { db } from "./db";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -10,6 +10,9 @@ export interface IStorage {
   getAllUsers(): Promise<User[]>;
   updateUser(id: string, data: Partial<User>): Promise<User | undefined>;
   deleteUser(id: string): Promise<boolean>;
+  upsertCase(id: string, ownerId: string, caseData: string): Promise<void>;
+  getCasesByOwnerIds(ownerIds: string[]): Promise<{ id: string; ownerId: string; caseData: string }[]>;
+  deleteCase(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -60,6 +63,24 @@ export class DatabaseStorage implements IStorage {
   async deleteUser(id: string): Promise<boolean> {
     const result = await db.delete(users).where(eq(users.id, id)).returning();
     return result.length > 0;
+  }
+
+  async upsertCase(id: string, ownerId: string, caseData: string): Promise<void> {
+    await db.insert(labCases).values({ id, ownerId, caseData, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: labCases.id,
+        set: { ownerId, caseData, updatedAt: new Date() },
+      });
+  }
+
+  async getCasesByOwnerIds(ownerIds: string[]): Promise<{ id: string; ownerId: string; caseData: string }[]> {
+    if (ownerIds.length === 0) return [];
+    const rows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
+    return rows.map(r => ({ id: r.id, ownerId: r.ownerId, caseData: r.caseData }));
+  }
+
+  async deleteCase(id: string): Promise<void> {
+    await db.delete(labCases).where(eq(labCases.id, id));
   }
 }
 

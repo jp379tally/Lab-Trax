@@ -4,9 +4,11 @@ import React, {
   useState,
   useEffect,
   useMemo,
+  useRef,
   ReactNode,
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getApiUrl, resilientFetch } from "./query-client";
 import {
   UserRole,
   LabCase,
@@ -185,9 +187,93 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAllCases(updater);
   }
 
+  async function syncCaseToServer(labCase: LabCase) {
+    try {
+      await resilientFetch("/api/cases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: labCase.id, ownerId: labCase.ownerId || currentUserId, caseData: JSON.stringify(labCase) }),
+      });
+    } catch (e) {
+      console.log("Could not sync case to server:", e);
+    }
+  }
+
+  async function deleteCaseFromServer(caseId: string) {
+    try {
+      await resilientFetch(`/api/cases/${caseId}`, { method: "DELETE" });
+    } catch (e) {
+      console.log("Could not delete case from server:", e);
+    }
+  }
+
+  async function fetchCasesFromServer(ownerIds: string[]): Promise<LabCase[]> {
+    try {
+      if (ownerIds.length === 0) return [];
+      const res = await resilientFetch(`/api/cases?ownerIds=${ownerIds.join(",")}`);
+      if (res.ok) {
+        const data = await res.json();
+        return data.cases || [];
+      }
+    } catch (e) {
+      console.log("Could not fetch cases from server:", e);
+    }
+    return [];
+  }
+
   useEffect(() => {
     loadData();
   }, [currentUserId]);
+
+  const prevCasesRef = useRef<LabCase[]>([]);
+  const syncReadyRef = useRef(false);
+  const fetchingRef = useRef(false);
+
+  useEffect(() => {
+    if (!currentUserId || groupMemberIds.size === 0) return;
+    syncReadyRef.current = false;
+    fetchingRef.current = true;
+    const ownerIds = Array.from(groupMemberIds);
+    fetchCasesFromServer(ownerIds).then(serverCases => {
+      if (serverCases.length > 0) {
+        setAllCases(prev => {
+          const localMap = new Map(prev.map(c => [c.id, c]));
+          for (const sc of serverCases) {
+            const local = localMap.get(sc.id);
+            if (!local || (sc.updatedAt && local.updatedAt && sc.updatedAt > local.updatedAt)) {
+              localMap.set(sc.id, sc);
+            }
+          }
+          const merged = Array.from(localMap.values());
+          AsyncStorage.setItem(CASES_KEY, JSON.stringify(merged));
+          prevCasesRef.current = merged;
+          return merged;
+        });
+      } else {
+        prevCasesRef.current = allCases;
+      }
+      fetchingRef.current = false;
+      syncReadyRef.current = true;
+    });
+  }, [currentUserId, groupMemberIds]);
+
+  useEffect(() => {
+    if (!syncReadyRef.current || fetchingRef.current || !currentUserId) return;
+    const prev = prevCasesRef.current;
+    for (const c of allCases) {
+      if (!c.ownerId) continue;
+      const old = prev.find(p => p.id === c.id);
+      if (!old || old.updatedAt !== c.updatedAt) {
+        syncCaseToServer(c);
+      }
+    }
+    for (const old of prev) {
+      if (!allCases.find(c => c.id === old.id)) {
+        deleteCaseFromServer(old.id);
+      }
+    }
+    prevCasesRef.current = allCases;
+  }, [allCases, currentUserId]);
 
   async function loadData() {
     try {

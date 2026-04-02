@@ -221,6 +221,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/cases", async (req, res) => {
+    try {
+      const { id, ownerId, caseData } = req.body;
+      if (!id || !ownerId || !caseData) {
+        return res.status(400).json({ error: "id, ownerId, and caseData are required" });
+      }
+      await storage.upsertCase(id, ownerId, typeof caseData === "string" ? caseData : JSON.stringify(caseData));
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Upsert case error:", error?.message || error);
+      res.status(500).json({ error: "Failed to save case" });
+    }
+  });
+
+  app.put("/api/cases/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { ownerId, caseData } = req.body;
+      if (!caseData || !ownerId) {
+        return res.status(400).json({ error: "ownerId and caseData are required" });
+      }
+      await storage.upsertCase(id, ownerId, typeof caseData === "string" ? caseData : JSON.stringify(caseData));
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Update case error:", error?.message || error);
+      res.status(500).json({ error: "Failed to update case" });
+    }
+  });
+
+  app.get("/api/cases", async (req, res) => {
+    try {
+      const ownerIdsParam = req.query.ownerIds as string;
+      if (!ownerIdsParam) {
+        return res.json({ cases: [] });
+      }
+      const ownerIds = ownerIdsParam.split(",").filter(Boolean);
+      const rows = await storage.getCasesByOwnerIds(ownerIds);
+      const cases = rows.map(r => {
+        try {
+          return JSON.parse(r.caseData);
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      res.json({ cases });
+    } catch (error: any) {
+      console.error("Get cases error:", error?.message || error);
+      res.status(500).json({ error: "Failed to fetch cases" });
+    }
+  });
+
+  app.delete("/api/cases/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.deleteCase(id);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Delete case error:", error?.message || error);
+      res.status(500).json({ error: "Failed to delete case" });
+    }
+  });
+
   app.post("/api/audit-log", (req, res) => {
     const { action, user, resource } = req.body;
     if (!action || !user) {

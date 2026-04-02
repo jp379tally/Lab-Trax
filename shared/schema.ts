@@ -24,6 +24,13 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const labCases = pgTable("lab_cases", {
+  id: varchar("id").primaryKey(),
+  ownerId: varchar("owner_id").notNull(),
+  caseData: text("case_data").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -31,3 +38,4 @@ export const insertUserSchema = createInsertSchema(users).pick({
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
+export type LabCaseRow = typeof labCases.$inferSelect;
