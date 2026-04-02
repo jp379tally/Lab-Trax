@@ -28,7 +28,7 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
   const { sendGroupJoinRequest } = useApp();
-  const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile } = useAuth();
+  const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
   const [editLabName, setEditLabName] = useState("");
@@ -43,11 +43,79 @@ export default function SettingsScreen() {
   const [addLabSending, setAddLabSending] = useState(false);
   const [companyLogoUri, setCompanyLogoUri] = useState<string | null>(null);
 
+  type UserStatus = "active" | "inactive" | "on_lunch" | "out_of_office" | "on_break";
+  const [userStatus, setUserStatus] = useState<UserStatus>("active");
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
+
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
       if (uri) setCompanyLogoUri(uri);
     });
-  }, []);
+    AsyncStorage.getItem(`@labtrax_status_${currentUser}`).then((s) => {
+      if (s) setUserStatus(s as UserStatus);
+    });
+  }, [currentUser]);
+
+  function handleStatusChange(status: UserStatus) {
+    setUserStatus(status);
+    AsyncStorage.setItem(`@labtrax_status_${currentUser}`, status);
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }
+
+  async function handleChangePassword() {
+    setPasswordError(null);
+    if (!currentPasswordInput.trim()) {
+      setPasswordError("Please enter your current password.");
+      return;
+    }
+    if (newPassword.length < 8) {
+      setPasswordError("New password must be at least 8 characters.");
+      return;
+    }
+    if (!/[A-Z]/.test(newPassword)) {
+      setPasswordError("New password must contain an uppercase letter.");
+      return;
+    }
+    if (!/[a-z]/.test(newPassword)) {
+      setPasswordError("New password must contain a lowercase letter.");
+      return;
+    }
+    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(newPassword)) {
+      setPasswordError("New password must contain a special character.");
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError("New passwords do not match.");
+      return;
+    }
+    const result = await changePassword(currentPasswordInput, newPassword);
+    if (!result.success) {
+      setPasswordError(result.error || "Failed to change password.");
+      return;
+    }
+    setPasswordSuccess(true);
+    setTimeout(() => {
+      setShowChangePassword(false);
+      setCurrentPasswordInput("");
+      setNewPassword("");
+      setConfirmNewPassword("");
+      setPasswordError(null);
+      setPasswordSuccess(false);
+    }, 1500);
+  }
+
+  const statusConfig: { key: UserStatus; label: string; icon: keyof typeof Ionicons.glyphMap; color: string; bg: string }[] = [
+    { key: "active", label: "Active", icon: "checkmark-circle", color: "#16A34A", bg: "#DCFCE7" },
+    { key: "inactive", label: "Inactive", icon: "close-circle", color: "#9CA3AF", bg: "#F3F4F6" },
+    { key: "on_lunch", label: "On Lunch", icon: "restaurant", color: "#F59E0B", bg: "#FEF3C7" },
+    { key: "out_of_office", label: "Out of Office", icon: "airplane", color: "#6366F1", bg: "#EEF2FF" },
+    { key: "on_break", label: "On Break", icon: "cafe", color: "#D97706", bg: "#FEF9C3" },
+  ];
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
@@ -112,6 +180,61 @@ export default function SettingsScreen() {
               <View style={styles.menuInfo}>
                 <Text style={[styles.menuTitle, { color: colors.text }]}>Company Logo</Text>
                 <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Customize app branding</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>STATUS</Text>
+          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border, padding: 12, gap: 8 }]}>
+            {statusConfig.map((s) => (
+              <Pressable
+                key={s.key}
+                onPress={() => handleStatusChange(s.key)}
+                style={[
+                  {
+                    flexDirection: "row", alignItems: "center", gap: 12,
+                    paddingVertical: 10, paddingHorizontal: 12,
+                    borderRadius: 12, borderWidth: 1,
+                    borderColor: userStatus === s.key ? s.color : "transparent",
+                    backgroundColor: userStatus === s.key ? s.bg : "transparent",
+                  },
+                ]}
+              >
+                <View style={{ width: 32, height: 32, borderRadius: 10, justifyContent: "center", alignItems: "center", backgroundColor: userStatus === s.key ? s.color : colors.surfaceSecondary }}>
+                  <Ionicons name={s.icon} size={18} color={userStatus === s.key ? "#FFF" : colors.textSecondary} />
+                </View>
+                <Text style={{ flex: 1, fontSize: 15, fontFamily: userStatus === s.key ? "Inter_700Bold" : "Inter_500Medium", color: userStatus === s.key ? s.color : colors.text }}>{s.label}</Text>
+                {userStatus === s.key && (
+                  <Ionicons name="checkmark-circle" size={20} color={s.color} />
+                )}
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>ACCOUNT</Text>
+          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Pressable
+              style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => {
+                setShowChangePassword(true);
+                setCurrentPasswordInput("");
+                setNewPassword("");
+                setConfirmNewPassword("");
+                setPasswordError(null);
+                setPasswordSuccess(false);
+              }}
+            >
+              <View style={[styles.menuIcon, { backgroundColor: colors.tintLight }]}>
+                <Ionicons name="lock-closed" size={18} color={colors.tint} />
+              </View>
+              <View style={styles.menuInfo}>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Change Password</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Update your account password</Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
             </Pressable>
@@ -232,7 +355,7 @@ export default function SettingsScreen() {
           </View>
         ) : (
           <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>GROUP</Text>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>LAB</Text>
             <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <Pressable
                 style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
@@ -370,6 +493,84 @@ export default function SettingsScreen() {
           </Pressable>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={showChangePassword}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowChangePassword(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1, justifyContent: "flex-end" }}
+        >
+          <Pressable style={{ flex: 1 }} onPress={() => setShowChangePassword(false)} />
+          <View style={[joinStyles.sheet, { backgroundColor: colors.surface, paddingTop: 0 }]}>
+            <View style={joinStyles.handle} />
+            <View style={joinStyles.header}>
+              <Pressable onPress={() => setShowChangePassword(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </Pressable>
+              <Text style={[joinStyles.title, { color: colors.text }]}>Change Password</Text>
+              <View style={{ width: 24 }} />
+            </View>
+
+            {passwordSuccess ? (
+              <View style={{ alignItems: "center", paddingVertical: 32 }}>
+                <Ionicons name="checkmark-circle" size={48} color="#16A34A" />
+                <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: colors.text, marginTop: 12 }}>Password Changed</Text>
+              </View>
+            ) : (
+              <>
+                {passwordError && (
+                  <View style={{ backgroundColor: colors.errorLight, borderRadius: 12, padding: 12, marginBottom: 12, flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <Ionicons name="alert-circle" size={16} color={colors.error} />
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.error, flex: 1 }}>{passwordError}</Text>
+                  </View>
+                )}
+                <TextInput
+                  style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+                  placeholder="Current password"
+                  placeholderTextColor={colors.textTertiary}
+                  secureTextEntry
+                  value={currentPasswordInput}
+                  onChangeText={setCurrentPasswordInput}
+                  testID="current-password-input"
+                />
+                <TextInput
+                  style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+                  placeholder="New password"
+                  placeholderTextColor={colors.textTertiary}
+                  secureTextEntry
+                  value={newPassword}
+                  onChangeText={setNewPassword}
+                  testID="new-password-input"
+                />
+                <TextInput
+                  style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+                  placeholder="Confirm new password"
+                  placeholderTextColor={colors.textTertiary}
+                  secureTextEntry
+                  value={confirmNewPassword}
+                  onChangeText={setConfirmNewPassword}
+                  testID="confirm-password-input"
+                />
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginBottom: 16 }}>
+                  Must be 8+ characters with uppercase, lowercase, and special character
+                </Text>
+                <Pressable
+                  onPress={handleChangePassword}
+                  style={({ pressed }) => [joinStyles.sendBtn, pressed && { opacity: 0.85 }]}
+                  testID="change-password-btn"
+                >
+                  <Ionicons name="lock-closed" size={18} color="#FFF" />
+                  <Text style={joinStyles.sendBtnText}>Update Password</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       <Modal
         visible={showJoinModal}
