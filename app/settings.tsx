@@ -27,7 +27,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest, groups } = useApp();
+  const { sendGroupJoinRequest } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
@@ -38,7 +38,7 @@ export default function SettingsScreen() {
   const [adminUsername, setAdminUsername] = useState("");
   const [showAddLabModal, setShowAddLabModal] = useState(false);
   const [labSearchName, setLabSearchName] = useState("");
-  const [matchedLabs, setMatchedLabs] = useState<typeof groups>([]);
+  const [matchedLabs, setMatchedLabs] = useState<{ practiceName: string; username: string; practiceAddress?: string }[]>([]);
   const [labSearchDone, setLabSearchDone] = useState(false);
   const [addLabSending, setAddLabSending] = useState(false);
   const [companyLogoUri, setCompanyLogoUri] = useState<string | null>(null);
@@ -155,7 +155,7 @@ export default function SettingsScreen() {
                 </View>
                 <View style={styles.menuInfo}>
                   <Text style={[styles.menuTitle, { color: colors.text }]}>Admin Vault</Text>
-                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Manage users, groups, and settings</Text>
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Manage users, labs, and settings</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
               </Pressable>
@@ -387,11 +387,11 @@ export default function SettingsScreen() {
               <Pressable onPress={() => { setShowJoinModal(false); setAdminUsername(""); }}>
                 <Ionicons name="close" size={24} color={colors.textSecondary} />
               </Pressable>
-              <Text style={[joinStyles.title, { color: colors.text }]}>Join a Group</Text>
+              <Text style={[joinStyles.title, { color: colors.text }]}>Join a Lab</Text>
               <View style={{ width: 24 }} />
             </View>
             <Text style={[joinStyles.desc, { color: colors.textSecondary }]}>
-              Enter the admin's username to send a request to join their group. The admin will receive a notification to approve your request.
+              Enter the admin's username to send a request to join their lab. The admin will receive a notification to approve your request.
             </Text>
             <TextInput
               style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
@@ -473,8 +473,13 @@ export default function SettingsScreen() {
                 disabled={!labSearchName.trim()}
                 onPress={() => {
                   const q = labSearchName.toLowerCase().trim();
-                  const found = groups.filter(g => g.type === "lab" && g.name.toLowerCase().includes(q));
-                  setMatchedLabs(found);
+                  const labAdmins = registeredUsers.filter(u => u.userType === "lab" && u.role === "admin" && u.practiceName);
+                  const uniqueLabs = new Map<string, { practiceName: string; username: string; practiceAddress?: string }>();
+                  for (const u of labAdmins) {
+                    const key = u.practiceName!.toLowerCase().trim();
+                    if (!uniqueLabs.has(key) && key.includes(q)) uniqueLabs.set(key, { practiceName: u.practiceName!, username: u.username, practiceAddress: u.practiceAddress });
+                  }
+                  setMatchedLabs(Array.from(uniqueLabs.values()));
                   setLabSearchDone(true);
                 }}
                 testID="add-lab-search-btn"
@@ -500,18 +505,16 @@ export default function SettingsScreen() {
               <View style={{ gap: 10, maxHeight: 280 }}>
                 <ScrollView showsVerticalScrollIndicator={false}>
                   {matchedLabs.map((lab) => {
-                    const adminMember = lab.members.find(m => m.role === "admin");
-                    const alreadyMember = lab.members.some(m => m.username.toLowerCase() === (currentUser || "").toLowerCase());
+                    const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+                    const alreadyMember = currentUserData?.practiceName?.toLowerCase().trim() === lab.practiceName.toLowerCase().trim();
                     return (
-                      <View key={lab.id} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
+                      <View key={lab.username} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
                         <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: "#EDE9FE", justifyContent: "center", alignItems: "center" }}>
                           <Ionicons name="flask" size={20} color="#7C3AED" />
                         </View>
                         <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>{lab.name}</Text>
-                          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>
-                            {lab.members.length} member{lab.members.length !== 1 ? "s" : ""}
-                          </Text>
+                          <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>{lab.practiceName}</Text>
+                          {lab.practiceAddress && <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>{lab.practiceAddress}</Text>}
                         </View>
                         {alreadyMember ? (
                           <View style={{ backgroundColor: "#D1FAE5", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 }}>
@@ -526,13 +529,13 @@ export default function SettingsScreen() {
                             ]}
                             disabled={addLabSending}
                             onPress={() => {
-                              if (!currentUser || !adminMember) return;
+                              if (!currentUser) return;
                               setAddLabSending(true);
-                              const result = sendGroupJoinRequest(adminMember.username, currentUser, `${currentUser} would like to connect to ${lab.name}.`);
+                              const result = sendGroupJoinRequest(lab.username, currentUser, `${currentUser} would like to connect to ${lab.practiceName}.`);
                               setAddLabSending(false);
                               if (result.success) {
                                 if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                Alert.alert("Request Sent", `Your request to join ${lab.name} has been sent to the lab administrator. Once approved, you'll be able to view your cases.`);
+                                Alert.alert("Request Sent", `Your request to join ${lab.practiceName} has been sent to the lab administrator. Once approved, you'll be able to view your cases.`);
                                 setShowAddLabModal(false);
                                 setLabSearchName("");
                                 setMatchedLabs([]);

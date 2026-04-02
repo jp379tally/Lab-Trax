@@ -143,7 +143,7 @@ export default function NotificationsScreen() {
           <Ionicons name="people" size={20} color="#2563EB" />
         </View>
         <View style={styles.notifContent}>
-          <Text style={styles.notifTitle}>Group Invitation</Text>
+          <Text style={styles.notifTitle}>Lab Invitation</Text>
           <Text style={styles.notifMessage}>
             {invitation.invitedBy} invited you to join "{invitation.groupName}"
           </Text>
@@ -181,13 +181,13 @@ export default function NotificationsScreen() {
           <Ionicons name={isProvider ? "medical" : "person-add"} size={20} color={isProvider ? "#2563EB" : "#D97706"} />
         </View>
         <View style={styles.notifContent}>
-          <Text style={styles.notifTitle}>{isProvider ? "Provider Join Request" : isInternalJoin ? "User Join Request" : "Group Join Request"}</Text>
+          <Text style={styles.notifTitle}>{isProvider ? "Provider Join Request" : isInternalJoin ? "User Join Request" : "Lab Join Request"}</Text>
           <Text style={styles.notifMessage}>
             <Text style={{ fontFamily: "Inter_600SemiBold" }}>{request.requestingUsername}</Text>
-            {isProvider ? " (Provider) wants to join your group" : isInternalJoin ? " wants to join your lab" : " wants to join your group"}
+            {isProvider ? " (Provider) wants to join your lab" : isInternalJoin ? " wants to join your lab" : " wants to join your lab"}
           </Text>
           <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 4, marginBottom: 8 }}>
-            {isInternalJoin ? "What role should this user have?" : isProvider ? "Accept this provider into your group?" : "Accept this lab into your group?"}
+            {isInternalJoin ? "What role should this user have?" : isProvider ? "Accept this provider into your lab?" : "Accept this user into your lab?"}
           </Text>
           <View style={styles.inviteBtns}>
             {isInternalJoin ? (

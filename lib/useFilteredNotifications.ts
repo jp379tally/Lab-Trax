@@ -3,7 +3,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 
 export function useProviderFilteredNotifications() {
-  const { notifications, cases, groups } = useApp();
+  const { notifications, cases } = useApp();
   const { userType, currentUser, registeredUsers } = useAuth();
   return useMemo(() => {
     if (!notifications || !Array.isArray(notifications)) return [];
@@ -15,11 +15,8 @@ export function useProviderFilteredNotifications() {
     const users = Array.isArray(registeredUsers) ? registeredUsers : [];
     const currentUserData = users.find(u => u.username && u.username.toLowerCase() === lowerUser);
     const myDoctorName = (currentUserData?.doctorName || "").toLowerCase();
-    const safeGroups = Array.isArray(groups) ? groups : [];
-    const myGroups = safeGroups.filter(g =>
-      Array.isArray(g.members) && g.members.some(m => m.username && m.username.toLowerCase() === lowerUser)
-    );
-    if (myGroups.length === 0) return [];
+    const isAffiliated = !!currentUserData?.practiceName;
+    if (!isAffiliated) return [];
     const safeCases = Array.isArray(cases) ? cases : [];
     const myCaseIds = new Set(
       safeCases
@@ -32,5 +29,5 @@ export function useProviderFilteredNotifications() {
     );
     if (myCaseIds.size === 0) return [];
     return notifications.filter(n => n.caseId && myCaseIds.has(n.caseId));
-  }, [notifications, userType, currentUser, registeredUsers, cases, groups]);
+  }, [notifications, userType, currentUser, registeredUsers, cases]);
 }

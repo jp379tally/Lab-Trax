@@ -34,7 +34,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, Group, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase } from "@/lib/data";
+import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase } from "@/lib/data";
 import { apiRequest } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
@@ -1502,7 +1502,6 @@ type AdminView =
   | "sales"
   | "shipping"
   | "inventory"
-  | "create-group"
   | "lab-users"
   | "payment-processing"
   | "edit-locations"
@@ -1511,7 +1510,7 @@ type AdminView =
   | "delete-cases";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, groups, groupInvitations, addUserToGroup, removeUserFromGroup, sendGroupInvitation, respondToGroupInvitation, getUserGroups, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, createGroup, addNotification, customStationLabels, updateStationLabel, removeCase } = useApp();
+  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -1593,11 +1592,6 @@ function AdminDashboard() {
   const [selectedPriceClient, setSelectedPriceClient] = useState<Client | null>(null);
   const [showClientPicker, setShowClientPicker] = useState(false);
   const [selectedTierForClient, setSelectedTierForClient] = useState<string>("");
-  const [groupInviteUsername, setGroupInviteUsername] = useState("");
-  const [showGroupInviteConfirm, setShowGroupInviteConfirm] = useState(false);
-  const [showRemoveFromGroupConfirm, setShowRemoveFromGroupConfirm] = useState(false);
-  const [selectedGroupForAction, setSelectedGroupForAction] = useState<string>("");
-  const [selectedMemberForRemoval, setSelectedMemberForRemoval] = useState<string>("");
 
   const [invCategory, setInvCategory] = useState("All");
   const [showAddInv, setShowAddInv] = useState(false);
@@ -1609,10 +1603,6 @@ function AdminDashboard() {
   const [editingInvItem, setEditingInvItem] = useState<InventoryItem | null>(null);
   const [editInvQty, setEditInvQty] = useState("");
 
-  const [newGroupNameAdmin, setNewGroupNameAdmin] = useState("");
-  const [newGroupAddressAdmin, setNewGroupAddressAdmin] = useState("");
-  const [newGroupTypeAdmin, setNewGroupTypeAdmin] = useState<"provider" | "lab">("lab");
-  const [selectedLabGroup, setSelectedLabGroup] = useState<Group | null>(null);
   const [labUserSearchQuery, setLabUserSearchQuery] = useState("");
 
   const [iteroEmail, setIteroEmail] = useState("");
@@ -1769,7 +1759,7 @@ function AdminDashboard() {
 
     const menuItems: { icon: string; iconSet: "ion" | "mci" | "feather"; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
       { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · Add, Edit, Price List`, view: "client-hub" },
-      { icon: "people", iconSet: "ion", color: "#8B5CF6", bg: "#EDE9FE", title: "Users", sub: `${users.length} staff · Add, Edit, Groups`, view: "user-hub" },
+      { icon: "people", iconSet: "ion", color: "#8B5CF6", bg: "#EDE9FE", title: "Users", sub: `${users.length} staff · Add, Edit`, view: "user-hub" },
       { icon: "layers", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Edit Tier Pricing", sub: `${pricingTiers.length} pricing tiers`, view: "edit-tier-pricing" as AdminView },
       { icon: "document-text", iconSet: "ion", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Open Invoices", sub: `${openInvoiceCount} pending`, view: "invoices" },
       { icon: "receipt-outline", iconSet: "ion", color: "#06B6D4", bg: "#CFFAFE", title: "Generate Statements", sub: "Create billing statements", view: "statements" },
@@ -1778,8 +1768,7 @@ function AdminDashboard() {
       { icon: "cube", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items tracked`, view: "inventory" as AdminView },
       { icon: "card", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Payment Processing", sub: "Process payments & refunds", view: "payment-processing" as AdminView },
       { icon: "location", iconSet: "ion", color: "#0D9488", bg: "#CCFBF1", title: "Edit Locations", sub: `${STATIONS.length} workflow stations`, view: "edit-locations" as AdminView },
-      { icon: "add-circle", iconSet: "ion", color: "#059669", bg: "#ECFDF5", title: "Create Group", sub: "Create a new user group", view: "create-group" as AdminView },
-      { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Add Users", sub: `${labPortalUsers.length} lab users · Assign to groups`, view: "lab-users" as AdminView },
+      { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Lab Users", sub: `${labPortalUsers.length} lab members`, view: "lab-users" as AdminView },
       { icon: "cloud-upload", iconSet: "ion", color: "#2563EB", bg: "#DBEAFE", title: "Integrations", sub: "iTero · Scanner connections", view: "integrations" as AdminView },
       { icon: "trash", iconSet: "ion", color: "#EF4444", bg: "#FEE2E2", title: "Delete Case", sub: "Remove an active case", view: "delete-cases" as AdminView },
     ];
@@ -1924,38 +1913,6 @@ function AdminDashboard() {
           ))}
         </View>
 
-        {groups.length > 0 && (
-          <View style={{ paddingHorizontal: 20, marginTop: 16 }}>
-            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.subText, marginBottom: 12 }}>Groups</Text>
-            {groups.map((g) => (
-              <View key={g.id} style={{ backgroundColor: "#fff", borderRadius: 14, marginBottom: 10, padding: 14, shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 6, shadowOffset: { width: 0, height: 1 }, elevation: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: g.type === "lab" ? "#EDE9FE" : "#E0F2FE", justifyContent: "center", alignItems: "center" }}>
-                    <Ionicons name={g.type === "lab" ? "flask" : "business"} size={16} color={g.type === "lab" ? "#8B5CF6" : "#0EA5E9"} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{g.name}</Text>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""} · {g.type}</Text>
-                  </View>
-                </View>
-                {g.members.map((m) => {
-                  const regUser = registeredUsers.find(u => u.username.toLowerCase() === m.username.toLowerCase());
-                  return (
-                    <View key={m.userId} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 8, paddingHorizontal: 4, borderTopWidth: 1, borderTopColor: "#F3F4F6" }}>
-                      <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: m.role === "admin" ? "#DBEAFE" : "#F3E8FF", justifyContent: "center", alignItems: "center", marginRight: 10 }}>
-                        <Ionicons name={m.role === "admin" ? "shield" : "person"} size={14} color={m.role === "admin" ? "#2563EB" : "#8B5CF6"} />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{regUser?.practiceName || m.username}</Text>
-                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>{m.username} · {m.role}</Text>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            ))}
-          </View>
-        )}
       </ScrollView>
     );
   }
@@ -2392,155 +2349,6 @@ function AdminDashboard() {
               <Ionicons name="trash-outline" size={20} color="#FFF" />
               <Text style={adm.removeUserBtnText}>Remove User</Text>
             </Pressable>
-
-            <View style={{ marginTop: 24, borderTopWidth: 1, borderTopColor: Colors.light.border, paddingTop: 20 }}>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text, marginBottom: 12 }}>Group Management</Text>
-
-              {(() => {
-                const userGroups = groups.filter(g => g.members.some(m => m.username === editingUser.name || m.userId === editingUser.id));
-                return userGroups.length > 0 ? (
-                  <View style={{ marginBottom: 16 }}>
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginBottom: 8 }}>Current Groups</Text>
-                    {userGroups.map(g => (
-                      <View key={g.id} style={{ flexDirection: "row", alignItems: "center", backgroundColor: Colors.light.surfaceAlt, borderRadius: 10, padding: 12, marginBottom: 8 }}>
-                        <Ionicons name={g.type === "lab" ? "flask" : "business"} size={18} color={g.type === "lab" ? "#8B5CF6" : "#0EA5E9"} style={{ marginRight: 10 }} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{g.name}</Text>
-                          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""}</Text>
-                        </View>
-                        <Pressable
-                          onPress={() => {
-                            setSelectedGroupForAction(g.id);
-                            setSelectedMemberForRemoval(editingUser.id);
-                            setShowRemoveFromGroupConfirm(true);
-                          }}
-                          style={({ pressed }) => ({ padding: 6, opacity: pressed ? 0.6 : 1 })}
-                        >
-                          <Ionicons name="remove-circle-outline" size={22} color={Colors.light.error} />
-                        </Pressable>
-                      </View>
-                    ))}
-                  </View>
-                ) : (
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginBottom: 12 }}>Not a member of any group.</Text>
-                );
-              })()}
-
-              <View style={{ marginBottom: 12 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginBottom: 8 }}>Add User to Group</Text>
-                <View style={{ flexDirection: "row", gap: 8 }}>
-                  <TextInput
-                    style={[adm.input, { flex: 1 }]}
-                    placeholder="Username to invite"
-                    placeholderTextColor={Colors.light.textTertiary}
-                    value={groupInviteUsername}
-                    onChangeText={setGroupInviteUsername}
-                    autoCapitalize="none"
-                  />
-                </View>
-                {groups.length > 0 && (
-                  <View style={{ marginTop: 8 }}>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginBottom: 6 }}>Select Group</Text>
-                    <View style={adm.chipRow}>
-                      {groups.map(g => (
-                        <Pressable
-                          key={g.id}
-                          onPress={() => setSelectedGroupForAction(g.id)}
-                          style={[adm.chip, selectedGroupForAction === g.id && adm.chipActive]}
-                        >
-                          <Text style={[adm.chipText, selectedGroupForAction === g.id && adm.chipTextActive]}>{g.name}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                  </View>
-                )}
-                <Pressable
-                  style={({ pressed }) => [adm.submitBtn, { marginTop: 12 }, pressed && { opacity: 0.85 }]}
-                  onPress={() => {
-                    if (!groupInviteUsername.trim()) {
-                      Alert.alert("Required", "Please enter a username to invite.");
-                      return;
-                    }
-                    if (!selectedGroupForAction) {
-                      Alert.alert("Required", "Please select a group.");
-                      return;
-                    }
-                    setShowGroupInviteConfirm(true);
-                  }}
-                >
-                  <Ionicons name="person-add" size={18} color="#FFF" />
-                  <Text style={adm.submitBtnText}>Add User to Group</Text>
-                </Pressable>
-              </View>
-            </View>
-
-            <Modal transparent visible={showGroupInviteConfirm} animationType="fade" onRequestClose={() => setShowGroupInviteConfirm(false)}>
-              <View style={adm.confirmOverlay}>
-                <View style={adm.confirmCard}>
-                  <View style={[adm.confirmIconWrap, { backgroundColor: "#DBEAFE" }]}>
-                    <Ionicons name="people" size={32} color="#2563EB" />
-                  </View>
-                  <Text style={adm.confirmTitle}>Are you sure you want to add this user to your group?</Text>
-                  <Text style={adm.confirmDesc}>They will have access to confidential information.</Text>
-                  <View style={adm.confirmBtns}>
-                    <Pressable
-                      style={({ pressed }) => [adm.confirmYesBtn, pressed && { opacity: 0.85 }]}
-                      onPress={() => {
-                        const group = groups.find(g => g.id === selectedGroupForAction);
-                        if (group) {
-                          sendGroupInvitation(selectedGroupForAction, groupInviteUsername.trim(), "admin");
-                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                          Alert.alert("Invitation Sent", `An invitation has been sent to ${groupInviteUsername.trim()} to join ${group.name}. They must accept before they are added.`);
-                        }
-                        setShowGroupInviteConfirm(false);
-                        setGroupInviteUsername("");
-                      }}
-                    >
-                      <Text style={adm.confirmYesText}>Yes</Text>
-                    </Pressable>
-                    <Pressable
-                      style={({ pressed }) => [adm.confirmNoBtn, pressed && { opacity: 0.85 }]}
-                      onPress={() => setShowGroupInviteConfirm(false)}
-                    >
-                      <Text style={adm.confirmNoText}>No</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            </Modal>
-
-            <Modal transparent visible={showRemoveFromGroupConfirm} animationType="fade" onRequestClose={() => setShowRemoveFromGroupConfirm(false)}>
-              <View style={adm.confirmOverlay}>
-                <View style={adm.confirmCard}>
-                  <View style={adm.confirmIconWrap}>
-                    <Ionicons name="warning" size={32} color="#EF4444" />
-                  </View>
-                  <Text style={adm.confirmTitle}>Remove user from group?</Text>
-                  <Text style={adm.confirmDesc}>This user will lose access to the group's information.</Text>
-                  <View style={adm.confirmBtns}>
-                    <Pressable
-                      style={({ pressed }) => [adm.confirmYesBtn, pressed && { opacity: 0.85 }]}
-                      onPress={() => {
-                        removeUserFromGroup(selectedGroupForAction, selectedMemberForRemoval);
-                        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                        Alert.alert("Removed", "User has been removed from the group.");
-                        setShowRemoveFromGroupConfirm(false);
-                        setSelectedGroupForAction("");
-                        setSelectedMemberForRemoval("");
-                      }}
-                    >
-                      <Text style={adm.confirmYesText}>Yes</Text>
-                    </Pressable>
-                    <Pressable
-                      style={({ pressed }) => [adm.confirmNoBtn, pressed && { opacity: 0.85 }]}
-                      onPress={() => setShowRemoveFromGroupConfirm(false)}
-                    >
-                      <Text style={adm.confirmNoText}>No</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            </Modal>
 
             <Modal
               transparent
@@ -4684,128 +4492,6 @@ function AdminDashboard() {
     );
   }
 
-  function renderCreateGroupAdmin() {
-    function handleCreateGroup() {
-      if (!newGroupNameAdmin.trim()) {
-        Alert.alert("Required", "Group name is required.");
-        return;
-      }
-      if (!newGroupAddressAdmin.trim()) {
-        Alert.alert("Required", "Group address is required.");
-        return;
-      }
-      createGroup(newGroupNameAdmin.trim(), newGroupTypeAdmin, newGroupAddressAdmin.trim(), currentUser || "", "admin");
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Success", `Group "${newGroupNameAdmin.trim()}" created.`);
-      setNewGroupNameAdmin("");
-      setNewGroupAddressAdmin("");
-      setNewGroupTypeAdmin("lab");
-    }
-
-    return (
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
-        }}
-        showsVerticalScrollIndicator={false}
-      >
-        {renderBackHeader("Create Group")}
-
-        <View style={{ paddingHorizontal: 20 }}>
-          <View style={{ backgroundColor: "#ECFDF5", borderRadius: 16, padding: 20, marginBottom: 20, alignItems: "center" }}>
-            <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: "#059669", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
-              <Ionicons name="people" size={28} color="#fff" />
-            </View>
-            <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#065F46", textAlign: "center" }}>Create a New Group</Text>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#047857", textAlign: "center", marginTop: 4 }}>Groups help organize users by practice or location</Text>
-          </View>
-
-          <Text style={adm.fieldLabel}>Group Name</Text>
-          <TextInput
-            style={adm.textInput}
-            placeholder="e.g. Downtown Dental Lab"
-            value={newGroupNameAdmin}
-            onChangeText={setNewGroupNameAdmin}
-            placeholderTextColor="#9CA3AF"
-          />
-
-          <Text style={[adm.fieldLabel, { marginTop: 16 }]}>Address</Text>
-          <TextInput
-            style={adm.textInput}
-            placeholder="e.g. 123 Main St, City, ST 12345"
-            value={newGroupAddressAdmin}
-            onChangeText={setNewGroupAddressAdmin}
-            placeholderTextColor="#9CA3AF"
-          />
-
-          <Text style={[adm.fieldLabel, { marginTop: 16 }]}>Group Type</Text>
-          <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
-            <Pressable
-              onPress={() => setNewGroupTypeAdmin("lab")}
-              style={[
-                {
-                  flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: "center",
-                  borderWidth: 2, borderColor: newGroupTypeAdmin === "lab" ? Colors.light.tint : "#E5E7EB",
-                  backgroundColor: newGroupTypeAdmin === "lab" ? Colors.light.tintLight : "#F9FAFB",
-                },
-              ]}
-            >
-              <Ionicons name="flask" size={22} color={newGroupTypeAdmin === "lab" ? Colors.light.tint : "#6B7280"} />
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 14, color: newGroupTypeAdmin === "lab" ? Colors.light.tint : "#6B7280", marginTop: 4 }}>Lab</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setNewGroupTypeAdmin("provider")}
-              style={[
-                {
-                  flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: "center",
-                  borderWidth: 2, borderColor: newGroupTypeAdmin === "provider" ? "#7C3AED" : "#E5E7EB",
-                  backgroundColor: newGroupTypeAdmin === "provider" ? "#F3E8FF" : "#F9FAFB",
-                },
-              ]}
-            >
-              <Ionicons name="medkit" size={22} color={newGroupTypeAdmin === "provider" ? "#7C3AED" : "#6B7280"} />
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 14, color: newGroupTypeAdmin === "provider" ? "#7C3AED" : "#6B7280", marginTop: 4 }}>Provider</Text>
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={handleCreateGroup}
-            style={({ pressed }) => [
-              {
-                backgroundColor: "#059669", borderRadius: 14, paddingVertical: 16, alignItems: "center",
-                marginTop: 28, opacity: pressed ? 0.9 : 1,
-              },
-            ]}
-          >
-            <Text style={{ color: "#fff", fontFamily: "Inter_700Bold", fontSize: 16 }}>Create Group</Text>
-          </Pressable>
-
-          {groups.length > 0 && (
-            <View style={{ marginTop: 28 }}>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 12 }}>Existing Groups ({groups.length})</Text>
-              {groups.map(g => (
-                <View key={g.id} style={{ backgroundColor: "#F9FAFB", borderRadius: 12, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: "#E5E7EB" }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 15, color: Colors.light.text }}>{g.name}</Text>
-                      <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: Colors.light.subText, marginTop: 2 }}>{g.address}</Text>
-                    </View>
-                    <View style={{ backgroundColor: g.type === "lab" ? Colors.light.tintLight : "#F3E8FF", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 }}>
-                      <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 11, color: g.type === "lab" ? Colors.light.tint : "#7C3AED" }}>{g.type.toUpperCase()}</Text>
-                    </View>
-                  </View>
-                  <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: Colors.light.subText, marginTop: 6 }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-        </View>
-      </ScrollView>
-    );
-  }
-
   function renderLabUsers() {
     const filteredLabUsers = labUserSearchQuery.trim()
       ? labPortalUsers.filter(u => u.username.toLowerCase().includes(labUserSearchQuery.toLowerCase()) || (u.email && u.email.toLowerCase().includes(labUserSearchQuery.toLowerCase())))
@@ -4865,72 +4551,21 @@ function AdminDashboard() {
             </View>
           ) : (
             filteredLabUsers.map(user => {
-              const userGroups = getUserGroups(user.username);
               return (
                 <View key={user.username} style={{ backgroundColor: "#fff", borderRadius: 14, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: "#E5E7EB", shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
                     <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "#EDE9FE", alignItems: "center", justifyContent: "center", marginRight: 12 }}>
                       <Text style={{ fontFamily: "Inter_700Bold", fontSize: 16, color: "#7C3AED" }}>{user.username.charAt(0).toUpperCase()}</Text>
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 15, color: Colors.light.text }}>{user.username}</Text>
                       {user.email ? <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: Colors.light.subText }}>{user.email}</Text> : null}
+                      {user.practiceName ? <Text style={{ fontFamily: "Inter_400Regular", fontSize: 11, color: Colors.light.tint }}>{user.practiceName}</Text> : null}
                     </View>
                     <View style={{ backgroundColor: user.role === "admin" ? "#FEF3C7" : "#F3F4F6", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 }}>
                       <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 11, color: user.role === "admin" ? "#92400E" : "#6B7280" }}>{(user.role || "user").toUpperCase()}</Text>
                     </View>
                   </View>
-
-                  {userGroups.length > 0 && (
-                    <View style={{ marginBottom: 10 }}>
-                      <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: Colors.light.subText, marginBottom: 4 }}>Groups:</Text>
-                      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                        {userGroups.map(g => (
-                          <View key={g.id} style={{ backgroundColor: g.type === "lab" ? Colors.light.tintLight : "#F3E8FF", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 }}>
-                            <Text style={{ fontFamily: "Inter_500Medium", fontSize: 11, color: g.type === "lab" ? Colors.light.tint : "#7C3AED" }}>{g.name}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    </View>
-                  )}
-
-                  <Pressable
-                    onPress={() => {
-                      if (groups.length === 0) {
-                        Alert.alert("No Groups", "Create a group first before adding users.");
-                        return;
-                      }
-                      setSelectedLabGroup(null);
-                      Alert.alert(
-                        "Add to Group",
-                        `Select a group for ${user.username}:`,
-                        [
-                          ...groups.map(g => ({
-                            text: `${g.name} (${g.type})`,
-                            onPress: () => {
-                              const alreadyMember = g.members.some(m => m.username === user.username);
-                              if (alreadyMember) {
-                                Alert.alert("Already a Member", `${user.username} is already in ${g.name}.`);
-                              } else {
-                                handleAddUserToGroup(user.username, g.id);
-                              }
-                            },
-                          })),
-                          { text: "Cancel", style: "cancel" },
-                        ]
-                      );
-                    }}
-                    style={({ pressed }) => [
-                      {
-                        backgroundColor: pressed ? "#EDE9FE" : "#F3E8FF",
-                        borderRadius: 10, paddingVertical: 10, alignItems: "center",
-                        flexDirection: "row", justifyContent: "center", gap: 6,
-                      },
-                    ]}
-                  >
-                    <Ionicons name="add-circle-outline" size={18} color="#7C3AED" />
-                    <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 13, color: "#7C3AED" }}>Add to Group</Text>
-                  </Pressable>
                 </View>
               );
             })
@@ -5391,7 +5026,6 @@ function AdminDashboard() {
     case "inventory": return renderInventory();
     case "payment-processing": return renderPaymentProcessing();
     case "edit-locations": return renderEditLocations();
-    case "create-group": return renderCreateGroupAdmin();
     case "lab-users": return renderLabUsers();
     case "integrations": return renderIntegrations();
     default: return renderHub();
@@ -5399,7 +5033,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, addUserToGroup, removeUserFromGroup, users, addUser, updateUser, removeUser, getUserGroups, groups, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated } = useApp();
+  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -5435,12 +5069,9 @@ function ProviderDashboard() {
   const [showAddLab, setShowAddLab] = useState(false);
   const [labSearchQuery, setLabSearchQuery] = useState("");
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
-  const myGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === (currentUser || "").toLowerCase()));
-  const isGroupMember = myGroups.length > 0;
-  const myLabGroups = myGroups.filter(g => g.type === "lab");
-  const myLabName = myLabGroups.length > 0 ? myLabGroups[0].name : "Allied Dental Lab";
+  const myLabName = currentUserData?.practiceName || "Allied Dental Lab";
   const myDoctorName = currentUserData?.doctorName || currentUser || "";
-  const myCases = isGroupMember ? cases.filter(c =>
+  const myCases = userIsAffiliated ? cases.filter(c =>
     c.doctorName.toLowerCase() === myDoctorName.toLowerCase() ||
     c.doctorName.toLowerCase().includes((currentUser || "").toLowerCase())
   ) : [];
@@ -5828,25 +5459,23 @@ function ProviderDashboard() {
                 <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Add a Lab</Text>
               </Pressable>
             </View>
-            {myGroups.filter(g => g.type === "lab").length === 0 ? (
+            {!currentUserData?.practiceName ? (
               <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
                 <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center" }}>No connected labs yet</Text>
               </View>
             ) : (
-              myGroups.filter(g => g.type === "lab").map(g => (
-                <View key={g.id} style={{ flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border }}>
-                  <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
-                    <Ionicons name="business" size={18} color="#2563EB" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{g.name}</Text>
-                    {g.address ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{g.address}</Text> : null}
-                  </View>
-                  <View style={{ backgroundColor: "#DBEAFE", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#2563EB" }}>Lab</Text>
-                  </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border }}>
+                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
+                  <Ionicons name="business" size={18} color="#2563EB" />
                 </View>
-              ))
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{currentUserData.practiceName}</Text>
+                  {currentUserData.practiceAddress ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{currentUserData.practiceAddress}</Text> : null}
+                </View>
+                <View style={{ backgroundColor: "#DBEAFE", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#2563EB" }}>Lab</Text>
+                </View>
+              </View>
             )}
 
             <Pressable
@@ -5904,23 +5533,28 @@ function ProviderDashboard() {
             </View>
             <FlatList
               data={(() => {
-                const labGroups = groups.filter(g => g.type === "lab");
-                const myLabIds = new Set(myGroups.filter(g => g.type === "lab").map(g => g.id));
-                const available = labGroups.filter(g => !myLabIds.has(g.id));
+                const labAdmins = registeredUsers.filter(u => u.userType === "lab" && u.role === "admin" && u.practiceName);
+                const uniqueLabs = new Map<string, typeof labAdmins[0]>();
+                for (const u of labAdmins) {
+                  const key = u.practiceName!.toLowerCase().trim();
+                  if (key !== (currentUserData?.practiceName || "").toLowerCase().trim()) {
+                    if (!uniqueLabs.has(key)) uniqueLabs.set(key, u);
+                  }
+                }
+                const available = Array.from(uniqueLabs.values());
                 if (!labSearchQuery.trim()) return available;
                 const q = labSearchQuery.trim().toLowerCase();
-                return available.filter(g => g.name.toLowerCase().includes(q) || (g.address && g.address.toLowerCase().includes(q)));
+                return available.filter(u => u.practiceName!.toLowerCase().includes(q) || (u.practiceAddress && u.practiceAddress.toLowerCase().includes(q)));
               })()}
-              keyExtractor={item => item.id}
+              keyExtractor={item => item.id || item.username}
               contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 16 }}
               keyboardShouldPersistTaps="handled"
               renderItem={({ item: lab }) => {
-                const labAdmin = lab.members.find(m => m.role === "admin");
-                const alreadyRequested = labAdmin ? groupJoinRequests.some(
-                  r => r.targetAdminUsername.toLowerCase() === labAdmin.username.toLowerCase()
+                const alreadyRequested = groupJoinRequests.some(
+                  r => r.targetAdminUsername.toLowerCase() === lab.username.toLowerCase()
                     && r.requestingUsername.toLowerCase() === (currentUser || "").toLowerCase()
                     && r.status === "pending"
-                ) : false;
+                );
                 return (
                   <Pressable
                     style={({ pressed }) => ({
@@ -5936,24 +5570,19 @@ function ProviderDashboard() {
                       }
                       Alert.alert(
                         "Join Lab",
-                        `Send a join request to "${lab.name}"?`,
+                        `Send a join request to "${lab.practiceName}"?`,
                         [
                           { text: "Cancel", style: "cancel" },
                           {
                             text: "Send Request",
                             onPress: () => {
-                              const admin = lab.members.find(m => m.role === "admin");
-                              if (admin) {
-                                const result = sendGroupJoinRequest(admin.username, currentUser || "", `Provider ${currentUserData?.doctorName || currentUser} would like to join ${lab.name}`);
-                                if (result.success) {
-                                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                  Alert.alert("Request Sent", `Your join request has been sent to ${lab.name}. You'll be notified when it's accepted.`);
-                                  setShowAddLab(false);
-                                } else {
-                                  Alert.alert("Error", result.error || "Could not send request.");
-                                }
+                              const result = sendGroupJoinRequest(lab.username, currentUser || "", `Provider ${currentUserData?.doctorName || currentUser} would like to join ${lab.practiceName}`);
+                              if (result.success) {
+                                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                Alert.alert("Request Sent", `Your join request has been sent to ${lab.practiceName}. You'll be notified when it's accepted.`);
+                                setShowAddLab(false);
                               } else {
-                                Alert.alert("Error", "This lab has no admin to send a request to.");
+                                Alert.alert("Error", result.error || "Could not send request.");
                               }
                             },
                           },
@@ -5965,8 +5594,8 @@ function ProviderDashboard() {
                       <Ionicons name="business" size={20} color="#2563EB" />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{lab.name}</Text>
-                      {lab.address ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{lab.address}</Text> : null}
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{lab.practiceName}</Text>
+                      {lab.practiceAddress ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{lab.practiceAddress}</Text> : null}
                     </View>
                     {alreadyRequested ? (
                       <View style={{ backgroundColor: "#FEF3C7", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
@@ -6111,7 +5740,7 @@ function ProviderDashboard() {
               </View>
             ) : (
               users.map(u => {
-                const userGroups = getUserGroups(u.name);
+                const regUser = registeredUsers.find(ru => ru.username.toLowerCase() === u.name.toLowerCase());
                 return (
                   <View key={u.id} style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border }}>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
@@ -6120,18 +5749,9 @@ function ProviderDashboard() {
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{u.name}</Text>
-                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{u.role} · {u.email || "No email"}</Text>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{u.role} · {u.email || "No email"}{regUser?.practiceName ? ` · ${regUser.practiceName}` : ""}</Text>
                       </View>
                     </View>
-                    {userGroups.length > 0 && (
-                      <View style={{ marginTop: 8, flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                        {userGroups.map(g => (
-                          <View key={g.id} style={{ backgroundColor: Colors.light.tintLight, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 }}>
-                            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.tint }}>{g.name}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    )}
                   </View>
                 );
               })
@@ -6788,33 +6408,23 @@ const provStyles = StyleSheet.create({
   },
 });
 
-type MasterView = "hub" | "groups" | "group-detail" | "all-users" | "lab-portal" | "provider-portal" | "create-group";
+type MasterView = "hub" | "all-users" | "lab-portal" | "provider-portal";
 
 function MasterAdminDashboard() {
-  const { cases, clients, users, groups, invoices, createGroup, removeUserFromGroup, registeredUsers: appUsers } = useApp();
+  const { cases, clients, users, invoices } = useApp();
   const { currentUser, registeredUsers, logout } = useAuth();
   const insets = useSafeAreaInsets();
 
   const [masterView, setMasterView] = useState<MasterView>("hub");
-  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
   const [groupSearch, setGroupSearch] = useState("");
-  const [newGroupName, setNewGroupName] = useState("");
-  const [newGroupAddress, setNewGroupAddress] = useState("");
-  const [newGroupType, setNewGroupType] = useState<"provider" | "lab">("lab");
-
-  const filteredGroups = groups.filter(g =>
-    g.name.toLowerCase().includes(groupSearch.toLowerCase()) ||
-    (g.address || "").toLowerCase().includes(groupSearch.toLowerCase())
-  );
 
   const totalUsers = registeredUsers.length;
-  const totalGroups = groups.length;
   const totalCases = cases.length;
 
   function renderBackHeader(title: string, backTo: MasterView = "hub") {
     return (
       <View style={{ paddingHorizontal: 20, flexDirection: "row", alignItems: "center", marginBottom: 16 }}>
-        <Pressable onPress={() => { setMasterView(backTo); if (backTo === "hub" || backTo === "groups") { setSelectedGroup(null); setGroupSearch(""); } }} style={{ marginRight: 12 }}>
+        <Pressable onPress={() => { setMasterView(backTo); setGroupSearch(""); }} style={{ marginRight: 12 }}>
           <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
         </Pressable>
         <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text, flex: 1 }}>{title}</Text>
@@ -6855,9 +6465,6 @@ function MasterAdminDashboard() {
           <Text style={[styles.heroCount, { fontSize: 22 }]}>JP Phillips</Text>
           <View style={adm.heroBadgeRow}>
             <View style={[adm.heroBadge, { backgroundColor: "rgba(255,215,0,0.2)" }]}>
-              <Text style={[adm.heroBadgeText, { color: "#FFD700" }]}>{totalGroups} Groups</Text>
-            </View>
-            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,215,0,0.2)" }]}>
               <Text style={[adm.heroBadgeText, { color: "#FFD700" }]}>{totalUsers} Users</Text>
             </View>
             <View style={[adm.heroBadge, { backgroundColor: "rgba(255,215,0,0.2)" }]}>
@@ -6868,9 +6475,7 @@ function MasterAdminDashboard() {
 
         <View style={adm.menuSection}>
           {[
-            { icon: "search" as const, color: "#D97706", bg: "#FEF3C7", title: "Search Groups", sub: `${totalGroups} active groups`, view: "groups" as MasterView },
             { icon: "people" as const, color: "#8B5CF6", bg: "#EDE9FE", title: "All Users", sub: `${totalUsers} registered users`, view: "all-users" as MasterView },
-            { icon: "add-circle" as const, color: "#10B981", bg: "#D1FAE5", title: "Create Group", sub: "Add new lab or provider group", view: "create-group" as MasterView },
             { icon: "flask" as const, color: "#0EA5E9", bg: "#E0F2FE", title: "Lab Portal", sub: `${cases.length} cases · ${clients.length} clients`, view: "lab-portal" as MasterView },
             { icon: "medical" as const, color: "#3B82F6", bg: "#DBEAFE", title: "Provider Portal", sub: "View provider accounts", view: "provider-portal" as MasterView },
           ].map((item) => (
@@ -6894,110 +6499,11 @@ function MasterAdminDashboard() {
     );
   }
 
-  function renderGroups() {
-    return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
-        {renderBackHeader("Search Groups")}
-        <View style={{ marginHorizontal: 20, marginBottom: 16, backgroundColor: Colors.light.surface, borderRadius: 12, flexDirection: "row", alignItems: "center", paddingHorizontal: 12, borderWidth: 1, borderColor: Colors.light.border }}>
-          <Ionicons name="search" size={18} color={Colors.light.textTertiary} />
-          <TextInput
-            style={{ flex: 1, paddingVertical: 12, paddingHorizontal: 8, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text }}
-            placeholder="Search groups..."
-            placeholderTextColor={Colors.light.textTertiary}
-            value={groupSearch}
-            onChangeText={setGroupSearch}
-          />
-          {groupSearch.length > 0 && (
-            <Pressable onPress={() => setGroupSearch("")}>
-              <Ionicons name="close-circle" size={18} color={Colors.light.textTertiary} />
-            </Pressable>
-          )}
-        </View>
-        {filteredGroups.length === 0 ? (
-          <View style={{ alignItems: "center", padding: 40 }}>
-            <Ionicons name="people-outline" size={48} color={Colors.light.textTertiary} />
-            <Text style={{ color: Colors.light.textTertiary, fontSize: 15, fontFamily: "Inter_500Medium", marginTop: 12 }}>No groups found</Text>
-          </View>
-        ) : (
-          filteredGroups.map((g) => (
-            <Pressable
-              key={g.id}
-              onPress={() => { setSelectedGroup(g); setMasterView("group-detail"); }}
-              style={({ pressed }) => [adm.menuItem, { marginHorizontal: 20 }, pressed && { opacity: 0.7 }]}
-            >
-              <View style={[adm.menuIcon, { backgroundColor: g.type === "lab" ? "#E0F2FE" : "#DBEAFE" }]}>
-                <Ionicons name={g.type === "lab" ? "flask" : "medical"} size={20} color={g.type === "lab" ? "#0EA5E9" : "#3B82F6"} />
-              </View>
-              <View style={adm.menuInfo}>
-                <Text style={adm.menuTitle}>{g.name}</Text>
-                <Text style={adm.menuSub}>{g.type === "lab" ? "Lab" : "Provider"} · {g.members?.length || 0} members{g.address ? ` · ${g.address}` : ""}</Text>
-              </View>
-              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
-            </Pressable>
-          ))
-        )}
-      </ScrollView>
-    );
-  }
-
-  function renderGroupDetail() {
-    if (!selectedGroup) return renderGroups();
-    const currentGroupData = groups.find(g => g.id === selectedGroup.id) || selectedGroup;
-    const members = currentGroupData.members || [];
-    return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
-        <View style={{ paddingHorizontal: 20, flexDirection: "row", alignItems: "center", marginBottom: 16 }}>
-          <Pressable onPress={() => { setMasterView("groups"); setSelectedGroup(null); }} style={{ marginRight: 12 }}>
-            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{currentGroupData.name}</Text>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{currentGroupData.type === "lab" ? "Lab Group" : "Provider Group"}{currentGroupData.address ? ` · ${currentGroupData.address}` : ""}</Text>
-          </View>
-        </View>
-
-        <View style={{ marginHorizontal: 20, marginBottom: 16, backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
-          <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 12 }}>MEMBERS ({members.length})</Text>
-          {members.length === 0 ? (
-            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", padding: 20 }}>No members in this group</Text>
-          ) : (
-            members.map((m, idx) => (
-              <View key={m.userId || idx.toString()} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 10, borderTopWidth: idx > 0 ? 1 : 0, borderTopColor: Colors.light.border }}>
-                <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: m.role === "admin" ? Colors.light.tintLight : Colors.light.successLight, justifyContent: "center", alignItems: "center", marginRight: 12 }}>
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: m.role === "admin" ? Colors.light.tint : Colors.light.success }}>{(m.username || "?").charAt(0).toUpperCase()}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{m.username}</Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{m.role === "admin" ? "Admin" : "User"}</Text>
-                </View>
-                <Pressable
-                  onPress={() => {
-                    Alert.alert("Remove User", `Remove "${m.username}" from this group?`, [
-                      { text: "Cancel", style: "cancel" },
-                      { text: "Remove", style: "destructive", onPress: () => {
-                        removeUserFromGroup(currentGroupData.id, m.userId);
-                      }},
-                    ]);
-                  }}
-                  style={{ padding: 6 }}
-                >
-                  <Ionicons name="remove-circle-outline" size={20} color={Colors.light.error} />
-                </Pressable>
-              </View>
-            ))
-          )}
-        </View>
-      </ScrollView>
-    );
-  }
-
   function renderAllUsers() {
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         {renderBackHeader("All Users")}
-        {registeredUsers.filter(u => u.username !== "JPPhillips").map((u, idx) => {
-          const userGroups = groups.filter(g => g.members?.some(m => m.username.toLowerCase() === u.username.toLowerCase()));
-          return (
+        {registeredUsers.filter(u => u.username !== "JPPhillips").map((u, idx) => (
             <View key={u.username + idx} style={[adm.menuItem, { marginHorizontal: 20 }]}>
               <View style={[adm.menuIcon, { backgroundColor: u.userType === "provider" ? "#DBEAFE" : u.userType === "master_admin" ? "#FEF3C7" : "#E0F2FE" }]}>
                 <Ionicons name={u.userType === "provider" ? "medical" : u.userType === "master_admin" ? "shield-checkmark" : "person"} size={20} color={u.userType === "provider" ? "#3B82F6" : u.userType === "master_admin" ? "#D97706" : "#0EA5E9"} />
@@ -7007,69 +6513,11 @@ function MasterAdminDashboard() {
                 <Text style={adm.menuSub}>
                   {u.userType === "provider" ? "Provider" : u.userType === "master_admin" ? "Master Admin" : "Lab"} · {u.role === "admin" ? "Admin" : "User"}
                   {u.accountNumber ? ` · ${formatAcctNum(u.accountNumber)}` : ""}
-                  {userGroups.length > 0 ? ` · ${userGroups.map(g => g.name).join(", ")}` : ""}
+                  {u.practiceName ? ` · ${u.practiceName}` : ""}
                 </Text>
               </View>
             </View>
-          );
-        })}
-      </ScrollView>
-    );
-  }
-
-  function renderCreateGroup() {
-    return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
-        {renderBackHeader("Create Group")}
-        <View style={{ marginHorizontal: 20 }}>
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>GROUP NAME</Text>
-          <TextInput
-            style={{ backgroundColor: Colors.light.surface, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, borderWidth: 1, borderColor: Colors.light.border, marginBottom: 16 }}
-            value={newGroupName}
-            onChangeText={setNewGroupName}
-            placeholder="Enter group name..."
-            placeholderTextColor={Colors.light.textTertiary}
-          />
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>ADDRESS</Text>
-          <TextInput
-            style={{ backgroundColor: Colors.light.surface, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text, borderWidth: 1, borderColor: Colors.light.border, marginBottom: 16 }}
-            value={newGroupAddress}
-            onChangeText={setNewGroupAddress}
-            placeholder="Enter address..."
-            placeholderTextColor={Colors.light.textTertiary}
-          />
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>TYPE</Text>
-          <View style={{ flexDirection: "row", gap: 10, marginBottom: 24 }}>
-            <Pressable
-              onPress={() => setNewGroupType("lab")}
-              style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: newGroupType === "lab" ? Colors.light.tint : Colors.light.surface, borderWidth: 1, borderColor: newGroupType === "lab" ? Colors.light.tint : Colors.light.border, alignItems: "center" }}
-            >
-              <Ionicons name="flask" size={20} color={newGroupType === "lab" ? "#FFF" : Colors.light.textSecondary} />
-              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: newGroupType === "lab" ? "#FFF" : Colors.light.text, marginTop: 4 }}>Lab</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setNewGroupType("provider")}
-              style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: newGroupType === "provider" ? "#3B82F6" : Colors.light.surface, borderWidth: 1, borderColor: newGroupType === "provider" ? "#3B82F6" : Colors.light.border, alignItems: "center" }}
-            >
-              <Ionicons name="medical" size={20} color={newGroupType === "provider" ? "#FFF" : Colors.light.textSecondary} />
-              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: newGroupType === "provider" ? "#FFF" : Colors.light.text, marginTop: 4 }}>Provider</Text>
-            </Pressable>
-          </View>
-          <Pressable
-            onPress={() => {
-              if (!newGroupName.trim()) { Alert.alert("Error", "Please enter a group name."); return; }
-              createGroup(newGroupName.trim(), newGroupType, newGroupAddress.trim(), currentUser || "JPPhillips", "admin");
-              setNewGroupName("");
-              setNewGroupAddress("");
-              setNewGroupType("lab");
-              Alert.alert("Success", "Group created successfully.");
-              setMasterView("groups");
-            }}
-            style={({ pressed }) => [{ backgroundColor: Colors.light.tint, borderRadius: 14, padding: 16, alignItems: "center" }, pressed && { opacity: 0.85 }]}
-          >
-            <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Create Group</Text>
-          </Pressable>
-        </View>
+          ))}
       </ScrollView>
     );
   }
@@ -7134,7 +6582,6 @@ function MasterAdminDashboard() {
             ) : (
               providers.map((p, i) => {
                 const provCases = cases.filter(c => c.doctorName.toLowerCase().includes((p.doctorName || p.username || "").toLowerCase()));
-                const provGroups = groups.filter(g => g.members?.some(m => m.username.toLowerCase() === p.username.toLowerCase()));
                 return (
                   <View key={p.username + i} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 10, borderTopWidth: i > 0 ? 1 : 0, borderTopColor: Colors.light.border }}>
                     <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center", marginRight: 12 }}>
@@ -7144,7 +6591,7 @@ function MasterAdminDashboard() {
                       <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{p.doctorName ? `Dr. ${p.doctorName}` : p.username}</Text>
                       <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>
                         {p.accountNumber ? formatAcctNum(p.accountNumber) : "N/A"} · {provCases.length} cases · {p.role === "admin" ? "Admin" : "User"}
-                        {provGroups.length > 0 ? ` · ${provGroups[0].name}` : ""}
+                        {p.practiceName ? ` · ${p.practiceName}` : ""}
                       </Text>
                     </View>
                   </View>
@@ -7158,10 +6605,7 @@ function MasterAdminDashboard() {
   }
 
   switch (masterView) {
-    case "groups": return renderGroups();
-    case "group-detail": return renderGroupDetail();
     case "all-users": return renderAllUsers();
-    case "create-group": return renderCreateGroup();
     case "lab-portal": return renderLabPortal();
     case "provider-portal": return renderProviderPortal();
     default: return renderMasterHub();

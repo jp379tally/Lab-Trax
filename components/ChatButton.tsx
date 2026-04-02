@@ -138,7 +138,7 @@ function SwipeableRow({ children, onDelete }: { children: React.ReactNode; onDel
 }
 
 export function ChatButton() {
-  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, getUserGroups, groups, clients, addConversation, removeConversation } = useApp();
+  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, clients, addConversation, removeConversation } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [showChat, setShowChat] = useState(false);
@@ -152,29 +152,23 @@ export function ChatButton() {
   const [emojiCategory, setEmojiCategory] = useState(0);
   const inputRef = useRef<TextInput>(null);
 
-  const myGroups = getUserGroups(currentUser || "");
-
   const allContacts = React.useMemo(() => {
     const contactMap = new Map<string, { username: string; groupName: string; role: string; type: string }>();
-    for (const g of myGroups) {
-      for (const m of g.members) {
-        if (m.username.toLowerCase() !== (currentUser || "").toLowerCase() && !contactMap.has(m.username.toLowerCase())) {
-          contactMap.set(m.username.toLowerCase(), { username: m.username, groupName: g.name, role: m.role, type: g.type });
-        }
-      }
-    }
-    for (const g of myGroups) {
-      if (!contactMap.has(g.name.toLowerCase())) {
-        contactMap.set(g.name.toLowerCase(), { username: g.name, groupName: g.name, role: "group", type: g.type });
+    const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+    const myLabName = currentUserData?.practiceName || "";
+    if (myLabName) {
+      const labMembers = registeredUsers.filter(u => u.practiceName?.toLowerCase().trim() === myLabName.toLowerCase().trim() && u.username.toLowerCase() !== (currentUser || "").toLowerCase());
+      for (const m of labMembers) {
+        contactMap.set(m.username.toLowerCase(), { username: m.username, groupName: myLabName, role: m.role || "user", type: m.userType || "lab" });
       }
     }
     for (const u of registeredUsers) {
       if (u.username.toLowerCase() !== (currentUser || "").toLowerCase() && !contactMap.has(u.username.toLowerCase())) {
-        contactMap.set(u.username.toLowerCase(), { username: u.username, groupName: "", role: "user", type: "other" });
+        contactMap.set(u.username.toLowerCase(), { username: u.username, groupName: u.practiceName || "", role: u.role || "user", type: u.userType || "other" });
       }
     }
     return Array.from(contactMap.values());
-  }, [myGroups, currentUser, registeredUsers]);
+  }, [currentUser, registeredUsers]);
 
   const sortedConversations = React.useMemo(() => {
     return [...conversations].sort((a, b) => b.lastMessageTime - a.lastMessageTime);

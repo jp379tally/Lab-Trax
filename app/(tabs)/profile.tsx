@@ -21,8 +21,8 @@ import { ChatButton } from "@/components/ChatButton";
 type WorkStatus = "available" | "break" | "out_of_office";
 
 export default function ProfileScreen() {
-  const { role, setRole, adminUnlocked, setAdminUnlocked, getUserGroups } = useApp();
-  const { logout, currentUser, profilePicUri, changePassword } = useAuth();
+  const { role, setRole, adminUnlocked, setAdminUnlocked } = useApp();
+  const { logout, currentUser, profilePicUri, changePassword, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [workStatus, setWorkStatus] = useState<WorkStatus>("available");
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -186,28 +186,26 @@ export default function ProfileScreen() {
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
           </Pressable>
-          {currentUser && getUserGroups(currentUser).length > 0 && (
-            <>
-              <View style={styles.menuDivider} />
-              <View style={styles.menuItem}>
-                <View style={[styles.menuIcon, { backgroundColor: "#E0E7FF" }]}>
-                  <Ionicons name="people" size={18} color="#4F46E5" />
-                </View>
-                <View style={[styles.menuInfo, { flex: 1 }]}>
-                  <Text style={styles.menuTitle}>Groups</Text>
-                  {getUserGroups(currentUser).map((g) => (
-                    <View key={g.id} style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
-                      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: g.type === "provider" ? "#3B82F6" : "#10B981" }} />
-                      <Text style={[styles.menuSub, { marginTop: 0 }]}>{g.name}</Text>
-                      <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular" as const, color: Colors.light.textSecondary, backgroundColor: Colors.light.surfaceSecondary, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, overflow: "hidden" as const }}>
-                        {g.type === "provider" ? "Provider" : "Lab"}
-                      </Text>
+          {currentUser && (() => {
+            const userData = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
+            return userData?.practiceName ? (
+              <>
+                <View style={styles.menuDivider} />
+                <View style={styles.menuItem}>
+                  <View style={[styles.menuIcon, { backgroundColor: "#E0E7FF" }]}>
+                    <Ionicons name="business" size={18} color="#4F46E5" />
+                  </View>
+                  <View style={[styles.menuInfo, { flex: 1 }]}>
+                    <Text style={styles.menuTitle}>Lab</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
+                      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: "#10B981" }} />
+                      <Text style={[styles.menuSub, { marginTop: 0 }]}>{userData.practiceName}</Text>
                     </View>
-                  ))}
+                  </View>
                 </View>
-              </View>
-            </>
-          )}
+              </>
+            ) : null;
+          })()}
         </View>
       </View>
 

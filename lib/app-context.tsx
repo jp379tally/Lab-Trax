@@ -34,9 +34,6 @@ import {
   InventoryItem,
   PricingTier,
   DEFAULT_PRICING_TIERS,
-  Group,
-  GroupMember,
-  GroupInvitation,
   GroupJoinRequest,
 } from "./data";
 import { useAuth } from "./auth-context";
@@ -82,16 +79,6 @@ interface AppContextValue {
   sendChatMessage: (conversationId: string, content: string, imageUri?: string) => void;
   markConversationRead: (conversationId: string) => void;
   totalUnreadMessages: number;
-  groups: Group[];
-  groupInvitations: GroupInvitation[];
-  createGroup: (name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "user") => Group;
-  addUserToGroup: (groupId: string, username: string, role: "admin" | "user") => void;
-  removeUserFromGroup: (groupId: string, userId: string) => void;
-  sendGroupInvitation: (groupId: string, invitedUsername: string, invitedBy: string) => void;
-  respondToGroupInvitation: (invitationId: string, accept: boolean, userRole?: "admin" | "user") => void;
-  getUserGroups: (username: string) => Group[];
-  getGroupByNameAndAddress: (name: string, address: string) => Group | undefined;
-  findOrCreateGroup: (name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "user") => Group;
   updateCase: (caseId: string, updates: Partial<LabCase>) => void;
   removeCase: (caseId: string) => void;
   removeInvoice: (invoiceId: string) => void;
@@ -132,8 +119,6 @@ const SHIPPING_KEY = "@drivesync_shipping";
 const CONVERSATIONS_KEY = "@drivesync_conversations";
 const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
 const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
-const GROUPS_KEY = "@drivesync_groups";
-const GROUP_INVITATIONS_KEY = "@drivesync_group_invitations";
 const GROUP_JOIN_REQUESTS_KEY = "@drivesync_group_join_requests";
 const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 const STATION_LABELS_KEY = "@drivesync_station_labels";
@@ -151,37 +136,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [pricingTiers, setPricingTiers] = useState<PricingTier[]>(DEFAULT_PRICING_TIERS);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [groupInvitations, setGroupInvitations] = useState<GroupInvitation[]>([]);
   const [groupJoinRequests, setGroupJoinRequests] = useState<GroupJoinRequest[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
 
-  const userIsAffiliated = useMemo(() => {
-    if (!currentUser) return false;
-    return groups.some(g => g.members.some(m => m.username.toLowerCase() === currentUser.toLowerCase()));
-  }, [groups, currentUser]);
+  const currentUserProfile = useMemo(() => {
+    if (!currentUser) return null;
+    return registeredUsers.find(u => u.username?.toLowerCase() === currentUser.toLowerCase()) || null;
+  }, [currentUser, registeredUsers]);
 
-  const groupMemberIds = useMemo(() => {
-    if (!currentUser) return new Set<string>();
+  const userIsAffiliated = useMemo(() => {
+    if (!currentUserProfile) return false;
+    return !!currentUserProfile.practiceName;
+  }, [currentUserProfile]);
+
+  const labMemberIds = useMemo(() => {
+    if (!currentUser || !currentUserId) return new Set<string>();
     const ids = new Set<string>();
-    if (currentUserId) ids.add(currentUserId);
-    const myGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === currentUser.toLowerCase()));
-    for (const g of myGroups) {
-      for (const m of g.members) {
-        if (m.userId) ids.add(m.userId);
-        const regUser = registeredUsers.find(u => u.username.toLowerCase() === m.username.toLowerCase());
-        if (regUser?.id) ids.add(regUser.id);
+    ids.add(currentUserId);
+    const myLabName = currentUserProfile?.practiceName?.toLowerCase()?.trim();
+    if (myLabName) {
+      for (const u of registeredUsers) {
+        if (u.id && u.practiceName?.toLowerCase()?.trim() === myLabName) {
+          ids.add(u.id);
+        }
       }
     }
     return ids;
-  }, [currentUser, currentUserId, groups, registeredUsers]);
+  }, [currentUser, currentUserId, currentUserProfile, registeredUsers]);
 
   const cases = useMemo(() => {
     if (!currentUserId) return [];
-    return allCases.filter((c) => c.ownerId && groupMemberIds.has(c.ownerId));
-  }, [allCases, currentUserId, groupMemberIds]);
+    return allCases.filter((c) => c.ownerId && labMemberIds.has(c.ownerId));
+  }, [allCases, currentUserId, labMemberIds]);
 
   function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
     setAllCases(updater);
@@ -230,10 +218,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const fetchingRef = useRef(false);
 
   useEffect(() => {
-    if (!currentUserId || groupMemberIds.size === 0) return;
+    if (!currentUserId || labMemberIds.size === 0) return;
     syncReadyRef.current = false;
     fetchingRef.current = true;
-    const ownerIds = Array.from(groupMemberIds);
+    const ownerIds = Array.from(labMemberIds);
     fetchCasesFromServer(ownerIds).then(serverCases => {
       if (serverCases.length > 0) {
         setAllCases(prev => {
@@ -255,7 +243,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fetchingRef.current = false;
       syncReadyRef.current = true;
     });
-  }, [currentUserId, groupMemberIds]);
+  }, [currentUserId, labMemberIds]);
 
   useEffect(() => {
     if (!syncReadyRef.current || fetchingRef.current || !currentUserId) return;
@@ -348,35 +336,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await AsyncStorage.setItem(PRICING_TIERS_KEY, JSON.stringify(DEFAULT_PRICING_TIERS));
       }
 
-      const [savedGroups, savedGroupInvitations] = await Promise.all([
-        AsyncStorage.getItem(GROUPS_KEY),
-        AsyncStorage.getItem(GROUP_INVITATIONS_KEY),
-      ]);
-
-      if (savedGroups) {
-        const parsedGroups: Group[] = JSON.parse(savedGroups);
-        let groupsRepaired = false;
-        const repairedGroups = parsedGroups.map(g => {
-          const repairedMembers = g.members.map(m => {
-            const regUser = registeredUsers.find(u => u.username.toLowerCase() === m.username.toLowerCase());
-            if (regUser?.id && m.userId !== regUser.id) {
-              groupsRepaired = true;
-              return { ...m, userId: regUser.id };
-            }
-            return m;
-          });
-          return { ...g, members: repairedMembers };
-        });
-        setGroups(repairedGroups);
-        if (groupsRepaired) {
-          AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(repairedGroups));
-        }
-      }
-
-      if (savedGroupInvitations) {
-        setGroupInvitations(JSON.parse(savedGroupInvitations));
-      }
-
       const savedStationLabels = await AsyncStorage.getItem(STATION_LABELS_KEY);
       if (savedStationLabels) {
         setCustomStationLabels(JSON.parse(savedStationLabels));
@@ -385,37 +344,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const savedGroupJoinRequests = await AsyncStorage.getItem(GROUP_JOIN_REQUESTS_KEY);
       if (savedGroupJoinRequests) {
         setGroupJoinRequests(JSON.parse(savedGroupJoinRequests));
-      }
-      const pendingGroupRaw = await AsyncStorage.getItem("@drivesync_pending_group");
-      if (pendingGroupRaw) {
-        try {
-          const pg = JSON.parse(pendingGroupRaw);
-          const loadedGroups: Group[] = savedGroups ? JSON.parse(savedGroups) : [];
-          const existing = loadedGroups.find(g => g.name.toLowerCase() === pg.name.toLowerCase() && g.address.toLowerCase() === pg.address.toLowerCase());
-          const pgRegUser = registeredUsers.find(u => u.username.toLowerCase() === pg.username.toLowerCase());
-          const pgUserId = pgRegUser?.id || currentUserId || Date.now().toString();
-          if (existing) {
-            const alreadyMember = existing.members.some((m: any) => m.username === pg.username);
-            if (!alreadyMember) {
-              existing.members.push({ userId: pgUserId, username: pg.username, role: pg.role, joinedAt: Date.now() });
-              setGroups([...loadedGroups]);
-              AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(loadedGroups));
-            }
-          } else {
-            const newGroup: Group = {
-              id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-              name: pg.name,
-              type: pg.type,
-              address: pg.address,
-              members: [{ userId: pgUserId, username: pg.username, role: pg.role, joinedAt: Date.now() }],
-              createdAt: Date.now(),
-            };
-            const updatedGroups = [...loadedGroups, newGroup];
-            setGroups(updatedGroups);
-            AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(updatedGroups));
-          }
-        } catch {}
-        AsyncStorage.removeItem("@drivesync_pending_group");
       }
 
       const pendingClientRaw = await AsyncStorage.getItem("@drivesync_pending_client");
@@ -1238,78 +1166,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function createGroup(name: string, type: "provider" | "lab", address: string, creatorUsername: string, creatorRole: "admin" | "user"): Group {
-    const now = Date.now();
-    const creatorReg = registeredUsers.find(u => u.username.toLowerCase() === creatorUsername.toLowerCase());
-    const newGroup: Group = {
-      id: generateId(),
-      name,
-      type,
-      address,
-      members: [
-        {
-          userId: creatorReg?.id || generateId(),
-          username: creatorUsername,
-          role: creatorRole,
-          joinedAt: now,
-        },
-      ],
-      createdAt: now,
-    };
-    const updated = [...groups, newGroup];
-    setGroups(updated);
-    AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(updated));
-    return newGroup;
-  }
-
-  function addUserToGroup(groupId: string, username: string, role: "admin" | "user") {
-    const now = Date.now();
-    const regUser = registeredUsers.find(u => u.username.toLowerCase() === username.toLowerCase());
-    const newMember: GroupMember = {
-      userId: regUser?.id || generateId(),
-      username,
-      role,
-      joinedAt: now,
-    };
-    const updated = groups.map(g => {
-      if (g.id === groupId) {
-        const alreadyMember = g.members.some(m => m.username === username);
-        if (alreadyMember) return g;
-        return { ...g, members: [...g.members, newMember] };
-      }
-      return g;
-    });
-    setGroups(updated);
-    AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(updated));
-  }
-
-  function removeUserFromGroup(groupId: string, userId: string) {
-    const updated = groups.map(g => {
-      if (g.id === groupId) {
-        return { ...g, members: g.members.filter(m => m.userId !== userId) };
-      }
-      return g;
-    });
-    setGroups(updated);
-    AsyncStorage.setItem(GROUPS_KEY, JSON.stringify(updated));
-  }
-
-  function sendGroupInvitation(groupId: string, invitedUsername: string, invitedBy: string) {
-    const group = groups.find(g => g.id === groupId);
-    const invitation: GroupInvitation = {
-      id: generateId(),
-      groupId,
-      groupName: group?.name || "",
-      invitedUsername,
-      invitedBy,
-      status: "pending",
-      createdAt: Date.now(),
-    };
-    const updated = [...groupInvitations, invitation];
-    setGroupInvitations(updated);
-    AsyncStorage.setItem(GROUP_INVITATIONS_KEY, JSON.stringify(updated));
-  }
-
   function sendGroupJoinRequest(targetAdminUsername: string, requestingUsername: string, message?: string): { success: boolean; error?: string } {
     const existing = groupJoinRequests.find(
       r => r.requestingUsername.toLowerCase() === requestingUsername.toLowerCase()
@@ -1348,92 +1204,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
 
     if (accept) {
-      const adminGroups = groups.filter(g => g.members.some(m => m.username.toLowerCase() === request.targetAdminUsername.toLowerCase() && m.role === "admin"));
-      if (adminGroups.length > 0) {
-        addUserToGroup(adminGroups[0].id, request.requestingUsername, role || "user");
+      const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === request.targetAdminUsername.toLowerCase());
+      const requestingUser = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
+      if (adminProfile?.practiceName && requestingUser?.id) {
+        const apiUrl = getApiUrl();
+        const url = new URL(`/api/auth/users/${requestingUser.id}/profile`, apiUrl);
+        resilientFetch(url.toString(), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-user-id": requestingUser.id },
+          body: JSON.stringify({ practiceName: adminProfile.practiceName }),
+        }).catch(() => {});
       }
-      if (role === "user") {
-        AsyncStorage.getItem("@drivesync_auth_users").then(raw => {
-          if (!raw) return;
-          try {
-            const allUsers = JSON.parse(raw);
-            const updatedUsers = allUsers.map((u: any) => {
-              if (u.username.toLowerCase() === request.requestingUsername.toLowerCase()) {
-                return { ...u, role: "user" };
-              }
-              return u;
-            });
-            AsyncStorage.setItem("@drivesync_auth_users", JSON.stringify(updatedUsers));
-          } catch {}
-        });
+      if (requestingUser && requestingUser.userType === "provider") {
+        const doctorLabel = requestingUser.doctorName
+          ? (requestingUser.accountNumber ? `Dr. ${requestingUser.doctorName} ${formatAcctNum(requestingUser.accountNumber)}` : `Dr. ${requestingUser.doctorName}`)
+          : `Dr. ${requestingUser.username}`;
+        const alreadyClient = clients.some(c =>
+          c.leadDoctor.toLowerCase() === doctorLabel.toLowerCase() ||
+          (requestingUser.doctorName && c.leadDoctor.toLowerCase().includes(requestingUser.doctorName.toLowerCase())) ||
+          (requestingUser.practiceName && c.practiceName.toLowerCase() === requestingUser.practiceName.toLowerCase())
+        );
+        if (!alreadyClient) {
+          addClient({
+            practiceName: requestingUser.practiceName || `${requestingUser.doctorName || requestingUser.username}'s Practice`,
+            leadDoctor: doctorLabel,
+            phone: requestingUser.practicePhone || requestingUser.phone || "",
+            email: requestingUser.email || "",
+            address: requestingUser.practiceAddress || "",
+            tier: "Standard",
+            discountRate: 0,
+          });
+        }
       }
-      AsyncStorage.getItem("@drivesync_auth_users").then(raw => {
-        if (!raw) return;
-        try {
-          const allUsers = JSON.parse(raw);
-          const userData = allUsers.find((u: any) => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
-          if (userData && userData.userType === "provider") {
-            const doctorLabel = userData.doctorName
-              ? (userData.accountNumber ? `Dr. ${userData.doctorName} ${formatAcctNum(userData.accountNumber)}` : `Dr. ${userData.doctorName}`)
-              : `Dr. ${userData.username}`;
-            const alreadyClient = clients.some(c =>
-              c.leadDoctor.toLowerCase() === doctorLabel.toLowerCase() ||
-              (userData.doctorName && c.leadDoctor.toLowerCase().includes(userData.doctorName.toLowerCase())) ||
-              (userData.practiceName && c.practiceName.toLowerCase() === userData.practiceName.toLowerCase())
-            );
-            if (!alreadyClient) {
-              addClient({
-                practiceName: userData.practiceName || `${userData.doctorName || userData.username}'s Practice`,
-                leadDoctor: doctorLabel,
-                phone: userData.practicePhone || userData.phone || "",
-                email: userData.email || "",
-                address: userData.practiceAddress || "",
-                tier: "Standard",
-                discountRate: 0,
-              });
-            }
-          }
-        } catch {}
-      });
     }
-  }
-
-  function respondToGroupInvitation(invitationId: string, accept: boolean, userRole?: "admin" | "user") {
-    const invitation = groupInvitations.find(inv => inv.id === invitationId);
-    if (!invitation) return;
-
-    const updatedInvitations = groupInvitations.map(inv => {
-      if (inv.id === invitationId) {
-        return { ...inv, status: accept ? "accepted" as const : "declined" as const };
-      }
-      return inv;
-    });
-    setGroupInvitations(updatedInvitations);
-    AsyncStorage.setItem(GROUP_INVITATIONS_KEY, JSON.stringify(updatedInvitations));
-
-    if (accept) {
-      addUserToGroup(invitation.groupId, invitation.invitedUsername, userRole || "user");
-    }
-  }
-
-  function getUserGroups(username: string): Group[] {
-    return groups.filter(g => g.members.some(m => m.username === username));
-  }
-
-  function getGroupByNameAndAddress(name: string, address: string): Group | undefined {
-    return groups.find(g => g.name === name && g.address === address);
-  }
-
-  function findOrCreateGroup(name: string, type: "provider" | "lab", address: string, username: string, role: "admin" | "user"): Group {
-    const existing = getGroupByNameAndAddress(name, address);
-    if (existing) {
-      const alreadyMember = existing.members.some(m => m.username === username);
-      if (!alreadyMember) {
-        addUserToGroup(existing.id, username, role);
-      }
-      return existing;
-    }
-    return createGroup(name, type, address, username, role);
   }
 
   function addInventoryItem(item: Omit<InventoryItem, "id">) {
@@ -1658,16 +1461,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sendChatMessage,
       markConversationRead,
       totalUnreadMessages,
-      groups,
-      groupInvitations,
-      createGroup,
-      addUserToGroup,
-      removeUserFromGroup,
-      sendGroupInvitation,
-      respondToGroupInvitation,
-      getUserGroups,
-      getGroupByNameAndAddress,
-      findOrCreateGroup,
       updateCase,
       removeCase,
       removeInvoice,
@@ -1695,7 +1488,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateStationLabel,
       userIsAffiliated,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groups, groupInvitations, groupJoinRequests, inventory, customStationLabels, userIsAffiliated],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, inventory, customStationLabels, userIsAffiliated],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

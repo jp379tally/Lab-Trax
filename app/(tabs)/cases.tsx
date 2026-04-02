@@ -22,7 +22,7 @@ import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay } fro
 import { ChatButton } from "@/components/ChatButton";
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, getUserGroups, updateCaseStatus, customStationLabels } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels } = useApp();
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");

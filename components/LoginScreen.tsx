@@ -24,7 +24,7 @@ import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest } from "@/lib/query-client";
-import { generateId, GroupJoinRequest, Group } from "@/lib/data";
+import { generateId, GroupJoinRequest } from "@/lib/data";
 import Colors from "@/constants/colors";
 
 type SignUpStep = "credentials" | "user_type" | "lab_name" | "lab_info" | "license" | "practice_info" | "email_verify" | "updates_opt_in" | "phone_entry" | "phone_verify" | "phone_contact_name" | "role_select" | "join_group" | "hipaa_disclaimer" | "complete";
@@ -100,11 +100,11 @@ export default function LoginScreen() {
   const [labZip, setLabZip] = useState("");
   const [labPhone, setLabPhone] = useState("");
   const [labEmail, setLabEmail] = useState("");
-  const [matchingLabGroup, setMatchingLabGroup] = useState<Group | null>(null);
+  const [matchingLabGroup, setMatchingLabGroup] = useState<{ practiceName: string; username: string; practiceAddress?: string } | null>(null);
   const [labJoinRequestSent, setLabJoinRequestSent] = useState(false);
   const [checkingLabName, setCheckingLabName] = useState(false);
   const [browseExistingLabs, setBrowseExistingLabs] = useState(false);
-  const [allLabGroups, setAllLabGroups] = useState<Group[]>([]);
+  const [allLabGroups, setAllLabGroups] = useState<{ practiceName: string; username: string; practiceAddress?: string }[]>([]);
   const [labSearchFilter, setLabSearchFilter] = useState("");
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
@@ -467,44 +467,7 @@ export default function LoginScreen() {
       const resolvedPhone = isLab ? labPhone.trim() : practicePhone.trim();
       const resolvedEmail = isLab ? (labEmail.trim() || signUpEmail.trim()) : signUpEmail.trim();
 
-      if (selectedRole === "admin") {
-        const now = Date.now();
-        const groupDisplayName = isLab ? labName.trim() : (practiceName.trim() || signUpUsername.trim());
-        const newGroup = {
-          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-          name: groupDisplayName,
-          type: isLab ? "lab" : "provider",
-          address: resolvedAddress,
-          members: [{
-            userId: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-            username: signUpUsername.trim(),
-            role: "admin",
-            joinedAt: now,
-          }],
-          createdAt: now,
-        };
-        try {
-          const existingGroupsRaw = await AsyncStorage.getItem("@drivesync_groups");
-          const existingGroups = existingGroupsRaw ? JSON.parse(existingGroupsRaw) : [];
-          existingGroups.push(newGroup);
-          await AsyncStorage.setItem("@drivesync_groups", JSON.stringify(existingGroups));
-        } catch {}
-        await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
-          name: groupDisplayName,
-          type: isLab ? "lab" : "provider",
-          address: resolvedAddress,
-          username: signUpUsername.trim(),
-          role: "admin",
-        }));
-      } else if (practiceName.trim() && streetAddress.trim()) {
-        await AsyncStorage.setItem("@drivesync_pending_group", JSON.stringify({
-          name: practiceName.trim(),
-          type: isLab ? "lab" : "provider",
-          address: resolvedAddress,
-          username: signUpUsername.trim(),
-          role: selectedRole || "user",
-        }));
-      }
+      
       if (userType === "provider") {
         const pendingClient = {
           practiceName: practiceName.trim() || doctorName.trim(),
@@ -777,9 +740,15 @@ export default function LoginScreen() {
 
   async function loadAllLabGroups() {
     try {
-      const stored = await AsyncStorage.getItem("@drivesync_groups");
-      const groups: Group[] = stored ? JSON.parse(stored) : [];
-      setAllLabGroups(groups.filter(g => g.type === "lab"));
+      const res = await apiRequest("GET", "/api/auth/users");
+      const users: any[] = res || [];
+      const labAdmins = users.filter((u: any) => u.userType === "lab" && u.role === "admin" && u.practiceName);
+      const uniqueLabs = new Map<string, { practiceName: string; username: string; practiceAddress?: string }>();
+      for (const u of labAdmins) {
+        const key = u.practiceName.toLowerCase().trim();
+        if (!uniqueLabs.has(key)) uniqueLabs.set(key, { practiceName: u.practiceName, username: u.username, practiceAddress: u.practiceAddress });
+      }
+      setAllLabGroups(Array.from(uniqueLabs.values()));
     } catch {
       setAllLabGroups([]);
     }
@@ -793,13 +762,14 @@ export default function LoginScreen() {
     setCheckingLabName(true);
     setSignUpError(null);
     try {
-      const stored = await AsyncStorage.getItem("@drivesync_groups");
-      const existingGroups: Group[] = stored ? JSON.parse(stored) : [];
-      const match = existingGroups.find(
-        (g) => g.name.toLowerCase().trim() === labName.toLowerCase().trim() && g.type === "lab"
+      const res = await apiRequest("GET", "/api/auth/users");
+      const users: any[] = res || [];
+      const labAdmins = users.filter((u: any) => u.userType === "lab" && u.role === "admin" && u.practiceName);
+      const match = labAdmins.find(
+        (u: any) => u.practiceName.toLowerCase().trim() === labName.toLowerCase().trim()
       );
       if (match) {
-        setMatchingLabGroup(match);
+        setMatchingLabGroup({ practiceName: match.practiceName, username: match.username, practiceAddress: match.practiceAddress });
         setCheckingLabName(false);
       } else {
         setMatchingLabGroup(null);
@@ -816,17 +786,12 @@ export default function LoginScreen() {
   async function handleJoinExistingLab() {
     if (!matchingLabGroup) return;
     try {
-      const adminMember = matchingLabGroup.members.find((m) => m.role === "admin");
-      if (!adminMember) {
-        setSignUpError("This lab doesn't have an admin yet. Please continue with a new account.");
-        return;
-      }
       const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
       const existing: GroupJoinRequest[] = stored ? JSON.parse(stored) : [];
       const alreadyPending = existing.find(
         (r) =>
           r.requestingUsername.toLowerCase() === signUpUsername.trim().toLowerCase() &&
-          r.targetAdminUsername.toLowerCase() === adminMember.username.toLowerCase() &&
+          r.targetAdminUsername.toLowerCase() === matchingLabGroup.username.toLowerCase() &&
           r.status === "pending"
       );
       if (alreadyPending) {
@@ -836,8 +801,8 @@ export default function LoginScreen() {
       const request: GroupJoinRequest = {
         id: generateId(),
         requestingUsername: signUpUsername.trim(),
-        targetAdminUsername: adminMember.username,
-        message: `${signUpUsername.trim()} would like to join ${matchingLabGroup.name}.`,
+        targetAdminUsername: matchingLabGroup.username,
+        message: `${signUpUsername.trim()} would like to join ${matchingLabGroup.practiceName}.`,
         status: "pending",
         createdAt: Date.now(),
       };
@@ -938,7 +903,7 @@ export default function LoginScreen() {
 
             <ScrollView style={{ maxHeight: 240 }} showsVerticalScrollIndicator={false}>
               {allLabGroups
-                .filter(g => !labSearchFilter || g.name.toLowerCase().includes(labSearchFilter.toLowerCase()))
+                .filter(g => !labSearchFilter || g.practiceName.toLowerCase().includes(labSearchFilter.toLowerCase()))
                 .length === 0 ? (
                 <View style={{ padding: 24, alignItems: "center" }}>
                   <Ionicons name="business-outline" size={32} color="rgba(255,255,255,0.2)" />
@@ -948,10 +913,10 @@ export default function LoginScreen() {
                 </View>
               ) : (
                 allLabGroups
-                  .filter(g => !labSearchFilter || g.name.toLowerCase().includes(labSearchFilter.toLowerCase()))
+                  .filter(g => !labSearchFilter || g.practiceName.toLowerCase().includes(labSearchFilter.toLowerCase()))
                   .map(g => (
                     <Pressable
-                      key={g.id}
+                      key={g.username}
                       onPress={() => {
                         setMatchingLabGroup(g);
                         setLabJoinRequestSent(false);
@@ -968,9 +933,8 @@ export default function LoginScreen() {
                         <Ionicons name="business" size={20} color="#3B82F6" />
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>{g.name}</Text>
-                        {g.address && <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>{g.address}</Text>}
-                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.35)", marginTop: 2 }}>{g.members.length} member{g.members.length !== 1 ? "s" : ""}</Text>
+                        <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>{g.practiceName}</Text>
+                        {g.practiceAddress && <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2 }}>{g.practiceAddress}</Text>}
                       </View>
                       <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.3)" />
                     </Pressable>
@@ -993,7 +957,7 @@ export default function LoginScreen() {
             <View style={{ backgroundColor: "rgba(59,130,246,0.1)", borderWidth: 1, borderColor: "rgba(59,130,246,0.3)", borderRadius: 14, padding: 20, alignItems: "center" }}>
               <Ionicons name="business" size={32} color="#3B82F6" style={{ marginBottom: 8 }} />
               <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF", textAlign: "center", marginBottom: 4 }}>
-                "{matchingLabGroup.name}" already exists
+                "{matchingLabGroup.practiceName}" already exists
               </Text>
               <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18 }}>
                 A lab with this name is already registered. Would you like to request to join this lab?
@@ -1057,7 +1021,7 @@ export default function LoginScreen() {
             </View>
             <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Request Sent</Text>
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18 }}>
-              Your request to join {matchingLabGroup.name} has been sent to the lab admin. You'll be notified when they respond.
+              Your request to join {matchingLabGroup.practiceName} has been sent to the lab admin. You'll be notified when they respond.
             </Text>
             <Pressable
               onPress={() => {
