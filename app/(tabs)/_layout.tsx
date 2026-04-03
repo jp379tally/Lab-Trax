@@ -1,6 +1,4 @@
-import { isLiquidGlassAvailable } from "expo-glass-effect";
 import { Tabs } from "expo-router";
-import { NativeTabs, Icon, Label, Badge } from "expo-router/unstable-native-tabs";
 import { BlurView } from "expo-blur";
 import { Platform, StyleSheet, View, Text, Pressable, useWindowDimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -12,37 +10,6 @@ import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 
 const DESKTOP_BREAKPOINT = 768;
-
-function NativeTabLayout() {
-  const { unreadCount } = useApp();
-  const { userType } = useAuth();
-  const isProvider = userType === "provider";
-  return (
-    <NativeTabs>
-      <NativeTabs.Trigger name="index">
-        <Icon sf={{ default: "house", selected: "house.fill" }} />
-        <Label>Dashboard</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="cases">
-        <Icon sf={{ default: "tray.full", selected: "tray.full.fill" }} />
-        <Label>Cases</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="scan" href={isProvider ? null : undefined}>
-        <Icon sf={{ default: "location", selected: "location.fill" }} />
-        <Label>Locate</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="notifications">
-        <Icon sf={{ default: "bell", selected: "bell.fill" }} />
-        <Label>Alerts</Label>
-        {unreadCount > 0 && <Badge>{unreadCount}</Badge>}
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="profile" href={isProvider ? undefined : null}>
-        <Icon sf={{ default: "person", selected: "person.fill" }} />
-        <Label>Profile</Label>
-      </NativeTabs.Trigger>
-    </NativeTabs>
-  );
-}
 
 type TabItem = {
   key: string;
@@ -270,9 +237,6 @@ function ClassicTabLayout() {
 }
 
 export default function TabLayout() {
-  if (isLiquidGlassAvailable()) {
-    return <NativeTabLayout />;
-  }
   return <ClassicTabLayout />;
 }
 
