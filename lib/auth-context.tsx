@@ -52,6 +52,7 @@ interface AuthContextValue {
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
   updateUserProfile: (updates: { practiceName?: string; practiceAddress?: string; practicePhone?: string; email?: string; phone?: string }) => Promise<{ success: boolean; error?: string }>;
   resetInactivityTimer: () => void;
+  refreshUsers: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -417,6 +418,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       changePassword,
       updateUserProfile,
       resetInactivityTimer,
+      refreshUsers: fetchAllUsers,
     }),
     [isAuthenticated, isAuthLoading, currentUser, userType, registeredUsers, profilePicUri, isLocked, resetInactivityTimer, currentPassword, currentUserId],
   );

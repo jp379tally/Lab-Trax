@@ -124,7 +124,7 @@ const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 const STATION_LABELS_KEY = "@drivesync_station_labels";
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const { currentUserId, currentUser, userType, registeredUsers } = useAuth();
+  const { currentUserId, currentUser, userType, registeredUsers, refreshUsers } = useAuth();
   const [role, setRoleState] = useState<UserRole>("user");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
   const [allCases, setAllCases] = useState<LabCase[]>([]);
@@ -211,6 +211,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     loadData();
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    const interval = setInterval(() => {
+      refreshUsers();
+    }, 30000);
+    return () => clearInterval(interval);
   }, [currentUserId]);
 
   const prevCasesRef = useRef<LabCase[]>([]);
@@ -1213,6 +1221,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           method: "PUT",
           headers: { "Content-Type": "application/json", "x-user-id": requestingUser.id },
           body: JSON.stringify({ practiceName: adminProfile.practiceName }),
+        }).then(() => {
+          refreshUsers();
         }).catch(() => {});
       }
       if (requestingUser && requestingUser.userType === "provider") {
