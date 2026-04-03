@@ -20,7 +20,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications";
 import Colors from "@/constants/colors";
-import { Notification, GroupInvitation, GroupJoinRequest } from "@/lib/data";
+import { Notification, GroupJoinRequest } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 
 function getNotifIcon(type: Notification["type"]) {
@@ -101,10 +101,9 @@ function SwipeableNotifRow({ children, onDelete }: { children: React.ReactNode; 
 }
 
 export default function NotificationsScreen() {
-  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupInvitations, respondToGroupInvitation, groupJoinRequests, respondToGroupJoinRequest } = useApp();
+  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
-  const [confirmInvite, setConfirmInvite] = useState<{ invitation: GroupInvitation; accept: boolean } | null>(null);
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
   const filteredNotifications = useProviderFilteredNotifications();
 
@@ -114,59 +113,9 @@ export default function NotificationsScreen() {
     }, [])
   );
 
-  const pendingInvitations = groupInvitations.filter(
-    inv => inv.invitedUsername.toLowerCase() === (currentUser || "").toLowerCase() && inv.status === "pending"
-  );
-
   const pendingJoinRequests = groupJoinRequests.filter(
     r => r.targetAdminUsername.toLowerCase() === (currentUser || "").toLowerCase() && r.status === "pending"
   );
-
-  function handleInvitationResponse(invitation: GroupInvitation, accept: boolean) {
-    setConfirmInvite({ invitation, accept });
-  }
-
-  function confirmInvitationResponse() {
-    if (!confirmInvite) return;
-    const { invitation, accept } = confirmInvite;
-    respondToGroupInvitation(invitation.id, accept);
-    if (Platform.OS !== "web") {
-      Haptics.notificationAsync(accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
-    }
-    setConfirmInvite(null);
-  }
-
-  function renderInvitationCard(invitation: GroupInvitation) {
-    return (
-      <View key={invitation.id} style={styles.inviteCard}>
-        <View style={[styles.notifIcon, { backgroundColor: "#DBEAFE" }]}>
-          <Ionicons name="people" size={20} color="#2563EB" />
-        </View>
-        <View style={styles.notifContent}>
-          <Text style={styles.notifTitle}>Lab Invitation</Text>
-          <Text style={styles.notifMessage}>
-            {invitation.invitedBy} invited you to join "{invitation.groupName}"
-          </Text>
-          <View style={styles.inviteBtns}>
-            <Pressable
-              style={({ pressed }) => [styles.acceptBtn, pressed && { opacity: 0.8 }]}
-              onPress={() => handleInvitationResponse(invitation, true)}
-            >
-              <Ionicons name="checkmark" size={16} color="#FFF" />
-              <Text style={styles.acceptText}>Accept</Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
-              onPress={() => handleInvitationResponse(invitation, false)}
-            >
-              <Ionicons name="close" size={16} color={Colors.light.error} />
-              <Text style={styles.declineText}>Decline</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    );
-  }
 
   function renderJoinRequestCard(request: GroupJoinRequest) {
     const reqUserData = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
@@ -299,16 +248,15 @@ export default function NotificationsScreen() {
         ]}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
-          (pendingInvitations.length > 0 || pendingJoinRequests.length > 0) ? (
+          pendingJoinRequests.length > 0 ? (
             <View style={styles.inviteSection}>
-              <Text style={styles.sectionLabel}>Pending Invitations</Text>
-              {pendingInvitations.map(inv => renderInvitationCard(inv))}
+              <Text style={styles.sectionLabel}>Pending Requests</Text>
               {pendingJoinRequests.map(req => renderJoinRequestCard(req))}
             </View>
           ) : null
         }
         ListEmptyComponent={
-          pendingInvitations.length === 0 && pendingJoinRequests.length === 0 ? (
+          pendingJoinRequests.length === 0 ? (
             <View style={styles.emptyState}>
               <Ionicons
                 name="notifications-off-outline"
@@ -320,42 +268,6 @@ export default function NotificationsScreen() {
           ) : null
         }
       />
-
-      <Modal transparent visible={!!confirmInvite} animationType="fade" onRequestClose={() => setConfirmInvite(null)}>
-        <View style={styles.confirmOverlay}>
-          <View style={styles.confirmCard}>
-            <View style={[styles.confirmIconWrap, { backgroundColor: confirmInvite?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
-              <Ionicons
-                name={confirmInvite?.accept ? "people" : "close-circle"}
-                size={32}
-                color={confirmInvite?.accept ? "#16A34A" : "#EF4444"}
-              />
-            </View>
-            <Text style={styles.confirmTitle}>
-              {confirmInvite?.accept ? "Accept Invitation?" : "Decline Invitation?"}
-            </Text>
-            <Text style={styles.confirmDesc}>
-              {confirmInvite?.accept
-                ? `You will join "${confirmInvite?.invitation.groupName}" and gain access to the group's information.`
-                : `You will decline the invitation to "${confirmInvite?.invitation.groupName}".`}
-            </Text>
-            <View style={styles.confirmBtns}>
-              <Pressable
-                style={({ pressed }) => [styles.confirmYesBtn, pressed && { opacity: 0.85 }]}
-                onPress={confirmInvitationResponse}
-              >
-                <Text style={styles.confirmYesText}>Yes</Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [styles.confirmNoBtn, pressed && { opacity: 0.85 }]}
-                onPress={() => setConfirmInvite(null)}
-              >
-                <Text style={styles.confirmNoText}>No</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
 
       <Modal visible={!!confirmJoinRequest} transparent animationType="fade" onRequestClose={() => setConfirmJoinRequest(null)}>
         <View style={styles.confirmOverlay}>
