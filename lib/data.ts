@@ -568,6 +568,13 @@ export interface Client {
   tier: string;
   discountRate: number;
   createdAt: number;
+  status?: "active" | "inactive";
+}
+
+export interface DeletedClientInvoice {
+  invoice: Invoice;
+  clientName: string;
+  deletedAt: number;
 }
 
 export interface LabUser {

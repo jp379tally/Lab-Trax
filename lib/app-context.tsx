@@ -35,6 +35,7 @@ import {
   PricingTier,
   DEFAULT_PRICING_TIERS,
   GroupJoinRequest,
+  DeletedClientInvoice,
 } from "./data";
 import { useAuth } from "./auth-context";
 
@@ -105,6 +106,11 @@ interface AppContextValue {
   customStationLabels: Record<string, string>;
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
   userIsAffiliated: boolean;
+  removeClient: (clientId: string) => void;
+  deactivateClient: (clientId: string) => void;
+  reactivateClient: (clientId: string) => void;
+  deletedClientInvoices: DeletedClientInvoice[];
+  inactiveClients: Client[];
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -122,6 +128,7 @@ const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
 const GROUP_JOIN_REQUESTS_KEY = "@drivesync_group_join_requests";
 const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 const STATION_LABELS_KEY = "@drivesync_station_labels";
+const DELETED_CLIENT_INVOICES_KEY = "@drivesync_deleted_client_invoices";
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const { currentUserId, currentUser, userType, registeredUsers, refreshUsers } = useAuth();
@@ -139,6 +146,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [groupJoinRequests, setGroupJoinRequests] = useState<GroupJoinRequest[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
+  const [deletedClientInvoices, setDeletedClientInvoices] = useState<DeletedClientInvoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const currentUserProfile = useMemo(() => {
@@ -352,6 +360,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const savedGroupJoinRequests = await AsyncStorage.getItem(GROUP_JOIN_REQUESTS_KEY);
       if (savedGroupJoinRequests) {
         setGroupJoinRequests(JSON.parse(savedGroupJoinRequests));
+      }
+
+      const savedDeletedClientInvoices = await AsyncStorage.getItem(DELETED_CLIENT_INVOICES_KEY);
+      if (savedDeletedClientInvoices) {
+        setDeletedClientInvoices(JSON.parse(savedDeletedClientInvoices));
       }
 
       const pendingClientRaw = await AsyncStorage.getItem("@drivesync_pending_client");
@@ -1039,6 +1052,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updated));
   }
 
+  function deactivateClient(clientId: string) {
+    updateClient(clientId, { status: "inactive" });
+  }
+
+  function reactivateClient(clientId: string) {
+    updateClient(clientId, { status: "active" });
+  }
+
+  function removeClient(clientId: string) {
+    const client = clients.find(c => c.id === clientId);
+    if (!client) return;
+    const clientPracticeName = client.practiceName?.toLowerCase()?.trim();
+    const isClientInvoice = (inv: Invoice) =>
+      inv.clientId === clientId || (clientPracticeName && inv.clientName?.toLowerCase()?.trim() === clientPracticeName);
+    const clientOpenInvoices = invoices.filter(
+      inv => isClientInvoice(inv) && (inv.status === "open" || inv.status === "overdue")
+    );
+    if (clientOpenInvoices.length > 0) {
+      const newDeletedInvoices: DeletedClientInvoice[] = clientOpenInvoices.map(inv => ({
+        invoice: inv,
+        clientName: client.practiceName,
+        deletedAt: Date.now(),
+      }));
+      const updatedDeletedInvoices = [...deletedClientInvoices, ...newDeletedInvoices];
+      setDeletedClientInvoices(updatedDeletedInvoices);
+      AsyncStorage.setItem(DELETED_CLIENT_INVOICES_KEY, JSON.stringify(updatedDeletedInvoices));
+      const openInvoiceIds = new Set(clientOpenInvoices.map(inv => inv.id));
+      const remainingInvoices = invoices.filter(inv => !openInvoiceIds.has(inv.id));
+      setInvoices(remainingInvoices);
+      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(remainingInvoices));
+    }
+    const updatedClients = clients.filter(c => c.id !== clientId);
+    setClients(updatedClients);
+    AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updatedClients));
+  }
+
   function addUser(u: Omit<LabUser, "id" | "createdAt">) {
     const newUser: LabUser = { ...u, id: generateId(), createdAt: Date.now() };
     const updated = [newUser, ...users];
@@ -1497,8 +1546,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       customStationLabels,
       updateStationLabel,
       userIsAffiliated,
+      removeClient,
+      deactivateClient,
+      reactivateClient,
+      deletedClientInvoices,
+      inactiveClients: clients.filter(c => c.status === "inactive"),
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, inventory, customStationLabels, userIsAffiliated],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, inventory, customStationLabels, userIsAffiliated, deletedClientInvoices],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

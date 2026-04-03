@@ -1507,10 +1507,12 @@ type AdminView =
   | "edit-locations"
   | "integrations"
   | "client-stats"
-  | "delete-cases";
+  | "delete-cases"
+  | "inactive-clients"
+  | "deleted-invoices";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase } = useApp();
+  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -1541,6 +1543,9 @@ function AdminDashboard() {
   const [editingUser, setEditingUser] = useState<LabUser | null>(null);
   const [deleteCaseTarget, setDeleteCaseTarget] = useState<LabCase | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDeleteClientModal, setShowDeleteClientModal] = useState(false);
+  const [deleteClientTarget, setDeleteClientTarget] = useState<Client | null>(null);
+  const [deleteClientHasOpenInvoices, setDeleteClientHasOpenInvoices] = useState(false);
   const [newShipCompany, setNewShipCompany] = useState("");
   const [newShipAccount, setNewShipAccount] = useState("");
 
@@ -1771,6 +1776,8 @@ function AdminDashboard() {
       { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Lab Users", sub: `${labPortalUsers.length} lab members`, view: "lab-users" as AdminView },
       { icon: "cloud-upload", iconSet: "ion", color: "#2563EB", bg: "#DBEAFE", title: "Integrations", sub: "iTero · Scanner connections", view: "integrations" as AdminView },
       { icon: "trash", iconSet: "ion", color: "#EF4444", bg: "#FEE2E2", title: "Delete Case", sub: "Remove an active case", view: "delete-cases" as AdminView },
+      { icon: "person-remove", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Inactive Clients", sub: `${inactiveClients.length} inactive accounts`, view: "inactive-clients" as AdminView },
+      { icon: "document-attach", iconSet: "ion", color: "#DC2626", bg: "#FEE2E2", title: "Deleted Client Invoices", sub: `${deletedClientInvoices.length} archived invoices`, view: "deleted-invoices" as AdminView },
     ];
 
     return (
@@ -1842,10 +1849,11 @@ function AdminDashboard() {
       const clientInvoices = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
       return sum + clientInvoices.reduce((s, inv) => s + inv.amount, 0);
     }, 0);
+    const activeClientCount = clients.filter(c => c.status !== "inactive").length;
     const clientMenuItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
-      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · ${formatCurrency(totalOpenBalance)} open`, view: "clients" },
+      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${activeClientCount} practices · ${formatCurrency(totalOpenBalance)} open`, view: "clients" },
       { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
-      { icon: "people", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${clients.length} registered practices`, view: "edit-client" },
+      { icon: "people", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${activeClientCount} registered practices`, view: "edit-client" },
     ];
     return (
       <ScrollView
@@ -2179,7 +2187,105 @@ function AdminDashboard() {
               <Ionicons name="checkmark" size={20} color="#FFF" />
               <Text style={adm.submitBtnText}>Save Changes</Text>
             </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#FEE2E2", borderRadius: 14, padding: 16, marginTop: 16, borderWidth: 1, borderColor: "#FECACA" }, pressed && { opacity: 0.7 }]}
+              onPress={() => {
+                const clientPracticeName = editingClient.practiceName?.toLowerCase()?.trim();
+                const clientOpenInvoices = invoices.filter(
+                  inv => (inv.clientId === editingClient.id || (clientPracticeName && inv.clientName?.toLowerCase()?.trim() === clientPracticeName)) && (inv.status === "open" || inv.status === "overdue")
+                );
+                setDeleteClientTarget(editingClient);
+                setDeleteClientHasOpenInvoices(clientOpenInvoices.length > 0);
+                setShowDeleteClientModal(true);
+              }}
+            >
+              <Ionicons name="trash" size={20} color="#EF4444" />
+              <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#EF4444" }}>Delete Client</Text>
+            </Pressable>
           </View>
+
+          <Modal visible={showDeleteClientModal} transparent animationType="fade" onRequestClose={() => setShowDeleteClientModal(false)}>
+            <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 24 }} onPress={() => setShowDeleteClientModal(false)}>
+              <Pressable style={{ backgroundColor: "#fff", borderRadius: 20, padding: 24, width: "100%", maxWidth: 400 }} onPress={() => {}}>
+                <View style={{ alignItems: "center", marginBottom: 16 }}>
+                  <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: "#FEE2E2", justifyContent: "center", alignItems: "center", marginBottom: 12 }}>
+                    <Ionicons name="warning" size={28} color="#EF4444" />
+                  </View>
+                  <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 8, textAlign: "center" }}>
+                    {deleteClientHasOpenInvoices ? "Client Has Open Invoices" : "Delete Client"}
+                  </Text>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.subText, textAlign: "center", lineHeight: 20 }}>
+                    {deleteClientHasOpenInvoices
+                      ? `${deleteClientTarget?.practiceName} has open invoices. Would you like to make this account inactive instead of deleting?`
+                      : `Are you sure you want to delete ${deleteClientTarget?.practiceName}? This action cannot be undone.`}
+                  </Text>
+                </View>
+
+                {deleteClientHasOpenInvoices ? (
+                  <View style={{ gap: 10 }}>
+                    <Pressable
+                      style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#F59E0B", borderRadius: 12, padding: 14 }, pressed && { opacity: 0.8 }]}
+                      onPress={() => {
+                        if (deleteClientTarget) {
+                          deactivateClient(deleteClientTarget.id);
+                          setShowDeleteClientModal(false);
+                          setEditingClient(null);
+                          setAdminView("client-hub");
+                        }
+                      }}
+                    >
+                      <Ionicons name="pause-circle" size={20} color="#fff" />
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Yes, Make Inactive</Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#EF4444", borderRadius: 12, padding: 14 }, pressed && { opacity: 0.8 }]}
+                      onPress={() => {
+                        if (deleteClientTarget) {
+                          removeClient(deleteClientTarget.id);
+                          setShowDeleteClientModal(false);
+                          setEditingClient(null);
+                          setAdminView("client-hub");
+                        }
+                      }}
+                    >
+                      <Ionicons name="trash" size={20} color="#fff" />
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Delete Anyway</Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [{ alignItems: "center", justifyContent: "center", padding: 14, borderRadius: 12, backgroundColor: Colors.light.surfaceSecondary }, pressed && { opacity: 0.7 }]}
+                      onPress={() => setShowDeleteClientModal(false)}
+                    >
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.subText }}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <View style={{ gap: 10 }}>
+                    <Pressable
+                      style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#EF4444", borderRadius: 12, padding: 14 }, pressed && { opacity: 0.8 }]}
+                      onPress={() => {
+                        if (deleteClientTarget) {
+                          removeClient(deleteClientTarget.id);
+                          setShowDeleteClientModal(false);
+                          setEditingClient(null);
+                          setAdminView("client-hub");
+                        }
+                      }}
+                    >
+                      <Ionicons name="trash" size={20} color="#fff" />
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Delete Client</Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [{ alignItems: "center", justifyContent: "center", padding: 14, borderRadius: 12, backgroundColor: Colors.light.surfaceSecondary }, pressed && { opacity: 0.7 }]}
+                      onPress={() => setShowDeleteClientModal(false)}
+                    >
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.subText }}>Cancel</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </Pressable>
+            </Pressable>
+          </Modal>
         </ScrollView>
       );
     }
@@ -2196,7 +2302,7 @@ function AdminDashboard() {
         {renderBackHeader("Edit Client", "client-hub")}
         <View style={adm.listArea}>
           <Text style={adm.formDesc}>Select a client to edit.</Text>
-          {clients.map((c) => (
+          {clients.filter(c => c.status !== "inactive").map((c) => (
             <Pressable key={c.id} style={({ pressed }) => [adm.listItem, pressed && { opacity: 0.7 }]} onPress={() => {
               setEditingClient({ ...c });
               setShowEditClientPricing(false);
@@ -2964,7 +3070,8 @@ function AdminDashboard() {
   }
 
   function renderClients() {
-    const clientsWithBalance = clients.map((c) => {
+    const activeClients = clients.filter(c => c.status !== "inactive");
+    const clientsWithBalance = activeClients.map((c) => {
       const clientInvoices = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
       const openBalance = clientInvoices.reduce((s, inv) => s + inv.amount, 0);
       const openCount = clientInvoices.length;
@@ -5005,8 +5112,122 @@ function AdminDashboard() {
     );
   }
 
+  function renderInactiveClients() {
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Inactive Clients")}
+        <View style={adm.listArea}>
+          {inactiveClients.length === 0 ? (
+            <View style={{ alignItems: "center", paddingVertical: 60 }}>
+              <Ionicons name="checkmark-circle" size={48} color={Colors.light.textTertiary} />
+              <Text style={{ fontSize: 16, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 12 }}>No inactive clients</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4 }}>All clients are currently active</Text>
+            </View>
+          ) : (
+            inactiveClients.map((client) => {
+              const clientOpenInvoices = invoices.filter(inv => inv.clientId === client.id && (inv.status === "open" || inv.status === "overdue"));
+              const openBalance = clientOpenInvoices.reduce((s, inv) => s + inv.amount, 0);
+              return (
+                <View key={client.id} style={{ backgroundColor: "#fff", borderRadius: 14, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: Colors.light.border }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{client.practiceName}</Text>
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>{client.leadDoctor} · {client.accountNumber}</Text>
+                    </View>
+                    <View style={{ backgroundColor: "#FEF3C7", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#D97706" }}>Inactive</Text>
+                    </View>
+                  </View>
+                  {openBalance > 0 && (
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.warning, marginBottom: 8 }}>
+                      Open Balance: {formatCurrency(openBalance)} ({clientOpenInvoices.length} invoices)
+                    </Text>
+                  )}
+                  <Pressable
+                    style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: "#D1FAE5", borderRadius: 10, padding: 12 }, pressed && { opacity: 0.7 }]}
+                    onPress={() => {
+                      reactivateClient(client.id);
+                    }}
+                  >
+                    <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#10B981" }}>Reactivate Client</Text>
+                  </Pressable>
+                </View>
+              );
+            })
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderDeletedInvoices() {
+    const totalDeletedAmount = deletedClientInvoices.reduce((s, d) => s + d.invoice.amount, 0);
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Deleted Client Invoices")}
+        <View style={adm.listArea}>
+          {deletedClientInvoices.length > 0 && (
+            <View style={{ backgroundColor: "#FEF2F2", borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: "#FECACA" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#DC2626", marginBottom: 4 }}>Archived Open Invoices</Text>
+              <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: "#DC2626" }}>{formatCurrency(totalDeletedAmount)}</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#EF4444", marginTop: 4 }}>These amounts are excluded from monthly sales and open invoice totals</Text>
+            </View>
+          )}
+          {deletedClientInvoices.length === 0 ? (
+            <View style={{ alignItems: "center", paddingVertical: 60 }}>
+              <Ionicons name="document-text" size={48} color={Colors.light.textTertiary} />
+              <Text style={{ fontSize: 16, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 12 }}>No deleted client invoices</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4 }}>Invoices from deleted clients will appear here</Text>
+            </View>
+          ) : (
+            deletedClientInvoices.map((item, idx) => (
+              <View key={`${item.invoice.id}-${idx}`} style={{ backgroundColor: "#fff", borderRadius: 14, padding: 16, marginBottom: 10, borderWidth: 1, borderColor: Colors.light.border }}>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{item.invoice.invoiceNumber}</Text>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#DC2626" }}>{formatCurrency(item.invoice.amount)}</Text>
+                </View>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>Client: {item.clientName}</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Patient: {item.invoice.patientName || "N/A"}</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>
+                  Status: {item.invoice.status.charAt(0).toUpperCase() + item.invoice.status.slice(1)} · Deleted: {new Date(item.deletedAt).toLocaleDateString()}
+                </Text>
+                {item.invoice.lineItems && item.invoice.lineItems.length > 0 && (
+                  <View style={{ marginTop: 8, borderTopWidth: 1, borderTopColor: Colors.light.border, paddingTop: 8 }}>
+                    {item.invoice.lineItems.map((li, liIdx) => (
+                      <View key={liIdx} style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 2 }}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>{li.item} - {li.description}</Text>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatCurrency(li.amount)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            ))
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
   switch (adminView) {
     case "delete-cases": return renderDeleteCases();
+    case "inactive-clients": return renderInactiveClients();
+    case "deleted-invoices": return renderDeletedInvoices();
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();
     case "client-detail": return renderClientDetail();

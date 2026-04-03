@@ -200,22 +200,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/admin/cleanup-users", async (req, res) => {
-    try {
-      const { secret, userIds } = req.body;
-      if (secret !== "labtrax_cleanup_2026") return res.status(403).json({ error: "Forbidden" });
-      if (!Array.isArray(userIds)) return res.status(400).json({ error: "userIds required" });
-      const results: string[] = [];
-      for (const uid of userIds) {
-        const deleted = await storage.deleteUser(uid);
-        results.push(`${uid}: ${deleted ? "deleted" : "not found"}`);
-      }
-      res.json({ results });
-    } catch (error: any) {
-      res.status(500).json({ error: error?.message || "Cleanup failed" });
-    }
-  });
-
   app.delete("/api/auth/users/:id", async (req, res) => {
     try {
       const { id } = req.params;

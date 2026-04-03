@@ -24,6 +24,7 @@ import sharp from "sharp";
 var schema_exports = {};
 __export(schema_exports, {
   insertUserSchema: () => insertUserSchema,
+  labCases: () => labCases,
   users: () => users
 });
 import { sql } from "drizzle-orm";
@@ -47,6 +48,12 @@ var users = pgTable("users", {
   wantsUpdates: boolean("wants_updates").default(false),
   createdAt: timestamp("created_at").defaultNow()
 });
+var labCases = pgTable("lab_cases", {
+  id: varchar("id").primaryKey(),
+  ownerId: varchar("owner_id").notNull(),
+  caseData: text("case_data").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow()
+});
 var insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true
@@ -62,7 +69,7 @@ var pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 var db = drizzle(pool, { schema: schema_exports });
 
 // server/storage.ts
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 var DatabaseStorage = class {
   async getUser(id) {
     const [user] = await db.select().from(users).where(eq(users.id, id));
@@ -105,6 +112,21 @@ var DatabaseStorage = class {
   async deleteUser(id) {
     const result = await db.delete(users).where(eq(users.id, id)).returning();
     return result.length > 0;
+  }
+  async upsertCase(id, ownerId, caseData) {
+    await db.insert(labCases).values({ id, ownerId, caseData, updatedAt: /* @__PURE__ */ new Date() }).onConflictDoUpdate({
+      target: labCases.id,
+      set: { ownerId, caseData, updatedAt: /* @__PURE__ */ new Date() }
+    });
+  }
+  async getCasesByOwnerIds(ownerIds) {
+    if (ownerIds.length === 0)
+      return [];
+    const rows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
+    return rows.map((r) => ({ id: r.id, ownerId: r.ownerId, caseData: r.caseData }));
+  }
+  async deleteCase(id) {
+    await db.delete(labCases).where(eq(labCases.id, id));
   }
 };
 var storage = new DatabaseStorage();
@@ -254,6 +276,34 @@ async function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to fetch users" });
     }
   });
+  app2.put("/api/auth/users/:id/profile", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const authUser = req.headers["x-user-id"];
+      if (!authUser || authUser !== id) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+      const user = await storage.getUser(id);
+      if (!user)
+        return res.status(404).json({ error: "User not found" });
+      const { practiceName, practiceAddress, practicePhone, email, phone } = req.body;
+      const updates = {};
+      if (practiceName !== void 0)
+        updates.practiceName = practiceName;
+      if (practiceAddress !== void 0)
+        updates.practiceAddress = practiceAddress;
+      if (practicePhone !== void 0)
+        updates.practicePhone = practicePhone;
+      if (email !== void 0)
+        updates.email = email;
+      if (phone !== void 0)
+        updates.phone = phone;
+      const updated = await storage.updateUser(id, updates);
+      res.json({ success: true, user: updated });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
   app2.put("/api/auth/users/:id/password", async (req, res) => {
     try {
       const { id } = req.params;
@@ -268,6 +318,23 @@ async function registerRoutes(app2) {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to update password" });
+    }
+  });
+  app2.post("/api/admin/cleanup-users", async (req, res) => {
+    try {
+      const { secret, userIds } = req.body;
+      if (secret !== "labtrax_cleanup_2026")
+        return res.status(403).json({ error: "Forbidden" });
+      if (!Array.isArray(userIds))
+        return res.status(400).json({ error: "userIds required" });
+      const results = [];
+      for (const uid of userIds) {
+        const deleted = await storage.deleteUser(uid);
+        results.push(`${uid}: ${deleted ? "deleted" : "not found"}`);
+      }
+      res.json({ results });
+    } catch (error) {
+      res.status(500).json({ error: error?.message || "Cleanup failed" });
     }
   });
   app2.delete("/api/auth/users/:id", async (req, res) => {
@@ -289,6 +356,64 @@ async function registerRoutes(app2) {
     } catch (error) {
       console.error("Delete user error:", error?.message || error);
       res.status(500).json({ error: "Failed to delete user" });
+    }
+  });
+  app2.post("/api/cases", async (req, res) => {
+    try {
+      const { id, ownerId, caseData } = req.body;
+      if (!id || !ownerId || !caseData) {
+        return res.status(400).json({ error: "id, ownerId, and caseData are required" });
+      }
+      await storage.upsertCase(id, ownerId, typeof caseData === "string" ? caseData : JSON.stringify(caseData));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Upsert case error:", error?.message || error);
+      res.status(500).json({ error: "Failed to save case" });
+    }
+  });
+  app2.put("/api/cases/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { ownerId, caseData } = req.body;
+      if (!caseData || !ownerId) {
+        return res.status(400).json({ error: "ownerId and caseData are required" });
+      }
+      await storage.upsertCase(id, ownerId, typeof caseData === "string" ? caseData : JSON.stringify(caseData));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Update case error:", error?.message || error);
+      res.status(500).json({ error: "Failed to update case" });
+    }
+  });
+  app2.get("/api/cases", async (req, res) => {
+    try {
+      const ownerIdsParam = req.query.ownerIds;
+      if (!ownerIdsParam) {
+        return res.json({ cases: [] });
+      }
+      const ownerIds = ownerIdsParam.split(",").filter(Boolean);
+      const rows = await storage.getCasesByOwnerIds(ownerIds);
+      const cases = rows.map((r) => {
+        try {
+          return JSON.parse(r.caseData);
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      res.json({ cases });
+    } catch (error) {
+      console.error("Get cases error:", error?.message || error);
+      res.status(500).json({ error: "Failed to fetch cases" });
+    }
+  });
+  app2.delete("/api/cases/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      await storage.deleteCase(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Delete case error:", error?.message || error);
+      res.status(500).json({ error: "Failed to delete case" });
     }
   });
   app2.post("/api/audit-log", (req, res) => {
