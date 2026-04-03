@@ -27,16 +27,18 @@ function NativeTabLayout() {
         <Icon sf={{ default: "tray.full", selected: "tray.full.fill" }} />
         <Label>Cases</Label>
       </NativeTabs.Trigger>
-      {!isProvider && (
-        <NativeTabs.Trigger name="scan">
-          <Icon sf={{ default: "location", selected: "location.fill" }} />
-          <Label>Locate</Label>
-        </NativeTabs.Trigger>
-      )}
+      <NativeTabs.Trigger name="scan" href={isProvider ? null : undefined}>
+        <Icon sf={{ default: "location", selected: "location.fill" }} />
+        <Label>Locate</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="notifications">
         <Icon sf={{ default: "bell", selected: "bell.fill" }} />
         <Label>Alerts</Label>
         {unreadCount > 0 && <Badge>{unreadCount}</Badge>}
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="profile" href={isProvider ? undefined : null}>
+        <Icon sf={{ default: "person", selected: "person.fill" }} />
+        <Label>Profile</Label>
       </NativeTabs.Trigger>
     </NativeTabs>
   );
