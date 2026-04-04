@@ -1497,8 +1497,16 @@ type AdminView =
   | "add-user"
   | "edit-user"
   | "invoices"
+  | "invoices-hub"
   | "invoice-detail"
+  | "view-invoices"
+  | "send-invoice"
   | "statements"
+  | "statements-hub"
+  | "view-statements"
+  | "statement-detail-view"
+  | "send-statement"
+  | "edit-statement-message"
   | "sales"
   | "shipping"
   | "inventory"
@@ -1555,6 +1563,21 @@ function AdminDashboard() {
     invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; amount: number }[] }[];
     totalDue: number;
   }[] | null>(null);
+
+  const [invoiceFilter, setInvoiceFilter] = useState<"open" | "pastdue" | "all">("open");
+  const [statementFilter, setStatementFilter] = useState<"open" | "pastdue" | "all">("open");
+  const [statementViewClient, setStatementViewClient] = useState<Client | null>(null);
+  const [sendEmailTo, setSendEmailTo] = useState("");
+  const [sendEmailMessage, setSendEmailMessage] = useState("");
+  const [sendEmailSubject, setSendEmailSubject] = useState("");
+  const [sendInvoiceTarget, setSendInvoiceTarget] = useState<Invoice | null>(null);
+  const [sendStatementTarget, setSendStatementTarget] = useState<Client | null>(null);
+  const [statementDefaultMessage, setStatementDefaultMessage] = useState("Please remit payment at your earliest convenience. If you have any questions regarding this statement, please do not hesitate to contact us.\n\nThank you for your business.");
+  const [editingDefaultMessage, setEditingDefaultMessage] = useState("");
+  const adminUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+  const labName = adminUserData?.practiceName || "My Lab";
+  const labAddress = adminUserData?.practiceAddress || "";
+  const labPhone = adminUserData?.practicePhone || adminUserData?.phone || "";
 
   const [salesPeriod, setSalesPeriod] = useState<"daily" | "mtd" | "ytd" | "custom">("mtd");
   const [salesCustomStart, setSalesCustomStart] = useState("");
@@ -1766,8 +1789,8 @@ function AdminDashboard() {
       { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · Add, Edit, Price List`, view: "client-hub" },
       { icon: "people", iconSet: "ion", color: "#8B5CF6", bg: "#EDE9FE", title: "Users", sub: `${users.length} staff · Add, Edit`, view: "user-hub" },
       { icon: "layers", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Edit Tier Pricing", sub: `${pricingTiers.length} pricing tiers`, view: "edit-tier-pricing" as AdminView },
-      { icon: "document-text", iconSet: "ion", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Open Invoices", sub: `${openInvoiceCount} pending`, view: "invoices" },
-      { icon: "receipt-outline", iconSet: "ion", color: "#06B6D4", bg: "#CFFAFE", title: "Generate Statements", sub: "Create billing statements", view: "statements" },
+      { icon: "document-text", iconSet: "ion", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Invoices", sub: `${openInvoiceCount} pending`, view: "invoices-hub" as AdminView },
+      { icon: "receipt-outline", iconSet: "ion", color: "#06B6D4", bg: "#CFFAFE", title: "Statements", sub: "View & send billing statements", view: "statements-hub" as AdminView },
       { icon: "trending-up", iconSet: "ion", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
       { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
       { icon: "cube", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items tracked`, view: "inventory" as AdminView },
@@ -2560,7 +2583,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Open Invoices")}
+        {renderBackHeader("Invoices", "invoices-hub")}
         <View style={adm.listArea}>
           <View style={adm.invoiceSummary}>
             <View style={adm.invoiceSummaryItem}>
@@ -2631,7 +2654,7 @@ function AdminDashboard() {
         showsVerticalScrollIndicator={false}
       >
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
-          <Pressable onPress={() => { setSelectedInvoice(null); setAdminView("invoices"); }} style={{ marginRight: 12 }}>
+          <Pressable onPress={() => { setSelectedInvoice(null); setAdminView("invoices-hub"); }} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color="#333" />
           </Pressable>
           <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#333" }}>Invoice Detail</Text>
@@ -2954,7 +2977,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Generate Statements")}
+        {renderBackHeader("Generate Statements", "statements-hub")}
         <View style={adm.listArea}>
           {(() => {
             const allOpenInvoices = invoices.filter((inv) => inv.status === "open" || inv.status === "overdue");
@@ -3064,6 +3087,634 @@ function AdminDashboard() {
               </Pressable>
             );
           })}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderInvoicesHub() {
+    const openCount = invoices.filter(i => i.status === "open").length;
+    const overdueCount = invoices.filter(i => i.status === "overdue").length;
+    const allCount = invoices.length;
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        {renderBackHeader("Invoices")}
+        <View style={adm.listArea}>
+          <View style={adm.invoiceSummary}>
+            <View style={adm.invoiceSummaryItem}>
+              <Text style={adm.invoiceSummaryNum}>{openCount}</Text>
+              <Text style={adm.invoiceSummaryLabel}>Open</Text>
+            </View>
+            <View style={adm.invoiceSummaryDivider} />
+            <View style={adm.invoiceSummaryItem}>
+              <Text style={adm.invoiceSummaryNum}>{overdueCount}</Text>
+              <Text style={[adm.invoiceSummaryLabel, { color: Colors.light.error }]}>Overdue</Text>
+            </View>
+            <View style={adm.invoiceSummaryDivider} />
+            <View style={adm.invoiceSummaryItem}>
+              <Text style={adm.invoiceSummaryNum}>{allCount}</Text>
+              <Text style={[adm.invoiceSummaryLabel, { color: Colors.light.success }]}>Total</Text>
+            </View>
+          </View>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              Alert.alert("View Invoices", "Which invoices would you like to view?", [
+                { text: "Open Invoices", onPress: () => { setInvoiceFilter("open"); setAdminView("view-invoices"); } },
+                { text: "Past Due Invoices", onPress: () => { setInvoiceFilter("pastdue"); setAdminView("view-invoices"); } },
+                { text: "All Invoices", onPress: () => { setInvoiceFilter("all"); setAdminView("view-invoices"); } },
+                { text: "Cancel", style: "cancel" },
+              ]);
+            }}
+          >
+            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="eye-outline" size={20} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>View Invoices</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>Open, past due, or all invoices</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.6)" />
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              const openInvs = invoices.filter(i => i.status === "open" || i.status === "overdue");
+              if (openInvs.length === 0) {
+                Alert.alert("No Open Invoices", "There are no open invoices to send.");
+                return;
+              }
+              Alert.alert("Send Invoice", "How would you like to send the invoice?", [
+                {
+                  text: "Email Invoice",
+                  onPress: () => {
+                    Alert.alert("Select Invoice", "Choose an invoice to send:", [
+                      ...openInvs.slice(0, 10).map(inv => ({
+                        text: `${formatInvNum(inv.invoiceNumber)} - ${inv.clientName} (${formatCurrency(inv.amount)})`,
+                        onPress: () => {
+                          setSendInvoiceTarget(inv);
+                          const client = clients.find(c => c.practiceName === inv.clientName);
+                          setSendEmailTo(client?.email || "");
+                          setSendEmailSubject(`Invoice ${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}`);
+                          setSendEmailMessage(`Dear ${inv.clientName},\n\nPlease find attached invoice ${formatInvNum(inv.invoiceNumber)} for ${formatCurrency(inv.amount)}.\n\nDue Date: ${new Date(inv.dueAt).toLocaleDateString()}\n\n${statementDefaultMessage}`);
+                          setAdminView("send-invoice");
+                        },
+                      })),
+                      { text: "Cancel", style: "cancel" as const },
+                    ]);
+                  },
+                },
+                {
+                  text: "Text Invoice",
+                  onPress: () => {
+                    Alert.alert("Coming Soon", "Text message invoicing will be available in a future update.");
+                  },
+                },
+                { text: "Cancel", style: "cancel" },
+              ]);
+            }}
+          >
+            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="send" size={20} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Send Invoices</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>Email or text an invoice</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.6)" />
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderViewInvoices() {
+    const getStatusColor = (status: Invoice["status"]) => {
+      switch (status) {
+        case "open": return Colors.light.tint;
+        case "sent": return Colors.light.warning;
+        case "paid": return Colors.light.success;
+        case "overdue": return Colors.light.error;
+      }
+    };
+    const filterLabel = invoiceFilter === "open" ? "Open Invoices" : invoiceFilter === "pastdue" ? "Past Due Invoices" : "All Invoices";
+    const filteredInvoices = invoiceFilter === "open"
+      ? invoices.filter(i => i.status === "open")
+      : invoiceFilter === "pastdue"
+        ? invoices.filter(i => i.status === "overdue")
+        : invoices;
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, flex: 1 }}>{filterLabel}</Text>
+          <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 4 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>{filteredInvoices.length}</Text>
+          </View>
+        </View>
+        <View style={adm.listArea}>
+          {filteredInvoices.length === 0 ? (
+            <View style={{ alignItems: "center", paddingVertical: 40 }}>
+              <Ionicons name="document-text-outline" size={48} color={Colors.light.textTertiary} />
+              <Text style={{ fontSize: 16, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 12 }}>No {filterLabel.toLowerCase()} found</Text>
+            </View>
+          ) : (
+            filteredInvoices.map((inv) => {
+              const sc = getStatusColor(inv.status);
+              return (
+                <Pressable key={inv.id} style={({ pressed }) => [adm.invoiceCard, pressed && { opacity: 0.7 }]} onPress={() => { setSelectedInvoice(inv); setAdminView("invoice-detail"); }}>
+                  <View style={adm.invoiceCardTop}>
+                    <View>
+                      <Text style={adm.invoiceNumber}>{formatInvNum(inv.invoiceNumber)}</Text>
+                      <Text style={adm.invoiceClient}>{inv.clientName}</Text>
+                    </View>
+                    <Text style={adm.invoiceAmount}>{formatCurrency(inv.amount)}</Text>
+                  </View>
+                  <View style={adm.invoiceCardBottom}>
+                    <Text style={adm.invoiceDate}>Due {new Date(inv.dueAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</Text>
+                    <View style={[adm.invoiceStatus, { backgroundColor: sc + "18" }]}>
+                      <Text style={[adm.invoiceStatusText, { color: sc }]}>{inv.status.toUpperCase()}</Text>
+                    </View>
+                  </View>
+                </Pressable>
+              );
+            })
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderSendInvoice() {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Invoice</Text>
+        </View>
+        <View style={adm.listArea}>
+          {sendInvoiceTarget && (
+            <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 4 }}>{formatInvNum(sendInvoiceTarget.invoiceNumber)}</Text>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>{sendInvoiceTarget.clientName} · {formatCurrency(sendInvoiceTarget.amount)}</Text>
+            </View>
+          )}
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address</Text>
+          <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendEmailTo} onChangeText={setSendEmailTo} placeholder="Enter email address" keyboardType="email-address" autoCapitalize="none" />
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Please separate each email address with a ;</Text>
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Subject</Text>
+          <TextInput style={[adm.input, { marginBottom: 16 }]} value={sendEmailSubject} onChangeText={setSendEmailSubject} placeholder="Email subject" />
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Message</Text>
+          <TextInput style={[adm.input, { height: 160, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Email message" multiline numberOfLines={8} />
+
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4, marginBottom: 16 }}>The invoice will be attached as a PDF</Text>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address."); return; }
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              const emails = sendEmailTo.split(";").map(e => e.trim()).filter(e => e.length > 0);
+              emails.forEach(email => {
+                sendStatementEmail(sendInvoiceTarget?.clientName || "", email, sendEmailSubject, sendEmailMessage);
+              });
+              addNotification({ title: "Invoice Sent", message: `Invoice ${sendInvoiceTarget ? formatInvNum(sendInvoiceTarget.invoiceNumber) : ""} emailed to ${emails.join(", ")}`, type: "update" });
+              Alert.alert("Invoice Sent", `Invoice emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
+              setAdminView("invoices-hub");
+            }}
+          >
+            <Ionicons name="send" size={18} color="#FFF" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Email</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderStatementsHub() {
+    const allOpen = invoices.filter(inv => inv.status === "open" || inv.status === "overdue");
+    const clientsWithOpen = [...new Set(allOpen.map(inv => inv.clientName))].length;
+    const totalOpenAmt = allOpen.reduce((s, inv) => s + inv.amount, 0);
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        {renderBackHeader("Statements")}
+        <View style={adm.listArea}>
+          <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 14, padding: 16, marginBottom: 16, flexDirection: "row", justifyContent: "space-around" }}>
+            <View style={{ alignItems: "center" }}>
+              <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.tint }}>{clientsWithOpen}</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Clients</Text>
+            </View>
+            <View style={{ alignItems: "center" }}>
+              <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.tint }}>{allOpen.length}</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Invoices</Text>
+            </View>
+            <View style={{ alignItems: "center" }}>
+              <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.error }}>{formatCurrency(totalOpenAmt)}</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Total Due</Text>
+            </View>
+          </View>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              if (allOpen.length === 0) { Alert.alert("No Open Invoices", "There are no open invoices to generate statements for."); return; }
+              const clientNames = [...new Set(allOpen.map(inv => inv.clientName))];
+              const preview = clientNames.map(name => {
+                const client = clients.find(cl => cl.practiceName === name);
+                const clientInvs = allOpen.filter(inv => inv.clientName === name);
+                return {
+                  clientName: name,
+                  email: client?.email || "",
+                  invoices: clientInvs.map(inv => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, issuedAt: inv.issuedAt, dueAt: inv.dueAt, patientName: inv.patientName, lineItems: (inv.lineItems || []).map(li => ({ item: li.item, description: li.description, amount: li.amount })) })),
+                  totalDue: clientInvs.reduce((s, inv) => s + inv.amount, 0),
+                };
+              });
+              setStatementPreview(preview);
+              setAdminView("statements");
+            }}
+          >
+            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="documents" size={20} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Generate Statements</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>{allOpen.length} open invoices · {formatCurrency(totalOpenAmt)}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.6)" />
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: "#0EA5E9", borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              Alert.alert("View Statements", "Which statements would you like to view?", [
+                { text: "Open Statements", onPress: () => { setStatementFilter("open"); setAdminView("view-statements"); } },
+                { text: "Past Due Statements", onPress: () => { setStatementFilter("pastdue"); setAdminView("view-statements"); } },
+                { text: "All Statements", onPress: () => { setStatementFilter("all"); setAdminView("view-statements"); } },
+                { text: "Cancel", style: "cancel" },
+              ]);
+            }}
+          >
+            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="eye-outline" size={20} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>View Statements</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>Open, past due, or all statements</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.6)" />
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue")));
+              if (clientsWithOpenInvs.length === 0) { Alert.alert("No Statements", "No clients have open invoices to send statements for."); return; }
+              Alert.alert("Send Statement", "How would you like to send the statement?", [
+                {
+                  text: "Email Statement",
+                  onPress: () => {
+                    Alert.alert("Select Client", "Choose a client:", [
+                      ...clientsWithOpenInvs.slice(0, 10).map(c => ({
+                        text: c.practiceName,
+                        onPress: () => {
+                          setSendStatementTarget(c);
+                          setSendEmailTo(c.email || "");
+                          setSendEmailSubject(`Billing Statement - ${c.practiceName}`);
+                          const cInvs = invoices.filter(inv => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                          const total = cInvs.reduce((s, inv) => s + inv.amount, 0);
+                          const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
+                          setSendEmailMessage(`Dear ${c.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(total)}\n\n${statementDefaultMessage}`);
+                          setAdminView("send-statement");
+                        },
+                      })),
+                      { text: "Cancel", style: "cancel" as const },
+                    ]);
+                  },
+                },
+                {
+                  text: "Text Statement",
+                  onPress: () => { Alert.alert("Coming Soon", "Text message statements will be available in a future update."); },
+                },
+                { text: "Cancel", style: "cancel" },
+              ]);
+            }}
+          >
+            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="send" size={20} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Send Statements</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>Email or text a statement</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.6)" />
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: Colors.light.surface, borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, borderWidth: 1, borderColor: Colors.light.border, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              setEditingDefaultMessage(statementDefaultMessage);
+              setAdminView("edit-statement-message");
+            }}
+          >
+            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "#FEF3C7", alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="create" size={20} color="#D97706" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Edit Statement Message</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>Customize outgoing email & text messages</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.light.textTertiary} />
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderViewStatements() {
+    const filterLabel = statementFilter === "open" ? "Open Statements" : statementFilter === "pastdue" ? "Past Due Statements" : "All Statements";
+    const activeClients = clients.filter(c => c.status !== "inactive");
+    const filteredClients = activeClients.filter(c => {
+      const cInvs = invoices.filter(inv => inv.clientName === c.practiceName);
+      if (statementFilter === "open") return cInvs.some(inv => inv.status === "open");
+      if (statementFilter === "pastdue") return cInvs.some(inv => inv.status === "overdue");
+      return cInvs.length > 0;
+    });
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, flex: 1 }}>{filterLabel}</Text>
+        </View>
+        <View style={{ paddingHorizontal: 20, marginBottom: 12 }}>
+          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Select a client to view their statement</Text>
+        </View>
+        <View style={adm.listArea}>
+          {filteredClients.length === 0 ? (
+            <View style={{ alignItems: "center", paddingVertical: 40 }}>
+              <Ionicons name="receipt-outline" size={48} color={Colors.light.textTertiary} />
+              <Text style={{ fontSize: 16, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 12 }}>No {filterLabel.toLowerCase()} found</Text>
+            </View>
+          ) : (
+            filteredClients.map(c => {
+              const cInvs = statementFilter === "open"
+                ? invoices.filter(inv => inv.clientName === c.practiceName && inv.status === "open")
+                : statementFilter === "pastdue"
+                  ? invoices.filter(inv => inv.clientName === c.practiceName && inv.status === "overdue")
+                  : invoices.filter(inv => inv.clientName === c.practiceName);
+              const total = cInvs.reduce((s, inv) => s + inv.amount, 0);
+              return (
+                <Pressable key={c.id} style={({ pressed }) => [adm.statementCard, pressed && { opacity: 0.7 }]} onPress={() => { setStatementViewClient(c); setAdminView("statement-detail-view"); }}>
+                  <View style={adm.listItemLeft}>
+                    <View style={[adm.listAvatar, { backgroundColor: Colors.light.tintLight }]}>
+                      <Ionicons name="document-text-outline" size={18} color={Colors.light.tint} />
+                    </View>
+                    <View>
+                      <Text style={adm.listItemTitle}>{c.practiceName}</Text>
+                      <Text style={adm.listItemSub}>{cInvs.length} invoice{cInvs.length !== 1 ? "s" : ""} · {formatCurrency(total)}</Text>
+                    </View>
+                  </View>
+                  <Ionicons name="eye-outline" size={20} color={Colors.light.tint} />
+                </Pressable>
+              );
+            })
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderStatementDetailView() {
+    const client = statementViewClient;
+    if (!client) return renderViewStatements();
+    const cInvs = statementFilter === "open"
+      ? invoices.filter(inv => inv.clientName === client.practiceName && inv.status === "open")
+      : statementFilter === "pastdue"
+        ? invoices.filter(inv => inv.clientName === client.practiceName && inv.status === "overdue")
+        : invoices.filter(inv => inv.clientName === client.practiceName);
+    const totalDue = cInvs.reduce((s, inv) => s + inv.amount, 0);
+    const today = new Date();
+    const dateStr = today.toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" });
+    let runningBalance = 0;
+
+    return (
+      <ScrollView style={{ flex: 1, backgroundColor: "#f5f5f0" }} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => { setStatementViewClient(null); setAdminView("view-statements"); }} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text, flex: 1 }}>Statement</Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Pressable
+              onPress={() => {
+                setSendStatementTarget(client);
+                setSendEmailTo(client.email || "");
+                setSendEmailSubject(`Billing Statement - ${client.practiceName}`);
+                const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
+                setSendEmailMessage(`Dear ${client.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(totalDue)}\n\n${statementDefaultMessage}`);
+                setAdminView("send-statement");
+              }}
+              style={({ pressed }) => ({ backgroundColor: "#16A34A", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, flexDirection: "row" as const, alignItems: "center" as const, gap: 4, opacity: pressed ? 0.8 : 1 })}
+            >
+              <Ionicons name="mail" size={16} color="#fff" />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Email</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 4, borderWidth: 1, borderColor: "#ddd", overflow: "hidden" }}>
+          <View style={{ backgroundColor: "#1a365d", paddingVertical: 20, paddingHorizontal: 20, alignItems: "center" }}>
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "center" }}>Statement</Text>
+          </View>
+
+          <View style={{ padding: 20 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 20 }}>
+              <View>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#1a365d" }}>{labName}</Text>
+                {labAddress ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#555", marginTop: 2 }}>{labAddress}</Text> : null}
+                {labPhone ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#555", marginTop: 2 }}>{labPhone}</Text> : null}
+              </View>
+              <View style={{ alignItems: "flex-end" }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#555" }}>Date</Text>
+                <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#1a365d" }}>{dateStr}</Text>
+              </View>
+            </View>
+
+            <View style={{ borderTopWidth: 1, borderTopColor: "#ddd", paddingTop: 16, marginBottom: 16 }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#555", marginBottom: 4 }}>To:</Text>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#1a365d" }}>{client.practiceName}</Text>
+              {client.leadDoctor ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#555" }}>Dr. {client.leadDoctor}</Text> : null}
+              {client.address ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#555" }}>{client.address}</Text> : null}
+            </View>
+
+            <View style={{ flexDirection: "row", justifyContent: "flex-end", marginBottom: 16 }}>
+              <View style={{ backgroundColor: "#f7fafc", borderRadius: 8, padding: 12, borderWidth: 1, borderColor: "#e2e8f0" }}>
+                <View style={{ flexDirection: "row", gap: 20 }}>
+                  <View>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#555" }}>Due Date</Text>
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#1a365d" }}>{dateStr}</Text>
+                  </View>
+                  <View>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#555" }}>Amount Due</Text>
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#DC2626" }}>{formatCurrency(totalDue)}</Text>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            <View style={{ borderWidth: 1, borderColor: "#e2e8f0", borderRadius: 4, overflow: "hidden" }}>
+              <View style={{ flexDirection: "row", backgroundColor: "#1a365d", paddingVertical: 8, paddingHorizontal: 10 }}>
+                <Text style={{ flex: 1.2, fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Date</Text>
+                <Text style={{ flex: 3, fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Transaction</Text>
+                <Text style={{ flex: 1, fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff", textAlign: "right" }}>Amount</Text>
+                <Text style={{ flex: 1.2, fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff", textAlign: "right" }}>Balance</Text>
+              </View>
+              {cInvs.map((inv, idx) => {
+                runningBalance += inv.amount;
+                const invDate = new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
+                return (
+                  <View key={inv.id || idx} style={{ borderTopWidth: idx > 0 ? 1 : 0, borderTopColor: "#e2e8f0" }}>
+                    <View style={{ flexDirection: "row", paddingVertical: 8, paddingHorizontal: 10, backgroundColor: idx % 2 === 0 ? "#f7fafc" : "#fff" }}>
+                      <Text style={{ flex: 1.2, fontSize: 11, fontFamily: "Inter_400Regular", color: "#333" }}>{invDate}</Text>
+                      <View style={{ flex: 3 }}>
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#333" }}>INV #{inv.invoiceNumber}. PO #{inv.patientName}.</Text>
+                        <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#555" }}>Orig. Amount {formatCurrency(inv.amount)}</Text>
+                        {inv.lineItems.map((li, liIdx) => (
+                          <Text key={liIdx} style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#666", marginTop: 1 }}>
+                            --- {li.item}{li.description ? ` - ${li.description}` : ""}, {formatCurrency(li.amount)}
+                          </Text>
+                        ))}
+                      </View>
+                      <Text style={{ flex: 1, fontSize: 11, fontFamily: "Inter_500Medium", color: "#333", textAlign: "right" }}>{formatCurrency(inv.amount)}</Text>
+                      <Text style={{ flex: 1.2, fontSize: 11, fontFamily: "Inter_500Medium", color: "#333", textAlign: "right" }}>{formatCurrency(runningBalance)}</Text>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+
+            <View style={{ marginTop: 20, alignItems: "flex-end" }}>
+              <View style={{ backgroundColor: "#1a365d", borderRadius: 8, paddingHorizontal: 20, paddingVertical: 12 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.7)" }}>Amount Due</Text>
+                <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#fff" }}>{formatCurrency(totalDue)}</Text>
+              </View>
+            </View>
+
+            <View style={{ marginTop: 20, borderTopWidth: 1, borderTopColor: "#e2e8f0", paddingTop: 12, alignItems: "center" }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#1a365d" }}>{labName}</Text>
+              {labAddress ? <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#555" }}>{labAddress}</Text> : null}
+              {labPhone ? <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#555" }}>{labPhone}</Text> : null}
+            </View>
+          </View>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderSendStatement() {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Statement</Text>
+        </View>
+        <View style={adm.listArea}>
+          {sendStatementTarget && (
+            <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 4 }}>{sendStatementTarget.practiceName}</Text>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Billing Statement</Text>
+            </View>
+          )}
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address</Text>
+          <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendEmailTo} onChangeText={setSendEmailTo} placeholder="Enter email address" keyboardType="email-address" autoCapitalize="none" />
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Please separate each email address with a ;</Text>
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Subject</Text>
+          <TextInput style={[adm.input, { marginBottom: 16 }]} value={sendEmailSubject} onChangeText={setSendEmailSubject} placeholder="Email subject" />
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Message</Text>
+          <TextInput style={[adm.input, { height: 160, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Email message" multiline numberOfLines={8} />
+
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4, marginBottom: 16 }}>The statement will be attached as a PDF</Text>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address."); return; }
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              const emails = sendEmailTo.split(";").map(e => e.trim()).filter(e => e.length > 0);
+              emails.forEach(email => {
+                sendStatementEmail(sendStatementTarget?.practiceName || "", email, sendEmailSubject, sendEmailMessage);
+              });
+              addNotification({ title: "Statement Sent", message: `Statement for ${sendStatementTarget?.practiceName || ""} emailed to ${emails.join(", ")}`, type: "update" });
+              Alert.alert("Statement Sent", `Statement emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
+              setAdminView("statements-hub");
+            }}
+          >
+            <Ionicons name="send" size={18} color="#FFF" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Email</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderEditStatementMessage() {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Edit Statement Message</Text>
+        </View>
+        <View style={adm.listArea}>
+          <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 16 }}>
+            This message will be included in all outgoing statements sent via email or text message.
+          </Text>
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Default Message</Text>
+          <TextInput
+            style={[adm.input, { height: 200, textAlignVertical: "top" }]}
+            value={editingDefaultMessage}
+            onChangeText={setEditingDefaultMessage}
+            placeholder="Enter your default statement message..."
+            multiline
+            numberOfLines={10}
+          />
+
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
+            <Pressable
+              style={({ pressed }) => ({ flex: 1, backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+              onPress={() => {
+                setStatementDefaultMessage(editingDefaultMessage);
+                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Alert.alert("Saved", "Your default statement message has been updated.");
+                setAdminView("statements-hub");
+              }}
+            >
+              <Ionicons name="checkmark" size={18} color="#FFF" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Save Message</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => ({ flex: 1, backgroundColor: Colors.light.surface, borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, justifyContent: "center" as const, borderWidth: 1, borderColor: Colors.light.border, opacity: pressed ? 0.85 : 1 })}
+              onPress={() => setAdminView("statements-hub")}
+            >
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Cancel</Text>
+            </Pressable>
+          </View>
         </View>
       </ScrollView>
     );
@@ -3255,11 +3906,34 @@ function AdminDashboard() {
           {openBalance > 0 && (
             <Pressable
               onPress={() => {
-                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                const invoiceDetails = openInvoices.map((inv) => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)} (Due: ${new Date(inv.dueAt).toLocaleDateString()})`).join("\n");
-                const emailBody = `Billing Statement for ${selectedClient.practiceName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(openBalance)}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
-                sendStatementEmail(selectedClient.practiceName, selectedClient.email, `Billing Statement - ${selectedClient.practiceName}`, emailBody);
-                Alert.alert("Statement Generated & Emailed", `Statement for ${selectedClient.practiceName} with open balance of ${formatCurrency(openBalance)} has been generated and emailed to ${selectedClient.email} and admin.`);
+                Alert.alert("Statement Options", `${selectedClient.practiceName} - ${formatCurrency(openBalance)}`, [
+                  {
+                    text: "View Statement",
+                    onPress: () => {
+                      setStatementViewClient(selectedClient);
+                      setStatementFilter("open");
+                      setAdminView("statement-detail-view");
+                    },
+                  },
+                  {
+                    text: "Email Statement",
+                    onPress: () => {
+                      setSendStatementTarget(selectedClient);
+                      setSendEmailTo(selectedClient.email || "");
+                      setSendEmailSubject(`Billing Statement - ${selectedClient.practiceName}`);
+                      const invDetails = openInvoices.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
+                      setSendEmailMessage(`Dear ${selectedClient.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(openBalance)}\n\n${statementDefaultMessage}`);
+                      setAdminView("send-statement");
+                    },
+                  },
+                  {
+                    text: "Text Statement",
+                    onPress: () => {
+                      Alert.alert("Coming Soon", "Text message statements will be available in a future update.");
+                    },
+                  },
+                  { text: "Cancel", style: "cancel" },
+                ]);
               }}
               style={({ pressed }) => ({
                 flex: 1,
@@ -5240,8 +5914,16 @@ function AdminDashboard() {
     case "add-user": return renderAddUser();
     case "edit-user": return renderEditUser();
     case "invoices": return renderInvoices();
+    case "invoices-hub": return renderInvoicesHub();
+    case "view-invoices": return renderViewInvoices();
+    case "send-invoice": return renderSendInvoice();
     case "invoice-detail": return renderInvoiceDetail();
     case "statements": return renderStatements();
+    case "statements-hub": return renderStatementsHub();
+    case "view-statements": return renderViewStatements();
+    case "statement-detail-view": return renderStatementDetailView();
+    case "send-statement": return renderSendStatement();
+    case "edit-statement-message": return renderEditStatementMessage();
     case "sales": return renderSales();
     case "shipping": return renderShipping();
     case "inventory": return renderInventory();

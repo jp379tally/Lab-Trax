@@ -47,6 +47,10 @@ Preferred communication style: Simple, everyday language.
 - **Courtesy Text Feature**: Automates delay notifications and negotiation flows for updated delivery dates directly from case details.
 - **Inventory Tracking**: Allows administrators to manage inventory items, categories, quantities, and receive low-stock alerts.
 - **Provider Account Numbers**: Automates assignment of unique account numbers to providers upon registration.
+- **Invoices Hub**: The "Invoices" section in Admin Master Hub is a hub with sub-navigation: "View Invoices" (filter by open, past due, or all), and "Send Invoices" (email with editable message, PDF attachment, multiple recipients via semicolon-separated emails).
+- **Statements Hub**: The "Statements" section in Admin Master Hub is a hub with sub-navigation: "Generate Statements" (preview all open statements), "View Statements" (filter by open, past due, or all, then select a client to view a professional statement matching the lab's sample format with running balance), "Send Statements" (email with editable message and PDF attachment), and "Edit Statement Message" (customize the default closing message for all outgoing statements).
+- **Statement Detail View**: Professional statement view styled to match a formal billing statement format with lab header, client address block, date, due date/amount due panel, transaction table (Date, Transaction, Amount, Running Balance), and amount due footer with lab contact info.
+- **Client Statement Action Sheet**: The Statement button in Client Detail now shows options (View, Email, Text) instead of auto-emailing, giving admins control over how statements are delivered.
 
 ## External Dependencies
 
