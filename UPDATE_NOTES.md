@@ -1,6 +1,8 @@
 # LabTrax - Build Update Notes
 
-## Build Date: April 4, 2026
+**Version:** 1.0.3
+**Build:** 31
+**Date:** April 4, 2026
 
 ---
 
