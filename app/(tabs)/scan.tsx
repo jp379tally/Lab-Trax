@@ -835,9 +835,13 @@ export default function ScanScreen() {
     }
   }
 
-  async function sendToAI(base64Data: string): Promise<{ success: boolean; data?: any }> {
+  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any }> {
     const { getApiUrl } = await import("@/lib/query-client");
-    const jsonBody = JSON.stringify({ imageBase64: base64Data });
+    const payload: any = { imageBase64: base64Data };
+    if (additionalImages && additionalImages.length > 0) {
+      payload.additionalImages = additionalImages;
+    }
+    const jsonBody = JSON.stringify(payload);
     console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
 
     const urls: string[] = [];
@@ -1061,17 +1065,30 @@ export default function ScanScreen() {
         let base64Data: string;
         try {
           base64Data = await compressImageForAI(analyzeUri);
-          console.log("AI: Compressed image, base64 length:", base64Data.length);
+          console.log("AI: Compressed primary image, base64 length:", base64Data.length);
         } catch (compErr: any) {
           failReason = "Image compression failed";
           console.log("AI: Compression error:", compErr?.message || compErr);
           throw compErr;
         }
 
+        const additionalBase64: string[] = [];
+        if (casePhotos.length > 1) {
+          for (let i = 1; i < casePhotos.length; i++) {
+            try {
+              const compressed = await compressImageForAI(casePhotos[i]);
+              additionalBase64.push(compressed);
+              console.log(`AI: Compressed page ${i + 1}, base64 length:`, compressed.length);
+            } catch (compErr: any) {
+              console.log(`AI: Failed to compress page ${i + 1}:`, compErr?.message);
+            }
+          }
+        }
+
         let result: { success: boolean; data?: any };
         try {
-          result = await sendToAI(base64Data);
-          console.log("AI: Response received, success:", result.success);
+          result = await sendToAI(base64Data, additionalBase64.length > 0 ? additionalBase64 : undefined);
+          console.log("AI: Response received, success:", result.success, "pages sent:", 1 + additionalBase64.length);
         } catch (sendErr: any) {
           failReason = "Network request failed";
           console.log("AI: Send error:", sendErr?.message || sendErr);
@@ -3319,7 +3336,7 @@ export default function ScanScreen() {
             <View style={styles.reviewContent}>
               <Ionicons name="checkmark-circle" size={48} color={Colors.light.success} />
               <Text style={styles.detectedViewText}>
-                {casePhotos.length} Photo{casePhotos.length !== 1 ? "s" : ""} Captured
+                {casePhotos.length} RX Page{casePhotos.length !== 1 ? "s" : ""} Captured
               </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewPhotoStrip}>
                 {casePhotos.map((uri, idx) => (
@@ -3333,7 +3350,7 @@ export default function ScanScreen() {
         <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
           <Text style={styles.scanTitle}>AI Intake</Text>
           <Text style={styles.scanSubtitle}>
-            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing document..." : phase === "review" ? "Add more or continue" : "Document recognized"}
+            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "review" ? "Add more pages or continue" : "RX recognized"}
           </Text>
         </View>
 
@@ -3381,7 +3398,7 @@ export default function ScanScreen() {
                     <View style={styles.captureBtnDot} />
                   </View>
                 </Pressable>
-                <Text style={styles.captureBtnLabel}>Document</Text>
+                <Text style={styles.captureBtnLabel}>RX</Text>
               </View>
 
               <View style={styles.captureBtnWrap}>
@@ -3427,7 +3444,7 @@ export default function ScanScreen() {
         )}
         {phase === "scanning" && (
           <View style={styles.scanningIndicator}>
-            <Text style={styles.scanningText}>Analyzing document...</Text>
+            <Text style={styles.scanningText}>Analyzing RX...</Text>
           </View>
         )}
         {phase === "review" && (
@@ -3457,7 +3474,7 @@ export default function ScanScreen() {
               ]}
             >
               <Ionicons name="camera" size={22} color="#FFF" />
-              <Text style={styles.actionBtnText}>Add Photo</Text>
+              <Text style={styles.actionBtnText}>Add Page</Text>
             </Pressable>
             <Pressable
               onPress={handleSavePDF}

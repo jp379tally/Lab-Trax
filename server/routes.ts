@@ -610,25 +610,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/analyze-prescription", async (req, res) => {
     try {
       console.log("Prescription analysis request received, body keys:", Object.keys(req.body || {}), "content-type:", req.headers["content-type"]);
-      const { imageBase64 } = req.body;
+      const { imageBase64, additionalImages } = req.body;
       if (!imageBase64) {
         console.log("No image in body, body size:", JSON.stringify(req.body || {}).length);
         return res.status(400).json({ error: "No image provided" });
       }
 
-      console.log("Analyzing prescription, image data length:", imageBase64.length);
+      const totalPages = 1 + (Array.isArray(additionalImages) ? additionalImages.length : 0);
+      console.log("Analyzing prescription, pages:", totalPages, "primary image length:", imageBase64.length);
 
       const dataUrl = imageBase64.startsWith("data:")
         ? imageBase64
         : `data:image/jpeg;base64,${imageBase64}`;
 
+      const imageContentParts: any[] = [];
+      if (totalPages > 1) {
+        imageContentParts.push({
+          type: "text" as const,
+          text: `This dental prescription has ${totalPages} pages. Analyze ALL pages together as a single prescription and combine the information from every page into one unified result. Page 1:`,
+        });
+      } else {
+        imageContentParts.push({
+          type: "text" as const,
+          text: "Analyze this dental prescription document thoroughly. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully.",
+        });
+      }
+      imageContentParts.push({
+        type: "image_url" as const,
+        image_url: { url: dataUrl, detail: "high" as const },
+      });
+
+      if (Array.isArray(additionalImages)) {
+        additionalImages.forEach((img: string, idx: number) => {
+          const additionalDataUrl = img.startsWith("data:")
+            ? img
+            : `data:image/jpeg;base64,${img}`;
+          imageContentParts.push({
+            type: "text" as const,
+            text: `Page ${idx + 2}:`,
+          });
+          imageContentParts.push({
+            type: "image_url" as const,
+            image_url: { url: additionalDataUrl, detail: "high" as const },
+          });
+        });
+      }
+
       const models = ["gpt-4o", "gpt-4o-mini"];
       let response: any = null;
       let lastModelErr: any = null;
+      const multiPageNote = totalPages > 1
+        ? `\n\nMULTI-PAGE PRESCRIPTION: You are receiving ${totalPages} pages from the same prescription. Combine information from ALL pages into a single unified result. If the same field appears on multiple pages, use the most complete/detailed value. Merge tooth numbers, notes, and instructions from all pages.`
+        : "";
       const visionMessages = [
         {
           role: "system" as const,
-          content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read dental prescription forms from ALL platforms (handwritten paper Rx, iTero, 3Shape, Medit, Carestream, Dentrix, EagleSoft, etc.) and extract ALL information. Read every word on the document carefully.
+          content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read dental prescription forms from ALL platforms (handwritten paper Rx, iTero, 3Shape, Medit, Carestream, Dentrix, EagleSoft, etc.) and extract ALL information. Read every word on the document carefully.${multiPageNote}
 
 Return ONLY valid JSON with these fields:
 {
@@ -670,16 +707,7 @@ IMPORTANT RULES:
         },
         {
           role: "user" as const,
-          content: [
-            {
-              type: "text" as const,
-              text: "Analyze this dental prescription document thoroughly. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully.",
-            },
-            {
-              type: "image_url" as const,
-              image_url: { url: dataUrl, detail: "high" as const },
-            },
-          ],
+          content: imageContentParts,
         },
       ];
 
