@@ -119,6 +119,7 @@ export default function SettingsScreen() {
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
+  const isLabAdmin = userType === "lab" && currentUserData?.role === "admin";
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -319,8 +320,9 @@ export default function SettingsScreen() {
             <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MY LAB</Text>
             <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <Pressable
-                style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                style={({ pressed }) => [styles.menuItem, isLabAdmin && pressed && { opacity: 0.7 }]}
                 onPress={() => {
+                  if (!isLabAdmin) return;
                   setEditLabName(currentUserData?.practiceName || "");
                   setEditLabAddress(currentUserData?.practiceAddress || "");
                   setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
@@ -349,7 +351,7 @@ export default function SettingsScreen() {
                     <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practicePhone || currentUserData?.phone || "Phone not set"}</Text>
                   </View>
                 </View>
-                <Ionicons name="create-outline" size={20} color={colors.textTertiary} />
+                {isLabAdmin && <Ionicons name="create-outline" size={20} color={colors.textTertiary} />}
               </Pressable>
             </View>
           </View>
