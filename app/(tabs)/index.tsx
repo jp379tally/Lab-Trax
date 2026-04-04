@@ -1511,6 +1511,7 @@ type AdminView =
   | "view-statements"
   | "statement-detail-view"
   | "send-statement"
+  | "email-statement-preview"
   | "text-statement"
   | "pick-statement-to-send"
   | "edit-statement-message"
@@ -1588,6 +1589,8 @@ function AdminDashboard() {
   const [clientSearchQuery, setClientSearchQuery] = useState("");
   const [clientDetailInvFilter, setClientDetailInvFilter] = useState<"open" | "all" | "mtd">("open");
   const [clientDetailInvDropdownOpen, setClientDetailInvDropdownOpen] = useState(false);
+  const [emailPreviewStmtData, setEmailPreviewStmtData] = useState<typeof statementPreview>(null);
+  const [emailPreviewBackView, setEmailPreviewBackView] = useState<AdminView>("statements-hub");
   const [sendStatementTarget, setSendStatementTarget] = useState<Client | null>(null);
   const [statementDefaultMessage, setStatementDefaultMessage] = useState("Please remit payment at your earliest convenience. If you have any questions regarding this statement, please do not hesitate to contact us.\n\nThank you for your business.");
   const [editingDefaultMessage, setEditingDefaultMessage] = useState("");
@@ -3040,26 +3043,13 @@ function AdminDashboard() {
                       {
                         text: "Email (PDF)",
                         onPress: () => {
-                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                          statementPreview.forEach((cs) => {
-                            const invoiceDetails = cs.invoices.map((inv) => {
-                              const items = inv.lineItems.map(li => `    ${li.item}: ${formatCurrency(li.amount)}`).join("\n");
-                              return `  ${formatInvNum(inv.invoiceNumber)} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: ${formatCurrency(inv.amount)}`;
-                            }).join("\n\n");
-                            const emailBody = `${statementDefaultMessage}\n\nBilling Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(cs.totalDue)}\n\nPlease remit payment at your earliest convenience.`;
-                            sendStatementEmail(cs.clientName, cs.email, `Billing Statement - ${cs.clientName}`, emailBody);
-                            addNotification({
-                              title: "Statement Emailed",
-                              message: `Statement PDF emailed to ${cs.clientName} (${cs.email || "no email"}). Total due: ${formatCurrency(cs.totalDue)}`,
-                              type: "update",
-                            });
-                          });
-                          const totalAll = statementPreview.reduce((s, cs) => s + cs.totalDue, 0);
-                          Alert.alert(
-                            "Statements Emailed",
-                            `Emailed statement PDFs to ${statementPreview.length} client${statementPreview.length > 1 ? "s" : ""}.\nTotal: ${formatCurrency(totalAll)}`,
-                          );
-                          setStatementPreview(null);
+                          setEmailPreviewStmtData(statementPreview);
+                          const emails = statementPreview.map(cs => cs.email).filter(e => e).join("; ");
+                          setSendEmailTo(emails);
+                          setSendEmailSubject(`Billing Statement - ${statementPreview.map(cs => cs.clientName).join(", ")}`);
+                          setSendEmailMessage(statementDefaultMessage);
+                          setEmailPreviewBackView("statements");
+                          setAdminView("email-statement-preview");
                         },
                       },
                       {
@@ -4178,18 +4168,197 @@ function AdminDashboard() {
             style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
             onPress={() => {
               if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address."); return; }
-              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              const emails = sendEmailTo.split(";").map(e => e.trim()).filter(e => e.length > 0);
-              emails.forEach(email => {
-                sendStatementEmail(sendStatementTarget?.practiceName || "", email, sendEmailSubject, sendEmailMessage);
-              });
-              addNotification({ title: "Statement Sent", message: `Statement for ${sendStatementTarget?.practiceName || ""} emailed to ${emails.join(", ")}`, type: "update" });
-              Alert.alert("Statement Sent", `Statement emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
-              setAdminView("statements-hub");
+              const client = sendStatementTarget;
+              if (client) {
+                const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
+                setEmailPreviewStmtData([{
+                  clientName: client.practiceName,
+                  email: client.email || "",
+                  address: client.address || "",
+                  leadDoctor: client.leadDoctor || "",
+                  invoices: sortedInvs.map(inv => ({
+                    invoiceNumber: inv.invoiceNumber,
+                    amount: inv.amount,
+                    issuedAt: inv.issuedAt,
+                    dueAt: inv.dueAt,
+                    patientName: inv.patientName,
+                    lineItems: (inv.lineItems || []).map(li => ({
+                      item: li.item,
+                      description: li.description,
+                      qty: li.qty,
+                      rate: li.rate,
+                      amount: li.amount,
+                    })),
+                  })),
+                  totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0),
+                }]);
+              }
+              setEmailPreviewBackView("send-statement");
+              setAdminView("email-statement-preview");
             }}
           >
-            <Ionicons name="send" size={18} color="#FFF" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Email</Text>
+            <Ionicons name="eye" size={18} color="#FFF" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Preview & Send</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderEmailStatementPreview() {
+    const stmtDate = new Date().toLocaleDateString();
+    const emails = sendEmailTo.split(";").map(e => e.trim()).filter(e => e.length > 0);
+    const previewData = emailPreviewStmtData || [];
+
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => setAdminView(emailPreviewBackView)} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Email Preview</Text>
+        </View>
+
+        <View style={adm.listArea}>
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+            <View style={{ flexDirection: "row", marginBottom: 10 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, width: 60 }}>To:</Text>
+              <View style={{ flex: 1 }}>
+                {emails.map((email, i) => (
+                  <Text key={i} style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text, marginBottom: 2 }}>{email}</Text>
+                ))}
+              </View>
+            </View>
+            <View style={{ flexDirection: "row", marginBottom: 10 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, width: 60 }}>Subject:</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>{sendEmailSubject}</Text>
+            </View>
+            <View style={{ borderTopWidth: 1, borderTopColor: Colors.light.border, paddingTop: 10 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Message:</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.text, lineHeight: 20 }}>{sendEmailMessage}</Text>
+            </View>
+          </View>
+
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10, gap: 8 }}>
+            <Ionicons name="attach" size={18} color={Colors.light.tint} />
+            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>PDF Attachment Preview</Text>
+          </View>
+
+          {previewData.map((cs, idx) => {
+            let runningBalance = 0;
+            return (
+              <View key={idx} style={{ backgroundColor: "#fff", borderRadius: 14, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border, overflow: "hidden" }}>
+                <View style={{ backgroundColor: Colors.light.tint, paddingVertical: 12, paddingHorizontal: 16 }}>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "center" }}>Statement</Text>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.85)", textAlign: "center", marginTop: 2 }}>Date: {stmtDate}</Text>
+                </View>
+
+                <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 3 }}>To:</Text>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{cs.clientName}</Text>
+                  {cs.leadDoctor ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{cs.leadDoctor}</Text> : null}
+                  {cs.address ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{cs.address}</Text> : null}
+                </View>
+
+                <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 10, marginTop: 8, backgroundColor: Colors.light.tintLight, borderTopWidth: 1, borderBottomWidth: 1, borderColor: Colors.light.border }}>
+                  <View>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Due Date</Text>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{stmtDate}</Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Amount Due</Text>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: Colors.light.error }}>{formatCurrency(cs.totalDue)}</Text>
+                  </View>
+                </View>
+
+                <View style={{ paddingHorizontal: 10, paddingTop: 6 }}>
+                  <View style={{ flexDirection: "row", paddingVertical: 5, paddingHorizontal: 4, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+                    <Text style={{ width: 65, fontSize: 9, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Date</Text>
+                    <Text style={{ flex: 1, fontSize: 9, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Transaction</Text>
+                    <Text style={{ width: 55, fontSize: 9, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textAlign: "right" }}>Amount</Text>
+                    <Text style={{ width: 60, fontSize: 9, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textAlign: "right" }}>Balance</Text>
+                  </View>
+
+                  {cs.invoices.map((inv, invIdx) => {
+                    runningBalance += inv.amount;
+                    return (
+                      <View key={invIdx} style={{ borderBottomWidth: 1, borderBottomColor: Colors.light.border + "60", paddingVertical: 6, paddingHorizontal: 4 }}>
+                        <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
+                          <Text style={{ width: 65, fontSize: 10, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" })}</Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.text, marginTop: 1 }}>{inv.patientName || "—"}</Text>
+                            {inv.lineItems.map((li, liIdx) => (
+                              <Text key={liIdx} style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1, paddingLeft: 6 }}>
+                                {li.item || li.description} — {li.qty} @ {formatCurrency(li.rate)} = {formatCurrency(li.amount)}
+                              </Text>
+                            ))}
+                          </View>
+                          <Text style={{ width: 55, fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.text, textAlign: "right" }}>{formatCurrency(inv.amount)}</Text>
+                          <Text style={{ width: 60, fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.text, textAlign: "right" }}>{formatCurrency(runningBalance)}</Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                <View style={{ backgroundColor: Colors.light.tintLight, paddingVertical: 12, paddingHorizontal: 16, marginTop: 4, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Amount Due</Text>
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.error }}>{formatCurrency(cs.totalDue)}</Text>
+                </View>
+              </View>
+            );
+          })}
+
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+            <Pressable
+              style={({ pressed }) => ({ flex: 1, backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+              onPress={async () => {
+                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                await generateStatementPdfAndShare(previewData);
+                previewData.forEach((cs) => {
+                  emails.forEach(email => {
+                    sendStatementEmail(cs.clientName, email, sendEmailSubject, sendEmailMessage);
+                  });
+                  addNotification({
+                    title: "Statement Emailed",
+                    message: `Statement PDF emailed to ${cs.clientName} (${emails.join(", ")}). Total due: ${formatCurrency(cs.totalDue)}`,
+                    type: "update",
+                  });
+                });
+                const totalAll = previewData.reduce((s, cs) => s + cs.totalDue, 0);
+                Alert.alert("Statement Sent", `Statement PDF emailed to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.\nTotal: ${formatCurrency(totalAll)}`);
+
+                const client = sendStatementTarget;
+                if (client) {
+                  const onFileEmail = client.email || "";
+                  const allEnteredEmails = emails.join("; ");
+                  if (onFileEmail.trim() !== allEnteredEmails.trim() && allEnteredEmails.length > 0) {
+                    Alert.alert(
+                      "Save Email?",
+                      `The email address you entered is different from what's on file for ${client.practiceName}. Would you like to save it?`,
+                      [
+                        { text: "Yes, Save", onPress: () => { updateClient(client.id, { email: allEnteredEmails }); setAdminView("statements-hub"); } },
+                        { text: "No", onPress: () => setAdminView("statements-hub") },
+                      ]
+                    );
+                    return;
+                  }
+                }
+                setStatementPreview(null);
+                setAdminView("statements-hub");
+              }}
+            >
+              <Ionicons name="send" size={18} color="#FFF" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Email with PDF</Text>
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={() => setAdminView(emailPreviewBackView)}
+            style={({ pressed }) => ({ marginTop: 10, backgroundColor: Colors.light.surface, borderRadius: 14, paddingVertical: 14, alignItems: "center" as const, borderWidth: 1, borderColor: Colors.light.border, opacity: pressed ? 0.85 : 1 })}
+          >
+            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Go Back & Edit</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -6536,6 +6705,7 @@ function AdminDashboard() {
     case "view-statements": return renderViewStatements();
     case "statement-detail-view": return renderStatementDetailView();
     case "send-statement": return renderSendStatement();
+    case "email-statement-preview": return renderEmailStatementPreview();
     case "text-statement": return renderTextStatement();
     case "pick-statement-to-send": return renderPickStatementToSend();
     case "edit-statement-message": return renderEditStatementMessage();
