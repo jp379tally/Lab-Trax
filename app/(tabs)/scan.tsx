@@ -151,6 +151,33 @@ export default function ScanScreen() {
   const [customShadePhotos, setCustomShadePhotos] = useState<string[]>([]);
   const [customShadeVideos, setCustomShadeVideos] = useState<string[]>([]);
 
+  const allProviderEntries = React.useMemo(() => {
+    const entries: { providerName: string; practiceName: string; address: string; phone: string; accountNumber: string; clientId: string }[] = [];
+    const seen = new Set<string>();
+    clients.forEach(c => {
+      const key1 = `${c.leadDoctor.toLowerCase()}::${c.id}`;
+      if (!seen.has(key1)) {
+        seen.add(key1);
+        entries.push({ providerName: c.leadDoctor, practiceName: c.practiceName, address: c.address, phone: c.phone, accountNumber: c.accountNumber, clientId: c.id });
+      }
+      (c.additionalProviders || []).forEach(prov => {
+        const trimmed = prov.trim();
+        if (!trimmed) return;
+        const key2 = `${trimmed.toLowerCase()}::${c.id}`;
+        if (!seen.has(key2)) {
+          seen.add(key2);
+          entries.push({ providerName: trimmed, practiceName: c.practiceName, address: c.address, phone: c.phone, accountNumber: c.accountNumber, clientId: c.id });
+        }
+      });
+    });
+    return entries;
+  }, [clients]);
+
+  const filteredProviderEntries = allProviderEntries.filter((e) => {
+    const q = doctorSearch.toLowerCase();
+    return e.providerName.toLowerCase().includes(q) || e.practiceName.toLowerCase().includes(q);
+  });
+
   const filteredClients = clients.filter((c) => {
     const q = doctorSearch.toLowerCase();
     return c.leadDoctor.toLowerCase().includes(q) || c.practiceName.toLowerCase().includes(q);
@@ -1128,7 +1155,7 @@ export default function ScanScreen() {
             const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
             const drNameNorm = stripDr(d.doctorName);
             const existingClient = clients.find(
-              (c) => stripDr(c.leadDoctor) === drNameNorm
+              (c) => stripDr(c.leadDoctor) === drNameNorm || (c.additionalProviders || []).some(p => stripDr(p) === drNameNorm)
             );
             if (!existingClient) {
               setTimeout(() => {
@@ -2254,43 +2281,46 @@ export default function ScanScreen() {
                       <Text style={styles.addNewPatientBtnText}>Add New Doctor</Text>
                     </Pressable>
                     <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                      {filteredClients.length === 0 ? (
-                        <Text style={styles.dropdownEmpty}>No matching clients</Text>
+                      {filteredProviderEntries.length === 0 ? (
+                        <Text style={styles.dropdownEmpty}>No matching providers</Text>
                       ) : (
-                        filteredClients.map((c) => (
-                          <Pressable
-                            key={c.id}
-                            onPress={() => {
-                              setDoctorName(c.leadDoctor);
-                              setDoctorDropdownOpen(false);
-                              setDoctorSearch("");
-                              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                            }}
-                            style={({ pressed }) => [
-                              styles.dropdownItem,
-                              doctorName === c.leadDoctor && styles.dropdownItemSelected,
-                              pressed && { opacity: 0.7 },
-                            ]}
-                          >
-                            <View style={styles.dropdownItemLeft}>
-                              <View style={[styles.dropdownAvatar, doctorName === c.leadDoctor && { backgroundColor: Colors.light.tint }]}>
-                                <Text style={[styles.dropdownAvatarText, doctorName === c.leadDoctor && { color: "#FFF" }]}>
-                                  {c.leadDoctor.replace("Dr. ", "").charAt(0)}
-                                </Text>
+                        filteredProviderEntries.map((entry, idx) => {
+                          const isSelected = doctorName === entry.providerName;
+                          return (
+                            <Pressable
+                              key={`${entry.clientId}-${entry.providerName}-${idx}`}
+                              onPress={() => {
+                                setDoctorName(entry.providerName);
+                                setDoctorDropdownOpen(false);
+                                setDoctorSearch("");
+                                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              }}
+                              style={({ pressed }) => [
+                                styles.dropdownItem,
+                                isSelected && styles.dropdownItemSelected,
+                                pressed && { opacity: 0.7 },
+                              ]}
+                            >
+                              <View style={styles.dropdownItemLeft}>
+                                <View style={[styles.dropdownAvatar, isSelected && { backgroundColor: Colors.light.tint }]}>
+                                  <Text style={[styles.dropdownAvatarText, isSelected && { color: "#FFF" }]}>
+                                    {entry.providerName.replace(/^Dr\.\s*/i, "").charAt(0)}
+                                  </Text>
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={[styles.dropdownItemName, isSelected && { color: Colors.light.tint }]}>
+                                    {cleanDoctorDisplay(entry.providerName)}{entry.accountNumber && !entry.providerName.includes(entry.accountNumber) ? ` ${formatAcctNum(entry.accountNumber)}` : ""}
+                                  </Text>
+                                  <Text style={styles.dropdownItemSub}>{entry.practiceName}</Text>
+                                  {entry.address ? <Text style={styles.dropdownItemAddr} numberOfLines={1}>{entry.address}</Text> : null}
+                                </View>
                               </View>
-                              <View style={{ flex: 1 }}>
-                                <Text style={[styles.dropdownItemName, doctorName === c.leadDoctor && { color: Colors.light.tint }]}>
-                                  {cleanDoctorDisplay(c.leadDoctor)}{c.accountNumber && !c.leadDoctor.includes(c.accountNumber) ? ` ${formatAcctNum(c.accountNumber)}` : ""}
-                                </Text>
-                                <Text style={styles.dropdownItemSub}>{c.practiceName}</Text>
-                                {c.address ? <Text style={styles.dropdownItemAddr} numberOfLines={1}>{c.address}</Text> : null}
-                              </View>
-                            </View>
-                            {doctorName === c.leadDoctor && (
-                              <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
-                            )}
-                          </Pressable>
-                        ))
+                              {isSelected && (
+                                <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                              )}
+                            </Pressable>
+                          );
+                        })
                       )}
                     </ScrollView>
                   </>
