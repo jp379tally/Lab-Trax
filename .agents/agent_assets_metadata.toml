@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "rBD0L8oyTa7tMvP0SkNiK"
+uri = "file://UPDATE_NOTES.md"
+type = "text"
+title = "LabTrax Build Update Notes - April 4, 2026"
