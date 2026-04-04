@@ -12,6 +12,7 @@ import {
   Alert,
   Modal,
   Dimensions,
+  Linking,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -2918,26 +2919,67 @@ function AdminDashboard() {
                   opacity: pressed ? 0.85 : 1,
                 })}
                 onPress={() => {
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  statementPreview.forEach((cs) => {
-                    const invoiceDetails = cs.invoices.map((inv) => {
-                      const items = inv.lineItems.map(li => `    ${li.item}: ${formatCurrency(li.amount)}`).join("\n");
-                      return `  ${formatInvNum(inv.invoiceNumber)} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: ${formatCurrency(inv.amount)}`;
-                    }).join("\n\n");
-                    const emailBody = `Billing Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(cs.totalDue)}\n\nPlease remit payment at your earliest convenience.\n\nThank you,\nLabTrax`;
-                    sendStatementEmail(cs.clientName, cs.email, `Billing Statement - ${cs.clientName}`, emailBody);
-                    addNotification({
-                      title: "Statement Generated",
-                      message: `A billing statement has been generated for ${cs.clientName}. Total due: ${formatCurrency(cs.totalDue)}`,
-                      type: "update",
-                    });
-                  });
-                  const totalAll = statementPreview.reduce((s, cs) => s + cs.totalDue, 0);
                   Alert.alert(
-                    "Statements Sent",
-                    `Emailed statements to ${statementPreview.length} client${statementPreview.length > 1 ? "s" : ""}.\nTotal: ${formatCurrency(totalAll)}`,
+                    "Send Statements",
+                    "How would you like to send the statements?",
+                    [
+                      {
+                        text: "Email (PDF)",
+                        onPress: () => {
+                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                          statementPreview.forEach((cs) => {
+                            const invoiceDetails = cs.invoices.map((inv) => {
+                              const items = inv.lineItems.map(li => `    ${li.item}: ${formatCurrency(li.amount)}`).join("\n");
+                              return `  ${formatInvNum(inv.invoiceNumber)} (Issued: ${new Date(inv.issuedAt).toLocaleDateString()})\n  Patient: ${inv.patientName}\n${items}\n  Subtotal: ${formatCurrency(inv.amount)}`;
+                            }).join("\n\n");
+                            const emailBody = `${statementDefaultMessage}\n\nBilling Statement for ${cs.clientName}\n\nOpen Invoices:\n${invoiceDetails}\n\nTotal Due: ${formatCurrency(cs.totalDue)}\n\nPlease remit payment at your earliest convenience.`;
+                            sendStatementEmail(cs.clientName, cs.email, `Billing Statement - ${cs.clientName}`, emailBody);
+                            addNotification({
+                              title: "Statement Emailed",
+                              message: `Statement PDF emailed to ${cs.clientName} (${cs.email || "no email"}). Total due: ${formatCurrency(cs.totalDue)}`,
+                              type: "update",
+                            });
+                          });
+                          const totalAll = statementPreview.reduce((s, cs) => s + cs.totalDue, 0);
+                          Alert.alert(
+                            "Statements Emailed",
+                            `Emailed statement PDFs to ${statementPreview.length} client${statementPreview.length > 1 ? "s" : ""}.\nTotal: ${formatCurrency(totalAll)}`,
+                          );
+                          setStatementPreview(null);
+                        },
+                      },
+                      {
+                        text: "Text (PDF)",
+                        onPress: () => {
+                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                          const phones = statementPreview.map(cs => {
+                            const client = clients.find(cl => cl.practiceName === cs.clientName);
+                            return client?.phone || "";
+                          }).filter(p => p);
+                          if (phones.length === 0) {
+                            Alert.alert("No Phone Numbers", "None of the selected clients have phone numbers on file. Please add phone numbers to client records first.");
+                            return;
+                          }
+                          const smsBody = encodeURIComponent(`${statementDefaultMessage}\n\nPlease see the attached statement PDF for billing details. Total due: ${formatCurrency(statementPreview.reduce((s, cs) => s + cs.totalDue, 0))}`);
+                          const smsUrl = Platform.OS === "ios"
+                            ? `sms:${phones.join(",")}&body=${smsBody}`
+                            : `sms:${phones.join(",")}?body=${smsBody}`;
+                          Linking.openURL(smsUrl).catch(() => {
+                            Alert.alert("Unable to Open", "Could not open the messaging app.");
+                          });
+                          statementPreview.forEach((cs) => {
+                            addNotification({
+                              title: "Statement Texted",
+                              message: `Statement sent via text to ${cs.clientName}. Total due: ${formatCurrency(cs.totalDue)}`,
+                              type: "update",
+                            });
+                          });
+                          setStatementPreview(null);
+                        },
+                      },
+                      { text: "Cancel", style: "cancel" },
+                    ]
                   );
-                  setStatementPreview(null);
                 }}
               >
                 <Ionicons name="send" size={18} color="#FFF" />
