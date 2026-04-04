@@ -3153,26 +3153,40 @@ function AdminDashboard() {
             </View>
           </View>
 
-          <Pressable
-            style={({ pressed }) => ({ backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
-            onPress={() => {
-              Alert.alert("View Invoices", "Which invoices would you like to view?", [
-                { text: "Open Invoices", onPress: () => { setInvoiceFilter("open"); setAdminView("view-invoices"); } },
-                { text: "Past Due Invoices", onPress: () => { setInvoiceFilter("pastdue"); setAdminView("view-invoices"); } },
-                { text: "All Invoices", onPress: () => { setInvoiceFilter("all"); setAdminView("view-invoices"); } },
-                { text: "Cancel", style: "cancel" },
-              ]);
-            }}
-          >
-            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center" }}>
-              <Ionicons name="eye-outline" size={20} color="#fff" />
+          <View style={{ backgroundColor: Colors.light.tint, borderRadius: 14, marginBottom: 12, overflow: "hidden" as const }}>
+            <View style={{ paddingVertical: 14, paddingHorizontal: 20, flexDirection: "row" as const, alignItems: "center" as const, gap: 12 }}>
+              <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center" as const, justifyContent: "center" as const }}>
+                <Ionicons name="eye-outline" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>View Invoices</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>Select a category below</Text>
+              </View>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>View Invoices</Text>
-              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>Open, past due, or all invoices</Text>
+            <View style={{ flexDirection: "row" as const, gap: 1, backgroundColor: "rgba(255,255,255,0.15)" }}>
+              <Pressable
+                style={({ pressed }) => ({ flex: 1, backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)", paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const })}
+                onPress={() => { setInvoiceFilter("open"); setAdminView("view-invoices"); }}
+              >
+                <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#fff" }}>{openCount}</Text>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>Open</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => ({ flex: 1, backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)", paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const })}
+                onPress={() => { setInvoiceFilter("pastdue"); setAdminView("view-invoices"); }}
+              >
+                <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#FCA5A5" }}>{overdueCount}</Text>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>Past Due</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => ({ flex: 1, backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)", paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const })}
+                onPress={() => { setInvoiceFilter("all"); setAdminView("view-invoices"); }}
+              >
+                <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#fff" }}>{allCount}</Text>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>All</Text>
+              </Pressable>
             </View>
-            <Ionicons name="chevron-forward" size={20} color="rgba(255,255,255,0.6)" />
-          </Pressable>
+          </View>
 
           <Pressable
             style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
