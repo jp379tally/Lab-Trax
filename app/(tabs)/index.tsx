@@ -4392,34 +4392,30 @@ function AdminDashboard() {
           {openBalance > 0 && (
             <Pressable
               onPress={() => {
-                Alert.alert("Statement Options", `${selectedClient.practiceName} - ${formatCurrency(openBalance)}`, [
-                  {
-                    text: "View Statement",
-                    onPress: () => {
-                      setStatementViewClient(selectedClient);
-                      setStatementFilter("open");
-                      setAdminView("statement-detail-view");
-                    },
-                  },
-                  {
-                    text: "Email Statement",
-                    onPress: () => {
-                      setSendStatementTarget(selectedClient);
-                      setSendEmailTo(selectedClient.email || "");
-                      setSendEmailSubject(`Billing Statement - ${selectedClient.practiceName}`);
-                      const invDetails = openInvoices.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
-                      setSendEmailMessage(`Dear ${selectedClient.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(openBalance)}\n\n${statementDefaultMessage}`);
-                      setAdminView("send-statement");
-                    },
-                  },
-                  {
-                    text: "Text Statement",
-                    onPress: () => {
-                      Alert.alert("Coming Soon", "Text message statements will be available in a future update.");
-                    },
-                  },
-                  { text: "Cancel", style: "cancel" },
-                ]);
+                const sortedInvs = [...openInvoices].sort((a, b) => a.issuedAt - b.issuedAt);
+                const preview = [{
+                  clientName: selectedClient.practiceName,
+                  email: selectedClient.email || "",
+                  address: selectedClient.address || "",
+                  leadDoctor: selectedClient.leadDoctor || "",
+                  invoices: sortedInvs.map(inv => ({
+                    invoiceNumber: inv.invoiceNumber,
+                    amount: inv.amount,
+                    issuedAt: inv.issuedAt,
+                    dueAt: inv.dueAt,
+                    patientName: inv.patientName,
+                    lineItems: (inv.lineItems || []).map(li => ({
+                      item: li.item,
+                      description: li.description,
+                      qty: li.qty,
+                      rate: li.rate,
+                      amount: li.amount,
+                    })),
+                  })),
+                  totalDue: openBalance,
+                }];
+                setStatementPreview(preview);
+                setAdminView("statements");
               }}
               style={({ pressed }) => ({
                 flex: 1,
