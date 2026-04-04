@@ -1967,7 +1967,6 @@ function AdminDashboard() {
     const clientMenuItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
       { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${activeClientCount} practices · ${formatCurrency(totalOpenBalance)} open`, view: "clients" },
       { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
-      { icon: "people", color: Colors.light.accent, bg: Colors.light.accentLight, title: "Edit Client", sub: `${activeClientCount} registered practices`, view: "edit-client" },
     ];
     return (
       <ScrollView
@@ -2193,7 +2192,7 @@ function AdminDashboard() {
           }}
           showsVerticalScrollIndicator={false}
         >
-          {renderBackHeader("Edit Client", "client-hub")}
+          {renderBackHeader("Edit Client", selectedClient ? "client-detail" : "client-hub")}
           <View style={adm.formArea}>
             <View style={adm.field}>
               <Text style={adm.fieldLabel}>Practice Name</Text>
@@ -4542,37 +4541,6 @@ function AdminDashboard() {
             <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{selectedClient.practiceName}</Text>
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Dr. {selectedClient.leadDoctor}</Text>
           </View>
-          <Pressable
-            onPress={() => {
-              setEditingClient(selectedClient);
-              const tier = pricingTiers.find(t => t.name === selectedClient.tier);
-              const newPrices: Record<string, string> = {};
-              PRICE_LIST_ITEMS.forEach(item => {
-                if (selectedClient.customPricing && selectedClient.customPricing[item.key] !== undefined) {
-                  newPrices[item.key] = selectedClient.customPricing[item.key].toString();
-                } else if (tier) {
-                  newPrices[item.key] = tier.prices[item.key]?.toString() || "";
-                } else {
-                  newPrices[item.key] = "";
-                }
-              });
-              setPriceList(newPrices);
-              setAdminView("edit-client");
-            }}
-            style={({ pressed }) => ({
-              flexDirection: "row",
-              alignItems: "center",
-              backgroundColor: Colors.light.tint,
-              paddingHorizontal: 14,
-              paddingVertical: 8,
-              borderRadius: 10,
-              gap: 6,
-              opacity: pressed ? 0.8 : 1,
-            })}
-          >
-            <Ionicons name="create-outline" size={16} color="#FFF" />
-            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Edit</Text>
-          </Pressable>
         </View>
 
         <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, padding: 16, marginBottom: 12, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}>
@@ -4625,25 +4593,30 @@ function AdminDashboard() {
           </View>
         </View>
 
-        <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 10 }}>
-          <Pressable
-            onPress={() => setAdminView("client-stats")}
-            style={({ pressed }) => ({
-              flex: 1,
-              backgroundColor: "#EDE9FE",
-              borderRadius: 14,
-              paddingVertical: 14,
-              alignItems: "center",
-              flexDirection: "row",
-              justifyContent: "center",
-              gap: 8,
-              opacity: pressed ? 0.8 : 1,
-            })}
-          >
-            <Ionicons name="bar-chart" size={20} color="#7C3AED" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Account Stats</Text>
-          </Pressable>
-          {openBalance > 0 && (
+        <View style={{ marginHorizontal: 16, marginBottom: 12, gap: 8 }}>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Pressable
+              onPress={() => {
+                setEditingClient(selectedClient);
+                const tier = pricingTiers.find(t => t.name === selectedClient.tier);
+                const newPrices: Record<string, string> = {};
+                PRICE_LIST_ITEMS.forEach(item => {
+                  if (selectedClient.customPricing && selectedClient.customPricing[item.key] !== undefined) {
+                    newPrices[item.key] = selectedClient.customPricing[item.key].toString();
+                  } else if (tier) {
+                    newPrices[item.key] = tier.prices[item.key]?.toString() || "";
+                  } else {
+                    newPrices[item.key] = "";
+                  }
+                });
+                setPriceList(newPrices);
+                setAdminView("edit-client");
+              }}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: "#EDE9FE", borderRadius: 12, paddingVertical: 12, alignItems: "center" as const, justifyContent: "center" as const, flexDirection: "row" as const, gap: 6, opacity: pressed ? 0.8 : 1 })}
+            >
+              <Ionicons name="create-outline" size={18} color="#7C3AED" />
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Edit Client</Text>
+            </Pressable>
             <Pressable
               onPress={() => {
                 const sortedInvs = [...openInvoices].sort((a, b) => a.issuedAt - b.issuedAt);
@@ -4662,6 +4635,10 @@ function AdminDashboard() {
                   })),
                 }));
                 const computedTotal = mappedInvoices.reduce((s, inv) => s + inv.amount, 0);
+                if (computedTotal === 0) {
+                  Alert.alert("No Open Invoices", "This client has no open invoices to generate a statement for.");
+                  return;
+                }
                 const preview = [{
                   clientName: selectedClient.practiceName,
                   email: selectedClient.email || "",
@@ -4673,22 +4650,71 @@ function AdminDashboard() {
                 setStatementPreview(preview);
                 setAdminView("statements");
               }}
-              style={({ pressed }) => ({
-                flex: 1,
-                backgroundColor: Colors.light.tint,
-                borderRadius: 14,
-                paddingVertical: 14,
-                alignItems: "center",
-                flexDirection: "row",
-                justifyContent: "center",
-                gap: 8,
-                opacity: pressed ? 0.8 : 1,
-              })}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: Colors.light.tint, borderRadius: 12, paddingVertical: 12, alignItems: "center" as const, justifyContent: "center" as const, flexDirection: "row" as const, gap: 6, opacity: pressed ? 0.8 : 1 })}
             >
-              <Ionicons name="document-text" size={20} color="#fff" />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Statement</Text>
+              <Ionicons name="document-text" size={18} color="#fff" />
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Send Statement</Text>
             </Pressable>
-          )}
+          </View>
+
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Pressable
+              onPress={() => {
+                if (openInvoices.length === 0) {
+                  Alert.alert("No Open Invoices", "There are no open invoices to send.");
+                  return;
+                }
+                setSelectedInvoiceIds(openInvoices.map(inv => inv.id));
+                setSendInvoiceMode("email");
+                setAdminView("pick-invoice-to-send");
+              }}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: "#DBEAFE", borderRadius: 12, paddingVertical: 12, alignItems: "center" as const, justifyContent: "center" as const, flexDirection: "row" as const, gap: 6, opacity: pressed ? 0.8 : 1 })}
+            >
+              <Ionicons name="receipt-outline" size={18} color="#2563EB" />
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#2563EB" }}>Send Invoices</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                if (!selectedClient.phone) {
+                  Alert.alert("No Phone Number", "This client doesn't have a phone number on file. Please add one in Edit Client.");
+                  return;
+                }
+                const smsUrl = Platform.OS === "ios"
+                  ? `sms:${selectedClient.phone}`
+                  : `sms:${selectedClient.phone}`;
+                Linking.openURL(smsUrl).catch(() => {
+                  Alert.alert("Unable to Open", "Could not open the messaging app.");
+                });
+              }}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: "#D1FAE5", borderRadius: 12, paddingVertical: 12, alignItems: "center" as const, justifyContent: "center" as const, flexDirection: "row" as const, gap: 6, opacity: pressed ? 0.8 : 1 })}
+            >
+              <Ionicons name="chatbubble-outline" size={18} color="#059669" />
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#059669" }}>Text</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                if (!selectedClient.phone) {
+                  Alert.alert("No Phone Number", "This client doesn't have a phone number on file. Please add one in Edit Client.");
+                  return;
+                }
+                Linking.openURL(`tel:${selectedClient.phone}`).catch(() => {
+                  Alert.alert("Unable to Call", "Could not open the phone app.");
+                });
+              }}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: "#FEF3C7", borderRadius: 12, paddingVertical: 12, alignItems: "center" as const, justifyContent: "center" as const, flexDirection: "row" as const, gap: 6, opacity: pressed ? 0.8 : 1 })}
+            >
+              <Ionicons name="call-outline" size={18} color="#D97706" />
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#D97706" }}>Call</Text>
+            </Pressable>
+          </View>
+
+          <Pressable
+            onPress={() => setAdminView("client-stats")}
+            style={({ pressed }) => ({ backgroundColor: Colors.light.surfaceAlt, borderRadius: 12, paddingVertical: 12, alignItems: "center" as const, justifyContent: "center" as const, flexDirection: "row" as const, gap: 6, opacity: pressed ? 0.8 : 1 })}
+          >
+            <Ionicons name="bar-chart" size={18} color={Colors.light.textSecondary} />
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Account Stats</Text>
+          </Pressable>
         </View>
 
         <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
