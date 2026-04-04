@@ -4533,8 +4533,8 @@ function AdminDashboard() {
 
     return (
       <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingBottom: 40 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
-          <Pressable onPress={() => { setSelectedClient(null); setAdminView("clients"); }} style={{ marginRight: 12 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: (Platform.OS === "web" ? 67 : insets.top) + 12, paddingBottom: 8 }}>
+          <Pressable onPress={() => { setSelectedClient(null); setAdminView("clients"); }} style={{ marginRight: 12, width: 40, height: 40, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
           </Pressable>
           <View style={{ flex: 1 }}>
