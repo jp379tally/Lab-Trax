@@ -1565,7 +1565,9 @@ function AdminDashboard() {
   const [statementPreview, setStatementPreview] = useState<{
     clientName: string;
     email: string;
-    invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; amount: number }[] }[];
+    address: string;
+    leadDoctor: string;
+    invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; qty: number; rate: number; amount: number }[] }[];
     totalDue: number;
   }[] | null>(null);
 
@@ -2853,6 +2855,7 @@ function AdminDashboard() {
 
   function renderStatements() {
     if (statementPreview) {
+      const stmtDate = new Date().toLocaleDateString();
       return (
         <ScrollView
           style={styles.container}
@@ -2863,55 +2866,78 @@ function AdminDashboard() {
           showsVerticalScrollIndicator={false}
         >
           <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
-            <Pressable onPress={() => setStatementPreview(null)} style={{ marginRight: 12 }}>
+            <Pressable onPress={() => setStatementPreview(null)} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
               <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
             </Pressable>
             <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Statement Preview</Text>
           </View>
 
           <View style={adm.listArea}>
-            {statementPreview.map((clientStatement, idx) => (
-              <View key={idx} style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border }}>
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                  <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{clientStatement.clientName}</Text>
-                  <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.error }}>
-                    {formatCurrency(clientStatement.totalDue)}
-                  </Text>
-                </View>
-                {clientStatement.email ? (
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 12 }}>
-                    Email: {clientStatement.email}
-                  </Text>
-                ) : null}
-
-                {clientStatement.invoices.map((inv, invIdx) => (
-                  <View key={invIdx} style={{ borderTopWidth: 1, borderTopColor: Colors.light.border, paddingTop: 10, marginTop: invIdx > 0 ? 10 : 0 }}>
-                    <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}>
-                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
-                      <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
-                        {formatCurrency(inv.amount)}
-                      </Text>
-                    </View>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 2 }}>
-                      Patient: {inv.patientName}
-                    </Text>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 6 }}>
-                      Issued: {new Date(inv.issuedAt).toLocaleDateString()} · Due: {new Date(inv.dueAt).toLocaleDateString()}
-                    </Text>
-                    {inv.lineItems.length > 0 && (
-                      <View style={{ backgroundColor: Colors.light.background, borderRadius: 8, padding: 8 }}>
-                        {inv.lineItems.map((li, liIdx) => (
-                          <View key={liIdx} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 3 }}>
-                            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.text, flex: 1 }}>{li.item}{li.description ? ` - ${li.description}` : ""}</Text>
-                            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.text }}>{formatCurrency(li.amount)}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    )}
+            {statementPreview.map((cs, idx) => {
+              let runningBalance = 0;
+              return (
+                <View key={idx} style={{ backgroundColor: "#fff", borderRadius: 14, marginBottom: 20, borderWidth: 1, borderColor: Colors.light.border, overflow: "hidden" }}>
+                  <View style={{ backgroundColor: Colors.light.tint, paddingVertical: 14, paddingHorizontal: 16 }}>
+                    <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "center" }}>Statement</Text>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.85)", textAlign: "center", marginTop: 2 }}>Date: {stmtDate}</Text>
                   </View>
-                ))}
-              </View>
-            ))}
+
+                  <View style={{ paddingHorizontal: 16, paddingTop: 14 }}>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 4 }}>To:</Text>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{cs.clientName}</Text>
+                    {cs.leadDoctor ? <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{cs.leadDoctor}</Text> : null}
+                    {cs.address ? <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{cs.address}</Text> : null}
+                  </View>
+
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 12, marginTop: 8, backgroundColor: Colors.light.tintLight, borderTopWidth: 1, borderBottomWidth: 1, borderColor: Colors.light.border }}>
+                    <View>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Due Date</Text>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{stmtDate}</Text>
+                    </View>
+                    <View style={{ alignItems: "flex-end" }}>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Amount Due</Text>
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.error }}>{formatCurrency(cs.totalDue)}</Text>
+                    </View>
+                  </View>
+
+                  <View style={{ paddingHorizontal: 12, paddingTop: 8 }}>
+                    <View style={{ flexDirection: "row", paddingVertical: 6, paddingHorizontal: 4, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+                      <Text style={{ width: 70, fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Date</Text>
+                      <Text style={{ flex: 1, fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Transaction</Text>
+                      <Text style={{ width: 60, fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textAlign: "right" }}>Amount</Text>
+                      <Text style={{ width: 70, fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textAlign: "right" }}>Balance</Text>
+                    </View>
+
+                    {cs.invoices.map((inv, invIdx) => {
+                      runningBalance += inv.amount;
+                      return (
+                        <View key={invIdx} style={{ borderBottomWidth: 1, borderBottomColor: Colors.light.border + "60", paddingVertical: 8, paddingHorizontal: 4 }}>
+                          <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
+                            <Text style={{ width: 70, fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" })}</Text>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>INV #{inv.invoiceNumber}. Orig. Amount {formatCurrency(inv.amount)}.</Text>
+                              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.text, marginTop: 2 }}>{inv.patientName || "—"}</Text>
+                              {inv.lineItems.map((li, liIdx) => (
+                                <Text key={liIdx} style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1, paddingLeft: 8 }}>
+                                  --- {li.item || li.description}, {li.qty} @ {formatCurrency(li.rate)} = {formatCurrency(li.amount)}
+                                </Text>
+                              ))}
+                            </View>
+                            <Text style={{ width: 60, fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.text, textAlign: "right" }}>{formatCurrency(inv.amount)}</Text>
+                            <Text style={{ width: 70, fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.text, textAlign: "right" }}>{formatCurrency(runningBalance)}</Text>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+
+                  <View style={{ backgroundColor: Colors.light.tintLight, paddingVertical: 14, paddingHorizontal: 16, marginTop: 4, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Amount Due</Text>
+                    <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.error }}>{formatCurrency(cs.totalDue)}</Text>
+                  </View>
+                </View>
+              );
+            })}
 
             <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
               <Pressable
@@ -3034,10 +3060,13 @@ function AdminDashboard() {
             function generatePreviewForClients(selectedClients: typeof clients) {
               return selectedClients.map((c) => {
                 const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
+                clientInvs.sort((a, b) => a.issuedAt - b.issuedAt);
                 const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
                 return {
                   clientName: c.practiceName,
                   email: c.email || "",
+                  address: c.address || "",
+                  leadDoctor: c.leadDoctor || "",
                   invoices: clientInvs.map(inv => ({
                     invoiceNumber: inv.invoiceNumber,
                     amount: inv.amount,
@@ -3047,6 +3076,8 @@ function AdminDashboard() {
                     lineItems: (inv.lineItems || []).map(li => ({
                       item: li.item,
                       description: li.description,
+                      qty: li.qty,
+                      rate: li.rate,
                       amount: li.amount,
                     })),
                   })),
@@ -3536,10 +3567,13 @@ function AdminDashboard() {
               const preview = clientNames.map(name => {
                 const client = clients.find(cl => cl.practiceName === name);
                 const clientInvs = allOpen.filter(inv => inv.clientName === name);
+                clientInvs.sort((a, b) => a.issuedAt - b.issuedAt);
                 return {
                   clientName: name,
                   email: client?.email || "",
-                  invoices: clientInvs.map(inv => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, issuedAt: inv.issuedAt, dueAt: inv.dueAt, patientName: inv.patientName, lineItems: (inv.lineItems || []).map(li => ({ item: li.item, description: li.description, amount: li.amount })) })),
+                  address: client?.address || "",
+                  leadDoctor: client?.leadDoctor || "",
+                  invoices: clientInvs.map(inv => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, issuedAt: inv.issuedAt, dueAt: inv.dueAt, patientName: inv.patientName, lineItems: (inv.lineItems || []).map(li => ({ item: li.item, description: li.description, qty: li.qty, rate: li.rate, amount: li.amount })) })),
                   totalDue: clientInvs.reduce((s, inv) => s + inv.amount, 0),
                 };
               });
