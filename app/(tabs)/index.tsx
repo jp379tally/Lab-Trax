@@ -1502,6 +1502,7 @@ type AdminView =
   | "invoice-detail"
   | "view-invoices"
   | "send-invoice"
+  | "text-invoice"
   | "statements"
   | "statements-hub"
   | "view-statements"
@@ -1572,6 +1573,8 @@ function AdminDashboard() {
   const [sendEmailMessage, setSendEmailMessage] = useState("");
   const [sendEmailSubject, setSendEmailSubject] = useState("");
   const [sendInvoiceTarget, setSendInvoiceTarget] = useState<Invoice | null>(null);
+  const [sendTextTo, setSendTextTo] = useState("");
+  const [sendTextMessage, setSendTextMessage] = useState("");
   const [sendStatementTarget, setSendStatementTarget] = useState<Client | null>(null);
   const [statementDefaultMessage, setStatementDefaultMessage] = useState("Please remit payment at your earliest convenience. If you have any questions regarding this statement, please do not hesitate to contact us.\n\nThank you for your business.");
   const [editingDefaultMessage, setEditingDefaultMessage] = useState("");
@@ -3223,21 +3226,11 @@ function AdminDashboard() {
                       ...openInvs.slice(0, 10).map(inv => ({
                         text: `${formatInvNum(inv.invoiceNumber)} - ${inv.clientName} (${formatCurrency(inv.amount)})`,
                         onPress: () => {
+                          setSendInvoiceTarget(inv);
                           const client = clients.find(c => c.practiceName === inv.clientName);
-                          const phone = client?.phone || "";
-                          if (!phone) {
-                            Alert.alert("No Phone Number", `${inv.clientName} does not have a phone number on file. Please add one in the client record first.`);
-                            return;
-                          }
-                          const smsBody = encodeURIComponent(`${statementDefaultMessage}\n\nInvoice ${formatInvNum(inv.invoiceNumber)}\nAmount: ${formatCurrency(inv.amount)}\nDue: ${new Date(inv.dueAt).toLocaleDateString()}\n\nPlease see the attached invoice PDF for details.`);
-                          const smsUrl = Platform.OS === "ios"
-                            ? `sms:${phone}&body=${smsBody}`
-                            : `sms:${phone}?body=${smsBody}`;
-                          Linking.openURL(smsUrl).catch(() => {
-                            Alert.alert("Unable to Open", "Could not open the messaging app.");
-                          });
-                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                          addNotification({ title: "Invoice Texted", message: `Invoice ${formatInvNum(inv.invoiceNumber)} sent via text to ${inv.clientName}`, type: "update" });
+                          setSendTextTo(client?.phone || "");
+                          setSendTextMessage(`${statementDefaultMessage}\n\nInvoice ${formatInvNum(inv.invoiceNumber)}\nAmount: ${formatCurrency(inv.amount)}\nDue: ${new Date(inv.dueAt).toLocaleDateString()}\n\nPlease see the attached invoice PDF for details.`);
+                          setAdminView("text-invoice");
                         },
                       })),
                       { text: "Cancel", style: "cancel" as const },
@@ -3395,6 +3388,84 @@ function AdminDashboard() {
           >
             <Ionicons name="send" size={18} color="#FFF" />
             <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Email</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderTextInvoice() {
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
+          <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
+            <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Text Invoice</Text>
+        </View>
+        <View style={adm.listArea}>
+          {sendInvoiceTarget && (
+            <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 4 }}>{formatInvNum(sendInvoiceTarget.invoiceNumber)}</Text>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>{sendInvoiceTarget.clientName} · {formatCurrency(sendInvoiceTarget.amount)}</Text>
+            </View>
+          )}
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Phone Number</Text>
+          <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendTextTo} onChangeText={setSendTextTo} placeholder="Enter phone number" keyboardType="phone-pad" />
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Please separate each phone number with a ;</Text>
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Message</Text>
+          <TextInput style={[adm.input, { height: 160, textAlignVertical: "top" }]} value={sendTextMessage} onChangeText={setSendTextMessage} placeholder="Text message" multiline numberOfLines={8} />
+
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4, marginBottom: 16 }}>The invoice will be attached as a PDF</Text>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              if (!sendTextTo.trim()) { Alert.alert("Required", "Please enter a phone number."); return; }
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              const phones = sendTextTo.split(";").map(p => p.trim()).filter(p => p.length > 0);
+              const smsBody = encodeURIComponent(sendTextMessage);
+              const smsUrl = Platform.OS === "ios"
+                ? `sms:${phones.join(",")}&body=${smsBody}`
+                : `sms:${phones.join(",")}?body=${smsBody}`;
+              Linking.openURL(smsUrl).catch(() => {
+                Alert.alert("Unable to Open", "Could not open the messaging app.");
+              });
+              addNotification({ title: "Invoice Texted", message: `Invoice ${sendInvoiceTarget ? formatInvNum(sendInvoiceTarget.invoiceNumber) : ""} texted to ${phones.join(", ")}`, type: "update" });
+
+              const client = sendInvoiceTarget ? clients.find(c => c.practiceName === sendInvoiceTarget.clientName) : null;
+              const onFilePhone = client?.phone || "";
+              const allEnteredPhones = phones.join("; ");
+              const phoneChanged = onFilePhone.trim() !== allEnteredPhones.trim() && allEnteredPhones.length > 0;
+
+              if (phoneChanged && client) {
+                Alert.alert(
+                  "Save Phone Number?",
+                  `The phone number you entered (${allEnteredPhones}) is different from what's on file for ${client.practiceName}. Would you like to save this as the default phone number for future text messages?`,
+                  [
+                    {
+                      text: "Yes, Save",
+                      onPress: () => {
+                        updateClient(client.id, { phone: allEnteredPhones });
+                        setAdminView("invoices-hub");
+                      },
+                    },
+                    {
+                      text: "No",
+                      onPress: () => {
+                        setAdminView("invoices-hub");
+                      },
+                    },
+                  ]
+                );
+              } else {
+                setAdminView("invoices-hub");
+              }
+            }}
+          >
+            <Ionicons name="chatbubble-ellipses" size={18} color="#FFF" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Text</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -6039,6 +6110,7 @@ function AdminDashboard() {
     case "invoices-hub": return renderInvoicesHub();
     case "view-invoices": return renderViewInvoices();
     case "send-invoice": return renderSendInvoice();
+    case "text-invoice": return renderTextInvoice();
     case "invoice-detail": return renderInvoiceDetail();
     case "statements": return renderStatements();
     case "statements-hub": return renderStatementsHub();
