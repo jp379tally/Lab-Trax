@@ -1768,10 +1768,10 @@ function AdminDashboard() {
     return (
       <View style={adm.subHeader}>
         <Pressable onPress={() => { setAdminView(backTo); setEditingClient(null); setEditingUser(null); setShowEditClientPricing(false); }} style={adm.backBtn}>
-          <Ionicons name="chevron-back" size={22} color={Colors.light.tint} />
+          <Ionicons name="chevron-back" size={24} color={Colors.light.tint} />
         </Pressable>
         <Text style={adm.subHeaderTitle}>{title}</Text>
-        <View style={{ width: 36 }} />
+        <View style={{ width: 44 }} />
       </View>
     );
   }
@@ -8158,9 +8158,9 @@ const adm = StyleSheet.create({
     marginBottom: 20,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     backgroundColor: Colors.light.tintLight,
     justifyContent: "center",
     alignItems: "center",
