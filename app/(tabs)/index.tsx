@@ -1583,6 +1583,7 @@ function AdminDashboard() {
   const [sendInvoiceMode, setSendInvoiceMode] = useState<"email" | "text">("email");
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
   const [sendStatementMode, setSendStatementMode] = useState<"email" | "text">("email");
+  const [clientSearchQuery, setClientSearchQuery] = useState("");
   const [sendStatementTarget, setSendStatementTarget] = useState<Client | null>(null);
   const [statementDefaultMessage, setStatementDefaultMessage] = useState("Please remit payment at your earliest convenience. If you have any questions regarding this statement, please do not hesitate to contact us.\n\nThank you for your business.");
   const [editingDefaultMessage, setEditingDefaultMessage] = useState("");
@@ -4168,11 +4169,18 @@ function AdminDashboard() {
       return { ...c, openBalance, openCount };
     }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     const totalOpen = clientsWithBalance.reduce((s, c) => s + c.openBalance, 0);
+    const filteredClients = clientSearchQuery.trim()
+      ? clientsWithBalance.filter(c =>
+          c.practiceName.toLowerCase().includes(clientSearchQuery.toLowerCase()) ||
+          (c.leadDoctor || "").toLowerCase().includes(clientSearchQuery.toLowerCase()) ||
+          (c.accountNumber || "").toLowerCase().includes(clientSearchQuery.toLowerCase())
+        )
+      : clientsWithBalance;
 
     return (
-      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingBottom: 40 }}>
+      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingBottom: 40 }}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
-          <Pressable onPress={() => setAdminView("client-hub")} style={{ marginRight: 12 }}>
+          <Pressable onPress={() => { setAdminView("client-hub"); setClientSearchQuery(""); }} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
           </Pressable>
           <View style={{ flex: 1 }}>
@@ -4183,7 +4191,34 @@ function AdminDashboard() {
           </View>
         </View>
 
-        {clientsWithBalance.map((c) => (
+        <View style={{ paddingHorizontal: 16, marginBottom: 12 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: Colors.light.surface, borderRadius: 12, borderWidth: 1, borderColor: Colors.light.border, paddingHorizontal: 12, height: 44 }}>
+            <Ionicons name="search" size={18} color={Colors.light.textTertiary} style={{ marginRight: 8 }} />
+            <TextInput
+              style={{ flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+              placeholder="Search clients..."
+              placeholderTextColor={Colors.light.textTertiary}
+              value={clientSearchQuery}
+              onChangeText={setClientSearchQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {clientSearchQuery.length > 0 && (
+              <Pressable onPress={() => setClientSearchQuery("")} style={{ padding: 4 }}>
+                <Ionicons name="close-circle" size={18} color={Colors.light.textTertiary} />
+              </Pressable>
+            )}
+          </View>
+        </View>
+
+        {filteredClients.length === 0 && clientSearchQuery.trim().length > 0 && (
+          <View style={{ alignItems: "center", paddingVertical: 40 }}>
+            <Ionicons name="search-outline" size={40} color={Colors.light.textTertiary} />
+            <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary, marginTop: 10 }}>No clients found for "{clientSearchQuery}"</Text>
+          </View>
+        )}
+
+        {filteredClients.map((c) => (
           <Pressable
             key={c.id}
             onPress={() => { setSelectedClient(c); setAdminView("client-detail"); }}
