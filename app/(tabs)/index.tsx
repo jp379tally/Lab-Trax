@@ -1740,14 +1740,11 @@ function AdminDashboard() {
     if (!editingClient) return;
     updateClient(editingClient.id, editingClient);
     if (showEditClientPricing) {
-      const tier = pricingTiers.find(t => t.name === editingClient.tier);
-      if (tier) {
-        const prices: Record<string, number> = {};
-        PRICE_LIST_ITEMS.forEach(item => {
-          prices[item.key] = parseFloat(priceList[item.key] || "0") || 0;
-        });
-        updateTierPricing(tier.id, prices);
-      }
+      const prices: Record<string, number> = {};
+      PRICE_LIST_ITEMS.forEach(item => {
+        prices[item.key] = parseFloat(priceList[item.key] || "0") || 0;
+      });
+      updateClient(editingClient.id, { customPricing: prices });
     }
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert("Saved", showEditClientPricing ? "Client record and pricing updated." : "Client record updated.");
@@ -3817,6 +3814,18 @@ function AdminDashboard() {
           <Pressable
             onPress={() => {
               setEditingClient(selectedClient);
+              const tier = pricingTiers.find(t => t.name === selectedClient.tier);
+              const newPrices: Record<string, string> = {};
+              PRICE_LIST_ITEMS.forEach(item => {
+                if (selectedClient.customPricing && selectedClient.customPricing[item.key] !== undefined) {
+                  newPrices[item.key] = selectedClient.customPricing[item.key].toString();
+                } else if (tier) {
+                  newPrices[item.key] = tier.prices[item.key]?.toString() || "";
+                } else {
+                  newPrices[item.key] = "";
+                }
+              });
+              setPriceList(newPrices);
               setAdminView("edit-client");
             }}
             style={({ pressed }) => ({
@@ -4361,15 +4370,11 @@ function AdminDashboard() {
     function handleConfirmYes() {
       setPriceConfirmVisible(false);
       if (selectedPriceClient) {
-        const tierName = selectedTierForClient || selectedPriceClient.tier;
-        const tier = pricingTiers.find(t => t.name === tierName);
-        if (tier) {
-          const prices: Record<string, number> = {};
-          PRICE_LIST_ITEMS.forEach(item => {
-            prices[item.key] = parseFloat(priceList[item.key] || "0") || 0;
-          });
-          updateTierPricing(tier.id, prices);
-        }
+        const prices: Record<string, number> = {};
+        PRICE_LIST_ITEMS.forEach(item => {
+          prices[item.key] = parseFloat(priceList[item.key] || "0") || 0;
+        });
+        updateClient(selectedPriceClient.id, { customPricing: prices });
       }
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert("Saved", "Client price list has been updated.");
@@ -4465,6 +4470,18 @@ function AdminDashboard() {
                     onPress={() => {
                       setSelectedPriceClient(c);
                       setSelectedTierForClient(c.tier || "");
+                      const tier = pricingTiers.find(t => t.name === c.tier);
+                      const newPrices: Record<string, string> = {};
+                      PRICE_LIST_ITEMS.forEach(item => {
+                        if (c.customPricing && c.customPricing[item.key] !== undefined) {
+                          newPrices[item.key] = c.customPricing[item.key].toString();
+                        } else if (tier) {
+                          newPrices[item.key] = tier.prices[item.key]?.toString() || "";
+                        } else {
+                          newPrices[item.key] = "";
+                        }
+                      });
+                      setPriceList(newPrices);
                       setShowClientPicker(false);
                     }}
                     style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.light.border, opacity: pressed ? 0.7 : 1 })}

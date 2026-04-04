@@ -569,6 +569,7 @@ export interface Client {
   discountRate: number;
   createdAt: number;
   status?: "active" | "inactive";
+  customPricing?: Record<string, number>;
 }
 
 export interface DeletedClientInvoice {
