@@ -2862,12 +2862,6 @@ export default function ScanScreen() {
                     const connectorDots: { key: string; x: number; y: number; a: number; b: number }[] = [];
                     const archCenterY = CHART_H / 2;
                     allAdj.forEach(([a, b]) => {
-                      const aSelected = selectedTeeth.includes(a);
-                      const bSelected = selectedTeeth.includes(b);
-                      if (!aSelected || !bSelected) return;
-                      const aType = toothTypes[a] || "normal";
-                      const bType = toothTypes[b] || "normal";
-                      if (aType !== "bridge" && bType !== "bridge") return;
                       const pa = posMap[a];
                       const pb = posMap[b];
                       if (!pa || !pb) return;
@@ -2876,19 +2870,20 @@ export default function ScanScreen() {
                       const dx = mx - CX;
                       const dy = my - archCenterY;
                       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                      const outOffset = 20;
+                      const outOffset = 18;
                       const ox = mx + (dx / dist) * outOffset;
                       const oy = my + (dy / dist) * outOffset;
                       const cKey = `${Math.min(a,b)}-${Math.max(a,b)}`;
                       connectorDots.push({ key: cKey, x: ox, y: oy, a, b });
                     });
 
-                    const DOT_SZ = 16;
+                    const DOT_SZ = 14;
 
                     return (
                       <View style={{ width: CHART_W, height: CHART_H + 10, position: "relative" }}>
                         {connectorDots.map(({ key, x, y }) => {
                           const isActive = !!toothConnectors[key];
+                          const HIT_SZ = 28;
                           return (
                             <Pressable
                               key={`conn-${key}`}
@@ -2898,15 +2893,25 @@ export default function ScanScreen() {
                               onPress={() => setToothConnectors(prev => ({ ...prev, [key]: !prev[key] }))}
                               style={{
                                 position: "absolute",
-                                left: x - DOT_SZ / 2,
-                                top: y - DOT_SZ / 2,
+                                left: x - HIT_SZ / 2,
+                                top: y - HIT_SZ / 2,
+                                width: HIT_SZ,
+                                height: HIT_SZ,
+                                borderRadius: HIT_SZ / 2,
+                                justifyContent: "center" as const,
+                                alignItems: "center" as const,
+                                zIndex: 15,
+                              }}
+                            >
+                              <View style={{
                                 width: DOT_SZ,
                                 height: DOT_SZ,
                                 borderRadius: DOT_SZ / 2,
-                                backgroundColor: isActive ? normalColor : "#EF4444",
-                                zIndex: 15,
-                              }}
-                            />
+                                backgroundColor: isActive ? Colors.light.tint : "#D1D5DB",
+                                borderWidth: isActive ? 0 : 1,
+                                borderColor: "#B0B7C3",
+                              }} />
+                            </Pressable>
                           );
                         })}
                         {toothPositions.map(({ num, x, y }) => {
