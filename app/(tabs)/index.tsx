@@ -1581,6 +1581,7 @@ function AdminDashboard() {
   const [sendTextTo, setSendTextTo] = useState("");
   const [sendTextMessage, setSendTextMessage] = useState("");
   const [sendInvoiceMode, setSendInvoiceMode] = useState<"email" | "text">("email");
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
   const [sendStatementMode, setSendStatementMode] = useState<"email" | "text">("email");
   const [sendStatementTarget, setSendStatementTarget] = useState<Client | null>(null);
   const [statementDefaultMessage, setStatementDefaultMessage] = useState("Please remit payment at your earliest convenience. If you have any questions regarding this statement, please do not hesitate to contact us.\n\nThank you for your business.");
@@ -3393,10 +3394,49 @@ function AdminDashboard() {
 
   function renderPickInvoiceToSend() {
     const openInvs = invoices.filter(i => i.status === "open" || i.status === "overdue");
+    const allSelected = openInvs.length > 0 && openInvs.every(inv => selectedInvoiceIds.includes(inv.id));
+    const selectedCount = openInvs.filter(inv => selectedInvoiceIds.includes(inv.id)).length;
+
+    function handleSendSelected() {
+      const selected = openInvs.filter(inv => selectedInvoiceIds.includes(inv.id));
+      if (selected.length === 0) { Alert.alert("No Invoices Selected", "Please select at least one invoice to send."); return; }
+      if (selected.length === 1) {
+        const inv = selected[0];
+        setSendInvoiceTarget(inv);
+        const client = clients.find(c => c.practiceName === inv.clientName);
+        if (sendInvoiceMode === "email") {
+          setSendEmailTo(client?.email || "");
+          setSendEmailSubject(`Invoice ${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}`);
+          setSendEmailMessage(`Dear ${inv.clientName},\n\nPlease find attached invoice ${formatInvNum(inv.invoiceNumber)} for ${formatCurrency(inv.amount)}.\n\nDue Date: ${new Date(inv.dueAt).toLocaleDateString()}\n\n${statementDefaultMessage}`);
+          setAdminView("send-invoice");
+        } else {
+          setSendTextTo(client?.phone || "");
+          setSendTextMessage(`${statementDefaultMessage}\n\nInvoice ${formatInvNum(inv.invoiceNumber)}\nAmount: ${formatCurrency(inv.amount)}\nDue: ${new Date(inv.dueAt).toLocaleDateString()}\n\nPlease see the attached invoice PDF for details.`);
+          setAdminView("text-invoice");
+        }
+      } else {
+        const totalAmt = selected.reduce((s, inv) => s + inv.amount, 0);
+        const invSummary = selected.map(inv => `${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}: ${formatCurrency(inv.amount)}`).join("\n");
+        const clientNames = [...new Set(selected.map(inv => inv.clientName))];
+        const firstClient = clients.find(c => c.practiceName === clientNames[0]);
+        setSendInvoiceTarget(selected[0]);
+        if (sendInvoiceMode === "email") {
+          setSendEmailTo(firstClient?.email || "");
+          setSendEmailSubject(`Invoices - ${selected.length} invoices totaling ${formatCurrency(totalAmt)}`);
+          setSendEmailMessage(`Dear Client,\n\nPlease find the following invoices attached:\n\n${invSummary}\n\nTotal: ${formatCurrency(totalAmt)}\n\n${statementDefaultMessage}`);
+          setAdminView("send-invoice");
+        } else {
+          setSendTextTo(firstClient?.phone || "");
+          setSendTextMessage(`${statementDefaultMessage}\n\nInvoices:\n${invSummary}\n\nTotal: ${formatCurrency(totalAmt)}\n\nPlease see the attached invoice PDFs for details.`);
+          setAdminView("text-invoice");
+        }
+      }
+    }
+
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
-          <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
+          <Pressable onPress={() => { setAdminView("invoices-hub"); setSelectedInvoiceIds([]); }} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
           </Pressable>
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Invoice</Text>
@@ -3420,39 +3460,67 @@ function AdminDashboard() {
             </Pressable>
           </View>
 
-          <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 10 }}>Select an invoice</Text>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Select invoices</Text>
+            {openInvs.length > 0 && (
+              <Pressable
+                onPress={() => {
+                  if (allSelected) {
+                    setSelectedInvoiceIds([]);
+                  } else {
+                    setSelectedInvoiceIds(openInvs.map(inv => inv.id));
+                  }
+                }}
+                style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+              >
+                <Ionicons name={allSelected ? "checkbox" : "square-outline"} size={20} color={Colors.light.tint} />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.tint }}>Select All</Text>
+              </Pressable>
+            )}
+          </View>
           {openInvs.length === 0 && (
             <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", paddingVertical: 20 }}>No open invoices to send.</Text>
           )}
-          {openInvs.map(inv => (
+          {openInvs.map(inv => {
+            const isChecked = selectedInvoiceIds.includes(inv.id);
+            return (
+              <Pressable
+                key={inv.id}
+                style={({ pressed }) => ({ backgroundColor: isChecked ? Colors.light.tintLight : (pressed ? Colors.light.tintLight : Colors.light.surface), borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: isChecked ? Colors.light.tint : Colors.light.border, flexDirection: "row" as const, alignItems: "center" as const })}
+                onPress={() => {
+                  setSelectedInvoiceIds(prev =>
+                    prev.includes(inv.id) ? prev.filter(id => id !== inv.id) : [...prev, inv.id]
+                  );
+                }}
+              >
+                <Ionicons
+                  name={isChecked ? "checkbox" : "square-outline"}
+                  size={22}
+                  color={isChecked ? Colors.light.tint : Colors.light.textTertiary}
+                  style={{ marginRight: 12 }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{inv.clientName} · {formatCurrency(inv.amount)}</Text>
+                </View>
+                <View style={{ backgroundColor: inv.status === "overdue" ? Colors.light.error + "20" : Colors.light.tint + "20", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: inv.status === "overdue" ? Colors.light.error : Colors.light.tint, textTransform: "capitalize" }}>{inv.status}</Text>
+                </View>
+              </Pressable>
+            );
+          })}
+
+          {selectedCount > 0 && (
             <Pressable
-              key={inv.id}
-              style={({ pressed }) => ({ backgroundColor: pressed ? Colors.light.tintLight : Colors.light.surface, borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border, flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const })}
-              onPress={() => {
-                setSendInvoiceTarget(inv);
-                const client = clients.find(c => c.practiceName === inv.clientName);
-                if (sendInvoiceMode === "email") {
-                  setSendEmailTo(client?.email || "");
-                  setSendEmailSubject(`Invoice ${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}`);
-                  setSendEmailMessage(`Dear ${inv.clientName},\n\nPlease find attached invoice ${formatInvNum(inv.invoiceNumber)} for ${formatCurrency(inv.amount)}.\n\nDue Date: ${new Date(inv.dueAt).toLocaleDateString()}\n\n${statementDefaultMessage}`);
-                  setAdminView("send-invoice");
-                } else {
-                  setSendTextTo(client?.phone || "");
-                  setSendTextMessage(`${statementDefaultMessage}\n\nInvoice ${formatInvNum(inv.invoiceNumber)}\nAmount: ${formatCurrency(inv.amount)}\nDue: ${new Date(inv.dueAt).toLocaleDateString()}\n\nPlease see the attached invoice PDF for details.`);
-                  setAdminView("text-invoice");
-                }
-              }}
+              style={({ pressed }) => ({ backgroundColor: sendInvoiceMode === "text" ? "#16A34A" : Colors.light.tint, borderRadius: 14, paddingVertical: 16, marginTop: 12, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+              onPress={handleSendSelected}
             >
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>{inv.clientName} · {formatCurrency(inv.amount)}</Text>
-              </View>
-              <View style={{ backgroundColor: inv.status === "overdue" ? Colors.light.error + "20" : Colors.light.tint + "20", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 }}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: inv.status === "overdue" ? Colors.light.error : Colors.light.tint, textTransform: "capitalize" }}>{inv.status}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} style={{ marginLeft: 8 }} />
+              <Ionicons name={sendInvoiceMode === "text" ? "chatbubble-ellipses" : "send"} size={18} color="#FFF" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>
+                {sendInvoiceMode === "text" ? "Text" : "Email"} {selectedCount} Invoice{selectedCount !== 1 ? "s" : ""}
+              </Text>
             </Pressable>
-          ))}
+          )}
         </View>
       </ScrollView>
     );
