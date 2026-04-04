@@ -2919,11 +2919,11 @@ function AdminDashboard() {
                           <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
                             <Text style={{ width: 70, fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>{new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" })}</Text>
                             <View style={{ flex: 1 }}>
-                              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>INV #{inv.invoiceNumber}. Orig. Amount {formatCurrency(inv.amount)}.</Text>
+                              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
                               <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.text, marginTop: 2 }}>{inv.patientName || "—"}</Text>
                               {inv.lineItems.map((li, liIdx) => (
                                 <Text key={liIdx} style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1, paddingLeft: 8 }}>
-                                  --- {li.item || li.description}, {li.qty} @ {formatCurrency(li.rate)} = {formatCurrency(li.amount)}
+                                  {li.item || li.description} — {li.qty} @ {formatCurrency(li.rate)} = {formatCurrency(li.amount)}
                                 </Text>
                               ))}
                             </View>
@@ -4395,26 +4395,28 @@ function AdminDashboard() {
             <Pressable
               onPress={() => {
                 const sortedInvs = [...openInvoices].sort((a, b) => a.issuedAt - b.issuedAt);
+                const mappedInvoices = sortedInvs.map(inv => ({
+                  invoiceNumber: inv.invoiceNumber,
+                  amount: inv.amount,
+                  issuedAt: inv.issuedAt,
+                  dueAt: inv.dueAt,
+                  patientName: inv.patientName,
+                  lineItems: (inv.lineItems || []).map(li => ({
+                    item: li.item,
+                    description: li.description,
+                    qty: li.qty,
+                    rate: li.rate,
+                    amount: li.amount,
+                  })),
+                }));
+                const computedTotal = mappedInvoices.reduce((s, inv) => s + inv.amount, 0);
                 const preview = [{
                   clientName: selectedClient.practiceName,
                   email: selectedClient.email || "",
                   address: selectedClient.address || "",
                   leadDoctor: selectedClient.leadDoctor || "",
-                  invoices: sortedInvs.map(inv => ({
-                    invoiceNumber: inv.invoiceNumber,
-                    amount: inv.amount,
-                    issuedAt: inv.issuedAt,
-                    dueAt: inv.dueAt,
-                    patientName: inv.patientName,
-                    lineItems: (inv.lineItems || []).map(li => ({
-                      item: li.item,
-                      description: li.description,
-                      qty: li.qty,
-                      rate: li.rate,
-                      amount: li.amount,
-                    })),
-                  })),
-                  totalDue: openBalance,
+                  invoices: mappedInvoices,
+                  totalDue: computedTotal,
                 }];
                 setStatementPreview(preview);
                 setAdminView("statements");
