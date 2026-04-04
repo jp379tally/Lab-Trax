@@ -3200,7 +3200,7 @@ function AdminDashboard() {
                 {
                   text: "Email Invoice",
                   onPress: () => {
-                    Alert.alert("Select Invoice", "Choose an invoice to send:", [
+                    Alert.alert("Select Invoice", "Choose an invoice to email:", [
                       ...openInvs.slice(0, 10).map(inv => ({
                         text: `${formatInvNum(inv.invoiceNumber)} - ${inv.clientName} (${formatCurrency(inv.amount)})`,
                         onPress: () => {
@@ -3219,7 +3219,29 @@ function AdminDashboard() {
                 {
                   text: "Text Invoice",
                   onPress: () => {
-                    Alert.alert("Coming Soon", "Text message invoicing will be available in a future update.");
+                    Alert.alert("Select Invoice", "Choose an invoice to text:", [
+                      ...openInvs.slice(0, 10).map(inv => ({
+                        text: `${formatInvNum(inv.invoiceNumber)} - ${inv.clientName} (${formatCurrency(inv.amount)})`,
+                        onPress: () => {
+                          const client = clients.find(c => c.practiceName === inv.clientName);
+                          const phone = client?.phone || "";
+                          if (!phone) {
+                            Alert.alert("No Phone Number", `${inv.clientName} does not have a phone number on file. Please add one in the client record first.`);
+                            return;
+                          }
+                          const smsBody = encodeURIComponent(`${statementDefaultMessage}\n\nInvoice ${formatInvNum(inv.invoiceNumber)}\nAmount: ${formatCurrency(inv.amount)}\nDue: ${new Date(inv.dueAt).toLocaleDateString()}\n\nPlease see the attached invoice PDF for details.`);
+                          const smsUrl = Platform.OS === "ios"
+                            ? `sms:${phone}&body=${smsBody}`
+                            : `sms:${phone}?body=${smsBody}`;
+                          Linking.openURL(smsUrl).catch(() => {
+                            Alert.alert("Unable to Open", "Could not open the messaging app.");
+                          });
+                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                          addNotification({ title: "Invoice Texted", message: `Invoice ${formatInvNum(inv.invoiceNumber)} sent via text to ${inv.clientName}`, type: "update" });
+                        },
+                      })),
+                      { text: "Cancel", style: "cancel" as const },
+                    ]);
                   },
                 },
                 { text: "Cancel", style: "cancel" },
@@ -3337,8 +3359,38 @@ function AdminDashboard() {
                 sendStatementEmail(sendInvoiceTarget?.clientName || "", email, sendEmailSubject, sendEmailMessage);
               });
               addNotification({ title: "Invoice Sent", message: `Invoice ${sendInvoiceTarget ? formatInvNum(sendInvoiceTarget.invoiceNumber) : ""} emailed to ${emails.join(", ")}`, type: "update" });
-              Alert.alert("Invoice Sent", `Invoice emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
-              setAdminView("invoices-hub");
+
+              const client = sendInvoiceTarget ? clients.find(c => c.practiceName === sendInvoiceTarget.clientName) : null;
+              const onFileEmail = client?.email || "";
+              const allEnteredEmails = emails.join("; ");
+              const emailChanged = onFileEmail.toLowerCase().trim() !== allEnteredEmails.toLowerCase().trim() && allEnteredEmails.length > 0;
+
+              if (emailChanged && client) {
+                Alert.alert(
+                  "Save Email Address?",
+                  `The email address you entered (${allEnteredEmails}) is different from what's on file for ${client.practiceName}. Would you like to save this as the default email for future invoices and statements?`,
+                  [
+                    {
+                      text: "Yes, Save",
+                      onPress: () => {
+                        updateClient(client.id, { email: allEnteredEmails });
+                        Alert.alert("Invoice Sent & Email Saved", `Invoice emailed to ${emails.length} recipient${emails.length > 1 ? "s" : ""}. Email address updated for ${client.practiceName}.`);
+                        setAdminView("invoices-hub");
+                      },
+                    },
+                    {
+                      text: "No, Just Send",
+                      onPress: () => {
+                        Alert.alert("Invoice Sent", `Invoice emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
+                        setAdminView("invoices-hub");
+                      },
+                    },
+                  ]
+                );
+              } else {
+                Alert.alert("Invoice Sent", `Invoice emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
+                setAdminView("invoices-hub");
+              }
             }}
           >
             <Ionicons name="send" size={18} color="#FFF" />
