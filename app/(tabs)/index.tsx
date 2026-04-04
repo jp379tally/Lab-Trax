@@ -18,6 +18,8 @@ import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as LocalAuthentication from "expo-local-authentication";
@@ -1711,6 +1713,80 @@ function AdminDashboard() {
     }
   }
 
+  async function generateStatementPdfAndShare(
+    stmtData: { clientName: string; email: string; address: string; leadDoctor: string; invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; qty: number; rate: number; amount: number }[] }[]; totalDue: number }[],
+    textMessage?: string
+  ) {
+    const stmtDate = new Date().toLocaleDateString();
+    const htmlSections = stmtData.map(cs => {
+      let runBal = 0;
+      const rows = cs.invoices.map(inv => {
+        runBal += inv.amount;
+        const liHtml = inv.lineItems.map(li =>
+          `<div style="font-size:11px;color:#666;padding-left:10px;margin-top:2px;">${li.item || li.description} — ${li.qty} @ ${formatCurrency(li.rate)} = ${formatCurrency(li.amount)}</div>`
+        ).join("");
+        return `<tr>
+          <td style="padding:8px 4px;font-size:11px;color:#666;vertical-align:top;width:70px;">${new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" })}</td>
+          <td style="padding:8px 4px;vertical-align:top;">
+            <div style="font-size:12px;font-weight:600;">Inv #${inv.invoiceNumber}</div>
+            <div style="font-size:12px;margin-top:2px;">${inv.patientName || "—"}</div>
+            ${liHtml}
+          </td>
+          <td style="padding:8px 4px;font-size:12px;text-align:right;vertical-align:top;width:65px;">${formatCurrency(inv.amount)}</td>
+          <td style="padding:8px 4px;font-size:12px;text-align:right;vertical-align:top;width:70px;">${formatCurrency(runBal)}</td>
+        </tr>`;
+      }).join("");
+      return `<div style="background:#fff;border:1px solid #ddd;border-radius:8px;overflow:hidden;margin-bottom:20px;">
+        <div style="background:#4B6BFB;padding:14px 16px;text-align:center;">
+          <div style="color:#fff;font-size:18px;font-weight:700;">Statement</div>
+          <div style="color:rgba(255,255,255,0.85);font-size:12px;margin-top:2px;">Date: ${stmtDate}</div>
+        </div>
+        <div style="padding:14px 16px;">
+          <div style="font-size:13px;color:#666;margin-bottom:4px;">To:</div>
+          <div style="font-size:15px;font-weight:700;">${cs.clientName}</div>
+          ${cs.leadDoctor ? `<div style="font-size:13px;color:#666;">${cs.leadDoctor}</div>` : ""}
+          ${cs.address ? `<div style="font-size:13px;color:#666;">${cs.address}</div>` : ""}
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:12px 16px;background:#EEF2FF;border-top:1px solid #ddd;border-bottom:1px solid #ddd;">
+          <div><div style="font-size:11px;font-weight:600;color:#666;">Due Date</div><div style="font-size:14px;font-weight:700;">${stmtDate}</div></div>
+          <div style="text-align:right;"><div style="font-size:11px;font-weight:600;color:#666;">Amount Due</div><div style="font-size:14px;font-weight:700;color:#DC2626;">${formatCurrency(cs.totalDue)}</div></div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;padding:0 12px;">
+          <thead><tr style="border-bottom:1px solid #ddd;">
+            <th style="text-align:left;font-size:10px;font-weight:600;color:#666;padding:6px 4px;width:70px;">Date</th>
+            <th style="text-align:left;font-size:10px;font-weight:600;color:#666;padding:6px 4px;">Transaction</th>
+            <th style="text-align:right;font-size:10px;font-weight:600;color:#666;padding:6px 4px;width:65px;">Amount</th>
+            <th style="text-align:right;font-size:10px;font-weight:600;color:#666;padding:6px 4px;width:70px;">Balance</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:#EEF2FF;margin-top:4px;">
+          <div style="font-size:14px;font-weight:700;">Amount Due</div>
+          <div style="font-size:18px;font-weight:700;color:#DC2626;">${formatCurrency(cs.totalDue)}</div>
+        </div>
+      </div>`;
+    }).join("");
+
+    const fullHtml = `<html><head><meta charset="utf-8"><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:20px;color:#1a1a1a;}</style></head><body>${htmlSections}</body></html>`;
+
+    try {
+      const { uri } = await Print.printToFileAsync({ html: fullHtml });
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (isAvailable) {
+        await Sharing.shareAsync(uri, {
+          mimeType: "application/pdf",
+          dialogTitle: "Share Statement PDF",
+          UTI: "com.adobe.pdf",
+        });
+      } else {
+        Alert.alert("Sharing Unavailable", "PDF sharing is not available on this device. The PDF has been generated but cannot be shared.");
+      }
+    } catch (err) {
+      console.log("PDF generation/share error:", err);
+      Alert.alert("Error", "Could not generate the statement PDF. Please try again.");
+    }
+  }
+
   function handleAddClient() {
     if (!newClientName.trim() || !newClientDoctor.trim()) {
       Alert.alert("Required", "Practice name and main provider are required.");
@@ -2988,27 +3064,13 @@ function AdminDashboard() {
                       },
                       {
                         text: "Text (PDF)",
-                        onPress: () => {
+                        onPress: async () => {
                           if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                          const phones = statementPreview.map(cs => {
-                            const client = clients.find(cl => cl.practiceName === cs.clientName);
-                            return client?.phone || "";
-                          }).filter(p => p);
-                          if (phones.length === 0) {
-                            Alert.alert("No Phone Numbers", "None of the selected clients have phone numbers on file. Please add phone numbers to client records first.");
-                            return;
-                          }
-                          const smsBody = encodeURIComponent(`${statementDefaultMessage}\n\nPlease see the attached statement PDF for billing details. Total due: ${formatCurrency(statementPreview.reduce((s, cs) => s + cs.totalDue, 0))}`);
-                          const smsUrl = Platform.OS === "ios"
-                            ? `sms:${phones.join(",")}&body=${smsBody}`
-                            : `sms:${phones.join(",")}?body=${smsBody}`;
-                          Linking.openURL(smsUrl).catch(() => {
-                            Alert.alert("Unable to Open", "Could not open the messaging app.");
-                          });
+                          await generateStatementPdfAndShare(statementPreview);
                           statementPreview.forEach((cs) => {
                             addNotification({
                               title: "Statement Texted",
-                              message: `Statement sent via text to ${cs.clientName}. Total due: ${formatCurrency(cs.totalDue)}`,
+                              message: `Statement PDF shared for ${cs.clientName}. Total due: ${formatCurrency(cs.totalDue)}`,
                               type: "update",
                             });
                           });
@@ -4011,20 +4073,41 @@ function AdminDashboard() {
 
           <Pressable
             style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
-            onPress={() => {
+            onPress={async () => {
               if (!sendTextTo.trim()) { Alert.alert("Required", "Please enter a phone number."); return; }
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               const phones = sendTextTo.split(";").map(p => p.trim()).filter(p => p.length > 0);
-              const smsBody = encodeURIComponent(sendTextMessage);
-              const smsUrl = Platform.OS === "ios"
-                ? `sms:${phones.join(",")}&body=${smsBody}`
-                : `sms:${phones.join(",")}?body=${smsBody}`;
-              Linking.openURL(smsUrl).catch(() => {
-                Alert.alert("Unable to Open", "Could not open the messaging app.");
-              });
-              addNotification({ title: "Statement Texted", message: `Statement texted to ${sendStatementTarget?.practiceName || "client"}`, type: "update" });
 
               const client = sendStatementTarget;
+              if (client) {
+                const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
+                const stmtData = [{
+                  clientName: client.practiceName,
+                  email: client.email || "",
+                  address: client.address || "",
+                  leadDoctor: client.leadDoctor || "",
+                  invoices: sortedInvs.map(inv => ({
+                    invoiceNumber: inv.invoiceNumber,
+                    amount: inv.amount,
+                    issuedAt: inv.issuedAt,
+                    dueAt: inv.dueAt,
+                    patientName: inv.patientName,
+                    lineItems: (inv.lineItems || []).map(li => ({
+                      item: li.item,
+                      description: li.description,
+                      qty: li.qty,
+                      rate: li.rate,
+                      amount: li.amount,
+                    })),
+                  })),
+                  totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0),
+                }];
+                await generateStatementPdfAndShare(stmtData, sendTextMessage);
+              }
+
+              addNotification({ title: "Statement Texted", message: `Statement PDF shared for ${client?.practiceName || "client"}`, type: "update" });
+
               const onFilePhone = client?.phone || "";
               const allEnteredPhones = phones.join("; ");
               const phoneChanged = onFilePhone.trim() !== allEnteredPhones.trim() && allEnteredPhones.length > 0;
