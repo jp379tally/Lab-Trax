@@ -6,3 +6,9 @@ id = "rBD0L8oyTa7tMvP0SkNiK"
 uri = "file://UPDATE_NOTES.md"
 type = "text"
 title = "LabTrax Build Update Notes - v1.0.3 Build 31"
+
+[[outputs]]
+id = "zCj5OH5xCkmS2vQ535MV3"
+uri = "file://APP_STORE_LISTING.md"
+type = "text"
+title = "LabTrax - Apple App Store Promotional Text"
