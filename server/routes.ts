@@ -619,9 +619,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const totalPages = 1 + (Array.isArray(additionalImages) ? additionalImages.length : 0);
       console.log("Analyzing prescription, pages:", totalPages, "primary image length:", imageBase64.length);
 
+      let imgMime = "image/jpeg";
+      if (imageBase64.startsWith("data:image/png")) imgMime = "image/png";
+      else if (imageBase64.startsWith("data:image/webp")) imgMime = "image/webp";
       const dataUrl = imageBase64.startsWith("data:")
         ? imageBase64
-        : `data:image/jpeg;base64,${imageBase64}`;
+        : `data:${imgMime};base64,${imageBase64}`;
 
       const imageContentParts: any[] = [];
       if (totalPages > 1) {
@@ -632,7 +635,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         imageContentParts.push({
           type: "text" as const,
-          text: "Analyze this dental prescription document thoroughly. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully.",
+          text: "Analyze this dental prescription document thoroughly. The image may be a photo taken of a paper prescription, a screenshot, a scanned document, or a digital prescription from software like iTero, 3Shape, Medit, etc. The image may be rotated, skewed, low contrast, or partially blurry - do your best to read ALL text regardless of image quality. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully, even if faint or at an angle.",
         });
       }
       imageContentParts.push({
@@ -717,7 +720,7 @@ IMPORTANT RULES:
           response = await openai.chat.completions.create({
             model,
             messages: visionMessages,
-            max_tokens: 1000,
+            max_tokens: 2000,
           });
           console.log("Model", model, "succeeded");
           break;

@@ -675,13 +675,14 @@ export default function ScanScreen() {
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
-      quality: 0.8,
+      quality: 0.9,
       base64: true,
     });
 
     if (!result.canceled && result.assets[0]) {
       const asset = result.assets[0];
-      let rawUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+      const mimeType = asset.mimeType || (asset.uri?.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
+      let rawUri = asset.base64 ? `data:${mimeType};base64,${asset.base64}` : asset.uri;
 
       cropDoneRef.current = false;
       setCapturedUri(rawUri);
@@ -699,6 +700,17 @@ export default function ScanScreen() {
           setCapturedUri(dataUri);
         } catch (e: any) {
           console.log("Gallery crop: could not read file:", e?.message);
+          try {
+            const FSystem = await import("expo-file-system");
+            const destUri = FSystem.cacheDirectory + "gallery_" + Date.now() + ".jpg";
+            await FSystem.copyAsync({ from: rawUri, to: destUri });
+            const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+            dataUri = `data:image/jpeg;base64,${b64}`;
+            setCapturedUri(dataUri);
+            console.log("Gallery crop: copy+read succeeded, length:", b64.length);
+          } catch (copyErr: any) {
+            console.log("Gallery crop: copy fallback also failed:", copyErr?.message);
+          }
         }
       }
 
@@ -728,7 +740,14 @@ export default function ScanScreen() {
 
   async function compressImageForAI(uri: string): Promise<string> {
     if (uri.startsWith("data:")) {
-      console.log("AI compress: URI is already a data URI, using directly");
+      const commaIdx = uri.indexOf(",");
+      const b64Len = commaIdx >= 0 ? uri.length - commaIdx - 1 : uri.length;
+      console.log("AI compress: URI is already a data URI, base64 payload length:", b64Len);
+      if (b64Len < 5000) {
+        console.log("AI compress: data URI suspiciously small, may be corrupted");
+        const enhanced = await ensureHighQualityBase64(uri);
+        if (enhanced !== uri && enhanced.length > uri.length) return enhanced;
+      }
       return uri;
     }
 
@@ -742,7 +761,7 @@ export default function ScanScreen() {
           const objUrl = URL.createObjectURL(blob);
           img.onload = () => {
             URL.revokeObjectURL(objUrl);
-            const maxDim = 1024;
+            const maxDim = 1536;
             let w = img.width;
             let h = img.height;
             if (w > maxDim || h > maxDim) {
@@ -761,7 +780,7 @@ export default function ScanScreen() {
               return;
             }
             ctx.drawImage(img, 0, 0, w, h);
-            resolve(canvas.toDataURL("image/jpeg", 0.7));
+            resolve(canvas.toDataURL("image/jpeg", 0.85));
           };
           img.onerror = () => {
             URL.revokeObjectURL(objUrl);
@@ -789,6 +808,21 @@ export default function ScanScreen() {
           console.log("AI compress: copied content/ph URI to cache:", destUri);
         } catch (copyErr: any) {
           console.log("AI compress: copy from content/ph failed:", copyErr?.message);
+          try {
+            const ImagePkr = require("expo-image-picker");
+            const reResult = await ImagePkr.launchImageLibraryAsync({
+              mediaTypes: ["images"],
+              quality: 0.9,
+              base64: true,
+              allowsEditing: false,
+            });
+            if (!reResult.canceled && reResult.assets[0]?.base64) {
+              console.log("AI compress: re-picked with base64, length:", reResult.assets[0].base64.length);
+              return `data:image/jpeg;base64,${reResult.assets[0].base64}`;
+            }
+          } catch (rePickErr: any) {
+            console.log("AI compress: re-pick fallback failed:", rePickErr?.message);
+          }
         }
       }
 
@@ -815,8 +849,8 @@ export default function ScanScreen() {
           if (ImageManipulator.manipulateAsync) {
             const manipulated = await ImageManipulator.manipulateAsync(
               tryUri,
-              [{ resize: { width: 800 } }],
-              { compress: 0.6, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
+              [{ resize: { width: 1200 } }],
+              { compress: 0.85, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
             );
             console.log("AI compress: manipulator succeeded with:", tryUri);
             const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
@@ -1053,6 +1087,53 @@ export default function ScanScreen() {
     }
   }
 
+  async function ensureHighQualityBase64(uri: string): Promise<string> {
+    if (!uri) return uri;
+    if (uri.startsWith("data:")) {
+      const commaIdx = uri.indexOf(",");
+      const b64Part = commaIdx >= 0 ? uri.substring(commaIdx + 1) : uri;
+      if (b64Part.length > 10000) return uri;
+      console.log("AI quality: data URI too small (" + b64Part.length + " chars), attempting re-read");
+    }
+    if (Platform.OS !== "web" && !uri.startsWith("data:")) {
+      try {
+        const FSystem = await import("expo-file-system");
+        const destUri = FSystem.cacheDirectory + "hq_" + Date.now() + ".jpg";
+        await FSystem.copyAsync({ from: uri, to: destUri });
+        const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+        if (b64 && b64.length > 10000) {
+          console.log("AI quality: re-read succeeded, length:", b64.length);
+          return `data:image/jpeg;base64,${b64}`;
+        }
+      } catch (e: any) {
+        console.log("AI quality: re-read failed:", e?.message);
+      }
+      try {
+        const ImageManip = require("expo-image-manipulator");
+        const manipResult = await ImageManip.manipulateAsync(
+          uri,
+          [{ resize: { width: 1500 } }],
+          { compress: 0.9, format: ImageManip.SaveFormat?.JPEG || "jpeg", base64: true }
+        );
+        if (manipResult.base64 && manipResult.base64.length > 10000) {
+          console.log("AI quality: manipulator with base64 succeeded, length:", manipResult.base64.length);
+          return `data:image/jpeg;base64,${manipResult.base64}`;
+        }
+        if (manipResult.uri) {
+          const FSystem = await import("expo-file-system");
+          const b64 = await FSystem.readAsStringAsync(manipResult.uri, { encoding: FSystem.EncodingType.Base64 });
+          if (b64 && b64.length > 10000) {
+            console.log("AI quality: manipulator+read succeeded, length:", b64.length);
+            return `data:image/jpeg;base64,${b64}`;
+          }
+        }
+      } catch (e: any) {
+        console.log("AI quality: manipulator fallback failed:", e?.message);
+      }
+    }
+    return uri;
+  }
+
   async function handleFinishedReview() {
     const entries: ActivityEntry[] = [];
     casePhotos.forEach((uri) => {
@@ -1067,11 +1148,17 @@ export default function ScanScreen() {
       entries.push(photoEntry);
     });
 
-    const analyzeUri = casePhotos[0] || capturedUri;
+    let analyzeUri = casePhotos[0] || capturedUri;
     let aiSuccess = false;
     if (analyzeUri) {
       setIsAnalyzing(true);
       let failReason = "";
+
+      try {
+        analyzeUri = await ensureHighQualityBase64(analyzeUri);
+      } catch (e: any) {
+        console.log("AI: ensureHighQualityBase64 failed:", e?.message);
+      }
 
       autoGeneratePdf(casePhotos).then((pdfUri) => {
         if (pdfUri) {
@@ -1094,9 +1181,24 @@ export default function ScanScreen() {
           base64Data = await compressImageForAI(analyzeUri);
           console.log("AI: Compressed primary image, base64 length:", base64Data.length);
         } catch (compErr: any) {
-          failReason = "Image compression failed";
-          console.log("AI: Compression error:", compErr?.message || compErr);
-          throw compErr;
+          console.log("AI: Primary compression failed, trying direct base64 read:", compErr?.message || compErr);
+          if (Platform.OS !== "web" && !analyzeUri.startsWith("data:")) {
+            try {
+              const FSystem = await import("expo-file-system");
+              const destUri = FSystem.cacheDirectory + "ai_fallback_" + Date.now() + ".jpg";
+              await FSystem.copyAsync({ from: analyzeUri, to: destUri });
+              const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+              base64Data = `data:image/jpeg;base64,${b64}`;
+              console.log("AI: Fallback copy+read succeeded, length:", b64.length);
+            } catch (fallbackErr: any) {
+              console.log("AI: Fallback also failed:", fallbackErr?.message);
+              failReason = "Could not read the image file";
+              throw compErr;
+            }
+          } else {
+            failReason = "Image compression failed";
+            throw compErr;
+          }
         }
 
         const additionalBase64: string[] = [];
