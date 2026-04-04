@@ -2979,111 +2979,108 @@ function AdminDashboard() {
           {(() => {
             const allOpenInvoices = invoices.filter((inv) => inv.status === "open" || inv.status === "overdue");
             const totalOpenAmount = allOpenInvoices.reduce((s, inv) => s + inv.amount, 0);
-            const clientsWithOpen = [...new Set(allOpenInvoices.map((inv) => inv.clientName))];
+            const clientsWithOpen = clients.filter(c => allOpenInvoices.some(inv => inv.clientName === c.practiceName));
+
+            function generatePreviewForClients(selectedClients: typeof clients) {
+              return selectedClients.map((c) => {
+                const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
+                const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
+                return {
+                  clientName: c.practiceName,
+                  email: c.email || "",
+                  invoices: clientInvs.map(inv => ({
+                    invoiceNumber: inv.invoiceNumber,
+                    amount: inv.amount,
+                    issuedAt: inv.issuedAt,
+                    dueAt: inv.dueAt,
+                    patientName: inv.patientName,
+                    lineItems: (inv.lineItems || []).map(li => ({
+                      item: li.item,
+                      description: li.description,
+                      amount: li.amount,
+                    })),
+                  })),
+                  totalDue: clientTotal,
+                };
+              }).filter(p => p.invoices.length > 0);
+            }
+
             return (
-              <Pressable
-                style={({ pressed }) => ({
-                  backgroundColor: Colors.light.tint,
-                  borderRadius: 14,
-                  paddingVertical: 16,
-                  paddingHorizontal: 20,
-                  marginBottom: 20,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 10,
-                  opacity: pressed ? 0.85 : 1,
-                  shadowColor: Colors.light.tint,
-                  shadowOpacity: 0.3,
-                  shadowRadius: 8,
-                  shadowOffset: { width: 0, height: 4 },
-                  elevation: 4,
+              <>
+                <Pressable
+                  style={({ pressed }) => ({
+                    backgroundColor: Colors.light.tint,
+                    borderRadius: 14,
+                    paddingVertical: 16,
+                    paddingHorizontal: 20,
+                    marginBottom: 20,
+                    flexDirection: "row" as const,
+                    alignItems: "center" as const,
+                    justifyContent: "center" as const,
+                    gap: 10,
+                    opacity: pressed ? 0.85 : 1,
+                    shadowColor: Colors.light.tint,
+                    shadowOpacity: 0.3,
+                    shadowRadius: 8,
+                    shadowOffset: { width: 0, height: 4 },
+                    elevation: 4,
+                  })}
+                  onPress={() => {
+                    if (allOpenInvoices.length === 0) {
+                      Alert.alert("No Open Invoices", "There are no open invoices to generate statements for.");
+                      return;
+                    }
+                    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    setStatementPreview(generatePreviewForClients(clientsWithOpen));
+                  }}
+                  testID="generate-all-statements-btn"
+                >
+                  <Ionicons name="documents" size={22} color="#fff" />
+                  <View>
+                    <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Generate All Statements</Text>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", marginTop: 2 }}>
+                      {clientsWithOpen.length} client{clientsWithOpen.length !== 1 ? "s" : ""} · {allOpenInvoices.length} invoice{allOpenInvoices.length !== 1 ? "s" : ""} · {formatCurrency(totalOpenAmount)}
+                    </Text>
+                  </View>
+                </Pressable>
+
+                <Text style={[adm.formDesc, { marginBottom: 12 }]}>Or select a client to generate their statement:</Text>
+
+                {clientsWithOpen.map((c) => {
+                  const clientOpenInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
+                  const clientTotal = clientOpenInvs.reduce((s, inv) => s + inv.amount, 0);
+                  return (
+                    <Pressable
+                      key={c.id}
+                      style={({ pressed }) => [adm.statementCard, pressed && { opacity: 0.7 }]}
+                      onPress={() => {
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setStatementPreview(generatePreviewForClients([c]));
+                      }}
+                    >
+                      <View style={adm.listItemLeft}>
+                        <View style={[adm.listAvatar, { backgroundColor: Colors.light.tintLight }]}>
+                          <Ionicons name="document-text-outline" size={18} color={Colors.light.tint} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={adm.listItemTitle}>{c.practiceName}</Text>
+                          <Text style={adm.listItemSub}>{formatAcctNum(c.accountNumber)} · {clientOpenInvs.length} invoice{clientOpenInvs.length !== 1 ? "s" : ""} · {formatCurrency(clientTotal)}</Text>
+                        </View>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={Colors.light.tint} />
+                    </Pressable>
+                  );
                 })}
-                onPress={() => {
-                  if (allOpenInvoices.length === 0) {
-                    Alert.alert("No Open Invoices", "There are no open invoices to generate statements for.");
-                    return;
-                  }
-                  const preview = clientsWithOpen.map((name) => {
-                    const client = clients.find((cl) => cl.practiceName === name);
-                    const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === name);
-                    const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
-                    return {
-                      clientName: name,
-                      email: client?.email || "",
-                      invoices: clientInvs.map(inv => ({
-                        invoiceNumber: inv.invoiceNumber,
-                        amount: inv.amount,
-                        issuedAt: inv.issuedAt,
-                        dueAt: inv.dueAt,
-                        patientName: inv.patientName,
-                        lineItems: (inv.lineItems || []).map(li => ({
-                          item: li.item,
-                          description: li.description,
-                          amount: li.amount,
-                        })),
-                      })),
-                      totalDue: clientTotal,
-                    };
-                  });
-                  setStatementPreview(preview);
-                }}
-                testID="generate-all-statements-btn"
-              >
-                <Ionicons name="documents" size={22} color="#fff" />
-                <View>
-                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Preview All Open Statements</Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", marginTop: 2 }}>
-                    {allOpenInvoices.length} open invoice{allOpenInvoices.length !== 1 ? "s" : ""} · {formatCurrency(totalOpenAmount)}
-                  </Text>
-                </View>
-              </Pressable>
+
+                {clientsWithOpen.length === 0 && (
+                  <View style={{ alignItems: "center", paddingVertical: 40 }}>
+                    <Ionicons name="document-text-outline" size={48} color={Colors.light.textTertiary} />
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 12, textAlign: "center" }}>No clients with open invoices</Text>
+                  </View>
+                )}
+              </>
             );
           })()}
-          <Text style={adm.formDesc}>Or select a client to preview their statement.</Text>
-          {clients.map((c) => {
-            const clientOpenInvs = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
-            const clientTotal = clientOpenInvs.reduce((s, inv) => s + inv.amount, 0);
-            if (clientOpenInvs.length === 0) return null;
-            return (
-              <Pressable
-                key={c.id}
-                style={({ pressed }) => [adm.statementCard, pressed && { opacity: 0.7 }]}
-                onPress={() => {
-                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  const preview = [{
-                    clientName: c.practiceName,
-                    email: c.email,
-                    invoices: clientOpenInvs.map(inv => ({
-                      invoiceNumber: inv.invoiceNumber,
-                      amount: inv.amount,
-                      issuedAt: inv.issuedAt,
-                      dueAt: inv.dueAt,
-                      patientName: inv.patientName,
-                      lineItems: (inv.lineItems || []).map(li => ({
-                        item: li.item,
-                        description: li.description,
-                        amount: li.amount,
-                      })),
-                    })),
-                    totalDue: clientTotal,
-                  }];
-                  setStatementPreview(preview);
-                }}
-              >
-                <View style={adm.listItemLeft}>
-                  <View style={[adm.listAvatar, { backgroundColor: Colors.light.tintLight }]}>
-                    <Ionicons name="document-text-outline" size={18} color={Colors.light.tint} />
-                  </View>
-                  <View>
-                    <Text style={adm.listItemTitle}>{c.practiceName}</Text>
-                    <Text style={adm.listItemSub}>{formatAcctNum(c.accountNumber)} · {clientOpenInvs.length} open invoice{clientOpenInvs.length !== 1 ? "s" : ""} · {formatCurrency(clientTotal)}</Text>
-                  </View>
-                </View>
-                <Ionicons name="eye-outline" size={20} color={Colors.light.tint} />
-              </Pressable>
-            );
-          })}
         </View>
       </ScrollView>
     );
