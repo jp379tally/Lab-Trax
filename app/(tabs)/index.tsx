@@ -1584,6 +1584,8 @@ function AdminDashboard() {
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
   const [sendStatementMode, setSendStatementMode] = useState<"email" | "text">("email");
   const [clientSearchQuery, setClientSearchQuery] = useState("");
+  const [clientDetailInvFilter, setClientDetailInvFilter] = useState<"open" | "all" | "mtd">("open");
+  const [clientDetailInvDropdownOpen, setClientDetailInvDropdownOpen] = useState(false);
   const [sendStatementTarget, setSendStatementTarget] = useState<Client | null>(null);
   const [statementDefaultMessage, setStatementDefaultMessage] = useState("Please remit payment at your earliest convenience. If you have any questions regarding this statement, please do not hesitate to contact us.\n\nThank you for your business.");
   const [editingDefaultMessage, setEditingDefaultMessage] = useState("");
@@ -4435,52 +4437,86 @@ function AdminDashboard() {
           )}
         </View>
 
-        {openInvoices.length > 0 && (
-          <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
-            <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 10 }}>Open Invoices</Text>
-            {openInvoices.map((inv) => (
-              <Pressable
-                key={inv.id}
-                style={({ pressed }) => ({ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row" as const, justifyContent: "space-between" as const, alignItems: "center" as const, borderLeftWidth: 3, borderLeftColor: inv.status === "overdue" ? Colors.light.error : Colors.light.warning, opacity: pressed ? 0.7 : 1 })}
-                onPress={() => {
-                  setSelectedInvoice(inv);
-                  setAdminView("invoice-detail");
-                }}
-              >
-                <View>
-                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Due {new Date(inv.dueAt).toLocaleDateString()}</Text>
-                </View>
-                <View style={{ alignItems: "flex-end" }}>
-                  <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning }}>{formatCurrency(inv.amount)}</Text>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: inv.status === "overdue" ? Colors.light.error : Colors.light.warning, textTransform: "uppercase", marginTop: 2 }}>{inv.status}</Text>
-                </View>
-              </Pressable>
-            ))}
-          </View>
-        )}
+        <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
+          <View style={{ position: "relative", zIndex: 10 }}>
+            <Pressable
+              onPress={() => setClientDetailInvDropdownOpen(!clientDetailInvDropdownOpen)}
+              style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#fff", borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14, borderWidth: 1, borderColor: Colors.light.border, marginBottom: clientDetailInvDropdownOpen ? 0 : 10 }}
+            >
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text }}>
+                {clientDetailInvFilter === "open" ? "Open Invoices" : clientDetailInvFilter === "all" ? "All Invoices" : "Month to Date"}
+              </Text>
+              <Ionicons name={clientDetailInvDropdownOpen ? "chevron-up" : "chevron-down"} size={20} color={Colors.light.textSecondary} />
+            </Pressable>
 
-        {paidInvoices.length > 0 && (
-          <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
-            <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 10 }}>Paid Invoices</Text>
-            {paidInvoices.map((inv) => (
-              <Pressable
-                key={inv.id}
-                style={({ pressed }) => ({ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row" as const, justifyContent: "space-between" as const, alignItems: "center" as const, borderLeftWidth: 3, borderLeftColor: Colors.light.success, opacity: pressed ? 0.7 : 1 })}
-                onPress={() => {
-                  setSelectedInvoice(inv);
-                  setAdminView("invoice-detail");
-                }}
-              >
-                <View>
-                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>Paid {new Date(inv.issuedAt).toLocaleDateString()}</Text>
-                </View>
-                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.success }}>{formatCurrency(inv.amount)}</Text>
-              </Pressable>
-            ))}
+            {clientDetailInvDropdownOpen && (
+              <View style={{ backgroundColor: "#fff", borderRadius: 12, borderWidth: 1, borderColor: Colors.light.border, marginBottom: 10, overflow: "hidden" }}>
+                {(["open", "all", "mtd"] as const).map(opt => {
+                  const label = opt === "open" ? "Open Invoices" : opt === "all" ? "All Invoices" : "Month to Date";
+                  const isActive = clientDetailInvFilter === opt;
+                  return (
+                    <Pressable
+                      key={opt}
+                      onPress={() => { setClientDetailInvFilter(opt); setClientDetailInvDropdownOpen(false); }}
+                      style={({ pressed }) => ({ paddingVertical: 14, paddingHorizontal: 16, backgroundColor: isActive ? Colors.light.tintLight : (pressed ? Colors.light.surfaceAlt : "#fff"), borderBottomWidth: opt !== "mtd" ? 1 : 0, borderBottomColor: Colors.light.border, flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const })}
+                    >
+                      <Text style={{ fontSize: 14, fontFamily: isActive ? "Inter_600SemiBold" : "Inter_400Regular", color: isActive ? Colors.light.tint : Colors.light.text }}>{label}</Text>
+                      {isActive && <Ionicons name="checkmark" size={18} color={Colors.light.tint} />}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
           </View>
-        )}
+
+          {(() => {
+            const now = new Date();
+            const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+            const displayInvoices = clientDetailInvFilter === "open"
+              ? openInvoices
+              : clientDetailInvFilter === "all"
+                ? clientInvoices
+                : clientInvoices.filter(inv => inv.issuedAt >= monthStart);
+            const sortedDisplay = [...displayInvoices].sort((a, b) => b.issuedAt - a.issuedAt);
+
+            if (sortedDisplay.length === 0) {
+              return (
+                <View style={{ alignItems: "center", paddingVertical: 30 }}>
+                  <Ionicons name="document-text-outline" size={36} color={Colors.light.textTertiary} />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary, marginTop: 8 }}>
+                    No {clientDetailInvFilter === "open" ? "open" : clientDetailInvFilter === "mtd" ? "month-to-date" : ""} invoices
+                  </Text>
+                </View>
+              );
+            }
+
+            return sortedDisplay.map((inv) => {
+              const statusColor = inv.status === "paid" ? Colors.light.success : inv.status === "overdue" ? Colors.light.error : Colors.light.warning;
+              const borderColor = inv.status === "paid" ? Colors.light.success : inv.status === "overdue" ? Colors.light.error : Colors.light.warning;
+              return (
+                <Pressable
+                  key={inv.id}
+                  style={({ pressed }) => ({ backgroundColor: "#fff", borderRadius: 12, padding: 14, marginBottom: 8, flexDirection: "row" as const, justifyContent: "space-between" as const, alignItems: "center" as const, borderLeftWidth: 3, borderLeftColor: borderColor, opacity: pressed ? 0.7 : 1 })}
+                  onPress={() => {
+                    setSelectedInvoice(inv);
+                    setAdminView("invoice-detail");
+                  }}
+                >
+                  <View>
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 2 }}>
+                      {inv.status === "paid" ? "Paid" : "Due"} {new Date(inv.status === "paid" ? inv.issuedAt : inv.dueAt).toLocaleDateString()}
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: statusColor }}>{formatCurrency(inv.amount)}</Text>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: statusColor, textTransform: "uppercase", marginTop: 2 }}>{inv.status}</Text>
+                  </View>
+                </Pressable>
+              );
+            });
+          })()}
+        </View>
       </ScrollView>
     );
   }
