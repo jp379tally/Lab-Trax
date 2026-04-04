@@ -2,7 +2,7 @@
   "expo": {
     "name": "LabTrax",
     "slug": "labtrax",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "labtrax",
@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "40",
+      "buildNumber": "41",
       "bundleIdentifier": "com.allieddl.labtrax",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture photos of dental cases and scans for case tracking, documentation, and communication with the dental lab.",
