@@ -65,7 +65,12 @@ import pg from "pg";
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set");
 }
-var pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+var connectionString = process.env.DATABASE_URL;
+if (!connectionString.includes("sslmode=")) {
+  const separator = connectionString.includes("?") ? "&" : "?";
+  connectionString += `${separator}sslmode=verify-full`;
+}
+var pool = new pg.Pool({ connectionString });
 var db = drizzle(pool, { schema: schema_exports });
 
 // server/storage.ts
@@ -318,23 +323,6 @@ async function registerRoutes(app2) {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to update password" });
-    }
-  });
-  app2.post("/api/admin/cleanup-users", async (req, res) => {
-    try {
-      const { secret, userIds } = req.body;
-      if (secret !== "labtrax_cleanup_2026")
-        return res.status(403).json({ error: "Forbidden" });
-      if (!Array.isArray(userIds))
-        return res.status(400).json({ error: "userIds required" });
-      const results = [];
-      for (const uid of userIds) {
-        const deleted = await storage.deleteUser(uid);
-        results.push(`${uid}: ${deleted ? "deleted" : "not found"}`);
-      }
-      res.json({ results });
-    } catch (error) {
-      res.status(500).json({ error: error?.message || "Cleanup failed" });
     }
   });
   app2.delete("/api/auth/users/:id", async (req, res) => {
@@ -716,6 +704,12 @@ async function registerRoutes(app2) {
     }
     res.json({ success: true });
   });
+  const unsupportedMimeTypes = ["image/heic", "image/heif"];
+  const unsupportedExtensions = [".heic", ".heif"];
+  function isUnsupportedImageFormat(dataUri) {
+    const lower = dataUri.toLowerCase();
+    return unsupportedMimeTypes.some((mime) => lower.startsWith(`data:${mime}`)) || unsupportedExtensions.some((ext) => lower.includes(ext));
+  }
   app2.post("/api/analyze-prescription", async (req, res) => {
     try {
       let flipLastFirst2 = function(name) {
@@ -729,20 +723,74 @@ async function registerRoutes(app2) {
       };
       var flipLastFirst = flipLastFirst2;
       console.log("Prescription analysis request received, body keys:", Object.keys(req.body || {}), "content-type:", req.headers["content-type"]);
-      const { imageBase64 } = req.body;
+      const { imageBase64, additionalImages } = req.body;
       if (!imageBase64) {
         console.log("No image in body, body size:", JSON.stringify(req.body || {}).length);
         return res.status(400).json({ error: "No image provided" });
       }
-      console.log("Analyzing prescription, image data length:", imageBase64.length);
-      const dataUrl = imageBase64.startsWith("data:") ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
+      if (isUnsupportedImageFormat(imageBase64)) {
+        console.log("Unsupported image format detected (HEIC/HEIF)");
+        return res.status(400).json({
+          error: "HEIC/HEIF images are not supported yet. Please upload a JPG or PNG."
+        });
+      }
+      if (Array.isArray(additionalImages)) {
+        for (const img of additionalImages) {
+          if (isUnsupportedImageFormat(img)) {
+            console.log("Unsupported additional image format detected (HEIC/HEIF)");
+            return res.status(400).json({
+              error: "HEIC/HEIF images are not supported yet. Please upload a JPG or PNG."
+            });
+          }
+        }
+      }
+      const totalPages = 1 + (Array.isArray(additionalImages) ? additionalImages.length : 0);
+      console.log("Analyzing prescription, pages:", totalPages, "primary image length:", imageBase64.length);
+      let imgMime = "image/jpeg";
+      if (imageBase64.startsWith("data:image/png"))
+        imgMime = "image/png";
+      else if (imageBase64.startsWith("data:image/webp"))
+        imgMime = "image/webp";
+      const dataUrl = imageBase64.startsWith("data:") ? imageBase64 : `data:${imgMime};base64,${imageBase64}`;
+      const imageContentParts = [];
+      if (totalPages > 1) {
+        imageContentParts.push({
+          type: "text",
+          text: `This dental prescription has ${totalPages} pages. Analyze ALL pages together as a single prescription and combine the information from every page into one unified result. Page 1:`
+        });
+      } else {
+        imageContentParts.push({
+          type: "text",
+          text: "Analyze this dental prescription document thoroughly. The image may be a photo taken of a paper prescription, a screenshot, a scanned document, or a digital prescription from software like iTero, 3Shape, Medit, etc. The image may be rotated, skewed, low contrast, or partially blurry - do your best to read ALL text regardless of image quality. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully, even if faint or at an angle."
+        });
+      }
+      imageContentParts.push({
+        type: "image_url",
+        image_url: { url: dataUrl, detail: "high" }
+      });
+      if (Array.isArray(additionalImages)) {
+        additionalImages.forEach((img, idx) => {
+          const additionalDataUrl = img.startsWith("data:") ? img : `data:image/jpeg;base64,${img}`;
+          imageContentParts.push({
+            type: "text",
+            text: `Page ${idx + 2}:`
+          });
+          imageContentParts.push({
+            type: "image_url",
+            image_url: { url: additionalDataUrl, detail: "high" }
+          });
+        });
+      }
       const models = ["gpt-4o", "gpt-4o-mini"];
       let response = null;
       let lastModelErr = null;
+      const multiPageNote = totalPages > 1 ? `
+
+MULTI-PAGE PRESCRIPTION: You are receiving ${totalPages} pages from the same prescription. Combine information from ALL pages into a single unified result. If the same field appears on multiple pages, use the most complete/detailed value. Merge tooth numbers, notes, and instructions from all pages.` : "";
       const visionMessages = [
         {
           role: "system",
-          content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read dental prescription forms from ALL platforms (handwritten paper Rx, iTero, 3Shape, Medit, Carestream, Dentrix, EagleSoft, etc.) and extract ALL information. Read every word on the document carefully.
+          content: `You are a dental prescription/lab slip document analyzer. Your job is to carefully read dental prescription forms from ALL platforms (handwritten paper Rx, iTero, 3Shape, Medit, Carestream, Dentrix, EagleSoft, etc.) and extract ALL information. Read every word on the document carefully.${multiPageNote}
 
 Return ONLY valid JSON with these fields:
 {
@@ -784,16 +832,7 @@ IMPORTANT RULES:
         },
         {
           role: "user",
-          content: [
-            {
-              type: "text",
-              text: "Analyze this dental prescription document thoroughly. Extract ALL visible information: doctor name, patient full name, case/restoration type, tooth numbers, shade, material, due date, rush status, and any notes or special instructions. Read all handwritten and printed text carefully."
-            },
-            {
-              type: "image_url",
-              image_url: { url: dataUrl, detail: "high" }
-            }
-          ]
+          content: imageContentParts
         }
       ];
       for (const model of models) {
@@ -802,7 +841,7 @@ IMPORTANT RULES:
           response = await openai.chat.completions.create({
             model,
             messages: visionMessages,
-            max_tokens: 1e3
+            max_tokens: 2e3
           });
           console.log("Model", model, "succeeded");
           break;
@@ -1017,17 +1056,37 @@ Be helpful, concise, and professional. If asked about a specific case, reference
       if (!imageBase64) {
         return res.status(400).json({ error: "No image provided" });
       }
-      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-      const rawBuffer = Buffer.from(base64Data, "base64");
-      const rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 95 }).toBuffer();
-      const rotatedBase64 = rotatedBuffer.toString("base64");
-      const rotatedDataUrl = `data:image/jpeg;base64,${rotatedBase64}`;
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: `You are a professional document scanner like OneDrive, Adobe Scan, or CamScanner. Your job is to detect any document (paper, form, prescription, letter, card, receipt, etc.) in the photo and return TIGHT crop coordinates that isolate ONLY the document.
+      let base64Data;
+      let rawBuffer;
+      let rotatedBuffer;
+      let rotatedDataUrl;
+      try {
+        base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+        rawBuffer = Buffer.from(base64Data, "base64");
+        if (rawBuffer.length < 100) {
+          console.error("[Crop Document] Image buffer too small:", rawBuffer.length);
+          return res.status(400).json({ error: "Unable to process this image. Please upload a JPG or PNG." });
+        }
+      } catch (decodeErr) {
+        console.error("[Crop Document] Base64 decode failed:", decodeErr?.message);
+        return res.status(400).json({ error: "Unable to process this image. Please upload a JPG or PNG." });
+      }
+      try {
+        rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 95 }).toBuffer();
+        const rotatedBase64 = rotatedBuffer.toString("base64");
+        rotatedDataUrl = `data:image/jpeg;base64,${rotatedBase64}`;
+      } catch (sharpErr) {
+        console.error("[Crop Document] Sharp rotation failed:", sharpErr?.message);
+        return res.status(500).json({ error: "Unable to process this image. Please upload a JPG or PNG." });
+      }
+      let aiResult = null;
+      try {
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content: `You are a professional document scanner like OneDrive, Adobe Scan, or CamScanner. Your job is to detect any document (paper, form, prescription, letter, card, receipt, etc.) in the photo and return TIGHT crop coordinates that isolate ONLY the document.
 
 CRITICAL RULES:
 - Crop coordinates MUST tightly hug the edges of the document paper/card only.
@@ -1053,55 +1112,55 @@ If NO document is detected:
   "rotation": 0,
   "documentType": null
 }`
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Detect the document in this photo. Return precise crop coordinates that tightly isolate ONLY the document paper, removing all background (desk, table, hands, etc)." },
-              { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } }
-            ]
-          }
-        ],
-        max_tokens: 250
-      });
-      const text2 = response.choices?.[0]?.message?.content || "";
-      const jsonMatch = text2.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
-      }
-      const result = JSON.parse(jsonMatch[0]);
-      if (!result.documentDetected || !result.crop) {
-        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
-      }
-      const metadata = await sharp(rotatedBuffer).metadata();
-      const imgW = metadata.width || 1;
-      const imgH = metadata.height || 1;
-      const left = Math.max(0, Math.round(result.crop.left / 100 * imgW));
-      const top = Math.max(0, Math.round(result.crop.top / 100 * imgH));
-      const right = Math.min(imgW, Math.round(result.crop.right / 100 * imgW));
-      const bottom = Math.min(imgH, Math.round(result.crop.bottom / 100 * imgH));
-      const cropW = Math.max(1, right - left);
-      const cropH = Math.max(1, bottom - top);
-      let pipeline = sharp(rotatedBuffer).extract({ left, top, width: cropW, height: cropH });
-      const rotation = result.rotation || 0;
-      if (rotation === 90 || rotation === 180 || rotation === 270) {
-        pipeline = pipeline.rotate(rotation);
-      }
-      const croppedBuffer = await pipeline.sharpen({ sigma: 1.2 }).normalize().jpeg({ quality: 92 }).toBuffer();
-      const croppedBase64 = `data:image/jpeg;base64,${croppedBuffer.toString("base64")}`;
-      console.log(`[Crop] Document detected: ${result.documentType}, rotation: ${rotation}\xB0, crop: ${cropW}x${cropH}`);
-      res.json({ documentDetected: true, croppedImageBase64: croppedBase64, documentType: result.documentType });
-    } catch (err) {
-      console.error("[Crop Document] Error:", err?.message || err);
-      try {
-        const base64Data = req.body.imageBase64?.replace(/^data:image\/\w+;base64,/, "") || "";
-        if (base64Data) {
-          const fixedBuffer = await sharp(Buffer.from(base64Data, "base64")).rotate().jpeg({ quality: 90 }).toBuffer();
-          return res.json({ documentDetected: false, croppedImageBase64: `data:image/jpeg;base64,${fixedBuffer.toString("base64")}` });
+            },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Detect the document in this photo. Return precise crop coordinates that tightly isolate ONLY the document paper, removing all background (desk, table, hands, etc)." },
+                { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } }
+              ]
+            }
+          ],
+          max_tokens: 250
+        });
+        const text2 = response.choices?.[0]?.message?.content || "";
+        const jsonMatch = text2.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          aiResult = JSON.parse(jsonMatch[0]);
         }
-      } catch {
+      } catch (aiErr) {
+        console.error("[Crop Document] AI analysis failed:", aiErr?.message);
+        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
       }
-      res.json({ documentDetected: false, croppedImageBase64: null });
+      if (!aiResult || !aiResult.documentDetected || !aiResult.crop) {
+        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
+      }
+      try {
+        const metadata = await sharp(rotatedBuffer).metadata();
+        const imgW = metadata.width || 1;
+        const imgH = metadata.height || 1;
+        const left = Math.max(0, Math.round(aiResult.crop.left / 100 * imgW));
+        const top = Math.max(0, Math.round(aiResult.crop.top / 100 * imgH));
+        const right = Math.min(imgW, Math.round(aiResult.crop.right / 100 * imgW));
+        const bottom = Math.min(imgH, Math.round(aiResult.crop.bottom / 100 * imgH));
+        const cropW = Math.max(1, right - left);
+        const cropH = Math.max(1, bottom - top);
+        let pipeline = sharp(rotatedBuffer).extract({ left, top, width: cropW, height: cropH });
+        const rotation = aiResult.rotation || 0;
+        if (rotation === 90 || rotation === 180 || rotation === 270) {
+          pipeline = pipeline.rotate(rotation);
+        }
+        const croppedBuffer = await pipeline.sharpen({ sigma: 1.2 }).normalize().jpeg({ quality: 92 }).toBuffer();
+        const croppedBase64 = `data:image/jpeg;base64,${croppedBuffer.toString("base64")}`;
+        console.log(`[Crop] Document detected: ${aiResult.documentType}, rotation: ${rotation}\xB0, crop: ${cropW}x${cropH}`);
+        return res.json({ documentDetected: true, croppedImageBase64: croppedBase64, documentType: aiResult.documentType });
+      } catch (cropErr) {
+        console.error("[Crop Document] Crop/extract failed:", cropErr?.message);
+        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
+      }
+    } catch (err) {
+      console.error("[Crop Document] Unexpected error:", err?.message || err);
+      return res.status(500).json({ error: "Unable to process this image. Please upload a JPG or PNG." });
     }
   });
   app2.post("/api/document-to-pdf", async (req, res) => {
