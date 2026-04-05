@@ -13,7 +13,8 @@
     "db:push": "drizzle-kit push",
     "start": "npx expo start",
     "lint": "npx expo lint",
-    "lint:fix": "npx expo lint --fix"
+    "lint:fix": "npx expo lint --fix",
+    "build": "esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=server_dist"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
