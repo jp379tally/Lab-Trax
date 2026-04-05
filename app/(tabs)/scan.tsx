@@ -950,6 +950,12 @@ export default function ScanScreen() {
         if (!res.ok) {
           const errText = await res.text().catch(() => "");
           console.log("AI response error:", res.status, errText.substring(0, 200));
+          try {
+            const errJson = JSON.parse(errText);
+            if (errJson.error && errJson.error.includes("HEIC")) {
+              return { success: false, error: errJson.error };
+            }
+          } catch {}
           lastErr = new Error(`HTTP ${res.status}: ${errText.substring(0, 100)}`);
           continue;
         }
@@ -1214,7 +1220,7 @@ export default function ScanScreen() {
           }
         }
 
-        let result: { success: boolean; data?: any };
+        let result: { success: boolean; data?: any; error?: string };
         try {
           result = await sendToAI(base64Data, additionalBase64.length > 0 ? additionalBase64 : undefined);
           console.log("AI: Response received, success:", result.success, "pages sent:", 1 + additionalBase64.length);
@@ -1224,7 +1230,9 @@ export default function ScanScreen() {
           throw sendErr;
         }
 
-        if (result.success && result.data) {
+        if (result.error && result.error.includes("HEIC")) {
+          failReason = result.error;
+        } else if (result.success && result.data) {
           const d = result.data;
           if (d.doctorName) setDoctorName(d.doctorName);
           if (d.patientName) setPatientName(d.patientName);

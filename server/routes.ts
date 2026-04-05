@@ -607,6 +607,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ success: true });
   });
 
+  const unsupportedMimeTypes = ["image/heic", "image/heif"];
+  const unsupportedExtensions = [".heic", ".heif"];
+
+  function isUnsupportedImageFormat(dataUri: string): boolean {
+    const lower = dataUri.toLowerCase();
+    return (
+      unsupportedMimeTypes.some(mime => lower.startsWith(`data:${mime}`)) ||
+      unsupportedExtensions.some(ext => lower.includes(ext))
+    );
+  }
+
   app.post("/api/analyze-prescription", async (req, res) => {
     try {
       console.log("Prescription analysis request received, body keys:", Object.keys(req.body || {}), "content-type:", req.headers["content-type"]);
@@ -614,6 +625,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!imageBase64) {
         console.log("No image in body, body size:", JSON.stringify(req.body || {}).length);
         return res.status(400).json({ error: "No image provided" });
+      }
+
+      if (isUnsupportedImageFormat(imageBase64)) {
+        console.log("Unsupported image format detected (HEIC/HEIF)");
+        return res.status(400).json({
+          error: "HEIC/HEIF images are not supported yet. Please upload a JPG or PNG."
+        });
+      }
+
+      if (Array.isArray(additionalImages)) {
+        for (const img of additionalImages) {
+          if (isUnsupportedImageFormat(img)) {
+            console.log("Unsupported additional image format detected (HEIC/HEIF)");
+            return res.status(400).json({
+              error: "HEIC/HEIF images are not supported yet. Please upload a JPG or PNG."
+            });
+          }
+        }
       }
 
       const totalPages = 1 + (Array.isArray(additionalImages) ? additionalImages.length : 0);
