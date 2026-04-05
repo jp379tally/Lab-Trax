@@ -1000,18 +1000,40 @@ Be helpful, concise, and professional. If asked about a specific case, reference
         return res.status(400).json({ error: "No image provided" });
       }
 
-      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-      const rawBuffer = Buffer.from(base64Data, "base64");
-      const rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 95 }).toBuffer();
-      const rotatedBase64 = rotatedBuffer.toString("base64");
-      const rotatedDataUrl = `data:image/jpeg;base64,${rotatedBase64}`;
+      let base64Data: string;
+      let rawBuffer: Buffer;
+      let rotatedBuffer: Buffer;
+      let rotatedDataUrl: string;
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: `You are a professional document scanner like OneDrive, Adobe Scan, or CamScanner. Your job is to detect any document (paper, form, prescription, letter, card, receipt, etc.) in the photo and return TIGHT crop coordinates that isolate ONLY the document.
+      try {
+        base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+        rawBuffer = Buffer.from(base64Data, "base64");
+        if (rawBuffer.length < 100) {
+          console.error("[Crop Document] Image buffer too small:", rawBuffer.length);
+          return res.status(400).json({ error: "Unable to process this image. Please upload a JPG or PNG." });
+        }
+      } catch (decodeErr: any) {
+        console.error("[Crop Document] Base64 decode failed:", decodeErr?.message);
+        return res.status(400).json({ error: "Unable to process this image. Please upload a JPG or PNG." });
+      }
+
+      try {
+        rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 95 }).toBuffer();
+        const rotatedBase64 = rotatedBuffer.toString("base64");
+        rotatedDataUrl = `data:image/jpeg;base64,${rotatedBase64}`;
+      } catch (sharpErr: any) {
+        console.error("[Crop Document] Sharp rotation failed:", sharpErr?.message);
+        return res.status(500).json({ error: "Unable to process this image. Please upload a JPG or PNG." });
+      }
+
+      let aiResult: any = null;
+      try {
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content: `You are a professional document scanner like OneDrive, Adobe Scan, or CamScanner. Your job is to detect any document (paper, form, prescription, letter, card, receipt, etc.) in the photo and return TIGHT crop coordinates that isolate ONLY the document.
 
 CRITICAL RULES:
 - Crop coordinates MUST tightly hug the edges of the document paper/card only.
@@ -1037,66 +1059,67 @@ If NO document is detected:
   "rotation": 0,
   "documentType": null
 }`
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Detect the document in this photo. Return precise crop coordinates that tightly isolate ONLY the document paper, removing all background (desk, table, hands, etc)." },
-              { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } },
-            ],
-          },
-        ],
-        max_tokens: 250,
-      });
+            },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Detect the document in this photo. Return precise crop coordinates that tightly isolate ONLY the document paper, removing all background (desk, table, hands, etc)." },
+                { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } },
+              ],
+            },
+          ],
+          max_tokens: 250,
+        });
 
-      const text = response.choices?.[0]?.message?.content || "";
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
-      }
-
-      const result = JSON.parse(jsonMatch[0]);
-      if (!result.documentDetected || !result.crop) {
-        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
-      }
-
-      const metadata = await sharp(rotatedBuffer).metadata();
-      const imgW = metadata.width || 1;
-      const imgH = metadata.height || 1;
-
-      const left = Math.max(0, Math.round((result.crop.left / 100) * imgW));
-      const top = Math.max(0, Math.round((result.crop.top / 100) * imgH));
-      const right = Math.min(imgW, Math.round((result.crop.right / 100) * imgW));
-      const bottom = Math.min(imgH, Math.round((result.crop.bottom / 100) * imgH));
-      const cropW = Math.max(1, right - left);
-      const cropH = Math.max(1, bottom - top);
-
-      let pipeline = sharp(rotatedBuffer).extract({ left, top, width: cropW, height: cropH });
-
-      const rotation = result.rotation || 0;
-      if (rotation === 90 || rotation === 180 || rotation === 270) {
-        pipeline = pipeline.rotate(rotation);
-      }
-
-      const croppedBuffer = await pipeline
-        .sharpen({ sigma: 1.2 })
-        .normalize()
-        .jpeg({ quality: 92 })
-        .toBuffer();
-
-      const croppedBase64 = `data:image/jpeg;base64,${croppedBuffer.toString("base64")}`;
-      console.log(`[Crop] Document detected: ${result.documentType}, rotation: ${rotation}°, crop: ${cropW}x${cropH}`);
-      res.json({ documentDetected: true, croppedImageBase64: croppedBase64, documentType: result.documentType });
-    } catch (err: any) {
-      console.error("[Crop Document] Error:", err?.message || err);
-      try {
-        const base64Data = req.body.imageBase64?.replace(/^data:image\/\w+;base64,/, "") || "";
-        if (base64Data) {
-          const fixedBuffer = await sharp(Buffer.from(base64Data, "base64")).rotate().jpeg({ quality: 90 }).toBuffer();
-          return res.json({ documentDetected: false, croppedImageBase64: `data:image/jpeg;base64,${fixedBuffer.toString("base64")}` });
+        const text = response.choices?.[0]?.message?.content || "";
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          aiResult = JSON.parse(jsonMatch[0]);
         }
-      } catch {}
-      res.json({ documentDetected: false, croppedImageBase64: null });
+      } catch (aiErr: any) {
+        console.error("[Crop Document] AI analysis failed:", aiErr?.message);
+        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
+      }
+
+      if (!aiResult || !aiResult.documentDetected || !aiResult.crop) {
+        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
+      }
+
+      try {
+        const metadata = await sharp(rotatedBuffer).metadata();
+        const imgW = metadata.width || 1;
+        const imgH = metadata.height || 1;
+
+        const left = Math.max(0, Math.round((aiResult.crop.left / 100) * imgW));
+        const top = Math.max(0, Math.round((aiResult.crop.top / 100) * imgH));
+        const right = Math.min(imgW, Math.round((aiResult.crop.right / 100) * imgW));
+        const bottom = Math.min(imgH, Math.round((aiResult.crop.bottom / 100) * imgH));
+        const cropW = Math.max(1, right - left);
+        const cropH = Math.max(1, bottom - top);
+
+        let pipeline = sharp(rotatedBuffer).extract({ left, top, width: cropW, height: cropH });
+
+        const rotation = aiResult.rotation || 0;
+        if (rotation === 90 || rotation === 180 || rotation === 270) {
+          pipeline = pipeline.rotate(rotation);
+        }
+
+        const croppedBuffer = await pipeline
+          .sharpen({ sigma: 1.2 })
+          .normalize()
+          .jpeg({ quality: 92 })
+          .toBuffer();
+
+        const croppedBase64 = `data:image/jpeg;base64,${croppedBuffer.toString("base64")}`;
+        console.log(`[Crop] Document detected: ${aiResult.documentType}, rotation: ${rotation}°, crop: ${cropW}x${cropH}`);
+        return res.json({ documentDetected: true, croppedImageBase64: croppedBase64, documentType: aiResult.documentType });
+      } catch (cropErr: any) {
+        console.error("[Crop Document] Crop/extract failed:", cropErr?.message);
+        return res.json({ documentDetected: false, croppedImageBase64: rotatedDataUrl });
+      }
+    } catch (err: any) {
+      console.error("[Crop Document] Unexpected error:", err?.message || err);
+      return res.status(500).json({ error: "Unable to process this image. Please upload a JPG or PNG." });
     }
   });
 
