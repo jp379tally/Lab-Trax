@@ -13,6 +13,7 @@ import {
   TouchableWithoutFeedback,
   Modal,
   Alert,
+  Image,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -2200,14 +2201,11 @@ export default function LoginScreen() {
         >
           <View style={styles.logoSection}>
             <View style={styles.logoContainer}>
-              <LinearGradient
-                colors={[Colors.light.tint, "#3B82F6"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.logoGradient}
-              >
-                <Ionicons name="flask" size={36} color="#FFF" />
-              </LinearGradient>
+              <Image
+                source={require("@/assets/images/icon.png")}
+                style={{ width: 80, height: 80, borderRadius: 20 }}
+                resizeMode="contain"
+              />
             </View>
             <Text style={styles.appName}>LabTrax</Text>
             <Text style={styles.appTagline}>Dental Laboratory Management</Text>
