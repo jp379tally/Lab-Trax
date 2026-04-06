@@ -32,7 +32,7 @@ import { logAudit } from "@/lib/audit";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, updateCase, clients, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification } = useApp();
   const { currentUser, userType } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
@@ -3044,10 +3044,20 @@ export default function CaseDetailScreen() {
               lineItems: updatedInv.lineItems,
               amount: updatedInv.amount,
               credits: updatedInv.credits,
+              billTo: updatedInv.billTo,
+              caseNotes: updatedInv.caseNotes,
             });
+          } else {
+            const { id: _id, ...invWithoutId } = updatedInv;
+            addInvoice(invWithoutId);
+            const newInv = invoices.find(i => i.invoiceNumber === updatedInv.invoiceNumber);
+            if (newInv) updateCase(caseItem.id, { invoiceId: newInv.id });
           }
           const newTotal = updatedInv.lineItems.reduce((s, li) => s + li.amount, 0) - (updatedInv.credits || 0);
-          updateCase(caseItem.id, { price: newTotal });
+          const caseUpdates: Record<string, any> = { price: newTotal };
+          if (updatedInv.caseNotes !== undefined) caseUpdates.notes = updatedInv.caseNotes;
+          if (updatedInv.billTo && updatedInv.billTo !== caseItem.doctorName) caseUpdates.doctorName = updatedInv.billTo;
+          updateCase(caseItem.id, caseUpdates);
           addCaseNote(caseItem.id, `Invoice updated — new total: $${newTotal.toFixed(2)}`, userInitials);
         }}
       />

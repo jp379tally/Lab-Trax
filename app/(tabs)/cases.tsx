@@ -18,11 +18,12 @@ import { router } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, MATERIAL_PRICES, Invoice } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
+import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote } = useApp();
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");
@@ -32,6 +33,50 @@ export default function CasesScreen() {
   const [locateCaseId, setLocateCaseId] = useState<string | null>(null);
   const locateCase = locateCaseId ? cases.find(c => c.id === locateCaseId) : null;
   const [permission, requestPermission] = useCameraPermissions();
+  const [invoiceCase, setInvoiceCase] = useState<LabCase | null>(null);
+  const isAdmin = role === "admin";
+  const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
+
+  function getCaseInvoice(caseItem: LabCase): Invoice {
+    if (caseItem.invoiceId) {
+      const found = invoices.find((inv) => inv.id === caseItem.invoiceId);
+      if (found) return found;
+    }
+    const matchedInv = invoices.find(
+      (inv) => inv.caseIds.includes(caseItem.id) ||
+        (inv.patientName.toLowerCase() === (caseItem.patientName || "").toLowerCase() && inv.clientName.toLowerCase().includes(caseItem.doctorName.split(" ").pop()?.toLowerCase() || ""))
+    );
+    if (matchedInv) return matchedInv;
+    const toothCount = caseItem.toothMap?.length || caseItem.toothIndices.split(",").filter(Boolean).length || 1;
+    const rate = MATERIAL_PRICES[caseItem.material] || 250;
+    const lineItems = [
+      { qty: toothCount, item: `${caseItem.material} ${caseItem.caseType || "Restoration"}`, description: `${caseItem.material} restoration - teeth ${caseItem.toothIndices}`, rate, amount: toothCount * rate },
+    ];
+    if (caseItem.isRush) {
+      lineItems.push({ qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500, amount: 500 });
+    }
+    const total = lineItems.reduce((s, li) => s + li.amount, 0);
+    const invNum = `INV-${new Date(caseItem.createdAt).getFullYear()}-${caseItem.caseNumber.replace(/[^0-9]/g, "").padStart(3, "0")}`;
+    return {
+      id: caseItem.id + "-inv",
+      invoiceNumber: invNum,
+      clientId: "",
+      clientName: caseItem.doctorName,
+      caseIds: [caseItem.id],
+      amount: total,
+      credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
+      status: caseItem.status === "COMPLETE" ? "paid" as const : "open" as const,
+      issuedAt: caseItem.createdAt,
+      dueAt: caseItem.dueDate ? new Date(caseItem.dueDate + "T00:00:00").getTime() : caseItem.createdAt + 30 * 86400000,
+      billTo: caseItem.doctorName,
+      patientName: caseItem.patientName || caseItem.patientInitials,
+      caseType: caseItem.caseType || "Restoration",
+      teeth: caseItem.toothIndices,
+      shade: caseItem.shade,
+      caseNotes: caseItem.notes || "",
+      lineItems,
+    };
+  }
 
   function handleBarcodeLocateScanned({ data }: { data: string }) {
     if (barcodeLocateScanned) return;
@@ -180,6 +225,19 @@ export default function CasesScreen() {
             >
               <Ionicons name="play-circle" size={16} color="#3B82F6" />
               <Text style={styles.chartHistoryChipText}>{patientCaseCount}</Text>
+            </Pressable>
+          )}
+          {isAdmin && (
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation();
+                setInvoiceCase(item);
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+              style={{ padding: 6, borderRadius: 8, backgroundColor: "#EFF6FF", marginRight: 4 }}
+              hitSlop={8}
+            >
+              <Ionicons name="document-text-outline" size={16} color="#2563EB" />
             </Pressable>
           )}
           <Feather
@@ -427,6 +485,35 @@ export default function CasesScreen() {
           </View>
         </View>
       </Modal>
+
+      {invoiceCase && (
+        <InvoicePDFViewer
+          visible={!!invoiceCase}
+          onClose={() => setInvoiceCase(null)}
+          invoice={getCaseInvoice(invoiceCase)}
+          editable={isAdmin}
+          onSave={(updatedInv) => {
+            if (invoiceCase.invoiceId) {
+              updateInvoice(invoiceCase.invoiceId, {
+                lineItems: updatedInv.lineItems,
+                amount: updatedInv.amount,
+                credits: updatedInv.credits,
+                billTo: updatedInv.billTo,
+                caseNotes: updatedInv.caseNotes,
+              });
+            } else {
+              const { id: _id, ...invWithoutId } = updatedInv;
+              addInvoice(invWithoutId);
+            }
+            const newTotal = updatedInv.lineItems.reduce((s, li) => s + li.amount, 0) - (updatedInv.credits || 0);
+            const caseUpdates: Record<string, any> = { price: newTotal };
+            if (updatedInv.caseNotes !== undefined) caseUpdates.notes = updatedInv.caseNotes;
+            if (updatedInv.billTo && updatedInv.billTo !== invoiceCase.doctorName) caseUpdates.doctorName = updatedInv.billTo;
+            updateCase(invoiceCase.id, caseUpdates);
+            addCaseNote(invoiceCase.id, `Invoice updated — new total: $${newTotal.toFixed(2)}`, userInitials);
+          }}
+        />
+      )}
     </View>
   );
 }

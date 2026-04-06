@@ -53,11 +53,15 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   const [discountType, setDiscountType] = useState<"percent" | "flat">("percent");
   const [discountValue, setDiscountValue] = useState("");
   const [hasChanges, setHasChanges] = useState(false);
+  const [editBillTo, setEditBillTo] = useState("");
+  const [editNotes, setEditNotes] = useState("");
 
   useEffect(() => {
     if (invoice && visible) {
       setEditLineItems(invoice.lineItems.map(li => ({ ...li })));
       setEditCredits(invoice.credits || 0);
+      setEditBillTo(invoice.billTo || "");
+      setEditNotes(invoice.caseNotes || "");
       setEditMode(false);
       setHasChanges(false);
       setShowAddItem(false);
@@ -194,6 +198,8 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
       lineItems: editLineItems,
       amount: newTotal,
       credits: editCredits,
+      billTo: editBillTo.trim() || invoice.billTo,
+      caseNotes: editNotes,
     });
     setEditMode(false);
     setHasChanges(false);
@@ -210,6 +216,8 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
           onPress: () => {
             setEditLineItems(invoice.lineItems.map(li => ({ ...li })));
             setEditCredits(invoice.credits || 0);
+            setEditBillTo(invoice.billTo || "");
+            setEditNotes(invoice.caseNotes || "");
             setEditMode(false);
             setHasChanges(false);
           },
@@ -299,7 +307,17 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 <View style={s.billToSection}>
                   <View style={s.billToCol}>
                     <Text style={s.billToLabel}>BILL TO</Text>
-                    <Text style={s.billToName}>{invoice.billTo}</Text>
+                    {editMode ? (
+                      <TextInput
+                        style={[s.billToName, { borderBottomWidth: 1, borderBottomColor: "#3B82F6", paddingVertical: 4, minWidth: 120 }]}
+                        value={editBillTo}
+                        onChangeText={(v) => { setEditBillTo(v); setHasChanges(true); }}
+                        placeholder="Provider name"
+                        placeholderTextColor="#94A3B8"
+                      />
+                    ) : (
+                      <Text style={s.billToName}>{invoice.billTo}</Text>
+                    )}
                     <Text style={s.billToDetail}>{invoice.clientName}</Text>
                   </View>
                   <View style={s.billToCol}>
@@ -385,7 +403,19 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   </View>
                 </View>
 
-                {invoice.caseNotes ? (
+                {editMode ? (
+                  <View style={s.notesSection}>
+                    <Text style={s.notesLabel}>NOTES</Text>
+                    <TextInput
+                      style={[s.notesText, { borderWidth: 1, borderColor: "#3B82F6", borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }]}
+                      value={editNotes}
+                      onChangeText={(v) => { setEditNotes(v); setHasChanges(true); }}
+                      placeholder="Add notes..."
+                      placeholderTextColor="#94A3B8"
+                      multiline
+                    />
+                  </View>
+                ) : invoice.caseNotes ? (
                   <View style={s.notesSection}>
                     <Text style={s.notesLabel}>NOTES</Text>
                     <Text style={s.notesText}>{invoice.caseNotes}</Text>
