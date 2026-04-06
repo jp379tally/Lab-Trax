@@ -207,14 +207,14 @@ function configureExpoAndLanding(app: express.Application) {
       }
     }
 
-    if (req.path === "/app") {
-      const devDomain = process.env.REPLIT_DEV_DOMAIN;
-      if (devDomain) {
-        return res.redirect(`https://${devDomain}:8081`);
-      }
+    if (req.path === "/app" || req.path.startsWith("/app/")) {
       const indexPath = path.resolve(process.cwd(), "static-build", "index.html");
       if (fs.existsSync(indexPath)) {
         return res.sendFile(indexPath);
+      }
+      const devDomain = process.env.REPLIT_DEV_DOMAIN;
+      if (devDomain) {
+        return res.redirect(`https://${devDomain}:8081`);
       }
       return res.redirect("/");
     }
