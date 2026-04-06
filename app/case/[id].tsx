@@ -9,11 +9,12 @@ import {
   Alert,
   Modal,
   TextInput,
-  Image,
+  Image as RNImage,
   KeyboardAvoidingView,
   Share,
   Linking,
 } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
@@ -2193,161 +2194,107 @@ export default function CaseDetailScreen() {
                     <Text style={styles.aiLegendHint}>Hold to set type</Text>
                   </View>
 
-                  <View style={styles.aiAdaChartContainer}>
-                    <View style={styles.aiAdaQuadrantLabels}>
-                      <Text style={styles.aiAdaQuadrantLabel}>Upper Right</Text>
-                      <Text style={styles.aiAdaQuadrantLabel}>Upper Left</Text>
-                    </View>
-                    <View style={styles.aiAdaRow}>
-                      {[1,2,3,4,5,6,7,8].map((num) => {
-                        const isSelected = itemSelectedTeeth.includes(num);
-                        const tType = itemToothTypes[num] || "normal";
-                        return (
-                          <Pressable
-                            key={num}
-                            onPress={() => handleItemToothTap(num)}
-                            onLongPress={() => handleItemToothLongPress(num)}
-                            delayLongPress={400}
-                            style={[
-                              styles.aiAdaToothBtn,
-                              num === 8 && styles.aiAdaToothBtnMidline,
-                              isSelected && tType === "normal" && styles.aiToothBtnSelected,
-                              isSelected && tType === "bridge" && styles.aiToothBtnBridge,
-                              isSelected && tType === "missing" && styles.aiToothBtnMissing,
-                            ]}
-                          >
-                            {isSelected && tType === "missing" ? (
-                              <View style={styles.aiToothMissingWrap}>
-                                <Text style={[styles.aiAdaToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
-                                <View style={styles.aiToothXOverlay}>
-                                  <Ionicons name="close" size={14} color={Colors.light.error} />
-                                </View>
-                              </View>
-                            ) : (
-                              <Text style={[
-                                styles.aiAdaToothText,
-                                isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
-                                isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
-                              ]}>{num}</Text>
-                            )}
-                          </Pressable>
-                        );
-                      })}
-                      <View style={styles.aiAdaMidline} />
-                      {[9,10,11,12,13,14,15,16].map((num) => {
-                        const isSelected = itemSelectedTeeth.includes(num);
-                        const tType = itemToothTypes[num] || "normal";
-                        return (
-                          <Pressable
-                            key={num}
-                            onPress={() => handleItemToothTap(num)}
-                            onLongPress={() => handleItemToothLongPress(num)}
-                            delayLongPress={400}
-                            style={[
-                              styles.aiAdaToothBtn,
-                              isSelected && tType === "normal" && styles.aiToothBtnSelected,
-                              isSelected && tType === "bridge" && styles.aiToothBtnBridge,
-                              isSelected && tType === "missing" && styles.aiToothBtnMissing,
-                            ]}
-                          >
-                            {isSelected && tType === "missing" ? (
-                              <View style={styles.aiToothMissingWrap}>
-                                <Text style={[styles.aiAdaToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
-                                <View style={styles.aiToothXOverlay}>
-                                  <Ionicons name="close" size={14} color={Colors.light.error} />
-                                </View>
-                              </View>
-                            ) : (
-                              <Text style={[
-                                styles.aiAdaToothText,
-                                isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
-                                isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
-                              ]}>{num}</Text>
-                            )}
-                          </Pressable>
-                        );
-                      })}
-                    </View>
+                  <View style={{ alignItems: "center" as const, paddingVertical: 8, backgroundColor: "#FFFFFF", borderRadius: 12, overflow: "hidden" as const }}>
+                    {(() => {
+                      const IMG_W = 290;
+                      const IMG_H = 345;
+                      const TOOTH_SZ = 28;
+                      const scale = IMG_W / 320;
 
-                    <View style={styles.aiAdaDividerRow}>
-                      <View style={styles.aiAdaDividerLine} />
-                    </View>
+                      const toothPositions: { num: number; x: number; y: number }[] = [
+                        { num: 1, x: 26 * scale, y: 166 * scale },
+                        { num: 2, x: 32 * scale, y: 132 * scale },
+                        { num: 3, x: 42 * scale, y: 100 * scale },
+                        { num: 4, x: 56 * scale, y: 72 * scale },
+                        { num: 5, x: 74 * scale, y: 48 * scale },
+                        { num: 6, x: 96 * scale, y: 28 * scale },
+                        { num: 7, x: 122 * scale, y: 14 * scale },
+                        { num: 8, x: 148 * scale, y: 8 * scale },
+                        { num: 9, x: 174 * scale, y: 8 * scale },
+                        { num: 10, x: 200 * scale, y: 14 * scale },
+                        { num: 11, x: 226 * scale, y: 28 * scale },
+                        { num: 12, x: 248 * scale, y: 48 * scale },
+                        { num: 13, x: 266 * scale, y: 72 * scale },
+                        { num: 14, x: 280 * scale, y: 100 * scale },
+                        { num: 15, x: 290 * scale, y: 132 * scale },
+                        { num: 16, x: 296 * scale, y: 166 * scale },
+                        { num: 17, x: 296 * scale, y: 210 * scale },
+                        { num: 18, x: 290 * scale, y: 244 * scale },
+                        { num: 19, x: 280 * scale, y: 274 * scale },
+                        { num: 20, x: 266 * scale, y: 300 * scale },
+                        { num: 21, x: 248 * scale, y: 322 * scale },
+                        { num: 22, x: 226 * scale, y: 340 * scale },
+                        { num: 23, x: 200 * scale, y: 352 * scale },
+                        { num: 24, x: 174 * scale, y: 360 * scale },
+                        { num: 25, x: 148 * scale, y: 360 * scale },
+                        { num: 26, x: 122 * scale, y: 352 * scale },
+                        { num: 27, x: 96 * scale, y: 340 * scale },
+                        { num: 28, x: 74 * scale, y: 322 * scale },
+                        { num: 29, x: 56 * scale, y: 300 * scale },
+                        { num: 30, x: 42 * scale, y: 274 * scale },
+                        { num: 31, x: 32 * scale, y: 244 * scale },
+                        { num: 32, x: 26 * scale, y: 210 * scale },
+                      ];
 
-                    <View style={styles.aiAdaRow}>
-                      {[32,31,30,29,28,27,26,25].map((num) => {
-                        const isSelected = itemSelectedTeeth.includes(num);
-                        const tType = itemToothTypes[num] || "normal";
-                        return (
-                          <Pressable
-                            key={num}
-                            onPress={() => handleItemToothTap(num)}
-                            onLongPress={() => handleItemToothLongPress(num)}
-                            delayLongPress={400}
-                            style={[
-                              styles.aiAdaToothBtn,
-                              num === 25 && styles.aiAdaToothBtnMidline,
-                              isSelected && tType === "normal" && styles.aiToothBtnSelected,
-                              isSelected && tType === "bridge" && styles.aiToothBtnBridge,
-                              isSelected && tType === "missing" && styles.aiToothBtnMissing,
-                            ]}
-                          >
-                            {isSelected && tType === "missing" ? (
-                              <View style={styles.aiToothMissingWrap}>
-                                <Text style={[styles.aiAdaToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
-                                <View style={styles.aiToothXOverlay}>
-                                  <Ionicons name="close" size={14} color={Colors.light.error} />
-                                </View>
-                              </View>
-                            ) : (
-                              <Text style={[
-                                styles.aiAdaToothText,
-                                isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
-                                isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
-                              ]}>{num}</Text>
-                            )}
-                          </Pressable>
-                        );
-                      })}
-                      <View style={styles.aiAdaMidline} />
-                      {[24,23,22,21,20,19,18,17].map((num) => {
-                        const isSelected = itemSelectedTeeth.includes(num);
-                        const tType = itemToothTypes[num] || "normal";
-                        return (
-                          <Pressable
-                            key={num}
-                            onPress={() => handleItemToothTap(num)}
-                            onLongPress={() => handleItemToothLongPress(num)}
-                            delayLongPress={400}
-                            style={[
-                              styles.aiAdaToothBtn,
-                              isSelected && tType === "normal" && styles.aiToothBtnSelected,
-                              isSelected && tType === "bridge" && styles.aiToothBtnBridge,
-                              isSelected && tType === "missing" && styles.aiToothBtnMissing,
-                            ]}
-                          >
-                            {isSelected && tType === "missing" ? (
-                              <View style={styles.aiToothMissingWrap}>
-                                <Text style={[styles.aiAdaToothText, styles.aiToothBtnTextMissing]}>{num}</Text>
-                                <View style={styles.aiToothXOverlay}>
-                                  <Ionicons name="close" size={14} color={Colors.light.error} />
-                                </View>
-                              </View>
-                            ) : (
-                              <Text style={[
-                                styles.aiAdaToothText,
-                                isSelected && tType === "normal" && styles.aiToothBtnTextSelected,
-                                isSelected && tType === "bridge" && styles.aiToothBtnTextBridge,
-                              ]}>{num}</Text>
-                            )}
-                          </Pressable>
-                        );
-                      })}
-                    </View>
+                      const normalColor = Colors.light.tint;
+                      const ponticColor = Colors.light.accent;
+                      const missingColor = Colors.light.error;
 
-                    <View style={styles.aiAdaQuadrantLabels}>
-                      <Text style={styles.aiAdaQuadrantLabel}>Lower Right</Text>
-                      <Text style={styles.aiAdaQuadrantLabel}>Lower Left</Text>
-                    </View>
+                      return (
+                        <View style={{ width: IMG_W, height: IMG_H, position: "relative" }}>
+                          <Image
+                            source={require("@/assets/images/tooth-chart.jpeg")}
+                            style={{ width: IMG_W, height: IMG_H, position: "absolute", top: 0, left: 0 }}
+                            contentFit="contain"
+                          />
+                          {toothPositions.map(({ num, x, y }) => {
+                            const isSelected = itemSelectedTeeth.includes(num);
+                            const tType = itemToothTypes[num] || "normal";
+                            let bgColor = "transparent";
+                            let borderCol = "transparent";
+                            let textColor = "transparent";
+                            if (isSelected) {
+                              if (tType === "normal") { bgColor = normalColor + "CC"; borderCol = normalColor; textColor = "#FFF"; }
+                              else if (tType === "bridge") { bgColor = ponticColor + "CC"; borderCol = ponticColor; textColor = "#FFF"; }
+                              else if (tType === "missing") { bgColor = "#FEE2E2CC"; borderCol = missingColor; textColor = missingColor; }
+                            }
+                            return (
+                              <Pressable
+                                key={num}
+                                onPress={() => handleItemToothTap(num)}
+                                onLongPress={() => handleItemToothLongPress(num)}
+                                delayLongPress={400}
+                                style={{
+                                  position: "absolute",
+                                  left: x - TOOTH_SZ / 2,
+                                  top: y - TOOTH_SZ / 2,
+                                  width: TOOTH_SZ,
+                                  height: TOOTH_SZ,
+                                  borderRadius: TOOTH_SZ / 2,
+                                  backgroundColor: bgColor,
+                                  borderWidth: isSelected ? 2 : 0,
+                                  borderColor: borderCol,
+                                  alignItems: "center" as const,
+                                  justifyContent: "center" as const,
+                                  zIndex: 10,
+                                }}
+                              >
+                                {isSelected && tType === "missing" ? (
+                                  <View style={styles.aiToothMissingWrap}>
+                                    <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: missingColor }}>{num}</Text>
+                                    <View style={styles.aiToothXOverlay}>
+                                      <Ionicons name="close" size={12} color={missingColor} />
+                                    </View>
+                                  </View>
+                                ) : isSelected ? (
+                                  <Text style={{ fontSize: 10, fontFamily: "Inter_700Bold", color: textColor }}>{num}</Text>
+                                ) : null}
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      );
+                    })()}
                   </View>
 
                   {itemSelectedTeeth.length > 0 && (

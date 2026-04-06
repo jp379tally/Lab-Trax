@@ -2964,45 +2964,43 @@ export default function ScanScreen() {
 
                 <View style={styles.archChartWrap}>
                   {(() => {
-                    const TOOTH_SZ = 34;
-                    const GAP = 2;
-                    const CHART_W = 310;
-                    const CHART_H = 360;
-                    const CX = CHART_W / 2;
+                    const IMG_W = 320;
+                    const IMG_H = 380;
+                    const TOOTH_SZ = 30;
 
                     const toothPositions: { num: number; x: number; y: number }[] = [
-                      { num: 7, x: CX - 30, y: 10 },
-                      { num: 8, x: CX - 2, y: 6 },
-                      { num: 9, x: CX + 26, y: 10 },
-                      { num: 10, x: CX + 54, y: 18 },
-                      { num: 6, x: CX - 60, y: 18 },
-                      { num: 5, x: CX - 86, y: 36 },
-                      { num: 11, x: CX + 80, y: 36 },
-                      { num: 4, x: CX - 106, y: 60 },
-                      { num: 12, x: CX + 100, y: 60 },
-                      { num: 3, x: CX - 118, y: 90 },
-                      { num: 13, x: CX + 112, y: 90 },
-                      { num: 2, x: CX - 124, y: 122 },
-                      { num: 14, x: CX + 118, y: 122 },
-                      { num: 1, x: CX - 122, y: 156 },
-                      { num: 15, x: CX + 116, y: 156 },
-                      { num: 16, x: CX + 110, y: 190 },
-                      { num: 32, x: CX - 116, y: 190 },
-                      { num: 31, x: CX - 110, y: 222 },
-                      { num: 17, x: CX + 104, y: 222 },
-                      { num: 30, x: CX - 100, y: 252 },
-                      { num: 18, x: CX + 94, y: 252 },
-                      { num: 29, x: CX - 86, y: 278 },
-                      { num: 19, x: CX + 80, y: 278 },
-                      { num: 28, x: CX - 68, y: 300 },
-                      { num: 20, x: CX + 62, y: 300 },
-                      { num: 27, x: CX - 46, y: 316 },
-                      { num: 21, x: CX + 40, y: 316 },
-                      { num: 26, x: CX - 22, y: 326 },
-                      { num: 22, x: CX + 16, y: 326 },
-                      { num: 25, x: CX - 2, y: 332 },
-                      { num: 24, x: CX + 26, y: 332 },
-                      { num: 23, x: CX + 50, y: 326 },
+                      { num: 1, x: 26, y: 166 },
+                      { num: 2, x: 32, y: 132 },
+                      { num: 3, x: 42, y: 100 },
+                      { num: 4, x: 56, y: 72 },
+                      { num: 5, x: 74, y: 48 },
+                      { num: 6, x: 96, y: 28 },
+                      { num: 7, x: 122, y: 14 },
+                      { num: 8, x: 148, y: 8 },
+                      { num: 9, x: 174, y: 8 },
+                      { num: 10, x: 200, y: 14 },
+                      { num: 11, x: 226, y: 28 },
+                      { num: 12, x: 248, y: 48 },
+                      { num: 13, x: 266, y: 72 },
+                      { num: 14, x: 280, y: 100 },
+                      { num: 15, x: 290, y: 132 },
+                      { num: 16, x: 296, y: 166 },
+                      { num: 17, x: 296, y: 210 },
+                      { num: 18, x: 290, y: 244 },
+                      { num: 19, x: 280, y: 274 },
+                      { num: 20, x: 266, y: 300 },
+                      { num: 21, x: 248, y: 322 },
+                      { num: 22, x: 226, y: 340 },
+                      { num: 23, x: 200, y: 352 },
+                      { num: 24, x: 174, y: 360 },
+                      { num: 25, x: 148, y: 360 },
+                      { num: 26, x: 122, y: 352 },
+                      { num: 27, x: 96, y: 340 },
+                      { num: 28, x: 74, y: 322 },
+                      { num: 29, x: 56, y: 300 },
+                      { num: 30, x: 42, y: 274 },
+                      { num: 31, x: 32, y: 244 },
+                      { num: 32, x: 26, y: 210 },
                     ];
 
                     const normalColor = "#22C55E";
@@ -3017,17 +3015,18 @@ export default function ScanScreen() {
                     toothPositions.forEach(p => { posMap[p.num] = { x: p.x, y: p.y }; });
 
                     const connectorDots: { key: string; x: number; y: number; a: number; b: number }[] = [];
-                    const archCenterY = CHART_H / 2;
                     allAdj.forEach(([a, b]) => {
                       const pa = posMap[a];
                       const pb = posMap[b];
                       if (!pa || !pb) return;
                       const mx = (pa.x + pb.x) / 2;
-                      const my = (pa.y + pb.y) / 2 + TOOTH_SZ / 2;
-                      const dx = mx - CX;
-                      const dy = my - archCenterY;
+                      const my = (pa.y + pb.y) / 2;
+                      const cx = IMG_W / 2;
+                      const cy = IMG_H / 2;
+                      const dx = mx - cx;
+                      const dy = my - cy;
                       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-                      const outOffset = 18;
+                      const outOffset = 22;
                       const ox = mx + (dx / dist) * outOffset;
                       const oy = my + (dy / dist) * outOffset;
                       const cKey = `${Math.min(a,b)}-${Math.max(a,b)}`;
@@ -3037,7 +3036,12 @@ export default function ScanScreen() {
                     const DOT_SZ = 14;
 
                     return (
-                      <View style={{ width: CHART_W, height: CHART_H + 10, position: "relative" }}>
+                      <View style={{ width: IMG_W, height: IMG_H, position: "relative" }}>
+                        <Image
+                          source={require("@/assets/images/tooth-chart.jpeg")}
+                          style={{ width: IMG_W, height: IMG_H, position: "absolute", top: 0, left: 0 }}
+                          contentFit="contain"
+                        />
                         {connectorDots.map(({ key, x, y }) => {
                           const isActive = !!toothConnectors[key];
                           const HIT_SZ = 28;
@@ -3074,13 +3078,13 @@ export default function ScanScreen() {
                         {toothPositions.map(({ num, x, y }) => {
                           const isSelected = selectedTeeth.includes(num);
                           const tType = toothTypes[num] || "normal";
-                          let bgColor = "#E8EDF4";
-                          let borderCol = "#CBD5E1";
-                          let textColor = Colors.light.textSecondary;
+                          let bgColor = "transparent";
+                          let borderCol = "transparent";
+                          let textColor = "transparent";
                           if (isSelected) {
-                            if (tType === "normal") { bgColor = normalColor; borderCol = normalColor; textColor = "#FFF"; }
-                            else if (tType === "bridge") { bgColor = ponticColor; borderCol = ponticColor; textColor = "#FFF"; }
-                            else if (tType === "missing") { bgColor = "#FEE2E2"; borderCol = missingColor; textColor = missingColor; }
+                            if (tType === "normal") { bgColor = normalColor + "CC"; borderCol = normalColor; textColor = "#FFF"; }
+                            else if (tType === "bridge") { bgColor = ponticColor + "CC"; borderCol = ponticColor; textColor = "#FFF"; }
+                            else if (tType === "missing") { bgColor = "#FEE2E2CC"; borderCol = missingColor; textColor = missingColor; }
                           }
                           return (
                             <Pressable
@@ -3091,12 +3095,12 @@ export default function ScanScreen() {
                               style={{
                                 position: "absolute",
                                 left: x - TOOTH_SZ / 2,
-                                top: y,
+                                top: y - TOOTH_SZ / 2,
                                 width: TOOTH_SZ,
                                 height: TOOTH_SZ,
-                                borderRadius: 10,
+                                borderRadius: TOOTH_SZ / 2,
                                 backgroundColor: bgColor,
-                                borderWidth: 1.5,
+                                borderWidth: isSelected ? 2 : 0,
                                 borderColor: borderCol,
                                 alignItems: "center" as const,
                                 justifyContent: "center" as const,
@@ -3105,14 +3109,14 @@ export default function ScanScreen() {
                             >
                               {isSelected && tType === "missing" ? (
                                 <View style={styles.toothMissingWrap}>
-                                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: missingColor }}>{num}</Text>
+                                  <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: missingColor }}>{num}</Text>
                                   <View style={styles.toothXOverlay}>
-                                    <Ionicons name="close" size={14} color={missingColor} />
+                                    <Ionicons name="close" size={12} color={missingColor} />
                                   </View>
                                 </View>
-                              ) : (
-                                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: textColor }}>{num}</Text>
-                              )}
+                              ) : isSelected ? (
+                                <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: textColor }}>{num}</Text>
+                              ) : null}
                             </Pressable>
                           );
                         })}
@@ -5103,8 +5107,8 @@ const styles = StyleSheet.create({
   },
   archChartWrap: {
     alignItems: "center" as const,
-    paddingVertical: 8,
-    backgroundColor: "#F1F5F9",
+    paddingVertical: 12,
+    backgroundColor: "#FFFFFF",
     borderRadius: 16,
     marginVertical: 4,
     overflow: "hidden" as const,

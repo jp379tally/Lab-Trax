@@ -2,7 +2,7 @@
 
 ## Overview
 
-LabTrax is a dental laboratory case management application designed to streamline operations for dental labs and provide a dedicated portal for dental providers. Built with Expo (React Native) for the frontend and Express.js for the backend, its core purpose is to track dental lab cases through various production stages, manage clients, handle invoicing, and facilitate communication through notifications and a global chat system. The application supports role-based access for standard users, administrators, and providers, offering tailored functionalities such as inventory tracking, client management, and detailed case workflow visualization. The business vision is to enhance efficiency, transparency, and communication within the dental lab ecosystem, ultimately improving service delivery and client satisfaction.
+LabTrax is a comprehensive dental laboratory case management application designed to streamline operations for dental labs and provide a dedicated portal for dental providers. Its core purpose is to track dental lab cases through various production stages, manage clients, handle invoicing, and facilitate communication via notifications and a global chat system. The application supports role-based access for standard users, administrators, and providers, offering tailored functionalities such as inventory tracking, client management, and detailed case workflow visualization. The business vision is to enhance efficiency, transparency, and communication within the dental lab ecosystem, ultimately improving service delivery and client satisfaction.
 
 ## User Preferences
 
@@ -10,82 +10,74 @@ Preferred communication style: Simple, everyday language.
 
 ## System Architecture
 
-### Frontend Architecture
-- **Framework**: Expo SDK 54 with React Native 0.81, utilizing `expo-router` for file-based routing.
-- **Navigation**: Features tab-based layouts customized for lab users (5 tabs) and providers (4 tabs), with a dedicated case detail screen.
-- **State Management**: Global application state (cases, clients, users, invoices, notifications) is managed via React Context and persisted locally using AsyncStorage.
+### Frontend
+- **Framework**: Expo SDK 54 with React Native 0.81, using `expo-router` for file-based routing.
+- **Navigation**: Tab-based layouts for lab users (5 tabs) and providers (4 tabs), with a dedicated case detail screen.
+- **State Management**: React Context for global state, persisted locally with AsyncStorage.
 - **Styling**: React Native StyleSheet with a centralized color theme.
-- **Data Fetching**: TanStack React Query for server state management and data fetching, using `expo/fetch` for network requests.
+- **Data Fetching**: TanStack React Query for server state management and data fetching.
 
-### Backend Architecture
+### Backend
 - **Framework**: Express.js v5 on Node.js with TypeScript.
-- **API Pattern**: RESTful API with routes registered under `/api`.
-- **Storage**: Designed with an interface (`IStorage`) to easily switch between in-memory storage (for development) and database-backed solutions.
-- **CORS**: Dynamically configured to support Replit and local development environments.
-- **Static Serving**: Serves a pre-built Expo web bundle in production.
+- **API Pattern**: RESTful API under `/api`.
+- **Storage**: Pluggable storage interface, supporting in-memory and PostgreSQL.
+- **CORS**: Dynamically configured for Replit and local development.
+- **Static Serving**: Serves pre-built Expo web bundle in production.
 
 ### Data Storage
-- **Server-side Database**: PostgreSQL database via Drizzle ORM.
-- **Authentication**: Handles user login and registration with accounts persisted in PostgreSQL.
-- **Database Schema**: Defined using Drizzle ORM with Zod schemas for validation.
-- **Client-side Persistence**: AsyncStorage is used for local storage of persistent application state.
+- **Server-side**: PostgreSQL via Drizzle ORM.
+- **Client-side**: AsyncStorage for local persistence.
+- **Database Schema**: Defined using Drizzle ORM with Zod schemas.
 
 ### Key Features and Design Patterns
-- **3-Portal Architecture**: Differentiates access and features for Master Admin, Lab Portal, and Provider Portal users based on `userType`.
-- **Role-Based Access**: Two primary roles (`user`, `admin`) with additional `adminUnlocked` state for sensitive actions in the Lab Portal. Price information and administrative sections are role-gated.
-- **Case Workflow**: Cases transition through predefined stations (INTAKE, DESIGN, SCAN, MILL, PORCELAIN, QC, COMPLETE, SHIP) with `routeHistory` tracking. Case and invoice numbers follow a chronological YY-N format.
-- **Barcode System**: Supports barcode scanning for case intake, location, and batch processing, linking physical barcodes to digital case records.
-- **Remake Detection**: Implements a specific flow for identifying and managing remakes, including reason selection and recharge options.
-- **Lab-Based Membership**: Users belong to a lab based on their `practiceName` field. All registered users sharing the same `practiceName` are lab members. The `labMemberIds` memo derives membership from `registeredUsers` in the auth context. Join requests allow users to request affiliation with an existing lab admin, who then approves and sets the requesting user's `practiceName`.
-- **Server-Synced Cases**: Cases are stored both locally (AsyncStorage) and on the server (`lab_cases` PostgreSQL table). When a case is created or modified, it's automatically synced to the server. On login, cases are fetched from the server for all lab members and merged with local data. This enables case sharing across devices for users in the same lab.
-- **Lab-Based Case Sharing**: Cases are visible to all members of the same lab (sharing the same `practiceName`), not just the creator. The `labMemberIds` memo collects all user IDs from users with the same `practiceName`, and `cases` filters `allCases` to show cases owned by any lab member.
-- **Data Isolation (HIPAA)**: Cases are filtered by lab membership (`labMemberIds`). The `currentUserId` is exposed from `AuthContext` and consumed by `AppProvider` for case ownership filtering and stamping. Users not affiliated with any lab see an informational banner but can still access their own cases. Profile pictures are stored per-user (keyed by user ID) and cleared on logout.
-- **Client Deletion & Deactivation**: Admins can delete clients from the Edit Client page. If a client has open invoices, the admin is warned and offered the choice to make the client inactive instead. If deletion is chosen despite open invoices, those invoices are archived under "Deleted Client Invoices" in the Admin Master Hub and excluded from monthly sales/open invoice totals. Inactive clients appear in a dedicated "Inactive Clients" list in the hub and can be reactivated. The `DeletedClientInvoice` type in `lib/data.ts` tracks archived invoices with their original client name and deletion timestamp.
-- **Duplicate Registration Prevention**: During account creation, email, phone number, and address are checked against existing active accounts to prevent duplicates. Deleted accounts release their information for reuse.
-- **Security**: Incorporates inactivity timeouts, biometric/password-based lock screens, and robust password change mechanisms. Forgot Password and Forgot Username flows on the login screen use email-based recovery via `/api/forgot-password` and `/api/forgot-username`. Password reset tokens are cryptographically generated (crypto.randomBytes), expire after 30 minutes, and the reset endpoint enforces server-side password policy. Demo recovery info (reset links, usernames) is only returned in development mode (NODE_ENV=development). The web-based reset page is served at `/reset-password?token=...`. SMTP credentials (SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_PORT, SMTP_FROM) are optional — if not configured, recovery info is logged server-side and shown in-app during dev.
-- **Global Chat System**: Facilitates communication between users and labs with real-time messaging and unread message indicators.
-- **Courtesy Text Feature**: Automates delay notifications and negotiation flows for updated delivery dates directly from case details.
-- **Inventory Tracking**: Allows administrators to manage inventory items, categories, quantities, and receive low-stock alerts.
-- **Provider Account Numbers**: Automates assignment of unique account numbers to providers upon registration.
-- **Invoices Hub**: The "Invoices" section in Admin Master Hub is a hub with sub-navigation: "View Invoices" (filter by open, past due, or all), and "Send Invoices" (email with editable message, PDF attachment, multiple recipients via semicolon-separated emails).
-- **Statements Hub**: The "Statements" section in Admin Master Hub is a hub with sub-navigation: "Generate Statements" (preview all open statements), "View Statements" (filter by open, past due, or all, then select a client to view a professional statement matching the lab's sample format with running balance), "Send Statements" (email with editable message and PDF attachment), and "Edit Statement Message" (customize the default closing message for all outgoing statements).
-- **Statement Detail View**: Professional statement view styled to match a formal billing statement format with lab header, client address block, date, due date/amount due panel, transaction table (Date, Transaction, Amount, Running Balance), and amount due footer with lab contact info.
-- **Client Statement Action Sheet**: The Statement button in Client Detail now shows options (View, Email, Text) instead of auto-emailing, giving admins control over how statements are delivered.
-- **Editable Invoice (Admin)**: Admin users can view and edit invoices directly from the case detail screen. QuickBooks-style editing: add/remove line items, edit qty/rate/description, apply percentage or flat discounts. Changes auto-sync to case price and activity log. Component: `InvoicePDFViewer` with `editable` and `onSave` props.
-- **Admin Case Editing**: Admin users can edit case fields (provider, patient, teeth, shade, material, due date, notes) from a modal in case detail. When the provider name changes, the linked invoice is automatically transferred to the matching client account. All case edits are reflected on the associated invoice in real-time.
+- **3-Portal Architecture**: Differentiated access for Master Admin, Lab Portal, and Provider Portal based on `userType`.
+- **Role-Based Access**: `user`, `admin` roles with additional `adminUnlocked` state for sensitive actions.
+- **Case Workflow**: Tracks cases through predefined stations (INTAKE, DESIGN, etc.) with `routeHistory`.
+- **Barcode System**: Supports scanning for case intake, location, and batch processing.
+- **Remake Detection**: Specific flow for identifying and managing remakes.
+- **Lab-Based Membership & Sharing**: Users belong to a lab based on `practiceName`, enabling shared case visibility and join requests. Cases are synced between local storage and server for all lab members.
+- **Data Isolation (HIPAA)**: Cases filtered by lab membership.
+- **Client Management**: Admins can delete or deactivate clients, with safeguards for open invoices.
+- **Duplicate Registration Prevention**: Checks for existing accounts by email, phone, and address during sign-up.
+- **Security**: Inactivity timeouts, biometric/password lock screens, robust password recovery via email (with optional SMTP configuration).
+- **Global Chat System**: Real-time messaging with unread indicators.
+- **Courtesy Text Feature**: Automates delay notifications and delivery date negotiations.
+- **Inventory Tracking**: Manage items, categories, quantities, and low-stock alerts.
+- **Provider Account Numbers**: Automated assignment of unique IDs.
+- **Invoices Hub**: Centralized management for viewing, generating, and sending invoices. Admins can directly edit invoices.
+- **Statements Hub**: Centralized management for generating, viewing, and sending client statements.
+- **AI Integration**:
+    - **Prescription Scanning**: Uses GPT-4o vision to extract data from dental prescriptions, with client-side image compression.
+    - **Document Scanning**: Uses GPT-4o vision and `sharp` to detect and crop document boundaries, correct rotation, and enhance quality.
+    - **PDF Generation**: Converts scanned images into multi-page PDFs.
+    - **Smile Preview**: AI-powered feature for teeth whitening and symmetry restoration using OpenAI's gpt-image-1 model.
+- **App Store Readiness**: Includes required permission descriptions, privacy policy/terms of service, and secure account deletion.
+- **Registration**: Collects detailed address and license number.
+- **Case Management Enhancements**: Features like "Locate Case," "Reprint Lab Slip," and barcode assignment flows.
 
 ## External Dependencies
 
 ### Database
-- **PostgreSQL**: Used for persistent data storage, managed with Drizzle ORM. Requires `DATABASE_URL` environment variable.
+- **PostgreSQL**: Primary data store, managed with Drizzle ORM.
 
 ### Key NPM Packages
-- **expo**: Core framework for cross-platform development.
+- **expo**: Core framework.
 - **express**: Backend HTTP server.
-- **drizzle-orm** & **drizzle-kit**: ORM for database interaction and migrations.
-- **@tanstack/react-query**: For server state management and data fetching.
+- **drizzle-orm** & **drizzle-kit**: ORM for database.
+- **@tanstack/react-query**: Server state management.
 - **pg**: PostgreSQL client.
-- **zod** & **drizzle-zod**: For runtime schema validation.
+- **zod** & **drizzle-zod**: Schema validation.
+- **sharp**: Server-side image processing.
 
 ### Environment Variables
 - `DATABASE_URL`: PostgreSQL connection string.
-- `REPLIT_DEV_DOMAIN`: Replit development domain for CORS and API URL construction.
-- `EXPO_PUBLIC_DOMAIN`: Public domain for client-side API requests (set to `$REPLIT_DEV_DOMAIN:5000` so API requests go directly to the Express backend). `resilientFetch` tries the primary URL first and falls back to portless URL if the response is not JSON.
-- `REPLIT_INTERNAL_APP_DOMAIN`: Replit deployment domain for production builds.
+- `REPLIT_DEV_DOMAIN`: Replit dev domain.
+- `EXPO_PUBLIC_DOMAIN`: Public domain for client API.
+- `REPLIT_INTERNAL_APP_DOMAIN`: Replit deployment domain.
+- SMTP credentials (optional): `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `SMTP_PORT`, `SMTP_FROM` for email recovery.
 
 ### API Proxy (Development)
-- **Metro proxy**: `metro.config.js` configures the Expo dev server (port 8081) to proxy `/api` requests to the Express backend (port 5000) using a single shared `http-proxy-middleware` instance with 120s timeout. This ensures API calls work without specifying a port number, matching the production behavior where Express serves both API and static assets on a single port.
-- **`.local/` exclusion**: Metro's file watcher excludes `.local/` to prevent ENOENT crashes from transient Replit log files.
+- **Metro proxy**: Configures Expo dev server to proxy `/api` requests to Express backend.
 
-### Server Configuration
-- **Single instance**: Server listens without `reusePort` to ensure a single process handles all requests. This is critical for in-memory state like verification codes.
-- **Body parser limit**: Express JSON body parser is set to 50MB to support base64-encoded prescription photos from the camera.
-- **AI prescription scanning**: POST `/api/analyze-prescription` uses GPT-4o vision (with GPT-4o-mini fallback) via Replit's AI integration to extract doctor name, patient name, tooth numbers, shade, material, and notes from scanned dental prescriptions. Images are compressed to max 1024px on the client side before sending (web: canvas resize, native: expo-image-manipulator). The client uses `resilientFetch` with a 90s timeout and shows an Alert on failure instead of failing silently. Server-side post-processing flips "Last, First" names to "First Last" and normalizes case types (Crown/Bridge/Veneer → Restorative).
-- **AI document scanning**: POST `/api/crop-document` uses GPT-4o vision to detect document boundaries in photos and `sharp` to crop to just the document, like OneDrive/Adobe Scan. First applies EXIF rotation correction via `sharp.rotate()` to fix sideways photos from phone cameras, then AI detects crop coordinates and any rotation needed to make the document upright. Post-processing includes sharpening and normalization for clean, readable scans.
-- **PDF generation**: POST `/api/document-to-pdf` converts scanned document images into a multi-page PDF. Each image is EXIF-corrected, centered on a letter-size page with margins. The frontend "Save PDF" button normalizes file URIs to base64 data URIs before sending, then uses `expo-sharing` to share/save the resulting PDF on native devices or triggers a download on web.
-- **Demo Account**: A demo account (`phillipsjohnpaul@yahoo.com` / `Jp#14482726`) is seeded on server startup for App Store review purposes. The account is created with `userType: "lab"` and `role: "admin"` if it doesn't already exist.
-- **App Store Readiness**: Bundle identifier is `com.allieddl.labtrax`, URL scheme is `labtrax`. iOS `infoPlist` declares all required permission descriptions: camera, photo library, microphone, location (when in use), and Face ID. Privacy Policy and Terms of Service are accessible both as in-app screens (`/privacy-policy`, `/terms-of-service`) and as web-accessible HTML pages served by the backend at the same paths. Legal links appear on the login screen and in Settings > LEGAL section. Camera permission requests are preceded by a pre-permission `Alert.alert()` explaining usage before the system prompt. All `CameraView` components across the app are guarded by `permission?.granted` checks with fallback UI to prevent iOS crashes. Account deletion is implemented with authorization (x-user-id header) ensuring users can only delete their own accounts. ATT (App Tracking Transparency) is not requested since the app does not perform cross-app tracking.
-- **Registration**: Sign-up flow collects address in 3 fields (street, city, zip code) with GPS auto-fill, plus a license number (labeled "Lab License Number" for labs, "Dental License Number" for providers).
-- **Case management features**: Case detail includes "Locate Case" (station selection), "Reprint Lab Slip" (view/print), and "Assign Barcode" buttons. Cases list supports long-press to locate cases. Barcode scan flow: scanning an unknown barcode auto-navigates to the new case form with the barcode pre-attached; on case creation, the barcode is auto-assigned and the label modal shows directly. The label modal "Done" button navigates to the cases list when a barcode was already attached (skipping the redundant attach prompt).
-- **Smile Preview AI**: Provider portal has an AI-powered smile enhancement feature at `/smile-preview`. Uses OpenAI's gpt-image-1 model via POST `/api/smile-process` for three modes: teeth whitening, symmetry restoration, and both combined. The screen captures a photo with the device camera and sends it to the server for AI processing. Results are displayed as clean processed images (no CSS overlays). Supports retake, original view, and re-processing with different modes.
-- **Sharp**: Used for server-side image cropping (document detection). Installed as a Node.js dependency.
+### AI Services
+- **OpenAI API**: Used for GPT-4o vision (prescription and document scanning) and gpt-image-1 (smile preview).
