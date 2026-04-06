@@ -116,8 +116,9 @@ export default function CaseDetailScreen() {
   const [showPhotoNotes, setShowPhotoNotes] = useState(false);
 
   const caseItem = cases.find((c) => c.id === id);
-  const isAdmin = role === "admin" && adminUnlocked;
-  const showPrice = isAdmin;
+  const isAdmin = role === "admin";
+  const isAdminUnlocked = role === "admin" && adminUnlocked;
+  const showPrice = isAdminUnlocked;
 
   React.useEffect(() => {
     if (caseItem && currentUser) {
@@ -1032,7 +1033,7 @@ export default function CaseDetailScreen() {
         </View>
 
 
-        {showPrice && (
+        {isAdmin && (
           <View style={{ flexDirection: "row", gap: 8, marginHorizontal: 16, marginBottom: 16 }}>
             <Pressable
               onPress={() => {
@@ -1054,32 +1055,30 @@ export default function CaseDetailScreen() {
               ]}
             >
               <Ionicons name="document-text" size={18} color="#FFF" />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>{isAdmin ? "View/Edit Invoice" : "View Invoice"}</Text>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>View/Edit Invoice</Text>
             </Pressable>
-            {isAdmin && (
-              <Pressable
-                onPress={() => {
-                  openEditCase();
-                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                }}
-                style={({ pressed }) => [
-                  {
-                    flexDirection: "row" as const,
-                    alignItems: "center" as const,
-                    justifyContent: "center" as const,
-                    gap: 6,
-                    paddingVertical: 14,
-                    paddingHorizontal: 16,
-                    borderRadius: 12,
-                    backgroundColor: "#7C3AED",
-                  },
-                  pressed && { opacity: 0.85 },
-                ]}
-              >
-                <Ionicons name="create" size={18} color="#FFF" />
-                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Edit Case</Text>
-              </Pressable>
-            )}
+            <Pressable
+              onPress={() => {
+                openEditCase();
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+              style={({ pressed }) => [
+                {
+                  flexDirection: "row" as const,
+                  alignItems: "center" as const,
+                  justifyContent: "center" as const,
+                  gap: 6,
+                  paddingVertical: 14,
+                  paddingHorizontal: 16,
+                  borderRadius: 12,
+                  backgroundColor: "#7C3AED",
+                },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Ionicons name="create" size={18} color="#FFF" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Edit Case</Text>
+            </Pressable>
           </View>
         )}
 
