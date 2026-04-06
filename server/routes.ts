@@ -61,6 +61,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (existing) {
         return res.status(409).json({ error: "Username already taken." });
       }
+      if (email) {
+        const existingEmail = await storage.getUserByEmail(email.trim());
+        if (existingEmail) {
+          return res.status(409).json({ error: "An account with this email already exists." });
+        }
+      }
       const user = await storage.createUser({
         username: username.trim(),
         password,
