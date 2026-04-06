@@ -109,6 +109,8 @@ export default function ScanScreen() {
   const [material, setMaterial] = useState("Zirconia");
   const [removableSubtype, setRemovableSubtype] = useState("");
   const [removableSubtypeOpen, setRemovableSubtypeOpen] = useState(false);
+  const [removableStage, setRemovableStage] = useState("");
+  const [removableStageOpen, setRemovableStageOpen] = useState(false);
   const [isRush, setIsRush] = useState(false);
   const [isCropping, setIsCropping] = useState(false);
   const [notes, setNotes] = useState("");
@@ -1776,7 +1778,7 @@ export default function ScanScreen() {
 
     const savedPatientName = patientName.trim();
 
-    const finalNotes = (removableSubtype ? `[${removableSubtype}] ` : "") + notes.trim();
+    const finalNotes = (removableSubtype ? `[${removableSubtype}]` : "") + (removableStage ? `[Stage: ${removableStage}] ` : (removableSubtype ? " " : "")) + notes.trim();
 
     const newCase = addCase({
       caseNumber,
@@ -1981,6 +1983,8 @@ export default function ScanScreen() {
     setMaterial("Zirconia");
     setRemovableSubtype("");
     setRemovableSubtypeOpen(false);
+    setRemovableStage("");
+    setRemovableStageOpen(false);
     setIsCropping(false);
     setIsRush(false);
     setNotes("");
@@ -2801,10 +2805,13 @@ export default function ScanScreen() {
                       if (type === "Removable") {
                         setMaterial("Acrylic");
                         setRemovableSubtype("");
+                        setRemovableStage("");
                       } else {
                         setMaterial("Zirconia");
                         setRemovableSubtype("");
                         setRemovableSubtypeOpen(false);
+                        setRemovableStage("");
+                        setRemovableStageOpen(false);
                       }
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
@@ -2863,6 +2870,53 @@ export default function ScanScreen() {
                           {sub}
                         </Text>
                         {removableSubtype === sub && (
+                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+          )}
+
+          {caseType === "Removable" && (
+            <View style={[styles.formGroup, { zIndex: 3 }]}>
+              <Text style={styles.formLabel}>Removable Stage</Text>
+              <Pressable
+                onPress={() => { setRemovableStageOpen(!removableStageOpen); setRemovableSubtypeOpen(false); }}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !removableStage && { color: Colors.light.textTertiary }]}>
+                  {removableStage || "Select stage"}
+                </Text>
+                <Ionicons
+                  name={removableStageOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {removableStageOpen && (
+                <View style={[styles.dropdownPanel, { maxHeight: 280 }]}>
+                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {["Custom Tray", "Rims and Plates", "Frame with Bite Rims", "Set Up Teeth in Wax", "Process", "Repair", "Adjust", "Reline", "Reset Teeth in Wax"].map((stage) => (
+                      <Pressable
+                        key={stage}
+                        onPress={() => {
+                          setRemovableStage(stage);
+                          setRemovableStageOpen(false);
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [
+                          styles.dropdownItem,
+                          removableStage === stage && styles.dropdownItemSelected,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Text style={[styles.dropdownItemName, removableStage === stage && { color: Colors.light.tint }]}>
+                          {stage}
+                        </Text>
+                        {removableStage === stage && (
                           <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
                         )}
                       </Pressable>
