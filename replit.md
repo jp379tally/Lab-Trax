@@ -51,6 +51,8 @@ Preferred communication style: Simple, everyday language.
 - **Statements Hub**: The "Statements" section in Admin Master Hub is a hub with sub-navigation: "Generate Statements" (preview all open statements), "View Statements" (filter by open, past due, or all, then select a client to view a professional statement matching the lab's sample format with running balance), "Send Statements" (email with editable message and PDF attachment), and "Edit Statement Message" (customize the default closing message for all outgoing statements).
 - **Statement Detail View**: Professional statement view styled to match a formal billing statement format with lab header, client address block, date, due date/amount due panel, transaction table (Date, Transaction, Amount, Running Balance), and amount due footer with lab contact info.
 - **Client Statement Action Sheet**: The Statement button in Client Detail now shows options (View, Email, Text) instead of auto-emailing, giving admins control over how statements are delivered.
+- **Editable Invoice (Admin)**: Admin users can view and edit invoices directly from the case detail screen. QuickBooks-style editing: add/remove line items, edit qty/rate/description, apply percentage or flat discounts. Changes auto-sync to case price and activity log. Component: `InvoicePDFViewer` with `editable` and `onSave` props.
+- **Admin Case Editing**: Admin users can edit case fields (provider, patient, teeth, shade, material, due date, notes) from a modal in case detail. When the provider name changes, the linked invoice is automatically transferred to the matching client account. All case edits are reflected on the associated invoice in real-time.
 
 ## External Dependencies
 

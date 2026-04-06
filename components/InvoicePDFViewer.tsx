@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   StyleSheet,
   View,
@@ -7,16 +7,21 @@ import {
   Pressable,
   Platform,
   Modal,
+  TextInput,
+  Alert,
+  KeyboardAvoidingView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { Invoice } from "@/lib/data";
+import type { Invoice, InvoiceLineItem } from "@/lib/data";
 import { formatInvNum } from "@/lib/data";
 
 interface InvoicePDFViewerProps {
   visible: boolean;
   onClose: () => void;
   invoice: Invoice | null;
+  editable?: boolean;
+  onSave?: (updatedInvoice: Invoice) => void;
 }
 
 function formatDate(ts: number) {
@@ -32,13 +37,46 @@ function formatCurrency(amount: number) {
   return "$" + amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-export default function InvoicePDFViewer({ visible, onClose, invoice }: InvoicePDFViewerProps) {
+export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave }: InvoicePDFViewerProps) {
   const insets = useSafeAreaInsets();
+  const [editMode, setEditMode] = useState(false);
+  const [editLineItems, setEditLineItems] = useState<InvoiceLineItem[]>([]);
+  const [editCredits, setEditCredits] = useState(0);
+  const [showAddItem, setShowAddItem] = useState(false);
+  const [newItemName, setNewItemName] = useState("");
+  const [newItemDesc, setNewItemDesc] = useState("");
+  const [newItemQty, setNewItemQty] = useState("1");
+  const [newItemRate, setNewItemRate] = useState("");
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [showDiscount, setShowDiscount] = useState(false);
+  const [discountIdx, setDiscountIdx] = useState<number | null>(null);
+  const [discountType, setDiscountType] = useState<"percent" | "flat">("percent");
+  const [discountValue, setDiscountValue] = useState("");
+  const [hasChanges, setHasChanges] = useState(false);
+
+  useEffect(() => {
+    if (invoice && visible) {
+      setEditLineItems(invoice.lineItems.map(li => ({ ...li })));
+      setEditCredits(invoice.credits || 0);
+      setEditMode(false);
+      setHasChanges(false);
+      setShowAddItem(false);
+      setShowDiscount(false);
+      setEditingIdx(null);
+      setDiscountIdx(null);
+      setNewItemName("");
+      setNewItemDesc("");
+      setNewItemQty("1");
+      setNewItemRate("");
+      setDiscountValue("");
+    }
+  }, [invoice?.id, visible]);
 
   if (!invoice) return null;
 
-  const subtotal = invoice.lineItems.reduce((sum, li) => sum + li.amount, 0);
-  const credits = invoice.credits || 0;
+  const displayItems = editMode ? editLineItems : invoice.lineItems;
+  const subtotal = displayItems.reduce((sum, li) => sum + li.amount, 0);
+  const credits = editMode ? editCredits : (invoice.credits || 0);
   const total = subtotal - credits;
 
   const statusColor =
@@ -47,143 +85,453 @@ export default function InvoicePDFViewer({ visible, onClose, invoice }: InvoiceP
     invoice.status === "sent" ? "#3B82F6" :
     "#F59E0B";
 
+  function handleEditItem(idx: number) {
+    setEditingIdx(idx);
+    const li = editLineItems[idx];
+    setNewItemName(li.item);
+    setNewItemDesc(li.description);
+    setNewItemQty(li.qty.toString());
+    setNewItemRate(li.rate.toString());
+    setShowAddItem(true);
+  }
+
+  function handleSaveItem() {
+    const qty = Math.max(1, Math.round(parseInt(newItemQty) || 1));
+    const rate = Math.max(0, parseFloat(newItemRate) || 0);
+    if (rate === 0) {
+      Alert.alert("Invalid Rate", "Please enter a rate greater than zero.");
+      return;
+    }
+    const item: InvoiceLineItem = {
+      qty,
+      item: newItemName.trim() || "Item",
+      description: newItemDesc.trim(),
+      rate,
+      amount: qty * rate,
+    };
+
+    if (editingIdx !== null) {
+      const updated = [...editLineItems];
+      updated[editingIdx] = item;
+      setEditLineItems(updated);
+    } else {
+      setEditLineItems([...editLineItems, item]);
+    }
+
+    setHasChanges(true);
+    resetItemForm();
+  }
+
+  function resetItemForm() {
+    setShowAddItem(false);
+    setEditingIdx(null);
+    setNewItemName("");
+    setNewItemDesc("");
+    setNewItemQty("1");
+    setNewItemRate("");
+  }
+
+  function handleRemoveItem(idx: number) {
+    Alert.alert("Remove Item", `Remove "${editLineItems[idx].item}"?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove",
+        style: "destructive",
+        onPress: () => {
+          setEditLineItems(editLineItems.filter((_, i) => i !== idx));
+          setHasChanges(true);
+        },
+      },
+    ]);
+  }
+
+  function handleOpenDiscount(idx: number) {
+    setDiscountIdx(idx);
+    setDiscountType("percent");
+    setDiscountValue("");
+    setShowDiscount(true);
+  }
+
+  function handleApplyDiscount() {
+    if (discountIdx === null) return;
+    const val = Math.max(0, parseFloat(discountValue) || 0);
+    if (val === 0) {
+      Alert.alert("Invalid Discount", "Please enter a discount value greater than zero.");
+      return;
+    }
+    const updated = [...editLineItems];
+    const li = updated[discountIdx];
+    const fullPrice = li.qty * li.rate;
+
+    if (discountType === "percent") {
+      const clampedPct = Math.min(100, val);
+      const discountAmt = fullPrice * (clampedPct / 100);
+      updated[discountIdx] = {
+        ...li,
+        amount: Math.max(0, fullPrice - discountAmt),
+        description: li.description + ` (${clampedPct}% discount)`,
+      };
+    } else {
+      const clampedFlat = Math.min(fullPrice, val);
+      updated[discountIdx] = {
+        ...li,
+        amount: Math.max(0, fullPrice - clampedFlat),
+        description: li.description + ` ($${clampedFlat} discount)`,
+      };
+    }
+
+    setEditLineItems(updated);
+    setHasChanges(true);
+    setShowDiscount(false);
+    setDiscountIdx(null);
+  }
+
+  function handleSaveAll() {
+    if (!onSave || !invoice) return;
+    const newTotal = editLineItems.reduce((s, li) => s + li.amount, 0);
+    onSave({
+      ...invoice,
+      lineItems: editLineItems,
+      amount: newTotal,
+      credits: editCredits,
+    });
+    setEditMode(false);
+    setHasChanges(false);
+    Alert.alert("Saved", "Invoice updated successfully.");
+  }
+
+  function handleCancelEdit() {
+    if (hasChanges) {
+      Alert.alert("Discard Changes?", "You have unsaved changes.", [
+        { text: "Keep Editing", style: "cancel" },
+        {
+          text: "Discard",
+          style: "destructive",
+          onPress: () => {
+            setEditLineItems(invoice.lineItems.map(li => ({ ...li })));
+            setEditCredits(invoice.credits || 0);
+            setEditMode(false);
+            setHasChanges(false);
+          },
+        },
+      ]);
+    } else {
+      setEditMode(false);
+    }
+  }
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={[s.container, { paddingTop: Platform.OS === "web" ? 67 : insets.top }]}>
-        <View style={s.header}>
-          <Pressable onPress={onClose} style={s.closeBtn}>
-            <Ionicons name="arrow-back" size={22} color="#1E293B" />
-          </Pressable>
-          <Text style={s.headerTitle}>Invoice</Text>
-          <View style={{ width: 40 }} />
-        </View>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <View style={[s.container, { paddingTop: Platform.OS === "web" ? 67 : insets.top }]}>
+          <View style={s.header}>
+            <Pressable onPress={() => { if (editMode && hasChanges) { handleCancelEdit(); } else { onClose(); } }} style={s.closeBtn}>
+              <Ionicons name="arrow-back" size={22} color="#1E293B" />
+            </Pressable>
+            <Text style={s.headerTitle}>{editMode ? "Edit Invoice" : "Invoice"}</Text>
+            {editable && !editMode ? (
+              <Pressable
+                onPress={() => setEditMode(true)}
+                style={s.editBtn}
+              >
+                <Ionicons name="create-outline" size={18} color="#2563EB" />
+                <Text style={s.editBtnText}>Edit</Text>
+              </Pressable>
+            ) : editMode ? (
+              <Pressable onPress={handleCancelEdit} style={s.editBtn}>
+                <Ionicons name="close" size={18} color="#EF4444" />
+                <Text style={[s.editBtnText, { color: "#EF4444" }]}>Cancel</Text>
+              </Pressable>
+            ) : (
+              <View style={{ width: 60 }} />
+            )}
+          </View>
 
-        <ScrollView
-          style={s.scroll}
-          contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 34 + 20 : insets.bottom + 20 }}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={s.paper}>
-            <View style={s.paperTopStripe} />
+          <ScrollView
+            style={s.scroll}
+            contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 34 + 20 : insets.bottom + 20 }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={s.paper}>
+              <View style={s.paperTopStripe} />
 
-            <View style={s.paperContent}>
-              <View style={s.topRow}>
-                <View>
-                  <Text style={s.labName}>LabTrax</Text>
-                  <Text style={s.labDetail}>Dental Laboratory Services</Text>
-                  <Text style={s.labDetail}>1234 Innovation Dr, Suite 100</Text>
-                  <Text style={s.labDetail}>Pensacola, FL 32501</Text>
-                  <Text style={s.labDetail}>(850) 555-0100</Text>
-                </View>
-                <View style={s.invoiceBadgeCol}>
-                  <Text style={s.invoiceLabel}>INVOICE</Text>
-                  <View style={[s.statusPill, { backgroundColor: statusColor + "18" }]}>
-                    <View style={[s.statusDot, { backgroundColor: statusColor }]} />
-                    <Text style={[s.statusPillText, { color: statusColor }]}>
-                      {invoice.status.toUpperCase()}
-                    </Text>
+              <View style={s.paperContent}>
+                <View style={s.topRow}>
+                  <View>
+                    <Text style={s.labName}>LabTrax</Text>
+                    <Text style={s.labDetail}>Dental Laboratory Services</Text>
+                    <Text style={s.labDetail}>1234 Innovation Dr, Suite 100</Text>
+                    <Text style={s.labDetail}>Pensacola, FL 32501</Text>
+                    <Text style={s.labDetail}>(850) 555-0100</Text>
+                  </View>
+                  <View style={s.invoiceBadgeCol}>
+                    <Text style={s.invoiceLabel}>INVOICE</Text>
+                    <View style={[s.statusPill, { backgroundColor: statusColor + "18" }]}>
+                      <View style={[s.statusDot, { backgroundColor: statusColor }]} />
+                      <Text style={[s.statusPillText, { color: statusColor }]}>
+                        {invoice.status.toUpperCase()}
+                      </Text>
+                    </View>
                   </View>
                 </View>
-              </View>
 
-              <View style={s.divider} />
+                <View style={s.divider} />
 
-              <View style={s.metaRow}>
-                <View style={s.metaCol}>
-                  <Text style={s.metaLabel}>Invoice</Text>
-                  <Text style={s.metaValue}>{formatInvNum(invoice.invoiceNumber)}</Text>
-                </View>
-                <View style={s.metaCol}>
-                  <Text style={s.metaLabel}>Issue Date</Text>
-                  <Text style={s.metaValue}>{formatDate(invoice.issuedAt)}</Text>
-                </View>
-                <View style={s.metaCol}>
-                  <Text style={s.metaLabel}>Due Date</Text>
-                  <Text style={s.metaValue}>{formatDate(invoice.dueAt)}</Text>
-                </View>
-              </View>
-
-              <View style={s.billToSection}>
-                <View style={s.billToCol}>
-                  <Text style={s.billToLabel}>BILL TO</Text>
-                  <Text style={s.billToName}>{invoice.billTo}</Text>
-                  <Text style={s.billToDetail}>{invoice.clientName}</Text>
-                </View>
-                <View style={s.billToCol}>
-                  <Text style={s.billToLabel}>PATIENT</Text>
-                  <Text style={s.billToName}>{invoice.patientName}</Text>
-                </View>
-              </View>
-
-              <View style={s.caseInfoBar}>
-                <View style={s.caseInfoItem}>
-                  <Text style={s.caseInfoLabel}>Case Type</Text>
-                  <Text style={s.caseInfoValue}>{invoice.caseType || "—"}</Text>
-                </View>
-                <View style={s.caseInfoDivider} />
-                <View style={s.caseInfoItem}>
-                  <Text style={s.caseInfoLabel}>Teeth</Text>
-                  <Text style={s.caseInfoValue}>{invoice.teeth || "—"}</Text>
-                </View>
-                <View style={s.caseInfoDivider} />
-                <View style={s.caseInfoItem}>
-                  <Text style={s.caseInfoLabel}>Shade</Text>
-                  <Text style={s.caseInfoValue}>{invoice.shade || "—"}</Text>
-                </View>
-              </View>
-
-              <View style={s.tableHeader}>
-                <Text style={[s.tableHeaderText, s.colQty]}>QTY</Text>
-                <Text style={[s.tableHeaderText, s.colItem]}>ITEM</Text>
-                <Text style={[s.tableHeaderText, s.colDesc]}>DESCRIPTION</Text>
-                <Text style={[s.tableHeaderText, s.colRate]}>RATE</Text>
-                <Text style={[s.tableHeaderText, s.colAmount]}>AMOUNT</Text>
-              </View>
-
-              {invoice.lineItems.map((li, idx) => (
-                <View key={idx} style={[s.tableRow, idx % 2 === 0 && s.tableRowAlt]}>
-                  <Text style={[s.tableCell, s.colQty]}>{li.qty}</Text>
-                  <Text style={[s.tableCell, s.colItem, s.tableCellBold]}>{li.item}</Text>
-                  <Text style={[s.tableCell, s.colDesc]} numberOfLines={2}>{li.description}</Text>
-                  <Text style={[s.tableCell, s.colRate]}>{formatCurrency(li.rate)}</Text>
-                  <Text style={[s.tableCell, s.colAmount, s.tableCellBold]}>{formatCurrency(li.amount)}</Text>
-                </View>
-              ))}
-
-              <View style={s.totalsSection}>
-                <View style={s.totalRow}>
-                  <Text style={s.totalLabel}>Subtotal</Text>
-                  <Text style={s.totalValue}>{formatCurrency(subtotal)}</Text>
-                </View>
-                {credits > 0 && (
-                  <View style={s.totalRow}>
-                    <Text style={s.totalLabel}>Credits</Text>
-                    <Text style={[s.totalValue, { color: "#10B981" }]}>-{formatCurrency(credits)}</Text>
+                <View style={s.metaRow}>
+                  <View style={s.metaCol}>
+                    <Text style={s.metaLabel}>Invoice</Text>
+                    <Text style={s.metaValue}>{formatInvNum(invoice.invoiceNumber)}</Text>
                   </View>
+                  <View style={s.metaCol}>
+                    <Text style={s.metaLabel}>Issue Date</Text>
+                    <Text style={s.metaValue}>{formatDate(invoice.issuedAt)}</Text>
+                  </View>
+                  <View style={s.metaCol}>
+                    <Text style={s.metaLabel}>Due Date</Text>
+                    <Text style={s.metaValue}>{formatDate(invoice.dueAt)}</Text>
+                  </View>
+                </View>
+
+                <View style={s.billToSection}>
+                  <View style={s.billToCol}>
+                    <Text style={s.billToLabel}>BILL TO</Text>
+                    <Text style={s.billToName}>{invoice.billTo}</Text>
+                    <Text style={s.billToDetail}>{invoice.clientName}</Text>
+                  </View>
+                  <View style={s.billToCol}>
+                    <Text style={s.billToLabel}>PATIENT</Text>
+                    <Text style={s.billToName}>{invoice.patientName}</Text>
+                  </View>
+                </View>
+
+                <View style={s.caseInfoBar}>
+                  <View style={s.caseInfoItem}>
+                    <Text style={s.caseInfoLabel}>Case Type</Text>
+                    <Text style={s.caseInfoValue}>{invoice.caseType || "—"}</Text>
+                  </View>
+                  <View style={s.caseInfoDivider} />
+                  <View style={s.caseInfoItem}>
+                    <Text style={s.caseInfoLabel}>Teeth</Text>
+                    <Text style={s.caseInfoValue}>{invoice.teeth || "—"}</Text>
+                  </View>
+                  <View style={s.caseInfoDivider} />
+                  <View style={s.caseInfoItem}>
+                    <Text style={s.caseInfoLabel}>Shade</Text>
+                    <Text style={s.caseInfoValue}>{invoice.shade || "—"}</Text>
+                  </View>
+                </View>
+
+                <View style={s.tableHeader}>
+                  <Text style={[s.tableHeaderText, s.colQty]}>QTY</Text>
+                  <Text style={[s.tableHeaderText, s.colItem]}>ITEM</Text>
+                  <Text style={[s.tableHeaderText, s.colDesc]}>DESCRIPTION</Text>
+                  <Text style={[s.tableHeaderText, s.colRate]}>RATE</Text>
+                  <Text style={[s.tableHeaderText, s.colAmount]}>AMOUNT</Text>
+                  {editMode && <View style={{ width: 60 }} />}
+                </View>
+
+                {displayItems.map((li, idx) => (
+                  <View key={idx} style={[s.tableRow, idx % 2 === 0 && s.tableRowAlt]}>
+                    <Text style={[s.tableCell, s.colQty]}>{li.qty}</Text>
+                    <Text style={[s.tableCell, s.colItem, s.tableCellBold]}>{li.item}</Text>
+                    <Text style={[s.tableCell, s.colDesc]} numberOfLines={2}>{li.description}</Text>
+                    <Text style={[s.tableCell, s.colRate]}>{formatCurrency(li.rate)}</Text>
+                    <Text style={[s.tableCell, s.colAmount, s.tableCellBold]}>{formatCurrency(li.amount)}</Text>
+                    {editMode && (
+                      <View style={s.rowActions}>
+                        <Pressable onPress={() => handleEditItem(idx)} hitSlop={8}>
+                          <Ionicons name="pencil" size={14} color="#3B82F6" />
+                        </Pressable>
+                        <Pressable onPress={() => handleOpenDiscount(idx)} hitSlop={8}>
+                          <Ionicons name="pricetag" size={14} color="#F59E0B" />
+                        </Pressable>
+                        <Pressable onPress={() => handleRemoveItem(idx)} hitSlop={8}>
+                          <Ionicons name="trash" size={14} color="#EF4444" />
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
+                ))}
+
+                {editMode && (
+                  <Pressable
+                    onPress={() => { resetItemForm(); setShowAddItem(true); }}
+                    style={s.addItemBtn}
+                  >
+                    <Ionicons name="add-circle" size={18} color="#2563EB" />
+                    <Text style={s.addItemBtnText}>Add Line Item</Text>
+                  </Pressable>
                 )}
-                <View style={s.totalDivider} />
-                <View style={[s.totalRow, s.grandTotalRow]}>
-                  <Text style={s.grandTotalLabel}>Total Due</Text>
-                  <Text style={s.grandTotalValue}>{formatCurrency(total)}</Text>
-                </View>
-              </View>
 
-              {invoice.caseNotes ? (
-                <View style={s.notesSection}>
-                  <Text style={s.notesLabel}>NOTES</Text>
-                  <Text style={s.notesText}>{invoice.caseNotes}</Text>
+                <View style={s.totalsSection}>
+                  <View style={s.totalRow}>
+                    <Text style={s.totalLabel}>Subtotal</Text>
+                    <Text style={s.totalValue}>{formatCurrency(subtotal)}</Text>
+                  </View>
+                  {credits > 0 && (
+                    <View style={s.totalRow}>
+                      <Text style={s.totalLabel}>Credits</Text>
+                      <Text style={[s.totalValue, { color: "#10B981" }]}>-{formatCurrency(credits)}</Text>
+                    </View>
+                  )}
+                  <View style={s.totalDivider} />
+                  <View style={[s.totalRow, s.grandTotalRow]}>
+                    <Text style={s.grandTotalLabel}>Total Due</Text>
+                    <Text style={s.grandTotalValue}>{formatCurrency(total)}</Text>
+                  </View>
                 </View>
-              ) : null}
 
-              <View style={s.footer}>
-                <View style={s.footerDivider} />
-                <Text style={s.footerText}>Thank you for your business</Text>
-                <Text style={s.footerSub}>Payment due within 30 days of invoice date</Text>
+                {invoice.caseNotes ? (
+                  <View style={s.notesSection}>
+                    <Text style={s.notesLabel}>NOTES</Text>
+                    <Text style={s.notesText}>{invoice.caseNotes}</Text>
+                  </View>
+                ) : null}
+
+                <View style={s.footer}>
+                  <View style={s.footerDivider} />
+                  <Text style={s.footerText}>Thank you for your business</Text>
+                  <Text style={s.footerSub}>Payment due within 30 days of invoice date</Text>
+                </View>
               </View>
             </View>
-          </View>
-        </ScrollView>
-      </View>
+
+            {editMode && hasChanges && (
+              <Pressable
+                onPress={handleSaveAll}
+                style={({ pressed }) => [s.saveBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Ionicons name="checkmark-circle" size={20} color="#FFF" />
+                <Text style={s.saveBtnText}>Save Changes</Text>
+              </Pressable>
+            )}
+          </ScrollView>
+        </View>
+
+        <Modal visible={showAddItem} transparent animationType="fade">
+          <Pressable style={s.modalOverlay} onPress={resetItemForm}>
+            <Pressable style={s.modalCard} onPress={(e) => e.stopPropagation()}>
+              <Text style={s.modalTitle}>{editingIdx !== null ? "Edit Item" : "Add Item"}</Text>
+
+              <Text style={s.fieldLabel}>Item Name</Text>
+              <TextInput
+                style={s.fieldInput}
+                value={newItemName}
+                onChangeText={setNewItemName}
+                placeholder="e.g. Zirconia Crown"
+                placeholderTextColor="#94A3B8"
+              />
+
+              <Text style={s.fieldLabel}>Description</Text>
+              <TextInput
+                style={s.fieldInput}
+                value={newItemDesc}
+                onChangeText={setNewItemDesc}
+                placeholder="e.g. Full contour zirconia - tooth #14"
+                placeholderTextColor="#94A3B8"
+              />
+
+              <View style={s.fieldRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.fieldLabel}>Qty</Text>
+                  <TextInput
+                    style={s.fieldInput}
+                    value={newItemQty}
+                    onChangeText={setNewItemQty}
+                    keyboardType="number-pad"
+                    placeholderTextColor="#94A3B8"
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.fieldLabel}>Rate ($)</Text>
+                  <TextInput
+                    style={s.fieldInput}
+                    value={newItemRate}
+                    onChangeText={setNewItemRate}
+                    keyboardType="decimal-pad"
+                    placeholder="0.00"
+                    placeholderTextColor="#94A3B8"
+                  />
+                </View>
+              </View>
+
+              {(newItemQty && newItemRate) ? (
+                <Text style={s.previewAmt}>
+                  Amount: {formatCurrency((parseInt(newItemQty) || 0) * (parseFloat(newItemRate) || 0))}
+                </Text>
+              ) : null}
+
+              <View style={s.modalBtnRow}>
+                <Pressable onPress={resetItemForm} style={[s.modalBtn, s.modalBtnCancel]}>
+                  <Text style={s.modalBtnCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleSaveItem}
+                  style={[s.modalBtn, s.modalBtnSave]}
+                >
+                  <Text style={s.modalBtnSaveText}>{editingIdx !== null ? "Update" : "Add"}</Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        <Modal visible={showDiscount} transparent animationType="fade">
+          <Pressable style={s.modalOverlay} onPress={() => setShowDiscount(false)}>
+            <Pressable style={s.modalCard} onPress={(e) => e.stopPropagation()}>
+              <Text style={s.modalTitle}>Apply Discount</Text>
+              {discountIdx !== null && (
+                <Text style={s.discountItemName}>{editLineItems[discountIdx]?.item}</Text>
+              )}
+
+              <View style={s.discountToggle}>
+                <Pressable
+                  onPress={() => setDiscountType("percent")}
+                  style={[s.discountToggleBtn, discountType === "percent" && s.discountToggleBtnActive]}
+                >
+                  <Text style={[s.discountToggleText, discountType === "percent" && s.discountToggleTextActive]}>% Percent</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setDiscountType("flat")}
+                  style={[s.discountToggleBtn, discountType === "flat" && s.discountToggleBtnActive]}
+                >
+                  <Text style={[s.discountToggleText, discountType === "flat" && s.discountToggleTextActive]}>$ Flat</Text>
+                </Pressable>
+              </View>
+
+              <TextInput
+                style={s.fieldInput}
+                value={discountValue}
+                onChangeText={setDiscountValue}
+                keyboardType="decimal-pad"
+                placeholder={discountType === "percent" ? "e.g. 10" : "e.g. 25.00"}
+                placeholderTextColor="#94A3B8"
+              />
+
+              {discountIdx !== null && discountValue ? (
+                <Text style={s.previewAmt}>
+                  {discountType === "percent"
+                    ? `Discount: ${formatCurrency(editLineItems[discountIdx].qty * editLineItems[discountIdx].rate * ((parseFloat(discountValue) || 0) / 100))} off`
+                    : `Discount: ${formatCurrency(parseFloat(discountValue) || 0)} off`}
+                </Text>
+              ) : null}
+
+              <View style={s.modalBtnRow}>
+                <Pressable onPress={() => setShowDiscount(false)} style={[s.modalBtn, s.modalBtnCancel]}>
+                  <Text style={s.modalBtnCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable onPress={handleApplyDiscount} style={[s.modalBtn, s.modalBtnSave]}>
+                  <Text style={s.modalBtnSaveText}>Apply</Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -214,6 +562,20 @@ const s = StyleSheet.create({
     fontSize: 17,
     fontFamily: "Inter_700Bold",
     color: "#1E293B",
+  },
+  editBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "#EFF6FF",
+  },
+  editBtnText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#2563EB",
   },
   scroll: {
     flex: 1,
@@ -386,6 +748,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
+    alignItems: "center",
   },
   tableRowAlt: {
     backgroundColor: "#F8FAFC",
@@ -419,6 +782,30 @@ const s = StyleSheet.create({
   colAmount: {
     width: 65,
     textAlign: "right",
+  },
+  rowActions: {
+    flexDirection: "row",
+    gap: 10,
+    width: 60,
+    justifyContent: "flex-end",
+    paddingLeft: 4,
+  },
+  addItemBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderColor: "#2563EB",
+    borderStyle: "dashed",
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  addItemBtnText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#2563EB",
   },
   totalsSection: {
     marginTop: 16,
@@ -500,5 +887,130 @@ const s = StyleSheet.create({
     fontFamily: "Inter_400Regular",
     color: "#94A3B8",
     marginTop: 2,
+  },
+  saveBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 20,
+    paddingVertical: 16,
+    borderRadius: 12,
+    backgroundColor: "#10B981",
+  },
+  saveBtnText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 16,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: "#1E293B",
+    marginBottom: 16,
+  },
+  fieldLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: "#64748B",
+    marginBottom: 4,
+    marginTop: 8,
+  },
+  fieldInput: {
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: "#1E293B",
+    backgroundColor: "#F8FAFC",
+  },
+  fieldRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  previewAmt: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+    color: "#2563EB",
+    marginTop: 12,
+    textAlign: "right",
+  },
+  modalBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 20,
+  },
+  modalBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  modalBtnCancel: {
+    backgroundColor: "#F1F5F9",
+  },
+  modalBtnCancelText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#64748B",
+  },
+  modalBtnSave: {
+    backgroundColor: "#2563EB",
+  },
+  modalBtnSaveText: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  discountItemName: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#1E293B",
+    marginBottom: 12,
+  },
+  discountToggle: {
+    flexDirection: "row",
+    backgroundColor: "#F1F5F9",
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 12,
+  },
+  discountToggleBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  discountToggleBtnActive: {
+    backgroundColor: "#FFF",
+    ...Platform.select({
+      web: { boxShadow: "0 1px 3px rgba(0,0,0,0.1)" },
+      default: {},
+    }),
+  },
+  discountToggleText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: "#64748B",
+  },
+  discountToggleTextActive: {
+    fontFamily: "Inter_700Bold",
+    color: "#1E293B",
   },
 });

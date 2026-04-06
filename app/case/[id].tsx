@@ -31,7 +31,7 @@ import { logAudit } from "@/lib/audit";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, updateCase, clients, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification } = useApp();
   const { currentUser, userType } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
@@ -66,6 +66,15 @@ export default function CaseDetailScreen() {
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
   const [barcodeScanned, setBarcodeScanned] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+
+  const [showEditCase, setShowEditCase] = useState(false);
+  const [editDoctor, setEditDoctor] = useState("");
+  const [editPatient, setEditPatient] = useState("");
+  const [editTeeth, setEditTeeth] = useState("");
+  const [editShade, setEditShade] = useState("");
+  const [editMaterial, setEditMaterial] = useState("");
+  const [editDueDate, setEditDueDate] = useState("");
+  const [editNotes, setEditNotes] = useState("");
 
   function requestCameraWithPrompt(onGranted: () => void) {
     ImagePicker.getCameraPermissionsAsync().then((perm) => {
@@ -189,6 +198,110 @@ export default function CaseDetailScreen() {
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  function openEditCase() {
+    if (!caseItem) return;
+    setEditDoctor(caseItem.doctorName);
+    setEditPatient(caseItem.patientName || caseItem.patientInitials);
+    setEditTeeth(caseItem.toothIndices);
+    setEditShade(caseItem.shade);
+    setEditMaterial(caseItem.material);
+    setEditDueDate(caseItem.dueDate || "");
+    setEditNotes(caseItem.notes || "");
+    setShowEditCase(true);
+  }
+
+  function handleSaveEditCase() {
+    if (!caseItem) return;
+    const oldDoctor = caseItem.doctorName;
+    const newDoctor = editDoctor.trim();
+    const providerChanged = newDoctor.toLowerCase() !== oldDoctor.toLowerCase() && newDoctor.length > 0;
+    const changes: string[] = [];
+
+    const updates: Partial<typeof caseItem> = {};
+
+    if (newDoctor !== oldDoctor) {
+      updates.doctorName = newDoctor;
+      changes.push(`Provider: ${oldDoctor} → ${newDoctor}`);
+    }
+    if (editPatient.trim() !== (caseItem.patientName || caseItem.patientInitials)) {
+      updates.patientName = editPatient.trim();
+      updates.patientInitials = editPatient.trim().split(" ").map(w => w[0]).join("").toUpperCase().substring(0, 2);
+      changes.push(`Patient: ${caseItem.patientName || caseItem.patientInitials} → ${editPatient.trim()}`);
+    }
+    if (editTeeth.trim() !== caseItem.toothIndices) {
+      updates.toothIndices = editTeeth.trim();
+      changes.push(`Teeth: ${caseItem.toothIndices} → ${editTeeth.trim()}`);
+    }
+    if (editShade.trim() !== caseItem.shade) {
+      updates.shade = editShade.trim();
+      changes.push(`Shade: ${caseItem.shade} → ${editShade.trim()}`);
+    }
+    if (editMaterial.trim() !== caseItem.material) {
+      updates.material = editMaterial.trim();
+      changes.push(`Material: ${caseItem.material} → ${editMaterial.trim()}`);
+    }
+    if (editDueDate.trim() !== (caseItem.dueDate || "")) {
+      updates.dueDate = editDueDate.trim();
+      changes.push(`Due Date: ${caseItem.dueDate || "none"} → ${editDueDate.trim()}`);
+    }
+    if (editNotes.trim() !== (caseItem.notes || "")) {
+      updates.notes = editNotes.trim();
+      changes.push("Notes updated");
+    }
+
+    if (changes.length === 0) {
+      setShowEditCase(false);
+      return;
+    }
+
+    updateCase(caseItem.id, updates);
+
+    if (changes.length > 0) {
+      addCaseNote(caseItem.id, `Case edited: ${changes.join("; ")}`, userInitials);
+    }
+
+    const targetInvId = caseItem.invoiceId || (caseInvoice && caseInvoice.id !== caseItem.id + "-inv" ? caseInvoice.id : null);
+    if (targetInvId) {
+      const invUpdates: Partial<Invoice> = {};
+      if (updates.doctorName) {
+        invUpdates.clientName = updates.doctorName;
+        invUpdates.billTo = updates.doctorName;
+      }
+      if (updates.patientName) invUpdates.patientName = updates.patientName;
+      if (updates.toothIndices) invUpdates.teeth = updates.toothIndices;
+      if (updates.shade) invUpdates.shade = updates.shade;
+      if (updates.material || updates.toothIndices) {
+        const mat = updates.material || caseItem.material;
+        invUpdates.caseType = `${mat} Restoration`;
+      }
+      if (updates.dueDate) {
+        invUpdates.dueAt = new Date(updates.dueDate + "T00:00:00").getTime();
+      }
+      updateInvoice(targetInvId, invUpdates);
+    }
+
+    if (providerChanged) {
+      const matchClient = clients.find(
+        (cl) => cl.leadDoctor.toLowerCase().includes(newDoctor.toLowerCase()) ||
+          newDoctor.toLowerCase().includes(cl.leadDoctor.toLowerCase()) ||
+          (cl.additionalProviders || []).some(p => p.toLowerCase().includes(newDoctor.toLowerCase()))
+      );
+      const transferInvId = targetInvId || caseItem.invoiceId;
+      if (matchClient && transferInvId) {
+        updateInvoice(transferInvId, {
+          clientId: matchClient.id,
+          clientName: matchClient.leadDoctor,
+          billTo: matchClient.practiceName || matchClient.leadDoctor,
+        });
+        addCaseNote(caseItem.id, `Invoice transferred to ${matchClient.practiceName || matchClient.leadDoctor}`, userInitials);
+      }
+    }
+
+    setShowEditCase(false);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert("Saved", "Case updated successfully.");
   }
 
   function webFilePickerForCamera(): Promise<string | null> {
@@ -919,29 +1032,54 @@ export default function CaseDetailScreen() {
 
 
         {showPrice && (
-        <Pressable
-          onPress={() => {
-            setShowInvoiceModal(true);
-            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          }}
-          style={({ pressed }) => [
-            {
-              flexDirection: "row" as const,
-              alignItems: "center" as const,
-              justifyContent: "center" as const,
-              gap: 8,
-              marginHorizontal: 16,
-              marginBottom: 16,
-              paddingVertical: 14,
-              borderRadius: 12,
-              backgroundColor: "#2563EB",
-            },
-            pressed && { opacity: 0.85 },
-          ]}
-        >
-          <Ionicons name="document-text" size={18} color="#FFF" />
-          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>View Invoice</Text>
-        </Pressable>
+          <View style={{ flexDirection: "row", gap: 8, marginHorizontal: 16, marginBottom: 16 }}>
+            <Pressable
+              onPress={() => {
+                setShowInvoiceModal(true);
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+              style={({ pressed }) => [
+                {
+                  flex: 1,
+                  flexDirection: "row" as const,
+                  alignItems: "center" as const,
+                  justifyContent: "center" as const,
+                  gap: 8,
+                  paddingVertical: 14,
+                  borderRadius: 12,
+                  backgroundColor: "#2563EB",
+                },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Ionicons name="document-text" size={18} color="#FFF" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>{isAdmin ? "View/Edit Invoice" : "View Invoice"}</Text>
+            </Pressable>
+            {isAdmin && (
+              <Pressable
+                onPress={() => {
+                  openEditCase();
+                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+                style={({ pressed }) => [
+                  {
+                    flexDirection: "row" as const,
+                    alignItems: "center" as const,
+                    justifyContent: "center" as const,
+                    gap: 6,
+                    paddingVertical: 14,
+                    paddingHorizontal: 16,
+                    borderRadius: 12,
+                    backgroundColor: "#7C3AED",
+                  },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <Ionicons name="create" size={18} color="#FFF" />
+                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Edit Case</Text>
+              </Pressable>
+            )}
+          </View>
         )}
 
         {(() => {
@@ -2865,11 +3003,104 @@ export default function CaseDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {isAdmin && (
+      <Modal visible={showEditCase} animationType="slide" transparent>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+            <View style={{ backgroundColor: "#FFF", borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "90%", paddingBottom: Platform.OS === "web" ? 34 : insets.bottom }}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: "#E2E8F0" }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#1E293B" }}>Edit Case</Text>
+                <Pressable onPress={() => setShowEditCase(false)}>
+                  <Ionicons name="close" size={24} color="#64748B" />
+                </Pressable>
+              </View>
+              <ScrollView style={{ paddingHorizontal: 20 }} contentContainerStyle={{ paddingVertical: 16, gap: 14 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                <View>
+                  <Text style={editFieldStyles.label}>Provider / Doctor</Text>
+                  <TextInput style={editFieldStyles.input} value={editDoctor} onChangeText={setEditDoctor} placeholder="Doctor name" placeholderTextColor="#94A3B8" />
+                  {editDoctor.trim().toLowerCase() !== caseItem.doctorName.toLowerCase() && editDoctor.trim().length > 0 && (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6, backgroundColor: "#FEF3C7", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}>
+                      <Ionicons name="swap-horizontal" size={14} color="#D97706" />
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#92400E", flex: 1 }}>Invoice will transfer to new provider</Text>
+                    </View>
+                  )}
+                </View>
+
+                <View>
+                  <Text style={editFieldStyles.label}>Patient Name</Text>
+                  <TextInput style={editFieldStyles.input} value={editPatient} onChangeText={setEditPatient} placeholder="Patient name" placeholderTextColor="#94A3B8" />
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={editFieldStyles.label}>Teeth</Text>
+                    <TextInput style={editFieldStyles.input} value={editTeeth} onChangeText={setEditTeeth} placeholder="e.g. 3,4,5" placeholderTextColor="#94A3B8" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={editFieldStyles.label}>Shade</Text>
+                    <TextInput style={editFieldStyles.input} value={editShade} onChangeText={setEditShade} placeholder="e.g. A2" placeholderTextColor="#94A3B8" />
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={editFieldStyles.label}>Material</Text>
+                    <TextInput style={editFieldStyles.input} value={editMaterial} onChangeText={setEditMaterial} placeholder="e.g. Zirconia" placeholderTextColor="#94A3B8" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={editFieldStyles.label}>Due Date (YYYY-MM-DD)</Text>
+                    <TextInput style={editFieldStyles.input} value={editDueDate} onChangeText={setEditDueDate} placeholder="2025-12-31" placeholderTextColor="#94A3B8" />
+                  </View>
+                </View>
+
+                <View>
+                  <Text style={editFieldStyles.label}>Notes</Text>
+                  <TextInput style={[editFieldStyles.input, { height: 80, textAlignVertical: "top" }]} value={editNotes} onChangeText={setEditNotes} placeholder="Case notes..." placeholderTextColor="#94A3B8" multiline />
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
+                  <Pressable
+                    onPress={() => setShowEditCase(false)}
+                    style={({ pressed }) => [{ flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: "#F1F5F9", alignItems: "center" as const }, pressed && { opacity: 0.85 }]}
+                  >
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#64748B" }}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleSaveEditCase}
+                    style={({ pressed }) => [{ flex: 1, flexDirection: "row" as const, gap: 6, paddingVertical: 14, borderRadius: 12, backgroundColor: "#10B981", alignItems: "center" as const, justifyContent: "center" as const }, pressed && { opacity: 0.85 }]}
+                  >
+                    <Ionicons name="checkmark-circle" size={18} color="#FFF" />
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Save Changes</Text>
+                  </Pressable>
+                </View>
+              </ScrollView>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+      )}
+
       {showPrice && (
       <InvoicePDFViewer
         visible={showInvoiceModal}
         onClose={() => setShowInvoiceModal(false)}
         invoice={caseInvoice}
+        editable={isAdmin}
+        onSave={(updatedInv) => {
+          if (caseItem.invoiceId) {
+            updateInvoice(caseItem.invoiceId, {
+              lineItems: updatedInv.lineItems,
+              amount: updatedInv.amount,
+              credits: updatedInv.credits,
+            });
+          }
+          const newTotal = updatedInv.lineItems.reduce((s, li) => s + li.amount, 0) - (updatedInv.credits || 0);
+          updateCase(caseItem.id, { price: newTotal });
+          addCaseNote(caseItem.id, `Invoice updated — new total: $${newTotal.toFixed(2)}`, userInitials);
+        }}
       />
       )}
 
@@ -4428,5 +4659,25 @@ const exoStyles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: "#FFF",
+  },
+});
+
+const editFieldStyles = StyleSheet.create({
+  label: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: "#64748B",
+    marginBottom: 4,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: "#1E293B",
+    backgroundColor: "#F8FAFC",
   },
 });
