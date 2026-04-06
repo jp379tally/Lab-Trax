@@ -6,6 +6,13 @@ let cachedBaseUrl: string | null = null;
 export function getApiUrl(): string {
   if (cachedBaseUrl) return cachedBaseUrl;
 
+  if (typeof window !== "undefined" && window.location && window.location.origin) {
+    const origin = window.location.origin;
+    if (origin && !origin.includes("localhost")) {
+      return origin.endsWith("/") ? origin : origin + "/";
+    }
+  }
+
   let host = process.env.EXPO_PUBLIC_DOMAIN;
 
   if (!host) {
