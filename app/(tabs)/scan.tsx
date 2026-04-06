@@ -107,7 +107,10 @@ export default function ScanScreen() {
   const [toothChartOpen, setToothChartOpen] = useState(false);
   const [shade, setShade] = useState("");
   const [material, setMaterial] = useState("Zirconia");
+  const [removableSubtype, setRemovableSubtype] = useState("");
+  const [removableSubtypeOpen, setRemovableSubtypeOpen] = useState(false);
   const [isRush, setIsRush] = useState(false);
+  const [isCropping, setIsCropping] = useState(false);
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [dueDateOpen, setDueDateOpen] = useState(false);
@@ -541,6 +544,33 @@ export default function ScanScreen() {
       });
     }
     cropDoneRef.current = true;
+  }
+
+  async function handleManualCrop() {
+    if (casePhotos.length === 0) return;
+    setIsCropping(true);
+    try {
+      const lastPhoto = casePhotos[casePhotos.length - 1];
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        quality: 0.9,
+        base64: true,
+      });
+      if (!result.canceled && result.assets[0]) {
+        const asset = result.assets[0];
+        const newUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+        setCasePhotos(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = newUri;
+          return updated;
+        });
+        setCapturedUri(newUri);
+      }
+    } catch (e: any) {
+      console.log("Manual crop failed:", e?.message);
+    }
+    setIsCropping(false);
   }
 
   async function handleTakeRegularPhoto() {
@@ -1727,6 +1757,8 @@ export default function ScanScreen() {
 
     const savedPatientName = patientName.trim();
 
+    const finalNotes = (removableSubtype ? `[${removableSubtype}] ` : "") + notes.trim();
+
     const newCase = addCase({
       caseNumber,
       doctorName: doctorName.trim(),
@@ -1738,7 +1770,7 @@ export default function ScanScreen() {
       material,
       status: "INTAKE",
       isRush,
-      notes: notes.trim(),
+      notes: finalNotes,
       price: calculatedPrice,
       dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
       photos: casePhotos,
@@ -1928,6 +1960,9 @@ export default function ScanScreen() {
     setCustomShadePhotos([]);
     setCustomShadeVideos([]);
     setMaterial("Zirconia");
+    setRemovableSubtype("");
+    setRemovableSubtypeOpen(false);
+    setIsCropping(false);
     setIsRush(false);
     setNotes("");
     setDueDate("");
@@ -2744,6 +2779,14 @@ export default function ScanScreen() {
                     onPress={() => {
                       setCaseType(type);
                       setCaseTypeOpen(false);
+                      if (type === "Removable") {
+                        setMaterial("Acrylic");
+                        setRemovableSubtype("");
+                      } else {
+                        setMaterial("Zirconia");
+                        setRemovableSubtype("");
+                        setRemovableSubtypeOpen(false);
+                      }
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                     style={({ pressed }) => [
@@ -3207,7 +3250,10 @@ export default function ScanScreen() {
             <View style={[styles.formGroup, { flex: 1 }]}>
               <Text style={styles.formLabel}>Material</Text>
               <View style={styles.materialSelector}>
-                {["Zirconia", "E.max", "PFM", "Gold", "Semi Precious", "Full Cast"].map((m) => (
+                {(caseType === "Removable"
+                  ? ["Acrylic", "Flexible", "Cast Metal", "Other"]
+                  : ["Zirconia", "E.max", "PFM", "Gold", "Semi Precious", "Full Cast", "Diagnostic Wax Up", "Other"]
+                ).map((m) => (
                   <Pressable
                     key={m}
                     onPress={() => setMaterial(m)}
@@ -3229,6 +3275,53 @@ export default function ScanScreen() {
               </View>
             </View>
           </View>
+
+          {caseType === "Removable" && (
+            <View style={[styles.formGroup, { zIndex: 4 }]}>
+              <Text style={styles.formLabel}>Removable Type</Text>
+              <Pressable
+                onPress={() => setRemovableSubtypeOpen(!removableSubtypeOpen)}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !removableSubtype && { color: Colors.light.textTertiary }]}>
+                  {removableSubtype || "Select removable type"}
+                </Text>
+                <Ionicons
+                  name={removableSubtypeOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {removableSubtypeOpen && (
+                <View style={[styles.dropdownPanel, { maxHeight: 250 }]}>
+                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {["Full Denture", "Partial", "Nesbit", "Interim Partial", "Immediate Partial", "Immediate Denture"].map((sub) => (
+                      <Pressable
+                        key={sub}
+                        onPress={() => {
+                          setRemovableSubtype(sub);
+                          setRemovableSubtypeOpen(false);
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [
+                          styles.dropdownItem,
+                          removableSubtype === sub && styles.dropdownItemSelected,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Text style={[styles.dropdownItemName, removableSubtype === sub && { color: Colors.light.tint }]}>
+                          {sub}
+                        </Text>
+                        {removableSubtype === sub && (
+                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+          )}
 
           <Pressable
             onPress={() => setIsRush(!isRush)}
@@ -3608,6 +3701,23 @@ export default function ScanScreen() {
             >
               <Ionicons name="refresh" size={22} color="#EF4444" />
               <Text style={[styles.actionBtnText, { color: "#EF4444" }]}>Retake</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleManualCrop}
+              disabled={isCropping}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
+                pressed && { opacity: 0.7 },
+                isCropping && { opacity: 0.5 },
+              ]}
+            >
+              {isCropping ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Ionicons name="crop" size={22} color="#FFF" />
+              )}
+              <Text style={styles.actionBtnText}>{isCropping ? "Cropping..." : "Crop Photo"}</Text>
             </Pressable>
             <Pressable
               onPress={handleAddMoreFromReview}

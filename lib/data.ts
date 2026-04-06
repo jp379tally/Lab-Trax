@@ -80,6 +80,10 @@ export const MATERIAL_PRICES: Record<string, number> = {
   "Gold": 400,
   "Semi Precious": 275,
   "Full Cast": 225,
+  "Diagnostic Wax Up": 200,
+  "Acrylic": 350,
+  "Flexible": 400,
+  "Cast Metal": 450,
   "Other": 250,
 };
 

@@ -588,7 +588,7 @@ function TechDashboard() {
           <View style={{ marginTop: 16, padding: 14, backgroundColor: isDarkMode ? "#1E293B" : "#FFF7ED", borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: isDarkMode ? "#334155" : "#FDE68A" }}>
             <Ionicons name="information-circle-outline" size={22} color={isDarkMode ? "#FBBF24" : "#D97706"} />
             <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: isDarkMode ? "#E2E8F0" : "#92400E", flex: 1, lineHeight: 18 }}>
-              Join a lab group to collaborate with your team and access shared features.
+              Join a lab to collaborate with your team and access shared features.
             </Text>
           </View>
         )}
@@ -1315,7 +1315,7 @@ function TechDashboard() {
           </Text>
           <Text style={styles.joinReqConfirmDesc}>
             {confirmJoinReq?.accept
-              ? `${confirmJoinReq?.username} will be added to your group as a provider.`
+              ? `${confirmJoinReq?.username} will be added to your lab as a provider.`
               : `${confirmJoinReq?.username}'s connection request will be declined.`}
           </Text>
           <View style={styles.joinReqConfirmBtns}>
@@ -6089,7 +6089,7 @@ function AdminDashboard() {
       const role = user?.role || "user";
       addUserToGroup(groupId, username, role as "admin" | "user");
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Added", `${username} has been added to the group.`);
+      Alert.alert("Added", `${username} has been added to the lab.`);
       setSelectedLabGroup(null);
     }
 
@@ -6859,7 +6859,7 @@ function ProviderDashboard() {
           <View style={{ marginHorizontal: 20, marginTop: 12, padding: 14, backgroundColor: "#FFF7ED", borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: "#FDE68A" }}>
             <Ionicons name="information-circle-outline" size={22} color="#D97706" />
             <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: "#92400E", flex: 1, lineHeight: 18 }}>
-              Join a practice group to collaborate with your team.
+              Join a lab to collaborate with your team.
             </Text>
           </View>
         )}

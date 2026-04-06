@@ -368,7 +368,7 @@ export default function SettingsScreen() {
                 </View>
                 <View style={styles.menuInfo}>
                   <Text style={[styles.menuTitle, { color: colors.text }]}>Connect with a Lab</Text>
-                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Send request to join a lab group</Text>
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Send request to join a lab</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
               </Pressable>

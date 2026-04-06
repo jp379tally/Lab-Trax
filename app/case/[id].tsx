@@ -620,7 +620,7 @@ export default function CaseDetailScreen() {
       return;
     }
     const skipToothValidation =
-      (itemCaseType === "Removable" && removableSubtype === "Denture") ||
+      (itemCaseType === "Removable" && (removableSubtype === "Full Denture" || removableSubtype === "Immediate Denture" || removableSubtype === "Denture")) ||
       (itemCaseType === "Appliance" && ["Snore Guard", "Ortho Retainer", "Other"].includes(applianceSubtype)) ||
       (itemCaseType === "Appliance" && applianceSubtype === "Night Guard");
 
@@ -2350,7 +2350,7 @@ export default function CaseDetailScreen() {
                 <View style={styles.aiMaterialSection}>
                   <Text style={styles.aiMaterialLabel}>Material</Text>
                   <View style={styles.aiMaterialSelector}>
-                    {["Zirconia", "E.max", "PFM", "Gold", "Other"].map((m) => (
+                    {["Zirconia", "E.max", "PFM", "Gold", "Semi Precious", "Full Cast", "Diagnostic Wax Up", "Other"].map((m) => (
                       <Pressable
                         key={m}
                         onPress={() => setItemMaterial(m)}
@@ -2392,12 +2392,15 @@ export default function CaseDetailScreen() {
 
             {addItemStep === "removableSubtype" && (
               <View style={styles.addItemCaseTypeList}>
-                {["Nesbit", "Partial", "Denture", "Flipper", "Other"].map((sub) => (
+                {["Full Denture", "Partial", "Nesbit", "Interim Partial", "Immediate Partial", "Immediate Denture"].map((sub) => {
+                  const iconMap: Record<string, string> = { "Full Denture": "apps", "Partial": "pie-chart", "Nesbit": "git-branch", "Interim Partial": "time", "Immediate Partial": "flash", "Immediate Denture": "speedometer" };
+                  const isDenture = sub === "Full Denture" || sub === "Immediate Denture";
+                  return (
                   <Pressable
                     key={sub}
                     onPress={() => {
                       setRemovableSubtype(sub);
-                      if (sub === "Denture") {
+                      if (isDenture) {
                         setAddItemStep("removableMaterial");
                       } else {
                         setAddItemStep("toothChart");
@@ -2412,7 +2415,7 @@ export default function CaseDetailScreen() {
                   >
                     <View style={styles.addItemCaseTypeIcon}>
                       <Ionicons
-                        name={sub === "Nesbit" ? "git-branch" : sub === "Partial" ? "pie-chart" : sub === "Denture" ? "apps" : sub === "Flipper" ? "swap-vertical" : "ellipsis-horizontal"}
+                        name={(iconMap[sub] || "ellipsis-horizontal") as any}
                         size={20}
                         color={removableSubtype === sub ? Colors.light.tint : Colors.light.textSecondary}
                       />
@@ -2422,7 +2425,8 @@ export default function CaseDetailScreen() {
                     </Text>
                     <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
                   </Pressable>
-                ))}
+                  );
+                })}
               </View>
             )}
 
