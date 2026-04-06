@@ -117,8 +117,7 @@ export default function CaseDetailScreen() {
 
   const caseItem = cases.find((c) => c.id === id);
   const isAdmin = role === "admin";
-  const isAdminUnlocked = role === "admin" && adminUnlocked;
-  const showPrice = isAdminUnlocked;
+  const showPrice = isAdmin;
 
   React.useEffect(() => {
     if (caseItem && currentUser) {
