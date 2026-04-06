@@ -1254,13 +1254,29 @@ export default function CaseDetailScreen() {
                       )}
                     </View>
                   ) : isEvent ? (
-                    <View style={{
-                      backgroundColor: isBarcode ? "#ECFDF5" : isInvoice ? "#EFF6FF" : isTracking ? "#EEF2FF" : "#FDF2F8",
-                      borderRadius: 10,
-                      padding: 10,
-                      borderLeftWidth: 3,
-                      borderLeftColor: isBarcode ? "#10B981" : isInvoice ? "#3B82F6" : isTracking ? "#6366F1" : "#EC4899",
-                    }}>
+                    <Pressable
+                      onPress={() => {
+                        if (isInvoice && isAdmin) {
+                          setShowInvoiceModal(true);
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        } else if (isTracking && entry.description) {
+                          const trackMatch = entry.description.match(/tracking[:\s#]*([A-Za-z0-9]+)/i);
+                          if (trackMatch) Alert.alert("Tracking Number", trackMatch[1]);
+                          else Alert.alert("Tracking", entry.description);
+                        } else if (isBarcode) {
+                          Alert.alert("Barcode", entry.description);
+                        } else if (isCourtesy) {
+                          Alert.alert("Courtesy Text", entry.description);
+                        }
+                      }}
+                      style={{
+                        backgroundColor: isBarcode ? "#ECFDF5" : isInvoice ? "#EFF6FF" : isTracking ? "#EEF2FF" : "#FDF2F8",
+                        borderRadius: 10,
+                        padding: 10,
+                        borderLeftWidth: 3,
+                        borderLeftColor: isBarcode ? "#10B981" : isInvoice ? "#3B82F6" : isTracking ? "#6366F1" : "#EC4899",
+                      }}
+                    >
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <Ionicons
                           name={isBarcode ? "barcode" : isInvoice ? (entry.type === "invoice_paid" ? "card" : "receipt") : isTracking ? "airplane" : "chatbubble-ellipses"}
@@ -1283,6 +1299,11 @@ export default function CaseDetailScreen() {
                             <Text style={styles.initialsText}>{entry.user}</Text>
                           </View>
                         )}
+                        {(isInvoice && isAdmin) && (
+                          <View style={{ marginLeft: "auto" }}>
+                            <Ionicons name="open-outline" size={14} color="#2563EB" />
+                          </View>
+                        )}
                       </View>
                       <Text style={{
                         fontSize: 13,
@@ -1292,15 +1313,27 @@ export default function CaseDetailScreen() {
                       }}>
                         {entry.description}
                       </Text>
-                    </View>
+                      {(isInvoice && isAdmin) && (
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#2563EB", marginTop: 4 }}>Tap to view invoice</Text>
+                      )}
+                    </Pressable>
                   ) : (
-                    <View style={{
-                      backgroundColor: isNote ? "#FFF7ED" : "#F5F3FF",
-                      borderRadius: 10,
-                      padding: 10,
-                      borderLeftWidth: 3,
-                      borderLeftColor: isNote ? "#F59E0B" : "#8B5CF6",
-                    }}>
+                    <Pressable
+                      onPress={() => {
+                        if (isPhoto && entry.imageUri) {
+                          setFullScreenPhoto(entry.imageUri);
+                        } else if (isNote) {
+                          Alert.alert("Note", entry.description);
+                        }
+                      }}
+                      style={{
+                        backgroundColor: isNote ? "#FFF7ED" : "#F5F3FF",
+                        borderRadius: 10,
+                        padding: 10,
+                        borderLeftWidth: 3,
+                        borderLeftColor: isNote ? "#F59E0B" : "#8B5CF6",
+                      }}
+                    >
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <Ionicons
                           name={isNote ? "document-text" : "camera"}
@@ -1319,6 +1352,11 @@ export default function CaseDetailScreen() {
                         {entry.user && (
                           <View style={styles.initialsChip}>
                             <Text style={styles.initialsText}>{entry.user}</Text>
+                          </View>
+                        )}
+                        {isPhoto && entry.imageUri && (
+                          <View style={{ marginLeft: "auto" }}>
+                            <Ionicons name="expand-outline" size={14} color="#7C3AED" />
                           </View>
                         )}
                       </View>
@@ -1349,20 +1387,18 @@ export default function CaseDetailScreen() {
                         );
                       })()}
                       {isPhoto && entry.imageUri && (
-                        <Pressable onPress={() => setFullScreenPhoto(entry.imageUri!)}>
-                          <Image
-                            source={{ uri: entry.imageUri }}
-                            style={{
-                              width: "100%",
-                              height: 120,
-                              borderRadius: 8,
-                              marginTop: 8,
-                            }}
-                            resizeMode="cover"
-                          />
-                        </Pressable>
+                        <Image
+                          source={{ uri: entry.imageUri }}
+                          style={{
+                            width: "100%",
+                            height: 120,
+                            borderRadius: 8,
+                            marginTop: 8,
+                          }}
+                          resizeMode="cover"
+                        />
                       )}
-                    </View>
+                    </Pressable>
                   )}
                   <Text style={styles.timelineTime}>
                     {formatTimestamp(entry.timestamp)}
