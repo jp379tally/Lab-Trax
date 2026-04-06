@@ -551,24 +551,43 @@ export default function ScanScreen() {
     setIsCropping(true);
     try {
       const lastPhoto = casePhotos[casePhotos.length - 1];
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
-        allowsEditing: true,
-        quality: 0.9,
-        base64: true,
+      let imageData = lastPhoto;
+      if (!imageData.startsWith("data:")) {
+        try {
+          const base64 = await FileSystem.readAsStringAsync(imageData, { encoding: FileSystem.EncodingType.Base64 });
+          imageData = `data:image/jpeg;base64,${base64}`;
+        } catch (readErr: any) {
+          console.log("Could not read photo for crop:", readErr?.message);
+          setIsCropping(false);
+          return;
+        }
+      }
+      const apiUrl = getApiUrl();
+      const cropUrl = new URL("/api/crop-document", apiUrl);
+      const resp = await resilientFetch(cropUrl.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: imageData }),
       });
-      if (!result.canceled && result.assets[0]) {
-        const asset = result.assets[0];
-        const newUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+      const data = await resp.json();
+      if (data.croppedImageBase64) {
         setCasePhotos(prev => {
           const updated = [...prev];
-          updated[updated.length - 1] = newUri;
+          updated[updated.length - 1] = data.croppedImageBase64;
           return updated;
         });
-        setCapturedUri(newUri);
+        setCapturedUri(data.croppedImageBase64);
+        if (data.documentDetected) {
+          Alert.alert("Document Cropped", `Detected ${data.documentType || "document"} and cropped automatically.`);
+        } else {
+          Alert.alert("No Document Detected", "Could not detect a document. The image was auto-corrected but not cropped.");
+        }
+      } else {
+        Alert.alert("Crop Failed", "Unable to crop this image. Please try retaking the photo.");
       }
     } catch (e: any) {
       console.log("Manual crop failed:", e?.message);
+      Alert.alert("Crop Error", "Something went wrong while cropping. Please try again.");
     }
     setIsCropping(false);
   }
