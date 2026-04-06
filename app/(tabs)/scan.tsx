@@ -2826,6 +2826,53 @@ export default function ScanScreen() {
             )}
           </View>
 
+          {caseType === "Removable" && (
+            <View style={[styles.formGroup, { zIndex: 4 }]}>
+              <Text style={styles.formLabel}>Removable Type</Text>
+              <Pressable
+                onPress={() => setRemovableSubtypeOpen(!removableSubtypeOpen)}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !removableSubtype && { color: Colors.light.textTertiary }]}>
+                  {removableSubtype || "Select removable type"}
+                </Text>
+                <Ionicons
+                  name={removableSubtypeOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {removableSubtypeOpen && (
+                <View style={[styles.dropdownPanel, { maxHeight: 250 }]}>
+                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {["Full Denture", "Partial", "Nesbit", "Interim Partial", "Immediate Partial", "Immediate Denture"].map((sub) => (
+                      <Pressable
+                        key={sub}
+                        onPress={() => {
+                          setRemovableSubtype(sub);
+                          setRemovableSubtypeOpen(false);
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [
+                          styles.dropdownItem,
+                          removableSubtype === sub && styles.dropdownItemSelected,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Text style={[styles.dropdownItemName, removableSubtype === sub && { color: Colors.light.tint }]}>
+                          {sub}
+                        </Text>
+                        {removableSubtype === sub && (
+                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+          )}
+
           <View style={styles.dueDateRow}>
             <View style={styles.dueDateCol}>
               <Text style={styles.formLabel}>Due Date</Text>
@@ -3294,53 +3341,6 @@ export default function ScanScreen() {
               </View>
             </View>
           </View>
-
-          {caseType === "Removable" && (
-            <View style={[styles.formGroup, { zIndex: 4 }]}>
-              <Text style={styles.formLabel}>Removable Type</Text>
-              <Pressable
-                onPress={() => setRemovableSubtypeOpen(!removableSubtypeOpen)}
-                style={[styles.formInput, styles.dropdownTrigger]}
-              >
-                <Text style={[styles.dropdownTriggerText, !removableSubtype && { color: Colors.light.textTertiary }]}>
-                  {removableSubtype || "Select removable type"}
-                </Text>
-                <Ionicons
-                  name={removableSubtypeOpen ? "chevron-up" : "chevron-down"}
-                  size={18}
-                  color={Colors.light.textSecondary}
-                />
-              </Pressable>
-              {removableSubtypeOpen && (
-                <View style={[styles.dropdownPanel, { maxHeight: 250 }]}>
-                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                    {["Full Denture", "Partial", "Nesbit", "Interim Partial", "Immediate Partial", "Immediate Denture"].map((sub) => (
-                      <Pressable
-                        key={sub}
-                        onPress={() => {
-                          setRemovableSubtype(sub);
-                          setRemovableSubtypeOpen(false);
-                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        }}
-                        style={({ pressed }) => [
-                          styles.dropdownItem,
-                          removableSubtype === sub && styles.dropdownItemSelected,
-                          pressed && { opacity: 0.7 },
-                        ]}
-                      >
-                        <Text style={[styles.dropdownItemName, removableSubtype === sub && { color: Colors.light.tint }]}>
-                          {sub}
-                        </Text>
-                        {removableSubtype === sub && (
-                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
-                        )}
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                </View>
-              )}
-            </View>
-          )}
 
           <Pressable
             onPress={() => setIsRush(!isRush)}
