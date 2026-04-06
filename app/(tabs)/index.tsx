@@ -579,6 +579,9 @@ function TechDashboard() {
           <Text style={[styles.employeeName, { color: themeColors.text }]}>{currentUser.split(" ")[0] || currentUser}</Text>
         )}
         <Text style={[styles.avatarName, { color: themeColors.textSecondary }]}>{(currentUserData?.role === "admin" || role === "admin") ? "Administrator" : "User"}</Text>
+        {currentUserData?.practiceName ? (
+          <Text style={{ fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.light.primary, marginTop: 2 }}>{currentUserData.practiceName}</Text>
+        ) : null}
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
           <Text style={styles.liveText}>Available</Text>
