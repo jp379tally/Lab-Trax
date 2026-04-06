@@ -1531,7 +1531,7 @@ type AdminView =
   | "deleted-invoices";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients } = useApp();
+  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -1835,6 +1835,9 @@ function AdminDashboard() {
 
   function handleSaveEditClient() {
     if (!editingClient) return;
+    const originalClient = clients.find(c => c.id === editingClient.id);
+    const oldName = originalClient?.practiceName || "";
+    const newName = editingClient.practiceName || "";
     updateClient(editingClient.id, editingClient);
     if (showEditClientPricing) {
       const prices: Record<string, number> = {};
@@ -1842,6 +1845,13 @@ function AdminDashboard() {
         prices[item.key] = parseFloat(priceList[item.key] || "0") || 0;
       });
       updateClient(editingClient.id, { customPricing: prices });
+    }
+    if (oldName && newName && oldName.toLowerCase().trim() !== newName.toLowerCase().trim()) {
+      invoices.forEach(inv => {
+        if (inv.clientName?.toLowerCase()?.trim() === oldName.toLowerCase().trim() || inv.clientId === editingClient.id) {
+          updateInvoice(inv.id, { clientName: newName });
+        }
+      });
     }
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert("Saved", showEditClientPricing ? "Client record and pricing updated." : "Client record updated.");
