@@ -114,6 +114,14 @@ export default function CaseDetailScreen() {
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
   const [photoNotes, setPhotoNotes] = useState("");
   const [showPhotoNotes, setShowPhotoNotes] = useState(false);
+  const [showQuickEdit, setShowQuickEdit] = useState(false);
+  const [qeDoctor, setQeDoctor] = useState("");
+  const [qePatient, setQePatient] = useState("");
+  const [qeTeeth, setQeTeeth] = useState("");
+  const [qeShade, setQeShade] = useState("");
+  const [qeMaterial, setQeMaterial] = useState("");
+  const [qeDueDate, setQeDueDate] = useState("");
+  const [qeNotes, setQeNotes] = useState("");
 
   const caseItem = cases.find((c) => c.id === id);
   const isAdmin = role === "admin";
@@ -990,7 +998,20 @@ export default function CaseDetailScreen() {
         </Pressable>
         )}
 
-        <View style={styles.infoGrid}>
+        <Pressable
+          style={styles.infoGrid}
+          onPress={() => {
+            setQeDoctor(caseItem.doctorName || "");
+            setQePatient((caseItem as any).patientName || caseItem.patientInitials || "");
+            setQeTeeth(caseItem.toothIndices || "");
+            setQeShade(caseItem.shade || "");
+            setQeMaterial(caseItem.material || "");
+            setQeDueDate(caseItem.dueDate || "");
+            setQeNotes(caseItem.notes || "");
+            setShowQuickEdit(true);
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }}
+        >
           <View style={styles.infoItem}>
             <Text style={styles.infoLabel}>Doctor</Text>
             <Text style={styles.infoValue}>{cleanDoctorDisplay(caseItem.doctorName)}</Text>
@@ -1029,7 +1050,10 @@ export default function CaseDetailScreen() {
               </Text>
             </View>
           )}
-        </View>
+          <View style={{ position: "absolute", top: 8, right: 8 }}>
+            <Ionicons name="pencil" size={14} color={Colors.light.textTertiary} />
+          </View>
+        </Pressable>
 
 
         {isAdmin && (
@@ -3067,6 +3091,123 @@ export default function CaseDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
       )}
+
+      <Modal visible={showQuickEdit} transparent animationType="fade">
+        <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 20 }} onPress={() => setShowQuickEdit(false)}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          <Pressable style={{ backgroundColor: "#FFF", borderRadius: 16, padding: 20, maxHeight: "90%" }} onPress={(e) => e.stopPropagation()}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#1E293B" }}>Edit Case Info</Text>
+              <Pressable onPress={() => setShowQuickEdit(false)} hitSlop={12}>
+                <Ionicons name="close" size={22} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Doctor</Text>
+            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 12 }} value={qeDoctor} onChangeText={setQeDoctor} placeholder="Doctor name" placeholderTextColor="#94A3B8" />
+
+            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Patient</Text>
+            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 12 }} value={qePatient} onChangeText={setQePatient} placeholder="Patient name" placeholderTextColor="#94A3B8" />
+
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Teeth</Text>
+                <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B" }} value={qeTeeth} onChangeText={setQeTeeth} placeholder="#30, #31" placeholderTextColor="#94A3B8" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Shade</Text>
+                <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B" }} value={qeShade} onChangeText={setQeShade} placeholder="A2" placeholderTextColor="#94A3B8" />
+              </View>
+            </View>
+
+            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Material</Text>
+            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 12 }} value={qeMaterial} onChangeText={setQeMaterial} placeholder="Zirconia" placeholderTextColor="#94A3B8" />
+
+            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Due Date (YYYY-MM-DD)</Text>
+            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 12 }} value={qeDueDate} onChangeText={setQeDueDate} placeholder="2026-04-15" placeholderTextColor="#94A3B8" />
+
+            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Notes</Text>
+            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 16, minHeight: 80, textAlignVertical: "top" }} value={qeNotes} onChangeText={setQeNotes} placeholder="Case notes..." placeholderTextColor="#94A3B8" multiline />
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable onPress={() => setShowQuickEdit(false)} style={({ pressed }) => [{ flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: "#F1F5F9", alignItems: "center" as const }, pressed && { opacity: 0.85 }]}>
+                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#64748B" }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  const changes: string[] = [];
+                  const caseUpdates: Record<string, any> = {};
+                  if (qeDoctor.trim() && qeDoctor.trim() !== caseItem.doctorName) { caseUpdates.doctorName = qeDoctor.trim(); changes.push(`Doctor: ${qeDoctor.trim()}`); }
+                  if (qePatient.trim() && qePatient.trim() !== ((caseItem as any).patientName || caseItem.patientInitials)) { caseUpdates.patientName = qePatient.trim(); changes.push(`Patient: ${qePatient.trim()}`); }
+                  if (qeTeeth.trim() && qeTeeth.trim() !== caseItem.toothIndices) { caseUpdates.toothIndices = qeTeeth.trim(); changes.push(`Teeth: ${qeTeeth.trim()}`); }
+                  if (qeShade.trim() && qeShade.trim() !== caseItem.shade) { caseUpdates.shade = qeShade.trim(); changes.push(`Shade: ${qeShade.trim()}`); }
+                  if (qeMaterial.trim() && qeMaterial.trim() !== caseItem.material) { caseUpdates.material = qeMaterial.trim(); changes.push(`Material: ${qeMaterial.trim()}`); }
+                  if (qeDueDate.trim() && qeDueDate.trim() !== caseItem.dueDate) { caseUpdates.dueDate = qeDueDate.trim(); changes.push(`Due: ${qeDueDate.trim()}`); }
+                  if (qeNotes.trim() !== (caseItem.notes || "")) { caseUpdates.notes = qeNotes.trim(); changes.push("Notes updated"); }
+
+                  if (changes.length === 0) {
+                    setShowQuickEdit(false);
+                    return;
+                  }
+
+                  updateCase(caseItem.id, caseUpdates);
+
+                  if (caseUpdates.material || caseUpdates.toothIndices || caseUpdates.doctorName) {
+                    const toothCount = (caseUpdates.toothIndices || caseItem.toothIndices).split(",").filter(Boolean).length || 1;
+                    const mat = caseUpdates.material || caseItem.material;
+                    const rate = MATERIAL_PRICES[mat] || 250;
+                    const newTotal = toothCount * rate + (caseItem.isRush ? 500 : 0);
+                    updateCase(caseItem.id, { price: newTotal });
+                    if (caseItem.invoiceId) {
+                      const lineItems = [{ qty: toothCount, item: `${mat} ${caseItem.caseType || "Restoration"}`, description: `${mat} restoration - teeth ${caseUpdates.toothIndices || caseItem.toothIndices}`, rate, amount: toothCount * rate }];
+                      if (caseItem.isRush) lineItems.push({ qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500, amount: 500 });
+                      updateInvoice(caseItem.invoiceId, {
+                        lineItems,
+                        amount: newTotal,
+                        billTo: caseUpdates.doctorName || caseItem.doctorName,
+                        patientName: caseUpdates.patientName || (caseItem as any).patientName || caseItem.patientInitials,
+                        teeth: caseUpdates.toothIndices || caseItem.toothIndices,
+                        shade: caseUpdates.shade || caseItem.shade,
+                        caseNotes: caseUpdates.notes !== undefined ? caseUpdates.notes : (caseItem.notes || ""),
+                      });
+                    }
+                  } else if (caseItem.invoiceId) {
+                    const invUpdates: Record<string, any> = {};
+                    if (caseUpdates.doctorName) invUpdates.billTo = caseUpdates.doctorName;
+                    if (caseUpdates.patientName) invUpdates.patientName = caseUpdates.patientName;
+                    if (caseUpdates.shade) invUpdates.shade = caseUpdates.shade;
+                    if (caseUpdates.toothIndices) invUpdates.teeth = caseUpdates.toothIndices;
+                    if (caseUpdates.notes !== undefined) invUpdates.caseNotes = caseUpdates.notes;
+                    if (Object.keys(invUpdates).length > 0) updateInvoice(caseItem.invoiceId, invUpdates);
+                  }
+
+                  const changeDesc = changes.join("; ");
+                  addCaseNote(caseItem.id, `Case info edited: ${changeDesc}`, userInitials);
+
+                  if (!isAdmin) {
+                    addNotification({
+                      title: "Case Updated",
+                      message: `${currentUser || "A user"} edited case ${caseItem.caseNumber}: ${changeDesc}`,
+                      type: "case_update",
+                      caseId: caseItem.id,
+                    });
+                  }
+
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert("Saved", "Case information updated.");
+                  setShowQuickEdit(false);
+                }}
+                style={({ pressed }) => [{ flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: "#2563EB", alignItems: "center" as const }, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Save Changes</Text>
+              </Pressable>
+            </View>
+            </ScrollView>
+          </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
+      </Modal>
 
       {showPrice && (
       <InvoicePDFViewer
