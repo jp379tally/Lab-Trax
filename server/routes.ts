@@ -206,6 +206,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.delete("/api/admin/cleanup-email", async (req, res) => {
+    try {
+      const { email, adminKey } = req.body;
+      if (adminKey !== "labtrax-cleanup-2026") {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+      if (!email) return res.status(400).json({ error: "Email required" });
+      const allUsers = await storage.getAllUsers();
+      const matches = allUsers.filter(u => u.email && u.email.toLowerCase() === email.toLowerCase());
+      if (matches.length === 0) return res.json({ success: true, deleted: 0, message: "No users found with that email" });
+      let deletedCount = 0;
+      for (const u of matches) {
+        const ok = await storage.deleteUser(u.id);
+        if (ok) deletedCount++;
+      }
+      res.json({ success: true, deleted: deletedCount, found: matches.length });
+    } catch (error: any) {
+      console.error("Admin cleanup error:", error?.message || error);
+      res.status(500).json({ error: "Cleanup failed" });
+    }
+  });
+
   app.delete("/api/auth/users/:id", async (req, res) => {
     try {
       const { id } = req.params;
