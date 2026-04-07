@@ -16,7 +16,7 @@ export function getApiUrl(): string {
   let host = process.env.EXPO_PUBLIC_DOMAIN;
 
   if (!host) {
-    throw new Error("EXPO_PUBLIC_DOMAIN is not set");
+    return "https://lab-trax.replit.app/";
   }
 
   let url = new URL(`https://${host}`);
@@ -70,6 +70,15 @@ async function resilientFetch(
         const fallbackFullUrl = new URL(path, fallbackUrl).toString();
         const res = await fetch(fallbackFullUrl, options);
         cachedBaseUrl = fallbackUrl;
+        return res;
+      } catch {}
+    }
+    const prodUrl = "https://lab-trax.replit.app/";
+    if (prodUrl !== primaryUrl && prodUrl !== fallbackUrl) {
+      try {
+        const prodFullUrl = new URL(path, prodUrl).toString();
+        const res = await fetch(prodFullUrl, options);
+        cachedBaseUrl = prodUrl;
         return res;
       } catch {}
     }
