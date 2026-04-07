@@ -262,7 +262,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { success: true };
     } catch (e: any) {
       console.error("Register error:", e);
-      return { success: false, error: "Connection error. Please try again." };
+      const apiUrl = getApiUrl();
+      return { success: false, error: `Connection error: ${e?.message || "Network request failed"}. Server: ${apiUrl}` };
     }
   }
 
@@ -307,9 +308,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { success: true };
       }
       return { success: false, error: data.error || "Failed to delete account." };
-    } catch (e) {
+    } catch (e: any) {
       console.error("Delete account error:", e);
-      return { success: false, error: "Connection error. Please try again." };
+      return { success: false, error: `Connection error: ${e?.message || "Network request failed"}` };
     }
   }
 
@@ -358,8 +359,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await AsyncStorage.setItem(AUTH_KEY, JSON.stringify(auth));
       }
       return { success: true };
-    } catch (e) {
-      return { success: false, error: "Connection error. Please try again." };
+    } catch (e: any) {
+      return { success: false, error: `Connection error: ${e?.message || "Network request failed"}` };
     }
   }
 
@@ -383,8 +384,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ),
       );
       return { success: true };
-    } catch (e) {
-      return { success: false, error: "Connection error. Please try again." };
+    } catch (e: any) {
+      return { success: false, error: `Connection error: ${e?.message || "Network request failed"}` };
     }
   }
 

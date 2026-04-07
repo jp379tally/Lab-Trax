@@ -42,6 +42,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   const auditLog: { timestamp: number; action: string; user: string; resource: string; ip: string }[] = [];
 
+  app.get("/api/health", (_req, res) => {
+    res.status(200).json({ ok: true, timestamp: new Date().toISOString() });
+  });
+
   app.post("/api/check-username", async (req, res) => {
     const { username } = req.body;
     if (!username || typeof username !== "string") {

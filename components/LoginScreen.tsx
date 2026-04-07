@@ -24,7 +24,7 @@ import * as Location from "expo-location";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/lib/auth-context";
-import { apiRequest } from "@/lib/query-client";
+import { apiRequest, getApiUrl } from "@/lib/query-client";
 import { generateId, GroupJoinRequest } from "@/lib/data";
 import Colors from "@/constants/colors";
 
@@ -51,6 +51,7 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricType, setBiometricType] = useState<string>("Biometric");
+  const [diagTapCount, setDiagTapCount] = useState(0);
 
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [showForgotUsername, setShowForgotUsername] = useState(false);
@@ -2207,7 +2208,18 @@ export default function LoginScreen() {
                 resizeMode="contain"
               />
             </View>
-            <Text style={styles.appName}>LabTrax</Text>
+            <Pressable onPress={() => {
+              const next = diagTapCount + 1;
+              setDiagTapCount(next);
+              if (next >= 5) {
+                const apiUrl = getApiUrl();
+                const domain = process.env.EXPO_PUBLIC_DOMAIN || "(not set)";
+                Alert.alert("Diagnostics", `API: ${apiUrl}\nDomain env: ${domain}\nPlatform: ${Platform.OS}\nBuild: 51`);
+                setDiagTapCount(0);
+              }
+            }}>
+              <Text style={styles.appName}>LabTrax</Text>
+            </Pressable>
             <Text style={styles.appTagline}>Dental Laboratory Management</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8, backgroundColor: "rgba(16,185,129,0.12)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20 }}>
               <Ionicons name="shield-checkmark" size={12} color="#10B981" />

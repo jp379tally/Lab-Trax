@@ -1,10 +1,28 @@
 import { fetch } from "expo/fetch";
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+import { Platform } from "react-native";
+
 let cachedBaseUrl: string | null = null;
+
+const PRODUCTION_URL = "https://lab-trax.replit.app/";
 
 export function getApiUrl(): string {
   if (cachedBaseUrl) return cachedBaseUrl;
+
+  if (Platform.OS !== "web") {
+    const host = process.env.EXPO_PUBLIC_DOMAIN;
+    if (host) {
+      try {
+        let url = new URL(`https://${host}`);
+        url.port = "";
+        return url.href;
+      } catch {
+        return PRODUCTION_URL;
+      }
+    }
+    return PRODUCTION_URL;
+  }
 
   if (typeof window !== "undefined" && window.location && window.location.origin) {
     const origin = window.location.origin;
@@ -13,15 +31,7 @@ export function getApiUrl(): string {
     }
   }
 
-  let host = process.env.EXPO_PUBLIC_DOMAIN;
-
-  if (!host) {
-    return "https://lab-trax.replit.app/";
-  }
-
-  let url = new URL(`https://${host}`);
-
-  return url.href;
+  return PRODUCTION_URL;
 }
 
 function getApiUrlWithoutPort(): string | null {
