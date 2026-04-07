@@ -213,7 +213,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { success: true };
     } catch (e: any) {
       console.error("Login error:", e);
-      return { success: false, error: "Connection error. Please try again." };
+      const apiUrl = getApiUrl();
+      return { success: false, error: `Connection error: ${e?.message || "Network request failed"}. Server: ${apiUrl}` };
     }
   }
 
