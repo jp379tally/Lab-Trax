@@ -524,15 +524,8 @@ function TechDashboard() {
 
   return (
     <>
-    <ScrollView
-      style={[styles.container, { backgroundColor: themeColors.background }]}
-      contentContainerStyle={{
-        paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-        paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
-      }}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.topBar}>
+    <View style={[styles.container, { backgroundColor: themeColors.background }]}>
+      <View style={[styles.topBar, { position: "absolute", top: Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: themeColors.background }]}>
         <Pressable
           onPress={() => setDrawerOpen(true)}
           style={({ pressed }) => [styles.hamburgerBtn, pressed && { opacity: 0.6 }]}
@@ -542,7 +535,14 @@ function TechDashboard() {
         </Pressable>
         <ChatButton />
       </View>
-
+    <ScrollView
+      style={{ flex: 1 }}
+      contentContainerStyle={{
+        paddingTop: (Platform.OS === "web" ? 67 : insets.top) + 56,
+        paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+      }}
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.avatarSection}>
         <Pressable
           onPress={() => {
@@ -1030,6 +1030,7 @@ function TechDashboard() {
         <Ionicons name="chevron-forward" size={20} color={Colors.light.textTertiary} />
       </Pressable>
     </ScrollView>
+    </View>
 
     <Modal
       transparent
