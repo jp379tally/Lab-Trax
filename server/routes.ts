@@ -384,6 +384,100 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/analyze-prescription", async (req, res) => {
+    try {
+      const { imageBase64, additionalImages } = req.body;
+      if (!imageBase64) return res.status(400).json({ success: false, error: "No image provided" });
+
+      const isHEIC = imageBase64.includes("data:image/heic") || imageBase64.includes("data:image/heif");
+      if (isHEIC) return res.status(400).json({ success: false, error: "HEIC format is not supported. Please convert to JPEG or PNG first." });
+
+      const imageContents: Array<{ type: "image_url"; image_url: { url: string; detail: "auto" } }> = [];
+
+      let primaryUrl = imageBase64;
+      if (!primaryUrl.startsWith("data:")) {
+        primaryUrl = `data:image/jpeg;base64,${primaryUrl}`;
+      }
+      imageContents.push({ type: "image_url", image_url: { url: primaryUrl, detail: "auto" } });
+
+      if (additionalImages && Array.isArray(additionalImages)) {
+        for (const img of additionalImages) {
+          if (typeof img === "string" && img.length > 100) {
+            let imgUrl = img;
+            if (!imgUrl.startsWith("data:")) {
+              imgUrl = `data:image/jpeg;base64,${imgUrl}`;
+            }
+            imageContents.push({ type: "image_url", image_url: { url: imgUrl, detail: "auto" } });
+          }
+        }
+      }
+
+      const systemPrompt = `You are a dental laboratory prescription reader. Analyze the dental prescription image(s) and extract all available information. Return ONLY valid JSON with these fields (use null for any field you cannot determine):
+
+{
+  "doctorName": "Dr. Full Name",
+  "patientName": "Patient Full Name",
+  "patientInitials": "PI",
+  "caseType": "one of: Crown & Bridge, Removable, Implant, Orthodontic, Other",
+  "toothIndices": "comma-separated tooth numbers like 3,5,14",
+  "shade": "shade value like A2, B1, etc.",
+  "material": "one of: Zirconia, E max, PFM, Gold, Composite, Acrylic, Flexible, PMMA, Metal Framework, Titanium, Other",
+  "dueDate": "MM/DD/YYYY format",
+  "isRush": false,
+  "notes": "any additional notes or special instructions",
+  "practiceName": "dental practice or office name",
+  "practiceAddress": "practice address",
+  "practicePhone": "practice phone number"
+}
+
+Important rules:
+- Read ALL pages if multiple images are provided
+- For tooth numbers, use Universal Numbering System (1-32)
+- If you see FDI notation, convert to Universal
+- Only set isRush to true if explicitly marked as rush/urgent
+- For caseType, match to the closest category listed above
+- Extract the shade exactly as written on the prescription
+- Return ONLY the JSON object, no other text`;
+
+      const userContent: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "auto" } }> = [
+        { type: "text", text: `Analyze this dental prescription (${imageContents.length} page${imageContents.length > 1 ? "s" : ""}).` },
+        ...imageContents,
+      ];
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent },
+        ],
+        max_tokens: 1000,
+        temperature: 0.1,
+      });
+
+      const text = response.choices?.[0]?.message?.content || "";
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.log("AI analyze-prescription: No JSON found in response:", text.substring(0, 200));
+        return res.json({ success: false, error: "AI could not parse the prescription" });
+      }
+
+      const data = JSON.parse(jsonMatch[0]);
+
+      const cleanedData: Record<string, any> = {};
+      for (const [key, value] of Object.entries(data)) {
+        if (value !== null && value !== undefined && value !== "" && value !== "null") {
+          cleanedData[key] = value;
+        }
+      }
+
+      console.log("AI analyze-prescription: Success, fields:", Object.keys(cleanedData).join(", "));
+      return res.json({ success: true, data: cleanedData });
+    } catch (err: any) {
+      console.error("AI analyze-prescription error:", err?.message || err);
+      return res.status(500).json({ success: false, error: "AI analysis failed. Please try again." });
+    }
+  });
+
   app.post("/api/crop-document", async (req, res) => {
     try {
       const { imageBase64 } = req.body;
