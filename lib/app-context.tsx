@@ -106,6 +106,7 @@ interface AppContextValue {
   customStationLabels: Record<string, string>;
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
   userIsAffiliated: boolean;
+  leaveLab: () => Promise<{ success: boolean; error?: string }>;
   removeClient: (clientId: string) => void;
   deactivateClient: (clientId: string) => void;
   reactivateClient: (clientId: string) => void;
@@ -1262,16 +1263,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setGroupJoinRequests(updated);
     AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
 
+    const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === request.targetAdminUsername.toLowerCase());
+    const requestingUser = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
+
     if (accept) {
-      const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === request.targetAdminUsername.toLowerCase());
-      const requestingUser = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
       if (adminProfile?.practiceName && requestingUser?.id) {
         const apiUrl = getApiUrl();
         const url = new URL(`/api/auth/users/${requestingUser.id}/profile`, apiUrl);
+        const profileUpdate: Record<string, string> = { practiceName: adminProfile.practiceName };
+        if (role) profileUpdate.role = role;
         resilientFetch(url.toString(), {
           method: "PUT",
           headers: { "Content-Type": "application/json", "x-user-id": requestingUser.id },
-          body: JSON.stringify({ practiceName: adminProfile.practiceName }),
+          body: JSON.stringify(profileUpdate),
         }).then(() => {
           refreshUsers();
         }).catch(() => {});
@@ -1297,6 +1301,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
           });
         }
       }
+      addNotification({
+        title: "Lab Join Request Accepted",
+        message: `${request.requestingUsername} has been added to ${adminProfile?.practiceName || "your lab"} as ${role === "admin" ? "an admin" : "a user"}.`,
+        type: "update",
+      });
+    } else {
+      addNotification({
+        title: "Lab Join Request Declined",
+        message: `The admin from ${adminProfile?.practiceName || "the lab you selected"} elected to decline ${request.requestingUsername}'s request to join their lab.`,
+        type: "alert",
+      });
+    }
+  }
+
+  async function leaveLab(): Promise<{ success: boolean; error?: string }> {
+    if (!currentUserId) return { success: false, error: "Not logged in" };
+    try {
+      const apiUrl = getApiUrl();
+      const url = new URL(`/api/auth/users/${currentUserId}/profile`, apiUrl);
+      await resilientFetch(url.toString(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-user-id": currentUserId },
+        body: JSON.stringify({ practiceName: "" }),
+      });
+      await refreshUsers();
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || "Failed to leave lab" };
     }
   }
 
@@ -1548,6 +1580,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       customStationLabels,
       updateStationLabel,
       userIsAffiliated,
+      leaveLab,
       removeClient,
       deactivateClient,
       reactivateClient,

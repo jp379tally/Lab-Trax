@@ -27,7 +27,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest } = useApp();
+  const { sendGroupJoinRequest, leaveLab } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
@@ -340,43 +340,126 @@ export default function SettingsScreen() {
         {userType === "lab" ? (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MY LAB</Text>
-            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <Pressable
-                style={({ pressed }) => [styles.menuItem, isLabAdmin && pressed && { opacity: 0.7 }]}
-                onPress={() => {
-                  if (!isLabAdmin) return;
-                  setEditLabName(currentUserData?.practiceName || "");
-                  setEditLabAddress(currentUserData?.practiceAddress || "");
-                  setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
-                  setEditLabEmail(currentUserData?.email || "");
-                  setShowEditLab(true);
-                }}
-              >
-                {companyLogoUri ? (
-                  <Image
-                    source={{ uri: companyLogoUri }}
-                    style={{ width: 44, height: 44, borderRadius: 10, marginRight: 12 }}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE", width: 44, height: 44, borderRadius: 10, marginRight: 12 }]}>
-                    <Ionicons name="flask" size={22} color="#7C3AED" />
-                  </View>
-                )}
-                <View style={[styles.menuInfo, { flex: 1 }]}>
-                  <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: colors.text }}>{currentUserData?.practiceName || currentUserData?.username || "My Lab"}</Text>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 3 }}>
-                    <Ionicons name="location-outline" size={12} color={colors.textSecondary} />
-                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practiceAddress || "Address not set"}</Text>
-                  </View>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 }}>
-                    <Ionicons name="call-outline" size={12} color={colors.textSecondary} />
-                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practicePhone || currentUserData?.phone || "Phone not set"}</Text>
-                  </View>
+            {currentUserData?.practiceName ? (
+              <>
+                <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <Pressable
+                    style={({ pressed }) => [styles.menuItem, isLabAdmin && pressed && { opacity: 0.7 }]}
+                    onPress={() => {
+                      if (!isLabAdmin) return;
+                      setEditLabName(currentUserData?.practiceName || "");
+                      setEditLabAddress(currentUserData?.practiceAddress || "");
+                      setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
+                      setEditLabEmail(currentUserData?.email || "");
+                      setShowEditLab(true);
+                    }}
+                  >
+                    {companyLogoUri ? (
+                      <Image
+                        source={{ uri: companyLogoUri }}
+                        style={{ width: 44, height: 44, borderRadius: 10, marginRight: 12 }}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE", width: 44, height: 44, borderRadius: 10, marginRight: 12 }]}>
+                        <Ionicons name="flask" size={22} color="#7C3AED" />
+                      </View>
+                    )}
+                    <View style={[styles.menuInfo, { flex: 1 }]}>
+                      <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: colors.text }}>{currentUserData.practiceName}</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 3 }}>
+                        <Ionicons name="location-outline" size={12} color={colors.textSecondary} />
+                        <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practiceAddress || "Address not set"}</Text>
+                      </View>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 }}>
+                        <Ionicons name="call-outline" size={12} color={colors.textSecondary} />
+                        <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practicePhone || currentUserData?.phone || "Phone not set"}</Text>
+                      </View>
+                    </View>
+                    {isLabAdmin && <Ionicons name="create-outline" size={20} color={colors.textTertiary} />}
+                  </Pressable>
                 </View>
-                {isLabAdmin && <Ionicons name="create-outline" size={20} color={colors.textTertiary} />}
-              </Pressable>
-            </View>
+
+                <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border, marginTop: 10 }]}>
+                  <Pressable
+                    style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                    onPress={() => {
+                      Alert.alert(
+                        "Leave Lab",
+                        `Are you sure you want to leave ${currentUserData.practiceName}? You will no longer have access to cases affiliated with this lab.`,
+                        [
+                          { text: "No", style: "cancel" },
+                          {
+                            text: "Yes, Leave Lab",
+                            style: "destructive",
+                            onPress: async () => {
+                              const result = await leaveLab();
+                              if (result.success) {
+                                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                Alert.alert("Left Lab", `You have successfully left ${currentUserData.practiceName}.`);
+                              } else {
+                                Alert.alert("Error", result.error || "Failed to leave lab.");
+                              }
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                  >
+                    <View style={[styles.menuIcon, { backgroundColor: "#FEE2E2" }]}>
+                      <Ionicons name="log-out-outline" size={18} color="#DC2626" />
+                    </View>
+                    <View style={styles.menuInfo}>
+                      <Text style={[styles.menuTitle, { color: "#DC2626" }]}>Leave Lab</Text>
+                      <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Remove yourself from this lab</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                  </Pressable>
+
+                  <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+
+                  <Pressable
+                    style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                    onPress={() => {
+                      setShowAddLabModal(true);
+                      setLabSearchName("");
+                      setMatchedLabs([]);
+                      setLabSearchDone(false);
+                    }}
+                  >
+                    <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
+                      <Ionicons name="add-circle" size={18} color="#2563EB" />
+                    </View>
+                    <View style={styles.menuInfo}>
+                      <Text style={[styles.menuTitle, { color: colors.text }]}>Join a Lab</Text>
+                      <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Search and request to join another lab</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <Pressable
+                  style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                  onPress={() => {
+                    setShowAddLabModal(true);
+                    setLabSearchName("");
+                    setMatchedLabs([]);
+                    setLabSearchDone(false);
+                  }}
+                >
+                  <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
+                    <Ionicons name="add-circle" size={18} color="#2563EB" />
+                  </View>
+                  <View style={styles.menuInfo}>
+                    <Text style={[styles.menuTitle, { color: colors.text }]}>Join a Lab</Text>
+                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Search and request to join a lab</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                </Pressable>
+              </View>
+            )}
           </View>
         ) : (
           <View style={styles.section}>
@@ -682,38 +765,25 @@ export default function SettingsScreen() {
               placeholder="Lab name"
               placeholderTextColor={colors.textTertiary}
               value={labSearchName}
-              onChangeText={(t) => { setLabSearchName(t); setLabSearchDone(false); setMatchedLabs([]); }}
+              onChangeText={(t) => {
+                setLabSearchName(t);
+                const q = t.toLowerCase().trim();
+                if (!q) { setMatchedLabs([]); setLabSearchDone(false); return; }
+                const labAdmins = registeredUsers.filter(u => u.userType === "lab" && u.role === "admin" && u.practiceName);
+                const uniqueLabs = new Map<string, { practiceName: string; username: string; practiceAddress?: string }>();
+                for (const u of labAdmins) {
+                  const key = u.practiceName!.toLowerCase().trim();
+                  if (!uniqueLabs.has(key) && key.includes(q)) uniqueLabs.set(key, { practiceName: u.practiceName!, username: u.username, practiceAddress: u.practiceAddress });
+                }
+                setMatchedLabs(Array.from(uniqueLabs.values()));
+                setLabSearchDone(true);
+              }}
               autoCapitalize="words"
               autoCorrect={false}
               testID="add-lab-search-input"
             />
 
-            {!labSearchDone ? (
-              <Pressable
-                style={({ pressed }) => [
-                  joinStyles.sendBtn,
-                  { backgroundColor: "#7C3AED" },
-                  !labSearchName.trim() && { opacity: 0.5 },
-                  pressed && { opacity: 0.85 },
-                ]}
-                disabled={!labSearchName.trim()}
-                onPress={() => {
-                  const q = labSearchName.toLowerCase().trim();
-                  const labAdmins = registeredUsers.filter(u => u.userType === "lab" && u.role === "admin" && u.practiceName);
-                  const uniqueLabs = new Map<string, { practiceName: string; username: string; practiceAddress?: string }>();
-                  for (const u of labAdmins) {
-                    const key = u.practiceName!.toLowerCase().trim();
-                    if (!uniqueLabs.has(key) && key.includes(q)) uniqueLabs.set(key, { practiceName: u.practiceName!, username: u.username, practiceAddress: u.practiceAddress });
-                  }
-                  setMatchedLabs(Array.from(uniqueLabs.values()));
-                  setLabSearchDone(true);
-                }}
-                testID="add-lab-search-btn"
-              >
-                <Ionicons name="search" size={18} color="#FFF" />
-                <Text style={joinStyles.sendBtnText}>Search</Text>
-              </Pressable>
-            ) : matchedLabs.length === 0 ? (
+            {labSearchDone && matchedLabs.length === 0 ? (
               <View style={{ alignItems: "center", paddingVertical: 16, gap: 8 }}>
                 <Ionicons name="alert-circle-outline" size={36} color={colors.textTertiary} />
                 <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>No labs found</Text>
@@ -756,19 +826,31 @@ export default function SettingsScreen() {
                             disabled={addLabSending}
                             onPress={() => {
                               if (!currentUser) return;
-                              setAddLabSending(true);
-                              const result = sendGroupJoinRequest(lab.username, currentUser, `${currentUser} would like to connect to ${lab.practiceName}.`);
-                              setAddLabSending(false);
-                              if (result.success) {
-                                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                Alert.alert("Request Sent", `Your request to join ${lab.practiceName} has been sent to the lab administrator. Once approved, you'll be able to view your cases.`);
-                                setShowAddLabModal(false);
-                                setLabSearchName("");
-                                setMatchedLabs([]);
-                                setLabSearchDone(false);
-                              } else {
-                                Alert.alert("Unable to Send", result.error || "Something went wrong.");
-                              }
+                              Alert.alert(
+                                "Join Lab",
+                                `Are you sure you want to join ${lab.practiceName}?`,
+                                [
+                                  { text: "No", style: "cancel" },
+                                  {
+                                    text: "Yes, Join Lab",
+                                    onPress: () => {
+                                      setAddLabSending(true);
+                                      const result = sendGroupJoinRequest(lab.username, currentUser, `${currentUser} would like to join ${lab.practiceName}.`);
+                                      setAddLabSending(false);
+                                      if (result.success) {
+                                        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                        Alert.alert("Request Sent", `A request to join this lab has been sent to the lab admin. You will be notified if accepted.`);
+                                        setShowAddLabModal(false);
+                                        setLabSearchName("");
+                                        setMatchedLabs([]);
+                                        setLabSearchDone(false);
+                                      } else {
+                                        Alert.alert("Unable to Send", result.error || "Something went wrong.");
+                                      }
+                                    },
+                                  },
+                                ]
+                              );
                             }}
                             testID={`join-lab-${lab.id}`}
                           >
