@@ -1572,7 +1572,7 @@ type AdminView =
   | "deleted-invoices";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients } = useApp();
+  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
@@ -1597,6 +1597,9 @@ function AdminDashboard() {
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserRole, setNewUserRole] = useState<"user" | "admin">("user");
   const [newUserStation, setNewUserStation] = useState("Design");
+  const [inviteUsername, setInviteUsername] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"user" | "admin">("user");
 
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [showEditClientPricing, setShowEditClientPricing] = useState(false);
@@ -2553,6 +2556,56 @@ function AdminDashboard() {
           <Pressable style={({ pressed }) => [adm.submitBtn, pressed && { opacity: 0.85 }]} onPress={handleAddUser}>
             <Ionicons name="checkmark" size={20} color="#FFF" />
             <Text style={adm.submitBtnText}>Create User Account</Text>
+          </Pressable>
+        </View>
+
+        <View style={[adm.formArea, { marginTop: 24 }]}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <Ionicons name="mail-outline" size={20} color={Colors.light.tint} />
+            <Text style={[adm.formDesc, { marginBottom: 0, fontFamily: "Inter_600SemiBold", fontSize: 16 }]}>Invite Existing User</Text>
+          </View>
+          <Text style={adm.formDesc}>Send an invitation to an existing LabTrax user to join your lab.</Text>
+
+          <View style={adm.field}>
+            <Text style={adm.fieldLabel}>Username</Text>
+            <TextInput style={adm.input} value={inviteUsername} onChangeText={setInviteUsername} placeholder="Enter username" placeholderTextColor={Colors.light.textTertiary} autoCapitalize="none" />
+          </View>
+          <View style={adm.field}>
+            <Text style={adm.fieldLabel}>Email</Text>
+            <TextInput style={adm.input} value={inviteEmail} onChangeText={setInviteEmail} placeholder="user@example.com" placeholderTextColor={Colors.light.textTertiary} keyboardType="email-address" autoCapitalize="none" />
+          </View>
+          <View style={adm.field}>
+            <Text style={adm.fieldLabel}>Role</Text>
+            <View style={adm.chipRow}>
+              {(["user", "admin"] as const).map((r) => (
+                <Pressable key={r} onPress={() => setInviteRole(r)} style={[adm.chip, inviteRole === r && adm.chipActive]}>
+                  <Text style={[adm.chipText, inviteRole === r && adm.chipTextActive]}>{r === "user" ? "User" : "Admin"}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          <Pressable
+            style={({ pressed }) => [adm.submitBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
+            onPress={() => {
+              if (!inviteUsername.trim() || !inviteEmail.trim()) {
+                Alert.alert("Required", "Username and email are required.");
+                return;
+              }
+              const result = sendLabInvite(inviteUsername.trim(), inviteEmail.trim(), inviteRole);
+              if (result.success) {
+                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Alert.alert("Invitation Sent", `An invitation has been sent to ${inviteUsername.trim()}.`);
+                setInviteUsername("");
+                setInviteEmail("");
+                setInviteRole("user");
+              } else {
+                Alert.alert("Unable to Send", result.error || "Something went wrong.");
+              }
+            }}
+          >
+            <Ionicons name="send" size={18} color="#FFF" />
+            <Text style={adm.submitBtnText}>Send Invitation</Text>
           </Pressable>
         </View>
       </ScrollView>

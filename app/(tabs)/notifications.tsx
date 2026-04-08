@@ -20,7 +20,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications";
 import Colors from "@/constants/colors";
-import { Notification, GroupJoinRequest } from "@/lib/data";
+import { Notification, GroupJoinRequest, LabInvitation } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 
 function getNotifIcon(type: Notification["type"]) {
@@ -101,10 +101,11 @@ function SwipeableNotifRow({ children, onDelete }: { children: React.ReactNode; 
 }
 
 export default function NotificationsScreen() {
-  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest } = useApp();
+  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
+  const [confirmLabInvite, setConfirmLabInvite] = useState<{ invite: LabInvitation; accept: boolean } | null>(null);
   const filteredNotifications = useProviderFilteredNotifications();
 
   useFocusEffect(
@@ -116,6 +117,12 @@ export default function NotificationsScreen() {
   const pendingJoinRequests = groupJoinRequests.filter(
     r => r.targetAdminUsername.toLowerCase() === (currentUser || "").toLowerCase() && r.status === "pending"
   );
+
+  const pendingLabInvites = labInvitations.filter(
+    i => i.targetUsername.toLowerCase() === (currentUser || "").toLowerCase() && i.status === "pending"
+  );
+
+  const currentUserProfile = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
 
   function renderJoinRequestCard(request: GroupJoinRequest) {
     const reqUserData = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
@@ -248,15 +255,70 @@ export default function NotificationsScreen() {
         ]}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
-          pendingJoinRequests.length > 0 ? (
+          (pendingJoinRequests.length > 0 || pendingLabInvites.length > 0) ? (
             <View style={styles.inviteSection}>
-              <Text style={styles.sectionLabel}>Pending Requests</Text>
-              {pendingJoinRequests.map(req => renderJoinRequestCard(req))}
+              {pendingLabInvites.length > 0 && (
+                <>
+                  <Text style={styles.sectionLabel}>Lab Invitations</Text>
+                  {pendingLabInvites.map(invite => {
+                    const isAffiliated = !!currentUserProfile?.practiceName;
+                    return (
+                      <View key={invite.id} style={styles.inviteCard}>
+                        <View style={[styles.notifIcon, { backgroundColor: "#EDE9FE" }]}>
+                          <Ionicons name="mail-open" size={20} color="#7C3AED" />
+                        </View>
+                        <View style={styles.notifContent}>
+                          <Text style={styles.notifTitle}>Lab Invitation</Text>
+                          <Text style={styles.notifMessage}>
+                            <Text style={{ fontFamily: "Inter_600SemiBold" }}>{invite.adminUsername}</Text>
+                            {" has invited you to join "}
+                            <Text style={{ fontFamily: "Inter_600SemiBold" }}>{invite.adminLabName}</Text>
+                            {` as ${invite.role === "admin" ? "an admin" : "a user"}.`}
+                          </Text>
+                          {isAffiliated && (
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.error, marginTop: 4 }}>
+                              You are currently affiliated with {currentUserProfile?.practiceName}. You must leave your current lab before accepting.
+                            </Text>
+                          )}
+                          <View style={[styles.inviteBtns, { marginTop: 8 }]}>
+                            <Pressable
+                              style={({ pressed }) => [styles.acceptBtn, { backgroundColor: "#7C3AED" }, isAffiliated && { opacity: 0.4 }, pressed && { opacity: 0.8 }]}
+                              onPress={() => {
+                                if (isAffiliated) {
+                                  Alert.alert("Already Affiliated", `You are currently a member of ${currentUserProfile?.practiceName}. Please leave your current lab in Settings before accepting a new invitation.`);
+                                  return;
+                                }
+                                setConfirmLabInvite({ invite, accept: true });
+                              }}
+                            >
+                              <Ionicons name="checkmark" size={16} color="#FFF" />
+                              <Text style={styles.acceptText}>Accept</Text>
+                            </Pressable>
+                            <Pressable
+                              style={({ pressed }) => [styles.declineBtn, pressed && { opacity: 0.8 }]}
+                              onPress={() => setConfirmLabInvite({ invite, accept: false })}
+                            >
+                              <Ionicons name="close" size={16} color={Colors.light.error} />
+                              <Text style={styles.declineText}>Decline</Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </>
+              )}
+              {pendingJoinRequests.length > 0 && (
+                <>
+                  <Text style={[styles.sectionLabel, pendingLabInvites.length > 0 && { marginTop: 16 }]}>Pending Requests</Text>
+                  {pendingJoinRequests.map(req => renderJoinRequestCard(req))}
+                </>
+              )}
             </View>
           ) : null
         }
         ListEmptyComponent={
-          pendingJoinRequests.length === 0 ? (
+          (pendingJoinRequests.length === 0 && pendingLabInvites.length === 0) ? (
             <View style={styles.emptyState}>
               <Ionicons
                 name="notifications-off-outline"
@@ -316,6 +378,51 @@ export default function NotificationsScreen() {
               <Pressable
                 style={({ pressed }) => [styles.confirmNoBtn, pressed && { opacity: 0.85 }]}
                 onPress={() => setConfirmJoinRequest(null)}
+              >
+                <Text style={styles.confirmNoText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!confirmLabInvite} transparent animationType="fade" onRequestClose={() => setConfirmLabInvite(null)}>
+        <View style={styles.confirmOverlay}>
+          <View style={styles.confirmCard}>
+            <View style={[styles.confirmIconWrap, { backgroundColor: confirmLabInvite?.accept ? "#EDE9FE" : "#FEE2E2" }]}>
+              <Ionicons
+                name={confirmLabInvite?.accept ? "mail-open" : "close-circle"}
+                size={32}
+                color={confirmLabInvite?.accept ? "#7C3AED" : "#EF4444"}
+              />
+            </View>
+            <Text style={styles.confirmTitle}>
+              {confirmLabInvite?.accept ? "Join Lab?" : "Decline Invitation?"}
+            </Text>
+            <Text style={styles.confirmDesc}>
+              {confirmLabInvite?.accept
+                ? `You will join ${confirmLabInvite?.invite.adminLabName} as ${confirmLabInvite?.invite.role === "admin" ? "an admin" : "a user"} and will be able to see all lab data.`
+                : `You will decline the invitation from ${confirmLabInvite?.invite.adminUsername} to join ${confirmLabInvite?.invite.adminLabName}.`}
+            </Text>
+            <View style={styles.confirmBtns}>
+              <Pressable
+                style={({ pressed }) => [styles.confirmYesBtn, confirmLabInvite?.accept ? { backgroundColor: "#7C3AED" } : { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
+                onPress={() => {
+                  if (!confirmLabInvite) return;
+                  respondToLabInvite(confirmLabInvite.invite.id, confirmLabInvite.accept);
+                  if (Platform.OS !== "web") {
+                    Haptics.notificationAsync(confirmLabInvite.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                  }
+                  setConfirmLabInvite(null);
+                }}
+              >
+                <Text style={styles.confirmYesText}>
+                  {confirmLabInvite?.accept ? "Join Lab" : "Decline"}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.confirmNoBtn, pressed && { opacity: 0.85 }]}
+                onPress={() => setConfirmLabInvite(null)}
               >
                 <Text style={styles.confirmNoText}>Cancel</Text>
               </Pressable>

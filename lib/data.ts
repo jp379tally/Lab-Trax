@@ -192,6 +192,17 @@ export interface GroupJoinRequest {
   createdAt: number;
 }
 
+export interface LabInvitation {
+  id: string;
+  adminUsername: string;
+  adminLabName: string;
+  targetUsername: string;
+  targetEmail: string;
+  role: "admin" | "user";
+  status: "pending" | "accepted" | "declined";
+  createdAt: number;
+}
+
 export function getStationInfo(status: CaseStatus, customLabels?: Record<string, string>) {
   const station = STATIONS.find((s) => s.id === status) || STATIONS[0];
   if (customLabels && customLabels[station.id]) {

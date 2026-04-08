@@ -35,6 +35,7 @@ import {
   PricingTier,
   DEFAULT_PRICING_TIERS,
   GroupJoinRequest,
+  LabInvitation,
   DeletedClientInvoice,
 } from "./data";
 import { useAuth } from "./auth-context";
@@ -100,6 +101,9 @@ interface AppContextValue {
   groupJoinRequests: GroupJoinRequest[];
   sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => { success: boolean; error?: string };
   respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => void;
+  labInvitations: LabInvitation[];
+  sendLabInvite: (targetUsername: string, targetEmail: string, role: "admin" | "user") => { success: boolean; error?: string };
+  respondToLabInvite: (inviteId: string, accept: boolean) => void;
   addConversation: (conv: Conversation) => void;
   removeConversation: (conversationId: string) => void;
   addNotification: (notif: Omit<Notification, "id" | "read" | "timestamp">) => void;
@@ -127,6 +131,7 @@ const CONVERSATIONS_KEY = "@drivesync_conversations";
 const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
 const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
 const GROUP_JOIN_REQUESTS_KEY = "@drivesync_group_join_requests";
+const LAB_INVITATIONS_KEY = "@drivesync_lab_invitations";
 const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 const STATION_LABELS_KEY = "@drivesync_station_labels";
 const DELETED_CLIENT_INVOICES_KEY = "@drivesync_deleted_client_invoices";
@@ -145,6 +150,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [pricingTiers, setPricingTiers] = useState<PricingTier[]>(DEFAULT_PRICING_TIERS);
   const [groupJoinRequests, setGroupJoinRequests] = useState<GroupJoinRequest[]>([]);
+  const [labInvitations, setLabInvitations] = useState<LabInvitation[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [deletedClientInvoices, setDeletedClientInvoices] = useState<DeletedClientInvoice[]>([]);
@@ -361,6 +367,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const savedGroupJoinRequests = await AsyncStorage.getItem(GROUP_JOIN_REQUESTS_KEY);
       if (savedGroupJoinRequests) {
         setGroupJoinRequests(JSON.parse(savedGroupJoinRequests));
+      }
+
+      const savedLabInvitations = await AsyncStorage.getItem(LAB_INVITATIONS_KEY);
+      if (savedLabInvitations) {
+        setLabInvitations(JSON.parse(savedLabInvitations));
       }
 
       const savedDeletedClientInvoices = await AsyncStorage.getItem(DELETED_CLIENT_INVOICES_KEY);
@@ -1315,6 +1326,88 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function sendLabInvite(targetUsername: string, targetEmail: string, role: "admin" | "user"): { success: boolean; error?: string } {
+    if (!currentUser || !currentUserProfile?.practiceName) {
+      return { success: false, error: "You must be affiliated with a lab to send invitations." };
+    }
+    const targetUser = registeredUsers.find(
+      u => u.username.toLowerCase() === targetUsername.toLowerCase() && u.email?.toLowerCase() === targetEmail.toLowerCase()
+    );
+    if (!targetUser) {
+      return { success: false, error: "No user found with that username and email combination." };
+    }
+    const existing = labInvitations.find(
+      i => i.targetUsername.toLowerCase() === targetUsername.toLowerCase()
+        && i.adminUsername.toLowerCase() === currentUser.toLowerCase()
+        && i.status === "pending"
+    );
+    if (existing) {
+      return { success: false, error: "You already have a pending invitation for this user." };
+    }
+    const invite: LabInvitation = {
+      id: generateId(),
+      adminUsername: currentUser,
+      adminLabName: currentUserProfile.practiceName,
+      targetUsername: targetUser.username,
+      targetEmail: targetUser.email || targetEmail,
+      role,
+      status: "pending",
+      createdAt: Date.now(),
+    };
+    const updated = [...labInvitations, invite];
+    setLabInvitations(updated);
+    AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
+    addNotification({
+      title: "Lab Invitation Sent",
+      message: `Invitation sent to ${targetUser.username} to join ${currentUserProfile.practiceName} as ${role === "admin" ? "an admin" : "a user"}.`,
+      type: "update",
+    });
+    return { success: true };
+  }
+
+  function respondToLabInvite(inviteId: string, accept: boolean) {
+    const invite = labInvitations.find(i => i.id === inviteId);
+    if (!invite) return;
+
+    const updated = labInvitations.map(i => {
+      if (i.id === inviteId) {
+        return { ...i, status: accept ? "accepted" as const : "declined" as const };
+      }
+      return i;
+    });
+    setLabInvitations(updated);
+    AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
+
+    const targetUser = registeredUsers.find(u => u.username.toLowerCase() === invite.targetUsername.toLowerCase());
+
+    if (accept) {
+      if (targetUser?.id) {
+        const apiUrl = getApiUrl();
+        const url = new URL(`/api/auth/users/${targetUser.id}/profile`, apiUrl);
+        const profileUpdate: Record<string, string> = { practiceName: invite.adminLabName };
+        profileUpdate.role = invite.role;
+        resilientFetch(url.toString(), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-user-id": targetUser.id },
+          body: JSON.stringify(profileUpdate),
+        }).then(() => {
+          refreshUsers();
+        }).catch(() => {});
+      }
+      addNotification({
+        title: "Lab Invitation Accepted",
+        message: `${invite.targetUsername} has joined ${invite.adminLabName} as ${invite.role === "admin" ? "an admin" : "a user"}.`,
+        type: "update",
+      });
+    } else {
+      addNotification({
+        title: "Lab Invitation Declined",
+        message: `${invite.targetUsername} declined the invitation to join ${invite.adminLabName}.`,
+        type: "alert",
+      });
+    }
+  }
+
   async function leaveLab(): Promise<{ success: boolean; error?: string }> {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
@@ -1574,6 +1667,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       groupJoinRequests,
       sendGroupJoinRequest,
       respondToGroupJoinRequest,
+      labInvitations,
+      sendLabInvite,
+      respondToLabInvite,
       addConversation,
       removeConversation,
       addNotification,
@@ -1587,7 +1683,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       deletedClientInvoices,
       inactiveClients: clients.filter(c => c.status === "inactive"),
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, inventory, customStationLabels, userIsAffiliated, deletedClientInvoices],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, deletedClientInvoices],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
