@@ -448,13 +448,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const materialStr = c.material || "";
     const lineItems: import("@/lib/data").InvoiceLineItem[] = [];
     if (materialStr) {
-      const unitPrice = c.price || (MATERIAL_PRICES[materialStr] ?? 0);
+      const toothCount = c.toothMap?.length || toothStr.split(",").filter(Boolean).length || 1;
+      const perUnitPrice = MATERIAL_PRICES[materialStr] ?? 250;
+      const totalPrice = c.price || (toothCount * perUnitPrice);
       lineItems.push({
-        qty: 1,
+        qty: toothCount,
         item: materialStr,
         description: `${c.caseType || "Restorative"} - ${toothStr || "N/A"}`,
-        rate: unitPrice,
-        amount: unitPrice,
+        rate: perUnitPrice,
+        amount: totalPrice,
       });
     }
 
