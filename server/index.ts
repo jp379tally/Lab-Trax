@@ -256,6 +256,16 @@ function configureExpoAndLanding(app: express.Application) {
   app.use("/app", express.static(path.resolve(process.cwd(), "static-build")));
   app.use(express.static(path.resolve(process.cwd(), "static-build")));
 
+  const webIndexPath = path.resolve(process.cwd(), "static-build", "index.html");
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.method === "GET" && req.path.startsWith("/app/") && !req.path.includes(".")) {
+      if (fs.existsSync(webIndexPath)) {
+        return res.sendFile(webIndexPath);
+      }
+    }
+    next();
+  });
+
   log("Expo routing: Checking expo-platform header on / and /manifest");
 }
 
