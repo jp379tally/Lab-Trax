@@ -3826,23 +3826,6 @@ export default function ScanScreen() {
                 <Text style={styles.captureBtnLabel}>RX</Text>
               </View>
 
-              <View style={styles.captureBtnWrap}>
-                <Pressable
-                  onPress={handleTakeRegularPhoto}
-                  style={({ pressed }) => [
-                    styles.secondaryBtn,
-                    pressed && { opacity: 0.7 },
-                  ]}
-                >
-                  <Ionicons name="camera-outline" size={24} color="#FFF" />
-                  <Text style={styles.secondaryBtnText}>Photo</Text>
-                </Pressable>
-                {casePhotos.length > 0 && (
-                  <View style={styles.photoBadge}>
-                    <Text style={styles.photoBadgeText}>{casePhotos.length}</Text>
-                  </View>
-                )}
-              </View>
             </View>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 24, marginTop: 8 }}>
               <Pressable
