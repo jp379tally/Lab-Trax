@@ -12,7 +12,7 @@ import { AppState, AppStateStatus, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
 import { logAudit } from "./audit";
-import { getApiUrl, resilientFetch } from "./query-client";
+import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens } from "./query-client";
 
 interface StoredUser {
   id?: string;
@@ -129,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function loadAuth() {
     try {
+      await loadTokens();
       const savedAuth = await AsyncStorage.getItem(AUTH_KEY);
 
       await fetchAllUsers();
@@ -136,15 +137,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (savedAuth) {
         const auth = JSON.parse(savedAuth);
         if (auth.loggedIn && auth.username) {
-          setIsAuthenticated(true);
-          setCurrentUser(auth.username);
-          setCurrentUserId(auth.userId || null);
-          setUserType(auth.userType || "lab");
-          setCurrentPassword(auth.password || null);
-          setIsLocked(true);
-          const userPicKey = `${PROFILE_PIC_KEY}_${auth.userId || auth.username}`;
-          const savedPic = await AsyncStorage.getItem(userPicKey);
-          setProfilePicUriState(savedPic);
+          try {
+            const meRes = await resilientFetch("/api/auth/me");
+            if (meRes.ok) {
+              const meData = await meRes.json();
+              const user = meData.user;
+              setIsAuthenticated(true);
+              setCurrentUser(user.username);
+              setCurrentUserId(user.id);
+              setUserType(user.userType || "lab");
+              setCurrentPassword(auth.password || null);
+              setIsLocked(true);
+              const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
+              const savedPic = await AsyncStorage.getItem(userPicKey);
+              setProfilePicUriState(savedPic);
+            } else {
+              setIsAuthenticated(true);
+              setCurrentUser(auth.username);
+              setCurrentUserId(auth.userId || null);
+              setUserType(auth.userType || "lab");
+              setCurrentPassword(auth.password || null);
+              setIsLocked(true);
+              const userPicKey = `${PROFILE_PIC_KEY}_${auth.userId || auth.username}`;
+              const savedPic = await AsyncStorage.getItem(userPicKey);
+              setProfilePicUriState(savedPic);
+            }
+          } catch {
+            setIsAuthenticated(true);
+            setCurrentUser(auth.username);
+            setCurrentUserId(auth.userId || null);
+            setUserType(auth.userType || "lab");
+            setCurrentPassword(auth.password || null);
+            setIsLocked(true);
+          }
         } else {
           setProfilePicUriState(null);
         }
@@ -179,7 +204,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
 
       if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Invalid username or password." };
+        return { success: false, error: data.message || data.error || "Invalid username or password." };
+      }
+
+      if (data.accessToken && data.refreshToken) {
+        await saveTokens(data.accessToken, data.refreshToken);
       }
 
       const user = data.user;
@@ -197,15 +226,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         JSON.stringify({ username: user.username, password }),
       );
       await fetchAllUsers();
-      const allUsersRaw = await AsyncStorage.getItem("@drivesync_auth_users");
-      if (allUsersRaw) {
-        try {
-          const allUsers = JSON.parse(allUsersRaw);
-          const matchedUser = allUsers.find((u: any) => u.username.toLowerCase() === user.username.toLowerCase());
-          if (matchedUser?.role) {
-            await AsyncStorage.setItem("@drivesync_role", matchedUser.role);
-          }
-        } catch {}
+      if (user.role) {
+        await AsyncStorage.setItem("@drivesync_role", user.role);
       }
       const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
       const savedPic = await AsyncStorage.getItem(userPicKey);
@@ -243,7 +265,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const result = await res.json();
 
       if (!res.ok || !result.success) {
-        return { success: false, error: result.error || "Registration failed." };
+        return { success: false, error: result.message || result.error || "Registration failed." };
+      }
+
+      if (result.accessToken && result.refreshToken) {
+        await saveTokens(result.accessToken, result.refreshToken);
       }
 
       const user = result.user;
@@ -268,8 +294,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  function logout() {
+  async function logout() {
     logAudit("LOGOUT", currentUser || "unknown", "User signed out");
+    try {
+      await resilientFetch("/api/auth/logout", { method: "POST" });
+    } catch {}
+    await clearTokens();
     setIsAuthenticated(false);
     setCurrentUser(null);
     setCurrentUserId(null);
@@ -286,16 +316,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const apiUrl = getApiUrl();
       const url = new URL(`/api/auth/users/${currentUserId}`, apiUrl);
-      const resp = await resilientFetch(url.toString(), { method: "DELETE", headers: { "x-user-id": currentUserId } });
+      const resp = await resilientFetch(url.toString(), { method: "DELETE" });
       const data = await resp.json();
       if (data.success) {
         logAudit("DELETE_ACCOUNT", currentUser || "unknown", "User deleted their account");
-        const storedRaw = await AsyncStorage.getItem("@drivesync_auth_users");
-        if (storedRaw) {
-          const storedUsers = JSON.parse(storedRaw);
-          const filtered = storedUsers.filter((u: any) => u.id !== currentUserId);
-          await AsyncStorage.setItem("@drivesync_auth_users", JSON.stringify(filtered));
-        }
+        await clearTokens();
         setIsAuthenticated(false);
         setCurrentUser(null);
         setCurrentUserId(null);
@@ -308,7 +333,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setRegisteredUsers((prev) => prev.filter((u) => u.id !== currentUserId));
         return { success: true };
       }
-      return { success: false, error: data.error || "Failed to delete account." };
+      return { success: false, error: data.error || data.message || "Failed to delete account." };
     } catch (e: any) {
       console.error("Delete account error:", e);
       return { success: false, error: `Connection error: ${e?.message || "Network request failed"}` };
@@ -346,7 +371,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to change password" };
+        return { success: false, error: data.error || data.message || "Failed to change password" };
       }
       setCurrentPassword(newPassword);
       await AsyncStorage.setItem(
@@ -370,12 +395,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const res = await resilientFetch(`/api/auth/users/${currentUserId}/profile`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", "x-user-id": currentUserId },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        return { success: false, error: data.error || "Failed to update profile" };
+        return { success: false, error: data.error || data.message || "Failed to update profile" };
       }
       setRegisteredUsers((prev) =>
         prev.map((u) =>

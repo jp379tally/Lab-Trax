@@ -1,7 +1,10 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { DatabaseStorage } from "./storage";
+import { hashPassword } from "./lib/crypto";
+import { db } from "./db";
+import { users } from "../shared/schema";
+import { eq } from "drizzle-orm";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -39,9 +42,9 @@ function setupCors(app: express.Application) {
       res.header("Access-Control-Allow-Origin", origin);
       res.header(
         "Access-Control-Allow-Methods",
-        "GET, POST, PUT, DELETE, OPTIONS",
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS",
       );
-      res.header("Access-Control-Allow-Headers", "Content-Type");
+      res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
       res.header("Access-Control-Allow-Credentials", "true");
     }
 
@@ -275,22 +278,25 @@ function configureExpoAndLanding(app: express.Application) {
 
 function setupErrorHandler(app: express.Application) {
   app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) {
+      return next(err);
+    }
+
     const error = err as {
       status?: number;
       statusCode?: number;
       message?: string;
+      details?: unknown;
     };
 
     const status = error.status || error.statusCode || 500;
     const message = error.message || "Internal Server Error";
 
-    console.error("Internal Server Error:", err);
-
-    if (res.headersSent) {
-      return next(err);
+    if (status >= 500) {
+      console.error("Internal Server Error:", err);
     }
 
-    return res.status(status).json({ message });
+    return res.status(status).json({ ok: false, message, ...(error.details ? { details: error.details } : {}) });
   });
 }
 
@@ -313,16 +319,24 @@ function setupSecurityHeaders(app: express.Application) {
 }
 
 async function seedDemoAccount() {
-  const storage = new DatabaseStorage();
   const accounts = [
-    { username: "phillipsjohnpaul@yahoo.com", password: "Jp#14482726", email: "phillipsjohnpaul@yahoo.com", userType: "lab" as const, role: "admin" as const },
-    { username: "test@allieddl.com", password: "Test1234", email: "test@allieddl.com", userType: "lab" as const, role: "admin" as const },
+    { username: "phillipsjohnpaul@yahoo.com", password: "Jp#14482726", email: "phillipsjohnpaul@yahoo.com", userType: "lab", role: "admin" },
+    { username: "test@allieddl.com", password: "Test1234", email: "test@allieddl.com", userType: "lab", role: "admin" },
   ];
   for (const acct of accounts) {
     try {
-      const existing = await storage.getUserByUsername(acct.username);
+      const allUsers = await db.select().from(users);
+      const existing = allUsers.find(u => u.username.toLowerCase() === acct.username.toLowerCase());
       if (!existing) {
-        await storage.createUser(acct);
+        const hashed = await hashPassword(acct.password);
+        await db.insert(users).values({
+          username: acct.username,
+          password: hashed,
+          email: acct.email,
+          userType: acct.userType,
+          role: acct.role,
+          initials: acct.username.slice(0, 2).toUpperCase(),
+        });
         log(`Demo account ${acct.username} seeded successfully`);
       }
     } catch (err: any) {

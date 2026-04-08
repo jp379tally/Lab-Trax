@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "../shared/schema";
+import * as chatSchema from "../shared/models/chat";
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set");
@@ -13,4 +14,4 @@ if (!connectionString.includes("sslmode=")) {
 }
 
 const pool = new pg.Pool({ connectionString });
-export const db = drizzle(pool, { schema });
+export const db = drizzle(pool, { schema: { ...schema, ...chatSchema } });

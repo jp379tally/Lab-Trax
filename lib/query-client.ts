@@ -1,11 +1,13 @@
 import { fetch } from "expo/fetch";
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-
 import { Platform } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 let cachedBaseUrl: string | null = null;
 
 const PRODUCTION_URL = "https://lab-trax.replit.app/";
+
+const TOKEN_KEY = "@labtrax_tokens";
 
 export function getApiUrl(): string {
   if (cachedBaseUrl) return cachedBaseUrl;
@@ -42,15 +44,99 @@ function getApiUrlWithoutPort(): string | null {
   return url.href;
 }
 
+let _accessToken: string | null = null;
+let _refreshToken: string | null = null;
+let _refreshPromise: Promise<string | null> | null = null;
+
+export async function loadTokens() {
+  try {
+    const raw = await AsyncStorage.getItem(TOKEN_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      _accessToken = parsed.accessToken || null;
+      _refreshToken = parsed.refreshToken || null;
+    }
+  } catch {}
+}
+
+export async function saveTokens(accessToken: string, refreshToken: string) {
+  _accessToken = accessToken;
+  _refreshToken = refreshToken;
+  await AsyncStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken, refreshToken }));
+}
+
+export async function clearTokens() {
+  _accessToken = null;
+  _refreshToken = null;
+  await AsyncStorage.removeItem(TOKEN_KEY);
+}
+
+export function getAccessToken() {
+  return _accessToken;
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (!_refreshToken) return null;
+  if (_refreshPromise) return _refreshPromise;
+
+  _refreshPromise = (async () => {
+    try {
+      const apiUrl = getApiUrl();
+      const url = new URL("/api/auth/refresh", apiUrl).toString();
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: _refreshToken }),
+      });
+      if (!res.ok) {
+        await clearTokens();
+        return null;
+      }
+      const data = await res.json();
+      if (data.data?.accessToken) {
+        _accessToken = data.data.accessToken;
+        await AsyncStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken: _accessToken, refreshToken: _refreshToken }));
+        return _accessToken;
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      _refreshPromise = null;
+    }
+  })();
+
+  return _refreshPromise;
+}
+
+function injectAuthHeaders(options?: RequestInit): RequestInit {
+  const headers = new Headers(options?.headers || {});
+  if (_accessToken) {
+    headers.set("Authorization", `Bearer ${_accessToken}`);
+  }
+  return { ...options, headers };
+}
+
 async function resilientFetch(
   path: string,
   options?: RequestInit,
 ): Promise<Response> {
   const primaryUrl = getApiUrl();
   const primaryFullUrl = new URL(path, primaryUrl).toString();
+  const authedOptions = injectAuthHeaders(options);
 
   try {
-    const res = await fetch(primaryFullUrl, options);
+    let res = await fetch(primaryFullUrl, authedOptions);
+
+    if (res.status === 401 && _refreshToken) {
+      const newToken = await refreshAccessToken();
+      if (newToken) {
+        const retryHeaders = new Headers(authedOptions.headers || {});
+        retryHeaders.set("Authorization", `Bearer ${newToken}`);
+        res = await fetch(primaryFullUrl, { ...authedOptions, headers: retryHeaders });
+      }
+    }
+
     if (res.ok) {
       cachedBaseUrl = primaryUrl;
       return res;
@@ -64,7 +150,7 @@ async function resilientFetch(
     if (fallbackUrl && fallbackUrl !== primaryUrl) {
       try {
         const fallbackFullUrl = new URL(path, fallbackUrl).toString();
-        const fallbackRes = await fetch(fallbackFullUrl, options);
+        const fallbackRes = await fetch(fallbackFullUrl, authedOptions);
         if (fallbackRes.ok || (fallbackRes.headers.get("content-type") || "").includes("application/json")) {
           cachedBaseUrl = fallbackUrl;
           return fallbackRes;
@@ -78,7 +164,7 @@ async function resilientFetch(
     if (fallbackUrl && fallbackUrl !== primaryUrl) {
       try {
         const fallbackFullUrl = new URL(path, fallbackUrl).toString();
-        const res = await fetch(fallbackFullUrl, options);
+        const res = await fetch(fallbackFullUrl, authedOptions);
         cachedBaseUrl = fallbackUrl;
         return res;
       } catch {}
@@ -87,7 +173,7 @@ async function resilientFetch(
     if (prodUrl !== primaryUrl && prodUrl !== fallbackUrl) {
       try {
         const prodFullUrl = new URL(path, prodUrl).toString();
-        const res = await fetch(prodFullUrl, options);
+        const res = await fetch(prodFullUrl, authedOptions);
         cachedBaseUrl = prodUrl;
         return res;
       } catch {}
@@ -112,7 +198,6 @@ export async function apiRequest(
     method,
     headers: data ? { "Content-Type": "application/json" } : {},
     body: data ? JSON.stringify(data) : undefined,
-    credentials: "include",
   });
 
   await throwIfResNotOk(res);
@@ -129,9 +214,7 @@ export const getQueryFn: <T>(options: {
   async ({ queryKey }) => {
     const route = queryKey.join("/") as string;
 
-    const res = await resilientFetch(route, {
-      credentials: "include",
-    });
+    const res = await resilientFetch(route);
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;

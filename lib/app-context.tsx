@@ -192,7 +192,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function syncCaseToServer(labCase: LabCase) {
     try {
-      await resilientFetch("/api/cases", {
+      await resilientFetch("/api/legacy/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: labCase.id, ownerId: labCase.ownerId || currentUserId, caseData: JSON.stringify(labCase) }),
@@ -204,7 +204,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function deleteCaseFromServer(caseId: string) {
     try {
-      await resilientFetch(`/api/cases/${caseId}`, { method: "DELETE" });
+      await resilientFetch(`/api/legacy/cases/${caseId}`, { method: "DELETE" });
     } catch (e) {
       console.log("Could not delete case from server:", e);
     }
@@ -213,7 +213,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function fetchCasesFromServer(ownerIds: string[]): Promise<LabCase[]> {
     try {
       if (ownerIds.length === 0) return [];
-      const res = await resilientFetch(`/api/cases?ownerIds=${ownerIds.join(",")}`);
+      const res = await resilientFetch(`/api/legacy/cases?ownerIds=${ownerIds.join(",")}`);
       if (res.ok) {
         const data = await res.json();
         return data.cases || [];
@@ -1285,7 +1285,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (role) profileUpdate.role = role;
         resilientFetch(url.toString(), {
           method: "PUT",
-          headers: { "Content-Type": "application/json", "x-user-id": requestingUser.id },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(profileUpdate),
         }).then(() => {
           refreshUsers();
@@ -1388,7 +1388,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         profileUpdate.role = invite.role;
         resilientFetch(url.toString(), {
           method: "PUT",
-          headers: { "Content-Type": "application/json", "x-user-id": targetUser.id },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(profileUpdate),
         }).then(() => {
           refreshUsers();
@@ -1415,7 +1415,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const url = new URL(`/api/auth/users/${currentUserId}/profile`, apiUrl);
       await resilientFetch(url.toString(), {
         method: "PUT",
-        headers: { "Content-Type": "application/json", "x-user-id": currentUserId },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ practiceName: "" }),
       });
       await refreshUsers();
