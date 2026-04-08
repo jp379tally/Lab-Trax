@@ -18,6 +18,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as Location from "expo-location";
@@ -2344,7 +2345,7 @@ export default function LoginScreen() {
               <Text style={styles.footerText}>Secure Access Only</Text>
               <Ionicons name="shield-checkmark" size={14} color="rgba(255,255,255,0.25)" />
             </View>
-            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.2)", marginTop: 6 }}>v1.0.6 (Build 51)</Text>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.2)", marginTop: 6 }}>v{Constants.expoConfig?.version || "1.0.0"} (Build {Constants.expoConfig?.ios?.buildNumber || "1"})</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
