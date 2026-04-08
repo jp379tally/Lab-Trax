@@ -2344,6 +2344,7 @@ export default function LoginScreen() {
               <Text style={styles.footerText}>Secure Access Only</Text>
               <Ionicons name="shield-checkmark" size={14} color="rgba(255,255,255,0.25)" />
             </View>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.2)", marginTop: 6 }}>v1.0.6 (Build 51)</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
