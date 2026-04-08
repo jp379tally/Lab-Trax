@@ -1760,49 +1760,98 @@ export default function ScanScreen() {
       });
       if (result.canceled || !result.assets || result.assets.length === 0) return;
 
-      const imageAssets = result.assets.filter((a) =>
-        a.mimeType?.startsWith("image/")
-      );
-      const pdfAssets = result.assets.filter(
-        (a) => a.mimeType === "application/pdf"
-      );
-
-      if (imageAssets.length > 0) {
-        const newUris = imageAssets.map((a) => a.uri);
-        setCasePhotos((prev) => [...prev, ...newUris]);
-        const newEntries: ActivityEntry[] = imageAssets.map((a) => ({
-          id: generateId(),
-          type: "photo" as const,
-          timestamp: Date.now(),
-          description: `File attached: ${a.name}`,
-          imageUri: a.uri,
-          user: userInitials,
-        }));
-        setActivityEntries((prev) => [...newEntries, ...prev]);
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
 
-      if (pdfAssets.length > 0) {
-        for (const pdf of pdfAssets) {
+      const isInCameraPhase = phase === "camera";
+
+      for (const asset of result.assets) {
+        const isImage = asset.mimeType?.startsWith("image/");
+
+        if (isInCameraPhase && isImage) {
+          cropDoneRef.current = false;
+          let dataUri = asset.uri;
+          if (!asset.uri.startsWith("data:") && Platform.OS !== "web") {
+            try {
+              const FSystem = await import("expo-file-system");
+              const b64 = await FSystem.readAsStringAsync(asset.uri, { encoding: FSystem.EncodingType.Base64 });
+              const mime = asset.mimeType || "image/jpeg";
+              dataUri = `data:${mime};base64,${b64}`;
+            } catch (e: any) {
+              console.log("Attach file read error:", e?.message);
+              try {
+                const FSystem = await import("expo-file-system");
+                const destUri = FSystem.cacheDirectory + "attach_" + Date.now() + ".jpg";
+                await FSystem.copyAsync({ from: asset.uri, to: destUri });
+                const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+                dataUri = `data:image/jpeg;base64,${b64}`;
+              } catch (copyErr: any) {
+                console.log("Attach file copy fallback failed:", copyErr?.message);
+              }
+            }
+          }
+
+          setCapturedUri(dataUri);
+          setPhase("scanning");
+
+          if (dataUri.startsWith("data:")) {
+            const cropped = await cropDocumentIfNeeded(dataUri);
+            const finalUri = cropped !== dataUri ? cropped : dataUri;
+            setCapturedUri(finalUri);
+            setCasePhotos((prev) => {
+              if (prev.includes(finalUri)) return prev;
+              return [...prev, finalUri];
+            });
+          } else {
+            setCasePhotos((prev) => {
+              if (prev.includes(dataUri)) return prev;
+              return [...prev, dataUri];
+            });
+          }
+          cropDoneRef.current = true;
+          return;
+        }
+
+        if (isInCameraPhase && asset.mimeType === "application/pdf") {
+          setCasePhotos((prev) => [...prev, asset.uri]);
+          setCapturedUri(asset.uri);
+          setPhase("scanning");
+          cropDoneRef.current = true;
+          return;
+        }
+
+        if (isImage) {
+          setCasePhotos((prev) => [...prev, asset.uri]);
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "photo" as const,
+            timestamp: Date.now(),
+            description: `File attached: ${asset.name}`,
+            imageUri: asset.uri,
+            user: userInitials,
+          };
+          setActivityEntries((prev) => [entry, ...prev]);
+        } else if (asset.mimeType === "application/pdf") {
           const entry: ActivityEntry = {
             id: generateId(),
             type: "note" as const,
             timestamp: Date.now(),
-            description: `PDF attached: ${pdf.name}`,
+            description: `PDF attached: ${asset.name}`,
             user: userInitials,
           };
           setActivityEntries((prev) => [entry, ...prev]);
-          setCasePhotos((prev) => [...prev, pdf.uri]);
+          setCasePhotos((prev) => [...prev, asset.uri]);
         }
       }
 
-      const totalCount = result.assets.length;
-      if (Platform.OS !== "web") {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      if (!isInCameraPhase) {
+        const totalCount = result.assets.length;
+        Alert.alert(
+          "Files Attached",
+          `${totalCount} file${totalCount !== 1 ? "s" : ""} attached successfully.`
+        );
       }
-      Alert.alert(
-        "Files Attached",
-        `${totalCount} file${totalCount !== 1 ? "s" : ""} attached successfully.`
-      );
     } catch (e: any) {
       console.error("Attach files error:", e);
       Alert.alert("Error", "Could not attach files. Please try again.");
@@ -3811,18 +3860,14 @@ export default function ScanScreen() {
                 />
                 <Text style={styles.manualEntryLinkText}>Manual Entry</Text>
               </Pressable>
-              <Pressable
-                onPress={handleAttachFiles}
-                style={({ pressed }) => [
-                  styles.manualEntryLink,
-                  pressed && { opacity: 0.7 },
-                  { marginTop: 0 },
-                ]}
-              >
-                <Ionicons name="attach" size={16} color="rgba(255,255,255,0.6)" />
-                <Text style={styles.manualEntryLinkText}>Attach Files</Text>
-              </Pressable>
             </View>
+            <Pressable
+              onPress={handleAttachFiles}
+              style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="attach" size={22} color="#FFF" />
+              <Text style={styles.barcodeBtnText}>Attach Files</Text>
+            </Pressable>
             <Pressable
               onPress={openBarcodeScanner}
               style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
