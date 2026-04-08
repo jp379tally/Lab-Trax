@@ -12,3 +12,9 @@ id = "zCj5OH5xCkmS2vQ535MV3"
 uri = "file://APP_STORE_LISTING.md"
 type = "text"
 title = "LabTrax - Apple App Store Promotional Text"
+
+[[outputs]]
+id = "keJU1HUHccipZH8fBMmB9"
+uri = "file://labtrax-source-code.tar.gz"
+type = "unspecified"
+title = "LabTrax Source Code"
