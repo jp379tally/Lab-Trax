@@ -141,6 +141,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setCurrentUserId(auth.userId || null);
           setUserType(auth.userType || "lab");
           setCurrentPassword(auth.password || null);
+          setIsLocked(true);
           const userPicKey = `${PROFILE_PIC_KEY}_${auth.userId || auth.username}`;
           const savedPic = await AsyncStorage.getItem(userPicKey);
           setProfilePicUriState(savedPic);

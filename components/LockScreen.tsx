@@ -84,9 +84,9 @@ export default function LockScreen() {
         <View style={styles.lockIcon}>
           <Ionicons name="lock-closed" size={48} color="#FFF" />
         </View>
-        <Text style={styles.title}>Session Locked</Text>
+        <Text style={styles.title}>Welcome Back</Text>
         <Text style={styles.subtitle}>
-          Your session has been locked due to inactivity.{"\n"}Please authenticate to continue.
+          Please authenticate to continue.
         </Text>
         {currentUser && (
           <View style={styles.userBadge}>
