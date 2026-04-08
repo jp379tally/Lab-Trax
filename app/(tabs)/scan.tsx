@@ -94,6 +94,8 @@ export default function ScanScreen() {
   const scanAnim = useRef(new RNAnimated.Value(0)).current;
   const cameraRef = useRef<CameraView>(null);
   const [cameraReady, setCameraReady] = useState(false);
+  const [cameraPaused, setCameraPaused] = useState(false);
+  const isPickingFilesRef = useRef(false);
 
   const [permission, requestPermission] = useCameraPermissions();
 
@@ -1752,24 +1754,37 @@ export default function ScanScreen() {
   }
 
   async function handleAttachFiles() {
+    if (isPickingFilesRef.current) return;
+    isPickingFilesRef.current = true;
+    const wasInCameraPhase = phase === "camera";
+
     try {
+      if (wasInCameraPhase) {
+        setCameraReady(false);
+        setCameraPaused(true);
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(undefined))));
+      }
+
       const result = await DocumentPicker.getDocumentAsync({
         type: ["image/*", "application/pdf"],
         multiple: true,
         copyToCacheDirectory: true,
       });
-      if (result.canceled || !result.assets || result.assets.length === 0) return;
+
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        if (wasInCameraPhase) setCameraPaused(false);
+        isPickingFilesRef.current = false;
+        return;
+      }
 
       if (Platform.OS !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
 
-      const isInCameraPhase = phase === "camera";
-
       for (const asset of result.assets) {
         const isImage = asset.mimeType?.startsWith("image/");
 
-        if (isInCameraPhase && isImage) {
+        if (wasInCameraPhase && isImage) {
           cropDoneRef.current = false;
           let dataUri = asset.uri;
           if (!asset.uri.startsWith("data:") && Platform.OS !== "web") {
@@ -1793,6 +1808,7 @@ export default function ScanScreen() {
           }
 
           setCapturedUri(dataUri);
+          setCameraPaused(false);
           setPhase("scanning");
 
           if (dataUri.startsWith("data:")) {
@@ -1810,14 +1826,17 @@ export default function ScanScreen() {
             });
           }
           cropDoneRef.current = true;
+          isPickingFilesRef.current = false;
           return;
         }
 
-        if (isInCameraPhase && asset.mimeType === "application/pdf") {
+        if (wasInCameraPhase && asset.mimeType === "application/pdf") {
           setCasePhotos((prev) => [...prev, asset.uri]);
           setCapturedUri(asset.uri);
+          setCameraPaused(false);
           setPhase("scanning");
           cropDoneRef.current = true;
+          isPickingFilesRef.current = false;
           return;
         }
 
@@ -1845,15 +1864,23 @@ export default function ScanScreen() {
         }
       }
 
-      if (!isInCameraPhase) {
+      if (wasInCameraPhase) setCameraPaused(false);
+
+      if (!wasInCameraPhase) {
         const totalCount = result.assets.length;
         Alert.alert(
           "Files Attached",
           `${totalCount} file${totalCount !== 1 ? "s" : ""} attached successfully.`
         );
       }
+      isPickingFilesRef.current = false;
     } catch (e: any) {
+      if (wasInCameraPhase) setCameraPaused(false);
+      isPickingFilesRef.current = false;
       console.error("Attach files error:", e);
+      if (e?.message?.includes("cancel") || e?.code === "DOCUMENT_PICKER_CANCELED") {
+        return;
+      }
       Alert.alert("Error", "Could not attach files. Please try again.");
     }
   }
@@ -3710,7 +3737,7 @@ export default function ScanScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.cameraContainer}>
-        {phase === "camera" && permission?.granted && (
+        {phase === "camera" && permission?.granted && !cameraPaused && (
           <CameraView
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
@@ -3718,6 +3745,12 @@ export default function ScanScreen() {
             autofocus="on"
             onCameraReady={() => setCameraReady(true)}
           />
+        )}
+        {phase === "camera" && cameraPaused && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0F172A", justifyContent: "center", alignItems: "center" }]}>
+            <ActivityIndicator size="large" color={Colors.light.tint} />
+            <Text style={{ color: "#FFF", fontFamily: "Inter_500Medium", fontSize: 14, marginTop: 12 }}>Selecting files...</Text>
+          </View>
         )}
 
         {phase === "scanning" && capturedUri && (
