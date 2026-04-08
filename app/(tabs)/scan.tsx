@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
@@ -1750,6 +1751,64 @@ export default function ScanScreen() {
     }
   }
 
+  async function handleAttachFiles() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["image/*", "application/pdf"],
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets || result.assets.length === 0) return;
+
+      const imageAssets = result.assets.filter((a) =>
+        a.mimeType?.startsWith("image/")
+      );
+      const pdfAssets = result.assets.filter(
+        (a) => a.mimeType === "application/pdf"
+      );
+
+      if (imageAssets.length > 0) {
+        const newUris = imageAssets.map((a) => a.uri);
+        setCasePhotos((prev) => [...prev, ...newUris]);
+        const newEntries: ActivityEntry[] = imageAssets.map((a) => ({
+          id: generateId(),
+          type: "photo" as const,
+          timestamp: Date.now(),
+          description: `File attached: ${a.name}`,
+          imageUri: a.uri,
+          user: userInitials,
+        }));
+        setActivityEntries((prev) => [...newEntries, ...prev]);
+      }
+
+      if (pdfAssets.length > 0) {
+        for (const pdf of pdfAssets) {
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "note" as const,
+            timestamp: Date.now(),
+            description: `PDF attached: ${pdf.name}`,
+            user: userInitials,
+          };
+          setActivityEntries((prev) => [entry, ...prev]);
+          setCasePhotos((prev) => [...prev, pdf.uri]);
+        }
+      }
+
+      const totalCount = result.assets.length;
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+      Alert.alert(
+        "Files Attached",
+        `${totalCount} file${totalCount !== 1 ? "s" : ""} attached successfully.`
+      );
+    } catch (e: any) {
+      console.error("Attach files error:", e);
+      Alert.alert("Error", "Could not attach files. Please try again.");
+    }
+  }
+
   function handleAddPrescription() {
     setPhase("camera");
     setCapturedUri(null);
@@ -2390,6 +2449,13 @@ export default function ScanScreen() {
             >
               <Ionicons name="camera-outline" size={18} color={Colors.light.tint} />
               <Text style={styles.addMorePhotosBtnText}>Take Photo</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleAttachFiles}
+              style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="attach" size={18} color={Colors.light.tint} />
+              <Text style={styles.addMorePhotosBtnText}>Attach Files</Text>
             </Pressable>
           </View>
 
@@ -3729,20 +3795,34 @@ export default function ScanScreen() {
                 )}
               </View>
             </View>
-            <Pressable
-              onPress={handleManualEntry}
-              style={({ pressed }) => [
-                styles.manualEntryLink,
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <MaterialCommunityIcons
-                name="text-box-outline"
-                size={16}
-                color="rgba(255,255,255,0.6)"
-              />
-              <Text style={styles.manualEntryLinkText}>Manual Entry</Text>
-            </Pressable>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 24, marginTop: 8 }}>
+              <Pressable
+                onPress={handleManualEntry}
+                style={({ pressed }) => [
+                  styles.manualEntryLink,
+                  pressed && { opacity: 0.7 },
+                  { marginTop: 0 },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="text-box-outline"
+                  size={16}
+                  color="rgba(255,255,255,0.6)"
+                />
+                <Text style={styles.manualEntryLinkText}>Manual Entry</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleAttachFiles}
+                style={({ pressed }) => [
+                  styles.manualEntryLink,
+                  pressed && { opacity: 0.7 },
+                  { marginTop: 0 },
+                ]}
+              >
+                <Ionicons name="attach" size={16} color="rgba(255,255,255,0.6)" />
+                <Text style={styles.manualEntryLinkText}>Attach Files</Text>
+              </Pressable>
+            </View>
             <Pressable
               onPress={openBarcodeScanner}
               style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
