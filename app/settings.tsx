@@ -34,7 +34,10 @@ export default function SettingsScreen() {
   const [editLabName, setEditLabName] = useState("");
   const [editLabAddress, setEditLabAddress] = useState("");
   const [editLabPhone, setEditLabPhone] = useState("");
+  const [editLabEmail, setEditLabEmail] = useState("");
   const [editLabSaving, setEditLabSaving] = useState(false);
+  const [showEditEmail, setShowEditEmail] = useState(false);
+  const [editEmailSaving, setEditEmailSaving] = useState(false);
   const [adminUsername, setAdminUsername] = useState("");
   const [showAddLabModal, setShowAddLabModal] = useState(false);
   const [labSearchName, setLabSearchName] = useState("");
@@ -222,6 +225,25 @@ export default function SettingsScreen() {
             <Pressable
               style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
               onPress={() => {
+                setEditLabEmail(currentUserData?.email || "");
+                setShowEditEmail(true);
+              }}
+            >
+              <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
+                <Ionicons name="mail" size={18} color="#3B82F6" />
+              </View>
+              <View style={styles.menuInfo}>
+                <Text style={[styles.menuTitle, { color: colors.text }]}>Email</Text>
+                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.email || "Not set"}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+            </Pressable>
+
+            <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+
+            <Pressable
+              style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => {
                 setShowChangePassword(true);
                 setCurrentPasswordInput("");
                 setNewPassword("");
@@ -326,6 +348,7 @@ export default function SettingsScreen() {
                   setEditLabName(currentUserData?.practiceName || "");
                   setEditLabAddress(currentUserData?.practiceAddress || "");
                   setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
+                  setEditLabEmail(currentUserData?.email || "");
                   setShowEditLab(true);
                 }}
               >
@@ -801,6 +824,18 @@ export default function SettingsScreen() {
                 keyboardType="phone-pad"
               />
 
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Email</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                value={editLabEmail}
+                onChangeText={setEditLabEmail}
+                placeholder="Enter email address"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+
               <Pressable
                 style={({ pressed }) => [styles.sendBtn, editLabSaving && { opacity: 0.6 }, pressed && { opacity: 0.8 }]}
                 disabled={editLabSaving}
@@ -810,6 +845,7 @@ export default function SettingsScreen() {
                     practiceName: editLabName,
                     practiceAddress: editLabAddress,
                     practicePhone: editLabPhone,
+                    email: editLabEmail,
                   });
                   setEditLabSaving(false);
                   if (result.success) {
@@ -823,6 +859,53 @@ export default function SettingsScreen() {
                 }}
               >
                 <Text style={styles.sendBtnText}>{editLabSaving ? "Saving..." : "Save Changes"}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal transparent visible={showEditEmail} animationType="slide" onRequestClose={() => setShowEditEmail(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
+          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+            <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: insets.bottom + 24 }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.text }}>Edit Email</Text>
+                <Pressable onPress={() => setShowEditEmail(false)}>
+                  <Ionicons name="close" size={24} color={colors.textSecondary} />
+                </Pressable>
+              </View>
+
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Email Address</Text>
+              <TextInput
+                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                value={editLabEmail}
+                onChangeText={setEditLabEmail}
+                placeholder="Enter email address"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+
+              <Pressable
+                style={({ pressed }) => [styles.sendBtn, editEmailSaving && { opacity: 0.6 }, pressed && { opacity: 0.8 }]}
+                disabled={editEmailSaving}
+                onPress={async () => {
+                  setEditEmailSaving(true);
+                  const result = await updateUserProfile({ email: editLabEmail });
+                  setEditEmailSaving(false);
+                  if (result.success) {
+                    if (Platform.OS !== "web") {
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    }
+                    setShowEditEmail(false);
+                  } else {
+                    Alert.alert("Error", result.error || "Failed to save email");
+                  }
+                }}
+              >
+                <Text style={styles.sendBtnText}>{editEmailSaving ? "Saving..." : "Save Email"}</Text>
               </Pressable>
             </View>
           </View>
