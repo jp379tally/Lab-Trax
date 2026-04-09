@@ -957,7 +957,8 @@ export default function ScanScreen() {
 
   async function convertPdfToImages(arrayBuffer: ArrayBuffer): Promise<string[]> {
     try {
-      const pdfjsLib = await import("pdfjs-dist");
+      const pdfModuleName = "pdfjs" + "-dist";
+      const pdfjsLib = await import(/* webpackIgnore: true */ pdfModuleName);
       pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
       const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
       const pageImages: string[] = [];
