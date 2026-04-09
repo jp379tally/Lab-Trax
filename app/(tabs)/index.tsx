@@ -39,6 +39,7 @@ import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase } from "@/lib/data";
+import { LabFileDropZone } from "@/components/LabFileDropZone";
 import { apiRequest } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
@@ -278,7 +279,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, clients, addCasePhoto } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
@@ -755,6 +756,14 @@ function TechDashboard() {
           </View>
         </Pressable>
       </Modal>
+
+      <LabFileDropZone
+        cases={cases}
+        clients={clients}
+        currentUser={currentUser}
+        onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUser || undefined)}
+        isAdmin={isLabAdmin}
+      />
 
       <View style={styles.headerRow}>
         <View>

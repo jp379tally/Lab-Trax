@@ -56,6 +56,7 @@ Preferred communication style: Simple, everyday language.
 - **Courtesy Text Feature**: Automates delay notifications and delivery date negotiations.
 - **Inventory Tracking**: Manage items, categories, quantities, and low-stock alerts.
 - **Provider Account Numbers**: Automated assignment of unique IDs.
+- **File Drop Zone**: Dashboard bar where lab members can drag & drop or tap to upload patient files (photos/screenshots/videos). Admins see pending file count and can open a review modal to assign files to cases via provider → patient autocomplete flow. Files stored per-user in AsyncStorage (`components/LabFileDropZone.tsx`). 5MB limit per file. Uses `addCasePhoto` to attach to cases.
 - **Invoices Hub**: Centralized management for viewing, generating, and sending invoices. Admins can directly edit invoices.
 - **Statements Hub**: Centralized management for generating, viewing, and sending client statements.
 - **AI Integration**:
