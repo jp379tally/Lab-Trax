@@ -910,11 +910,12 @@ export default function ScanScreen() {
     const allowedPhases = ["camera", "form"];
     if (!allowedPhases.includes(phase)) return;
     dragCounterRef.current = 0;
-    const onDragEnter = (e: DragEvent) => { e.preventDefault(); dragCounterRef.current++; setWebDragOver(true); };
-    const onDragOver = (e: DragEvent) => { e.preventDefault(); };
-    const onDragLeave = (e: DragEvent) => { e.preventDefault(); dragCounterRef.current--; if (dragCounterRef.current <= 0) { dragCounterRef.current = 0; setWebDragOver(false); } };
+    const onDragEnter = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounterRef.current++; setWebDragOver(true); };
+    const onDragOver = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); };
+    const onDragLeave = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounterRef.current--; if (dragCounterRef.current <= 0) { dragCounterRef.current = 0; setWebDragOver(false); } };
     const onDrop = (e: DragEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       dragCounterRef.current = 0;
       setWebDragOver(false);
       if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return;

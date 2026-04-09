@@ -38,9 +38,10 @@ interface LabFileDropZoneProps {
   currentUser: string | null;
   onAddToCase: (caseId: string, fileUri: string) => void;
   isAdmin: boolean;
+  isFocused?: boolean;
 }
 
-export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAdmin }: LabFileDropZoneProps) {
+export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAdmin, isFocused = true }: LabFileDropZoneProps) {
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -156,41 +157,49 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
 
   useEffect(() => {
     if (Platform.OS !== "web") return;
+    if (!isFocused) {
+      setDragOver(false);
+      dragCounterRef.current = 0;
+      return;
+    }
     dragCounterRef.current = 0;
-    const onDragEnter = (e: DragEvent) => {
+    const onDocDragEnter = (e: DragEvent) => {
       if (!e.dataTransfer?.types?.includes("Files")) return;
       e.preventDefault();
+      e.stopPropagation();
       dragCounterRef.current++;
       setDragOver(true);
     };
-    const onDragOver = (e: DragEvent) => { e.preventDefault(); };
-    const onDragLeave = (e: DragEvent) => {
+    const onDocDragOver = (e: DragEvent) => {
       e.preventDefault();
+      e.stopPropagation();
+    };
+    const onDocDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
       dragCounterRef.current--;
       if (dragCounterRef.current <= 0) { dragCounterRef.current = 0; setDragOver(false); }
     };
-    const onDrop = (e: DragEvent) => {
+    const onDocDrop = (e: DragEvent) => {
       e.preventDefault();
+      e.stopPropagation();
       dragCounterRef.current = 0;
       setDragOver(false);
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
         processDroppedFilesRef.current(e.dataTransfer.files);
       }
     };
-    const target = document.querySelector(`[data-testid="lab-file-drop-bar"]`);
-    if (target) {
-      target.addEventListener("dragenter", onDragEnter);
-      target.addEventListener("dragover", onDragOver);
-      target.addEventListener("dragleave", onDragLeave);
-      target.addEventListener("drop", onDrop);
-      return () => {
-        target.removeEventListener("dragenter", onDragEnter);
-        target.removeEventListener("dragover", onDragOver);
-        target.removeEventListener("dragleave", onDragLeave);
-        target.removeEventListener("drop", onDrop);
-      };
-    }
-  }, []);
+    document.addEventListener("dragenter", onDocDragEnter);
+    document.addEventListener("dragover", onDocDragOver);
+    document.addEventListener("dragleave", onDocDragLeave);
+    document.addEventListener("drop", onDocDrop);
+    return () => {
+      document.removeEventListener("dragenter", onDocDragEnter);
+      document.removeEventListener("dragover", onDocDragOver);
+      document.removeEventListener("dragleave", onDocDragLeave);
+      document.removeEventListener("drop", onDocDrop);
+    };
+  }, [isFocused]);
 
   function removeFile(fileId: string) {
     setPendingFiles((prev) => {

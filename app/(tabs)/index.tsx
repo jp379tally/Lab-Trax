@@ -25,6 +25,7 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as LocalAuthentication from "expo-local-authentication";
 import { router } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -299,6 +300,7 @@ function TechDashboard() {
   const [confirmJoinReq, setConfirmJoinReq] = useState<{ requestId: string; username: string; accept: boolean } | null>(null);
   const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
+  const dashboardFocused = useIsFocused();
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isLabAdmin = currentUserData?.role === "admin";
@@ -634,6 +636,7 @@ function TechDashboard() {
           currentUser={currentUser}
           onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUser || undefined)}
           isAdmin={isLabAdmin}
+          isFocused={dashboardFocused}
         />
         <View style={styles.headerQuickActions}>
           <Pressable
