@@ -623,81 +623,83 @@ function TechDashboard() {
         </View>
 
         {!userIsAffiliated && (
-          <View style={{ marginTop: 16, padding: 14, backgroundColor: isDarkMode ? "#1E293B" : "#FFF7ED", borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: isDarkMode ? "#334155" : "#FDE68A" }}>
+          <View style={{ marginTop: 16, padding: 14, backgroundColor: isDarkMode ? "#1E293B" : "#FFF7ED", borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: isDarkMode ? "#334155" : "#FDE68A", marginHorizontal: 20 }}>
             <Ionicons name="information-circle-outline" size={22} color={isDarkMode ? "#FBBF24" : "#D97706"} />
             <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: isDarkMode ? "#E2E8F0" : "#92400E", flex: 1, lineHeight: 18 }}>
               Join a lab to collaborate with your team and access shared features.
             </Text>
           </View>
         )}
-        <LabFileDropZone
-          cases={cases}
-          clients={clients}
-          currentUser={currentUser}
-          onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUser || undefined)}
-          isAdmin={isLabAdmin}
-          isFocused={dashboardFocused}
-        />
-        <View style={styles.headerQuickActions}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.headerQuickBtn,
-              pressed && styles.quickBtnPressed,
-            ]}
-            onPress={() => router.push("/(tabs)/scan")}
-          >
-            <View style={[styles.quickIcon, { backgroundColor: Colors.light.tintLight }]}>
-              <Ionicons name="add" size={24} color={Colors.light.tint} />
-            </View>
-            <Text style={styles.quickLabel}>New Case</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [
-              styles.headerQuickBtn,
-              pressed && styles.quickBtnPressed,
-            ]}
-            onPress={() => router.push("/(tabs)/cases")}
-          >
-            <View style={[styles.quickIcon, { backgroundColor: Colors.light.accentLight }]}>
-              <Feather name="search" size={22} color={Colors.light.accent} />
-            </View>
-            <Text style={[styles.quickLabel, { color: themeColors.text }]}>Search Cases</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [
-              styles.headerQuickBtn,
-              pressed && styles.quickBtnPressed,
-            ]}
-            onPress={async () => {
-              if (Platform.OS === "web") {
-                setBatchLocateOpen(true);
-                return;
-              }
-              if (!camPermission?.granted) {
-                Alert.alert(
-                  "Camera Access",
-                  "This feature uses your camera to scan barcodes for batch case location.",
-                  [{
-                    text: "Continue",
-                    onPress: async () => {
-                      const result = await requestCamPermission();
-                      if (result.granted) {
-                        setBatchLocateOpen(true);
-                      }
-                    },
-                  }]
-                );
-                return;
-              }
+      </View>
+
+      <LabFileDropZone
+        cases={cases}
+        clients={clients}
+        currentUser={currentUser}
+        onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUser || undefined)}
+        isAdmin={isLabAdmin}
+        isFocused={dashboardFocused}
+      />
+
+      <View style={styles.headerQuickActions}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.headerQuickBtn,
+            pressed && styles.quickBtnPressed,
+          ]}
+          onPress={() => router.push("/(tabs)/scan")}
+        >
+          <View style={[styles.quickIcon, { backgroundColor: Colors.light.tintLight }]}>
+            <Ionicons name="add" size={24} color={Colors.light.tint} />
+          </View>
+          <Text style={styles.quickLabel}>New Case</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [
+            styles.headerQuickBtn,
+            pressed && styles.quickBtnPressed,
+          ]}
+          onPress={() => router.push("/(tabs)/cases")}
+        >
+          <View style={[styles.quickIcon, { backgroundColor: Colors.light.accentLight }]}>
+            <Feather name="search" size={22} color={Colors.light.accent} />
+          </View>
+          <Text style={[styles.quickLabel, { color: themeColors.text }]}>Search Cases</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [
+            styles.headerQuickBtn,
+            pressed && styles.quickBtnPressed,
+          ]}
+          onPress={async () => {
+            if (Platform.OS === "web") {
               setBatchLocateOpen(true);
-            }}
-          >
-            <View style={[styles.quickIcon, { backgroundColor: "#FEF3C7" }]}>
-              <MaterialCommunityIcons name="barcode-scan" size={22} color="#D97706" />
-            </View>
-            <Text style={[styles.quickLabel, { color: themeColors.text }]}>Batch Locate</Text>
-          </Pressable>
-        </View>
+              return;
+            }
+            if (!camPermission?.granted) {
+              Alert.alert(
+                "Camera Access",
+                "This feature uses your camera to scan barcodes for batch case location.",
+                [{
+                  text: "Continue",
+                  onPress: async () => {
+                    const result = await requestCamPermission();
+                    if (result.granted) {
+                      setBatchLocateOpen(true);
+                    }
+                  },
+                }]
+              );
+              return;
+            }
+            setBatchLocateOpen(true);
+          }}
+        >
+          <View style={[styles.quickIcon, { backgroundColor: "#FEF3C7" }]}>
+            <MaterialCommunityIcons name="barcode-scan" size={22} color="#D97706" />
+          </View>
+          <Text style={[styles.quickLabel, { color: themeColors.text }]}>Batch Locate</Text>
+        </Pressable>
       </View>
 
       <View style={styles.headerRow}>

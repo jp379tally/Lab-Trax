@@ -311,9 +311,9 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
         </View>
       </Pressable>
 
-      {reviewOpen && (
+      {reviewOpen ? (
       <Modal
-        visible={true}
+        visible
         animationType="slide"
         transparent={Platform.OS === "web"}
         onRequestClose={() => setReviewOpen(false)}
@@ -477,14 +477,13 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
           )}
         </View>
       </Modal>
-      )}
+      ) : null}
     </>
   );
 }
 
 const s = StyleSheet.create({
   bar: {
-    alignSelf: "stretch" as const,
     marginHorizontal: 20,
     marginTop: 12,
     marginBottom: 8,
@@ -494,7 +493,6 @@ const s = StyleSheet.create({
     borderColor: "#E2E8F0",
     borderStyle: "dashed",
     overflow: "hidden",
-    minHeight: 140,
   },
   barDragOver: {
     borderColor: "#2563EB",
