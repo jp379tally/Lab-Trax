@@ -1572,6 +1572,7 @@ type AdminView =
   | "edit-client"
   | "edit-price-list"
   | "edit-tier-pricing"
+  | "financial-hub"
   | "user-hub"
   | "add-user"
   | "edit-user"
@@ -1967,14 +1968,9 @@ function AdminDashboard() {
 
     const menuItems: { icon: string; iconSet: "ion" | "mci" | "feather"; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
       { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · Add, Edit, Price List`, view: "client-hub" },
-      { icon: "people", iconSet: "ion", color: "#8B5CF6", bg: "#EDE9FE", title: "Users", sub: `${users.length} staff · Add, Edit`, view: "user-hub" },
+      { icon: "wallet", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Financial", sub: "Invoices, Statements, Sales & more", view: "financial-hub" as AdminView },
       { icon: "layers", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Edit Tier Pricing", sub: `${pricingTiers.length} pricing tiers`, view: "edit-tier-pricing" as AdminView },
-      { icon: "document-text", iconSet: "ion", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Invoices", sub: `${openInvoiceCount} pending`, view: "invoices-hub" as AdminView },
-      { icon: "receipt-outline", iconSet: "ion", color: "#06B6D4", bg: "#CFFAFE", title: "Statements", sub: "View & send billing statements", view: "statements-hub" as AdminView },
-      { icon: "trending-up", iconSet: "ion", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
       { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
-      { icon: "cube", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items tracked`, view: "inventory" as AdminView },
-      { icon: "card", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Payment Processing", sub: "Process payments & refunds", view: "payment-processing" as AdminView },
       { icon: "location", iconSet: "ion", color: "#0D9488", bg: "#CCFBF1", title: "Edit Locations", sub: `${STATIONS.length} workflow stations`, view: "edit-locations" as AdminView },
       { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Lab Users", sub: `${labPortalUsers.length} lab members`, view: "lab-users" as AdminView },
       { icon: "cloud-upload", iconSet: "ion", color: "#2563EB", bg: "#DBEAFE", title: "Integrations", sub: "iTero · Scanner connections", view: "integrations" as AdminView },
@@ -3361,13 +3357,80 @@ function AdminDashboard() {
     );
   }
 
+  function renderFinancialHub() {
+    const openInvCount = invoices.filter(i => i.status === "open").length;
+    const overdueInvCount = invoices.filter(i => i.status === "overdue").length;
+    const totalOpenAmt = invoices
+      .filter(i => i.status === "open" || i.status === "overdue")
+      .reduce((s, inv) => s + inv.amount, 0);
+    const lowStockCount = inventory.filter(i => i.quantity <= i.minQuantity).length;
+
+    const financialItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
+      { icon: "document-text", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Invoices", sub: `${openInvCount} open · ${overdueInvCount} overdue`, view: "invoices-hub" as AdminView },
+      { icon: "receipt-outline", color: "#06B6D4", bg: "#CFFAFE", title: "Statements", sub: "View & send billing statements", view: "statements-hub" as AdminView },
+      { icon: "trending-up", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
+      { icon: "cube", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items · ${lowStockCount} low stock`, view: "inventory" as AdminView },
+      { icon: "card", color: "#7C3AED", bg: "#F3E8FF", title: "Payment Processing", sub: "Process payments & refunds", view: "payment-processing" as AdminView },
+    ];
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Financial")}
+
+        <LinearGradient
+          colors={["#065F46", "#047857"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.heroCard, { marginHorizontal: 20, marginBottom: 20 }]}
+        >
+          <Text style={[styles.heroLabel, { opacity: 0.6 }]}>TOTAL OPEN BALANCE</Text>
+          <Text style={styles.heroCount}>{formatCurrency(totalOpenAmt)}</Text>
+          <View style={adm.heroBadgeRow}>
+            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,255,255,0.15)" }]}>
+              <Text style={adm.heroBadgeText}>{openInvCount} Open</Text>
+            </View>
+            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,255,255,0.15)" }]}>
+              <Text style={adm.heroBadgeText}>{overdueInvCount} Overdue</Text>
+            </View>
+          </View>
+        </LinearGradient>
+
+        <View style={adm.menuSection}>
+          {financialItems.map((item) => (
+            <Pressable
+              key={item.view}
+              style={({ pressed }) => [adm.menuItem, pressed && { opacity: 0.7 }]}
+              onPress={() => setAdminView(item.view)}
+            >
+              <View style={[adm.menuIcon, { backgroundColor: item.bg }]}>
+                <Ionicons name={item.icon as any} size={20} color={item.color} />
+              </View>
+              <View style={adm.menuInfo}>
+                <Text style={adm.menuTitle}>{item.title}</Text>
+                <Text style={adm.menuSub}>{item.sub}</Text>
+              </View>
+              <Feather name="chevron-right" size={18} color={Colors.light.textTertiary} />
+            </Pressable>
+          ))}
+        </View>
+      </ScrollView>
+    );
+  }
+
   function renderInvoicesHub() {
     const openCount = invoices.filter(i => i.status === "open").length;
     const overdueCount = invoices.filter(i => i.status === "overdue").length;
     const allCount = invoices.length;
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
-        {renderBackHeader("Invoices")}
+        {renderBackHeader("Invoices", "financial-hub")}
         <View style={adm.listArea}>
           <View style={adm.invoiceSummary}>
             <View style={adm.invoiceSummaryItem}>
@@ -3803,7 +3866,7 @@ function AdminDashboard() {
     const totalOpenAmt = allOpen.reduce((s, inv) => s + inv.amount, 0);
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
-        {renderBackHeader("Statements")}
+        {renderBackHeader("Statements", "financial-hub")}
         <View style={adm.listArea}>
           <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 14, padding: 16, marginBottom: 16, flexDirection: "row", justifyContent: "space-around" }}>
             <View style={{ alignItems: "center" }}>
@@ -5534,7 +5597,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Sales")}
+        {renderBackHeader("Sales", "financial-hub")}
         <View style={adm.listArea}>
           <View style={{ flexDirection: "row", backgroundColor: Colors.light.surfaceSecondary, borderRadius: 12, padding: 3, marginBottom: 16 }}>
             {periods.map(p => (
@@ -5850,7 +5913,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Inventory")}
+        {renderBackHeader("Inventory", "financial-hub")}
 
         <View style={{ paddingHorizontal: 20, marginBottom: 16 }}>
           <View style={{ flexDirection: "row", gap: 10 }}>
@@ -6178,7 +6241,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Payment Processing")}
+        {renderBackHeader("Payment Processing", "financial-hub")}
 
         <View style={{ paddingHorizontal: 20, marginBottom: 20 }}>
           <LinearGradient
@@ -6847,6 +6910,7 @@ function AdminDashboard() {
     case "delete-cases": return renderDeleteCases();
     case "inactive-clients": return renderInactiveClients();
     case "deleted-invoices": return renderDeletedInvoices();
+    case "financial-hub": return renderFinancialHub();
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();
     case "client-detail": return renderClientDetail();
