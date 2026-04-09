@@ -790,6 +790,34 @@ export default function ScanScreen() {
 
   const [webDragOver, setWebDragOver] = useState(false);
 
+  async function convertPdfToImages(arrayBuffer: ArrayBuffer): Promise<string[]> {
+    try {
+      const pdfjsLib = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+      const pageImages: string[] = [];
+      const maxPages = Math.min(pdf.numPages, 10);
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const scale = 2.0;
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const imgDataUri = canvas.toDataURL("image/png");
+        pageImages.push(imgDataUri);
+      }
+      console.log(`PDF converted: ${pageImages.length} page(s) from ${pdf.numPages} total`);
+      return pageImages;
+    } catch (err: any) {
+      console.log("PDF conversion failed:", err?.message);
+      return [];
+    }
+  }
+
   async function processWebFiles(files: FileList | File[]) {
     if (!files || (files as any).length === 0) return;
     setPhase("scanning");
@@ -801,6 +829,17 @@ export default function ScanScreen() {
       const validExts = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tiff", ".webp", ".pdf"];
       const isValid = validTypes.some((t) => file.type.startsWith(t)) || validExts.some((ext) => file.name.toLowerCase().endsWith(ext));
       if (!isValid) continue;
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      if (isPdf) {
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const pdfImages = await convertPdfToImages(arrayBuffer);
+          uploadedUris.push(...pdfImages);
+        } catch (err: any) {
+          console.log("Web upload: PDF conversion failed:", file.name, err?.message);
+        }
+        continue;
+      }
       try {
         const dataUri = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
