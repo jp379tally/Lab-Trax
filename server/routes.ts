@@ -632,6 +632,78 @@ Important rules:
     } catch { return res.status(500).json({ error: "Unable to process this image." }); }
   });
 
+  app.post("/api/detect-document", async (req, res) => {
+    try {
+      const openai = getOpenAIClient();
+      if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
+
+      const { imageBase64 } = req.body;
+      if (!imageBase64) return res.status(400).json({ error: "No image provided" });
+
+      let base64Data: string;
+      let rotatedDataUrl: string;
+
+      try {
+        base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+        const rawBuffer = Buffer.from(base64Data, "base64");
+        if (rawBuffer.length < 100) return res.status(400).json({ error: "Unable to process this image." });
+        const rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 85 }).toBuffer();
+        rotatedDataUrl = `data:image/jpeg;base64,${rotatedBuffer.toString("base64")}`;
+      } catch { return res.status(400).json({ error: "Unable to process this image." }); }
+
+      try {
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: `You are a professional document scanner. Detect the document in the photo and return TIGHT crop coordinates as percentages (0-100). Return ONLY valid JSON: { "documentDetected": true, "crop": { "left": 15, "top": 8, "right": 85, "bottom": 92 }, "documentType": "prescription" }. If no document found: { "documentDetected": false }` },
+            { role: "user", content: [
+              { type: "text", text: "Detect the document edges in this photo." },
+              { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } },
+            ]},
+          ],
+          max_tokens: 200,
+        });
+        const text = response.choices?.[0]?.message?.content || "";
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const result = JSON.parse(jsonMatch[0]);
+          return res.json(result);
+        }
+        return res.json({ documentDetected: false });
+      } catch { return res.json({ documentDetected: false }); }
+    } catch { return res.status(500).json({ error: "Unable to process this image." }); }
+  });
+
+  app.post("/api/apply-crop", async (req, res) => {
+    try {
+      const { imageBase64, crop } = req.body;
+      if (!imageBase64 || !crop) return res.status(400).json({ error: "Image and crop coordinates required" });
+
+      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+      const rawBuffer = Buffer.from(base64Data, "base64");
+      const rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 95 }).toBuffer();
+      const metadata = await sharp(rotatedBuffer).metadata();
+      const imgW = metadata.width || 1;
+      const imgH = metadata.height || 1;
+
+      const left = Math.max(0, Math.round((crop.left / 100) * imgW));
+      const top = Math.max(0, Math.round((crop.top / 100) * imgH));
+      const right = Math.min(imgW, Math.round((crop.right / 100) * imgW));
+      const bottom = Math.min(imgH, Math.round((crop.bottom / 100) * imgH));
+      const cropW = Math.max(1, right - left);
+      const cropH = Math.max(1, bottom - top);
+
+      const croppedBuffer = await sharp(rotatedBuffer)
+        .extract({ left, top, width: cropW, height: cropH })
+        .sharpen({ sigma: 1.2 })
+        .normalize()
+        .jpeg({ quality: 92 })
+        .toBuffer();
+
+      return res.json({ croppedImageBase64: `data:image/jpeg;base64,${croppedBuffer.toString("base64")}` });
+    } catch { return res.status(500).json({ error: "Unable to crop image." }); }
+  });
+
   app.post("/api/document-to-pdf", async (req, res) => {
     try {
       const { images } = req.body;

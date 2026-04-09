@@ -32,7 +32,7 @@ import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
 import { getApiUrl, resilientFetch } from "@/lib/query-client";
 
-type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
+type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form" | "cropping";
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
@@ -78,6 +78,86 @@ interface LabelData {
   toothDiagram?: number[];
 }
 
+function CropOverlay({ rawCapturedUri, cropRegion, setCropRegion, isDetectingDoc }: {
+  rawCapturedUri: string;
+  cropRegion: { left: number; top: number; right: number; bottom: number };
+  setCropRegion: React.Dispatch<React.SetStateAction<{ left: number; top: number; right: number; bottom: number }>>;
+  isDetectingDoc: boolean;
+}) {
+  const containerRef = useRef<View>(null);
+  const activeHandle = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const handleMove = (e: any) => {
+      if (!activeHandle.current) return;
+      e.preventDefault();
+      const el = containerRef.current as any;
+      if (!el) return;
+      const domNode = el instanceof HTMLElement ? el : (el as any)?._nativeTag ? document.querySelector(`[data-crop-container]`) : null;
+      if (!domNode) return;
+      const rect = (domNode as HTMLElement).getBoundingClientRect();
+      const pctX = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+      const pctY = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+      const key = activeHandle.current;
+      setCropRegion(prev => {
+        const next = { ...prev };
+        if (key === "tl") { next.top = Math.min(pctY, prev.bottom - 5); next.left = Math.min(pctX, prev.right - 5); }
+        if (key === "tr") { next.top = Math.min(pctY, prev.bottom - 5); next.right = Math.max(pctX, prev.left + 5); }
+        if (key === "bl") { next.bottom = Math.max(pctY, prev.top + 5); next.left = Math.min(pctX, prev.right - 5); }
+        if (key === "br") { next.bottom = Math.max(pctY, prev.top + 5); next.right = Math.max(pctX, prev.left + 5); }
+        return next;
+      });
+    };
+    const handleUp = () => { activeHandle.current = null; };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    };
+  }, [setCropRegion]);
+
+  const handles = [
+    { key: "tl", top: cropRegion.top, left: cropRegion.left },
+    { key: "tr", top: cropRegion.top, left: cropRegion.right },
+    { key: "bl", top: cropRegion.bottom, left: cropRegion.left },
+    { key: "br", top: cropRegion.bottom, left: cropRegion.right },
+  ];
+
+  return (
+    <View style={[StyleSheet.absoluteFill, { backgroundColor: "#000" }]}>
+      <View ref={containerRef} style={{ flex: 1, position: "relative" }} {...(Platform.OS === "web" ? { "data-crop-container": "true" } as any : {})}>
+        <Image source={{ uri: rawCapturedUri }} style={StyleSheet.absoluteFill} contentFit="contain" />
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+          <View style={{ position: "absolute", top: `${cropRegion.top}%`, left: `${cropRegion.left}%`, width: `${cropRegion.right - cropRegion.left}%`, height: `${cropRegion.bottom - cropRegion.top}%`, borderWidth: 2, borderColor: "#22C55E", borderStyle: "dashed" }} pointerEvents="none" />
+          <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: `${cropRegion.top}%`, backgroundColor: "rgba(0,0,0,0.5)" }} pointerEvents="none" />
+          <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: `${100 - cropRegion.bottom}%`, backgroundColor: "rgba(0,0,0,0.5)" }} pointerEvents="none" />
+          <View style={{ position: "absolute", top: `${cropRegion.top}%`, left: 0, width: `${cropRegion.left}%`, height: `${cropRegion.bottom - cropRegion.top}%`, backgroundColor: "rgba(0,0,0,0.5)" }} pointerEvents="none" />
+          <View style={{ position: "absolute", top: `${cropRegion.top}%`, right: 0, width: `${100 - cropRegion.right}%`, height: `${cropRegion.bottom - cropRegion.top}%`, backgroundColor: "rgba(0,0,0,0.5)" }} pointerEvents="none" />
+          {handles.map((h) => (
+            <Pressable
+              key={h.key}
+              onPressIn={() => { activeHandle.current = h.key; }}
+              style={{ position: "absolute", top: `${h.top}%`, left: `${h.left}%`, width: 40, height: 40, marginLeft: -20, marginTop: -20, justifyContent: "center", alignItems: "center", zIndex: 10, ...(Platform.OS === "web" ? { cursor: h.key === "tl" ? "nw-resize" : h.key === "tr" ? "ne-resize" : h.key === "bl" ? "sw-resize" : "se-resize" } as any : {}) }}
+            >
+              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: "#22C55E", borderWidth: 3, borderColor: "#FFF", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 3 }} />
+            </Pressable>
+          ))}
+        </View>
+        {isDetectingDoc && (
+          <View style={{ position: "absolute", top: "45%", left: 0, right: 0, alignItems: "center" }}>
+            <View style={{ backgroundColor: "rgba(0,0,0,0.7)", paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <ActivityIndicator size="small" color="#22C55E" />
+              <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_600SemiBold" }}>Detecting document...</Text>
+            </View>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -118,6 +198,9 @@ export default function ScanScreen() {
   const [removableStageOpen, setRemovableStageOpen] = useState(false);
   const [isRush, setIsRush] = useState(false);
   const [isCropping, setIsCropping] = useState(false);
+  const [cropRegion, setCropRegion] = useState<{ left: number; top: number; right: number; bottom: number }>({ left: 5, top: 5, right: 95, bottom: 95 });
+  const [rawCapturedUri, setRawCapturedUri] = useState<string | null>(null);
+  const [isDetectingDoc, setIsDetectingDoc] = useState(false);
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [dueDateOpen, setDueDateOpen] = useState(false);
@@ -517,9 +600,6 @@ export default function ScanScreen() {
 
     if (!rawUri) return;
 
-    cropDoneRef.current = false;
-    setCapturedUri(rawUri);
-    setPhase("scanning");
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     let dataUri = rawUri;
@@ -530,27 +610,112 @@ export default function ScanScreen() {
           encoding: FileSystem.EncodingType.Base64,
         });
         dataUri = `data:image/jpeg;base64,${b64}`;
-        setCapturedUri(dataUri);
       } catch (e: any) {
         console.log("Could not read file for cropping:", e?.message);
       }
     }
 
+    setRawCapturedUri(dataUri);
+    setCapturedUri(dataUri);
+    setCropRegion({ left: 5, top: 5, right: 95, bottom: 95 });
+    setPhase("cropping");
+    setIsDetectingDoc(true);
+
     if (dataUri.startsWith("data:")) {
-      const cropped = await cropDocumentIfNeeded(dataUri);
-      const finalUri = cropped !== dataUri ? cropped : dataUri;
-      setCapturedUri(finalUri);
-      setCasePhotos((prev) => {
-        if (prev.includes(finalUri)) return prev;
-        return [...prev, finalUri];
-      });
-    } else {
-      setCasePhotos((prev) => {
-        if (prev.includes(rawUri)) return prev;
-        return [...prev, rawUri];
-      });
+      try {
+        const resp = await resilientFetch("/api/detect-document", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64: dataUri }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.documentDetected && data.crop) {
+            setCropRegion({
+              left: data.crop.left,
+              top: data.crop.top,
+              right: data.crop.right,
+              bottom: data.crop.bottom,
+            });
+          }
+        }
+      } catch (e: any) {
+        console.log("Document detection failed:", e?.message);
+      }
     }
+    setIsDetectingDoc(false);
+  }
+
+  async function handleConfirmCrop() {
+    if (!rawCapturedUri) return;
+    setIsCropping(true);
+    try {
+      if (Platform.OS === "web") {
+        const img = new (window as any).Image();
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error("Failed to load image"));
+          img.src = rawCapturedUri;
+        });
+        const imgW = img.naturalWidth;
+        const imgH = img.naturalHeight;
+        const left = Math.round((cropRegion.left / 100) * imgW);
+        const top = Math.round((cropRegion.top / 100) * imgH);
+        const right = Math.round((cropRegion.right / 100) * imgW);
+        const bottom = Math.round((cropRegion.bottom / 100) * imgH);
+        const cropW = Math.max(1, right - left);
+        const cropH = Math.max(1, bottom - top);
+        const canvas = document.createElement("canvas");
+        canvas.width = cropW;
+        canvas.height = cropH;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, left, top, cropW, cropH, 0, 0, cropW, cropH);
+          const croppedUri = canvas.toDataURL("image/jpeg", 0.92);
+          setCapturedUri(croppedUri);
+          setCasePhotos((prev) => [...prev, croppedUri]);
+          cropDoneRef.current = true;
+          setPhase("review");
+          setIsCropping(false);
+          return;
+        }
+      }
+      const resp = await resilientFetch("/api/apply-crop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: rawCapturedUri, crop: cropRegion }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.croppedImageBase64) {
+          setCapturedUri(data.croppedImageBase64);
+          setCasePhotos((prev) => [...prev, data.croppedImageBase64]);
+          cropDoneRef.current = true;
+          setPhase("review");
+          setIsCropping(false);
+          return;
+        }
+      }
+      setCasePhotos((prev) => [...prev, rawCapturedUri]);
+      setCapturedUri(rawCapturedUri);
+      cropDoneRef.current = true;
+      setPhase("review");
+    } catch (e: any) {
+      console.log("Crop confirmation failed:", e?.message);
+      setCasePhotos((prev) => [...prev, rawCapturedUri!]);
+      setCapturedUri(rawCapturedUri);
+      cropDoneRef.current = true;
+      setPhase("review");
+    }
+    setIsCropping(false);
+  }
+
+  function handleSkipCrop() {
+    if (!rawCapturedUri) return;
+    setCasePhotos((prev) => [...prev, rawCapturedUri]);
+    setCapturedUri(rawCapturedUri);
     cropDoneRef.current = true;
+    setPhase("review");
   }
 
   async function handleManualCrop() {
@@ -4076,6 +4241,15 @@ export default function ScanScreen() {
           </View>
         )}
 
+        {phase === "cropping" && rawCapturedUri && (
+          <CropOverlay
+            rawCapturedUri={rawCapturedUri}
+            cropRegion={cropRegion}
+            setCropRegion={setCropRegion}
+            isDetectingDoc={isDetectingDoc}
+          />
+        )}
+
         {phase === "review" && (
           <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)" }]}>
             <View style={styles.reviewContent}>
@@ -4095,16 +4269,18 @@ export default function ScanScreen() {
         <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
           <Text style={styles.scanTitle}>AI Intake</Text>
           <Text style={styles.scanSubtitle}>
-            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "review" ? "Add more pages or continue" : "RX recognized"}
+            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "cropping" ? "Adjust the crop frame" : phase === "review" ? "Add more pages or continue" : "RX recognized"}
           </Text>
         </View>
 
+        {phase !== "cropping" && (
         <View style={styles.viewfinderFrame}>
           <View style={styles.cornerTL} />
           <View style={styles.cornerTR} />
           <View style={styles.cornerBL} />
           <View style={styles.cornerBR} />
         </View>
+        )}
       </View>
 
       <View
@@ -4183,6 +4359,54 @@ export default function ScanScreen() {
         {phase === "scanning" && (
           <View style={styles.scanningIndicator}>
             <Text style={styles.scanningText}>Analyzing RX...</Text>
+          </View>
+        )}
+        {phase === "cropping" && (
+          <View style={styles.detectedActions}>
+            <Pressable
+              onPress={() => {
+                setRawCapturedUri(null);
+                setCapturedUri(null);
+                setPhase("camera");
+                scanAnim.setValue(0);
+              }}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(239,68,68,0.2)", borderWidth: 1, borderColor: "rgba(239,68,68,0.5)" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons name="refresh" size={22} color="#EF4444" />
+              <Text style={[styles.actionBtnText, { color: "#EF4444" }]}>Retake</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSkipCrop}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons name="scan-outline" size={22} color="#FFF" />
+              <Text style={styles.actionBtnText}>Use Full Photo</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleConfirmCrop}
+              disabled={isCropping}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                styles.actionBtnPrimary,
+                pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] },
+                isCropping && { opacity: 0.6 },
+              ]}
+            >
+              {isCropping ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Ionicons name="crop" size={22} color="#FFF" />
+              )}
+              <Text style={styles.actionBtnText}>{isCropping ? "Cropping..." : "Apply Crop"}</Text>
+            </Pressable>
           </View>
         )}
         {phase === "review" && (
