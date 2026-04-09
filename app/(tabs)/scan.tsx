@@ -25,6 +25,7 @@ import * as Sharing from "expo-sharing";
 import * as FileSystem from "expo-file-system";
 import { Share } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
@@ -80,6 +81,7 @@ interface LabelData {
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const isFocused = useIsFocused();
   const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode } = useApp();
   const { currentUser } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
@@ -861,6 +863,7 @@ export default function ScanScreen() {
 
   useEffect(() => {
     if (Platform.OS !== "web") return;
+    if (!isFocused) return;
     const allowedPhases = ["camera", "form"];
     if (!allowedPhases.includes(phase)) return;
     dragCounterRef.current = 0;
@@ -883,7 +886,7 @@ export default function ScanScreen() {
     document.addEventListener("dragleave", onDragLeave);
     document.addEventListener("drop", onDrop);
     return () => { document.removeEventListener("dragenter", onDragEnter); document.removeEventListener("dragover", onDragOver); document.removeEventListener("dragleave", onDragLeave); document.removeEventListener("drop", onDrop); };
-  }, [phase]);
+  }, [phase, isFocused]);
 
   function handleAddMoreFromReview() {
     setCapturedUri(null);
@@ -2537,7 +2540,7 @@ export default function ScanScreen() {
 
   if (phase === "form") {
     return (
-      <View style={[styles.container, { backgroundColor: Colors.light.background }]}>
+      <View style={[styles.container, { backgroundColor: Colors.light.backgroundSolid }]}>
         {Platform.OS === "web" && webDragOver && (
           <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(37,99,235,0.12)", zIndex: 999, justifyContent: "center", alignItems: "center", borderWidth: 3, borderColor: "#2563EB", borderStyle: "dashed", borderRadius: 16 }} pointerEvents="none">
             <Ionicons name="arrow-down-circle" size={48} color="#2563EB" />
@@ -3744,7 +3747,7 @@ export default function ScanScreen() {
 
   if (Platform.OS === "web" && phase === "camera") {
     return (
-      <View style={[styles.container, { paddingTop: 67 + 16 }]}>
+      <View style={[styles.container, { paddingTop: 67 + 16, backgroundColor: Colors.light.backgroundSolid }]}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 32 }}>
           <View style={{ width: "100%", maxWidth: 420, alignItems: "center" }}>
             <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: "rgba(37,99,235,0.1)", justifyContent: "center", alignItems: "center", marginBottom: 24 }}>
