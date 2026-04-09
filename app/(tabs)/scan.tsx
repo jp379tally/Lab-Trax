@@ -3749,6 +3749,7 @@ export default function ScanScreen() {
             style={StyleSheet.absoluteFill}
             facing="back"
             autofocus="on"
+            zoom={0}
             onCameraReady={() => setCameraReady(true)}
           />
         )}
