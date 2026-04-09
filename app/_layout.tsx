@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
+import { ThemeProvider as NavThemeProvider } from "@react-navigation/native";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet, PanResponder } from "react-native";
@@ -22,37 +23,57 @@ import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
 import Colors from "@/constants/colors";
 
+const TransparentNavTheme = {
+  dark: false,
+  colors: {
+    primary: Colors.light.tint,
+    background: "transparent",
+    card: "transparent",
+    text: Colors.light.text,
+    border: Colors.light.border,
+    notification: Colors.light.error,
+  },
+  fonts: {
+    regular: { fontFamily: "Inter_400Regular", fontWeight: "400" as const },
+    medium: { fontFamily: "Inter_500Medium", fontWeight: "500" as const },
+    bold: { fontFamily: "Inter_700Bold", fontWeight: "700" as const },
+    heavy: { fontFamily: "Inter_700Bold", fontWeight: "700" as const },
+  },
+};
+
 SplashScreen.preventAutoHideAsync();
 
 function RootLayoutNav() {
   return (
-    <Stack screenOptions={{ headerBackTitle: "Back" }}>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen
-        name="case/[id]"
-        options={{ headerShown: false, presentation: "card" }}
-      />
-      <Stack.Screen
-        name="settings"
-        options={{ headerShown: false, presentation: "card" }}
-      />
-      <Stack.Screen
-        name="chat"
-        options={{ headerShown: false }}
-      />
-      <Stack.Screen
-        name="smile-preview"
-        options={{ headerShown: false }}
-      />
-      <Stack.Screen
-        name="privacy-policy"
-        options={{ headerShown: false, presentation: "modal" }}
-      />
-      <Stack.Screen
-        name="terms-of-service"
-        options={{ headerShown: false, presentation: "modal" }}
-      />
-    </Stack>
+    <NavThemeProvider value={TransparentNavTheme}>
+      <Stack screenOptions={{ headerBackTitle: "Back", contentStyle: { backgroundColor: "transparent" } }}>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen
+          name="case/[id]"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="settings"
+          options={{ headerShown: false, presentation: "card" }}
+        />
+        <Stack.Screen
+          name="chat"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="smile-preview"
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="privacy-policy"
+          options={{ headerShown: false, presentation: "modal" }}
+        />
+        <Stack.Screen
+          name="terms-of-service"
+          options={{ headerShown: false, presentation: "modal" }}
+        />
+      </Stack>
+    </NavThemeProvider>
   );
 }
 
