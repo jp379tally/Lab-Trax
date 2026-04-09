@@ -628,6 +628,13 @@ function TechDashboard() {
             </Text>
           </View>
         )}
+        <LabFileDropZone
+          cases={cases}
+          clients={clients}
+          currentUser={currentUser}
+          onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUser || undefined)}
+          isAdmin={isLabAdmin}
+        />
         <View style={styles.headerQuickActions}>
           <Pressable
             style={({ pressed }) => [
@@ -756,14 +763,6 @@ function TechDashboard() {
           </View>
         </Pressable>
       </Modal>
-
-      <LabFileDropZone
-        cases={cases}
-        clients={clients}
-        currentUser={currentUser}
-        onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUser || undefined)}
-        isAdmin={isLabAdmin}
-      />
 
       <View style={styles.headerRow}>
         <View>

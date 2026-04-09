@@ -276,32 +276,29 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
           <View style={s.barIconWrap}>
             <Ionicons
               name={dragOver ? "arrow-down-circle" : fileCount > 0 ? "folder-open" : "cloud-upload-outline"}
-              size={20}
+              size={24}
               color={dragOver ? "#2563EB" : fileCount > 0 ? "#D97706" : Colors.light.tint}
             />
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={s.barTitle}>
-              {dragOver
-                ? "Drop files here"
-                : fileCount > 0
-                  ? `${fileCount} file${fileCount !== 1 ? "s" : ""} pending review`
-                  : "File Drop Zone"}
-            </Text>
-            <Text style={s.barSub}>
-              {dragOver
-                ? "Release to upload"
-                : fileCount > 0
-                  ? "Tap to review and assign to cases"
-                  : Platform.OS === "web" ? "Drag & drop or tap to upload files for review" : "Tap to upload files for review"}
-            </Text>
-          </View>
+          <Text style={s.barTitle}>
+            {dragOver
+              ? "Drop files here"
+              : fileCount > 0
+                ? `${fileCount} file${fileCount !== 1 ? "s" : ""} pending review`
+                : "File Drop Zone"}
+          </Text>
+          <Text style={s.barSub}>
+            {dragOver
+              ? "Release to upload"
+              : fileCount > 0
+                ? "Tap to review and assign to cases"
+                : Platform.OS === "web" ? "Drag & drop or tap to upload files for review" : "Tap to upload files for review"}
+          </Text>
           {fileCount > 0 && (
             <View style={s.badge}>
               <Text style={s.badgeText}>{fileCount}</Text>
             </View>
           )}
-          <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
         </View>
       </Pressable>
 
@@ -477,44 +474,50 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
 const s = StyleSheet.create({
   bar: {
     marginHorizontal: 20,
-    marginTop: 8,
-    marginBottom: 12,
-    borderRadius: 12,
+    marginTop: 12,
+    marginBottom: 8,
+    borderRadius: 14,
     backgroundColor: "#F8FAFC",
     borderWidth: 1.5,
     borderColor: "#E2E8F0",
     borderStyle: "dashed",
     overflow: "hidden",
+    minHeight: 140,
   },
   barDragOver: {
     borderColor: "#2563EB",
     backgroundColor: "rgba(37,99,235,0.08)",
   },
   barContent: {
-    flexDirection: "row",
+    flex: 1,
+    flexDirection: "column",
     alignItems: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    gap: 10,
+    justifyContent: "center",
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    gap: 8,
   },
   barIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: "rgba(37,99,235,0.08)",
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: "rgba(37,99,235,0.10)",
     justifyContent: "center",
     alignItems: "center",
+    marginBottom: 2,
   },
   barTitle: {
     fontFamily: "Inter_600SemiBold",
-    fontSize: 13,
+    fontSize: 15,
     color: Colors.light.text,
+    textAlign: "center",
   },
   barSub: {
     fontFamily: "Inter_400Regular",
-    fontSize: 11,
+    fontSize: 12,
     color: "#94A3B8",
-    marginTop: 1,
+    marginTop: 0,
+    textAlign: "center",
   },
   badge: {
     minWidth: 22,
