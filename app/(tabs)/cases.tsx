@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   StyleSheet,
@@ -37,6 +37,7 @@ export default function CasesScreen() {
   const [filterStatus, setFilterStatus] = useState<CaseStatus | "ALL">("ALL");
   const [showBarcodeLocate, setShowBarcodeLocate] = useState(false);
   const [barcodeLocateScanned, setBarcodeLocateScanned] = useState(false);
+  const barcodeLocateProcessingRef = useRef(false);
   const [locateCaseId, setLocateCaseId] = useState<string | null>(null);
   const locateCase = locateCaseId ? cases.find(c => c.id === locateCaseId) : null;
   const [permission, requestPermission] = useCameraPermissions();
@@ -86,7 +87,8 @@ export default function CasesScreen() {
   }
 
   function handleBarcodeLocateScanned({ data }: { data: string }) {
-    if (barcodeLocateScanned) return;
+    if (barcodeLocateScanned || barcodeLocateProcessingRef.current) return;
+    barcodeLocateProcessingRef.current = true;
     setBarcodeLocateScanned(true);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -94,17 +96,19 @@ export default function CasesScreen() {
     if (found) {
       setShowBarcodeLocate(false);
       setBarcodeLocateScanned(false);
+      barcodeLocateProcessingRef.current = false;
       router.push({ pathname: "/case/[id]", params: { id: found.id } });
     } else {
       const foundDirect = cases.find(c => c.id === data || c.caseNumber === data);
       if (foundDirect) {
         setShowBarcodeLocate(false);
         setBarcodeLocateScanned(false);
+        barcodeLocateProcessingRef.current = false;
         router.push({ pathname: "/case/[id]", params: { id: foundDirect.id } });
       } else {
         Alert.alert("Case Not Found", `No case found with barcode: ${data}`, [
-          { text: "Scan Again", onPress: () => setBarcodeLocateScanned(false) },
-          { text: "Close", onPress: () => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); } },
+          { text: "Scan Again", onPress: () => { setBarcodeLocateScanned(false); barcodeLocateProcessingRef.current = false; } },
+          { text: "Close", onPress: () => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); barcodeLocateProcessingRef.current = false; } },
         ]);
       }
     }
@@ -331,6 +335,7 @@ export default function CasesScreen() {
                 }
                 setShowBarcodeLocate(true);
                 setBarcodeLocateScanned(false);
+                barcodeLocateProcessingRef.current = false;
               }}
             >
               <Ionicons name="barcode-outline" size={18} color={Colors.light.tint} />

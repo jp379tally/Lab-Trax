@@ -1570,20 +1570,21 @@ export default function ScanScreen() {
     assignBarcodeToCase(caseId, data);
 
     const savedPendingRemake = pendingRemakeCheck;
-    resetForm();
     setBarcodeScanForCase(null);
     setShowBarcodeScanner(false);
     setLabelModalVisible(false);
     lastCreatedCaseIdRef.current = null;
 
     setTimeout(() => {
-      barcodeAttachProcessingRef.current = false;
+      resetForm();
+      barcodeAttachProcessingRef.current = true;
       Alert.alert(
         isShared ? "Barcode Shared" : "Barcode Assigned",
         isShared
           ? `Barcode "${data}" is now shared with case ${existingCase.caseNumber || existingCase.id}.`
           : `Barcode "${data}" has been assigned to this case.`,
         [{ text: "OK", onPress: () => {
+          barcodeAttachProcessingRef.current = false;
           if (savedPendingRemake) {
             setPendingRemakeCheck(null);
             startRemakeCheck(savedPendingRemake.caseId, savedPendingRemake.patientName);
