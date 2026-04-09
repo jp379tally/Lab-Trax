@@ -786,6 +786,44 @@ export default function ScanScreen() {
     }
   }
 
+  async function handleWebUploadRx() {
+    if (Platform.OS !== "web") return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*,.pdf,.jpg,.jpeg,.png,.heic,.heif,.bmp,.tiff,.webp";
+    input.multiple = true;
+    input.onchange = async () => {
+      const files = input.files;
+      if (!files || files.length === 0) return;
+      setPhase("scanning");
+      setCapturedUri(null);
+      const uploadedUris: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        try {
+          const dataUri = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error("Failed to read file"));
+            reader.readAsDataURL(file);
+          });
+          uploadedUris.push(dataUri);
+        } catch (err: any) {
+          console.log("Web upload: failed to read file:", file.name, err?.message);
+        }
+      }
+      if (uploadedUris.length === 0) {
+        Alert.alert("Upload Error", "Could not read the selected file(s). Please try again.");
+        setPhase("camera");
+        return;
+      }
+      setCasePhotos(uploadedUris);
+      setCapturedUri(uploadedUris[0]);
+      setPhase("review");
+    };
+    input.click();
+  }
+
   function handleAddMoreFromReview() {
     setCapturedUri(null);
     setPhase("camera");
@@ -2518,27 +2556,48 @@ export default function ScanScreen() {
           )}
 
           <View style={styles.addPhotoBtnRow}>
-            <Pressable
-              onPress={handleAddPrescription}
-              style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
-            >
-              <Ionicons name="scan-outline" size={18} color={Colors.light.tint} />
-              <Text style={styles.addMorePhotosBtnText}>Add Prescription</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleTakePhotoPrompt}
-              style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
-            >
-              <Ionicons name="camera-outline" size={18} color={Colors.light.tint} />
-              <Text style={styles.addMorePhotosBtnText}>Take Photo</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleAttachFiles}
-              style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
-            >
-              <Ionicons name="attach" size={18} color={Colors.light.tint} />
-              <Text style={styles.addMorePhotosBtnText}>Attach Files</Text>
-            </Pressable>
+            {Platform.OS === "web" ? (
+              <>
+                <Pressable
+                  onPress={handleWebUploadRx}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="cloud-upload-outline" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Upload RX</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleAttachFiles}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="attach" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Attach Files</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  onPress={handleAddPrescription}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="scan-outline" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Add Prescription</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleTakePhotoPrompt}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="camera-outline" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Take Photo</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleAttachFiles}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="attach" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Attach Files</Text>
+                </Pressable>
+              </>
+            )}
           </View>
 
           <View style={[styles.formGroup, { zIndex: 10 }]}>
@@ -3615,6 +3674,142 @@ export default function ScanScreen() {
     );
   }
 
+  if (Platform.OS === "web" && phase === "camera") {
+    return (
+      <View style={[styles.container, { paddingTop: 67 + 16 }]}>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 32 }}>
+          <View style={{ width: "100%", maxWidth: 420, alignItems: "center" }}>
+            <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: "rgba(37,99,235,0.1)", justifyContent: "center", alignItems: "center", marginBottom: 24 }}>
+              <Ionicons name="document-text-outline" size={40} color={Colors.light.tint} />
+            </View>
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 8, textAlign: "center" }}>AI Intake</Text>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center", marginBottom: 32, lineHeight: 20 }}>
+              Upload a prescription image or document and AI will automatically read and fill in the case details.
+            </Text>
+
+            <Pressable
+              onPress={handleWebUploadRx}
+              style={({ pressed }) => ({
+                width: "100%",
+                borderWidth: 2,
+                borderColor: Colors.light.tint,
+                borderStyle: "dashed" as const,
+                borderRadius: 16,
+                paddingVertical: 36,
+                paddingHorizontal: 24,
+                alignItems: "center",
+                backgroundColor: pressed ? "rgba(37,99,235,0.08)" : "rgba(37,99,235,0.04)",
+              })}
+              testID="upload-rx-btn"
+            >
+              <Ionicons name="cloud-upload-outline" size={36} color={Colors.light.tint} />
+              <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: Colors.light.tint, marginTop: 12 }}>Upload RX</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 6, textAlign: "center" }}>
+                Browse files from your computer, OneDrive, or any folder
+              </Text>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>
+                Supports JPG, PNG, PDF, HEIC, TIFF, BMP, WebP
+              </Text>
+            </Pressable>
+
+            <View style={{ flexDirection: "row", alignItems: "center", marginTop: 24, gap: 16, width: "100%" }}>
+              <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary }}>OR</Text>
+              <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
+            </View>
+
+            <Pressable
+              onPress={handleManualEntry}
+              style={({ pressed }) => ({
+                width: "100%",
+                flexDirection: "row" as const,
+                alignItems: "center" as const,
+                justifyContent: "center" as const,
+                gap: 8,
+                paddingVertical: 14,
+                paddingHorizontal: 24,
+                borderRadius: 12,
+                backgroundColor: pressed ? Colors.light.surfaceSecondary : Colors.light.surface,
+                borderWidth: 1,
+                borderColor: Colors.light.border,
+                marginTop: 16,
+              })}
+              testID="manual-entry-btn"
+            >
+              <MaterialCommunityIcons name="text-box-outline" size={20} color={Colors.light.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Manual Entry</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={openBarcodeScanner}
+              style={({ pressed }) => ({
+                width: "100%",
+                flexDirection: "row" as const,
+                alignItems: "center" as const,
+                justifyContent: "center" as const,
+                gap: 8,
+                paddingVertical: 14,
+                paddingHorizontal: 24,
+                borderRadius: 12,
+                backgroundColor: pressed ? Colors.light.surfaceSecondary : Colors.light.surface,
+                borderWidth: 1,
+                borderColor: Colors.light.border,
+                marginTop: 10,
+              })}
+            >
+              <Ionicons name="barcode-outline" size={20} color={Colors.light.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Enter Barcode</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
+          <View style={{ flex: 1, backgroundColor: "#000" }}>
+            <View style={{ paddingTop: 67, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Enter Barcode</Text>
+              <Pressable onPress={() => setShowBarcodeScanner(false)}>
+                <Ionicons name="close" size={28} color="#FFF" />
+              </Pressable>
+            </View>
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+              <Ionicons name="barcode-outline" size={64} color="#666" />
+              <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Enter a barcode manually:</Text>
+              <TextInput
+                style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
+                placeholder="Enter barcode..."
+                placeholderTextColor="#666"
+                value={webBarcodeInput}
+                onChangeText={setWebBarcodeInput}
+                onSubmitEditing={() => {
+                  const val = webBarcodeInput.trim();
+                  if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
+                }}
+                testID="barcode-manual-input"
+                autoFocus
+              />
+              <Pressable
+                onPress={() => {
+                  const val = webBarcodeInput.trim();
+                  if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
+                }}
+                style={({ pressed }) => ({
+                  marginTop: 16, backgroundColor: Colors.light.tint, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 12,
+                  opacity: pressed ? 0.85 : 1,
+                })}
+                testID="barcode-submit-btn"
+              >
+                <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Look Up Barcode</Text>
+              </Pressable>
+            </View>
+            <View style={{ padding: 20, paddingBottom: 34, alignItems: "center" }}>
+              <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter the barcode number from the case label</Text>
+            </View>
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
   if (!permission) {
     return (
       <View style={[styles.container, styles.permissionContainer]}>
@@ -3664,74 +3859,40 @@ export default function ScanScreen() {
                 <Ionicons name="close" size={28} color="#FFF" />
               </Pressable>
             </View>
-            {Platform.OS !== "web" && permission?.granted ? (
-              <CameraView
-                style={{ flex: 1 }}
-                facing="back"
-                autofocus="on"
-                barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
-                onBarcodeScanned={barcodeScanned ? undefined : (e) => {
-                  if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
-                  handleBarcodeScanned(e);
-                }}
-                onLayout={(e) => {
-                  const { width, height } = e.nativeEvent.layout;
-                  setBarcodeCameraLayout({ width, height });
-                }}
-              >
-                <View style={{ flex: 1 }} pointerEvents="none">
+            <CameraView
+              style={{ flex: 1 }}
+              facing="back"
+              autofocus="on"
+              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
+              onBarcodeScanned={barcodeScanned ? undefined : (e) => {
+                if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
+                handleBarcodeScanned(e);
+              }}
+              onLayout={(e) => {
+                const { width, height } = e.nativeEvent.layout;
+                setBarcodeCameraLayout({ width, height });
+              }}
+            >
+              <View style={{ flex: 1 }} pointerEvents="none">
+                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
                   <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
-                  <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
-                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
-                    <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
-                      <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
-                      <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
-                      <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
-                      <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
-                      <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
-                    </View>
-                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                  <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
+                    <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                    <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
                   </View>
-                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
-                    <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
-                    <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
-                  </View>
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
                 </View>
-              </CameraView>
-            ) : (
-              <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
-                <Ionicons name="barcode-outline" size={64} color="#666" />
-                <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Barcode scanning requires a device camera</Text>
-                <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
-                <TextInput
-                  style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
-                  placeholder="Enter barcode..."
-                  placeholderTextColor="#666"
-                  value={webBarcodeInput}
-                  onChangeText={setWebBarcodeInput}
-                  onSubmitEditing={() => {
-                    const val = webBarcodeInput.trim();
-                    if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
-                  }}
-                  testID="barcode-manual-input"
-                  autoFocus
-                />
-                <Pressable
-                  onPress={() => {
-                    const val = webBarcodeInput.trim();
-                    if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
-                  }}
-                  style={({ pressed }) => ({
-                    marginTop: 16, backgroundColor: Colors.light.tint, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 12,
-                    opacity: pressed ? 0.85 : 1,
-                  })}
-                  testID="barcode-submit-btn"
-                >
-                  <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Look Up Barcode</Text>
-                </Pressable>
+                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
+                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
+                </View>
               </View>
-            )}
-            <View style={{ padding: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>
+            </CameraView>
+            <View style={{ padding: 20, paddingBottom: insets.bottom + 10, alignItems: "center" }}>
               <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
             </View>
           </View>

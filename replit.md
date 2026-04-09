@@ -59,7 +59,7 @@ Preferred communication style: Simple, everyday language.
 - **Invoices Hub**: Centralized management for viewing, generating, and sending invoices. Admins can directly edit invoices.
 - **Statements Hub**: Centralized management for generating, viewing, and sending client statements.
 - **AI Integration**:
-    - **Prescription Scanning**: Uses GPT-4o vision to extract data from dental prescriptions, with client-side image compression.
+    - **Prescription Scanning**: Uses GPT-4o vision to extract data from dental prescriptions, with client-side image compression. On web/desktop, camera is replaced with "Upload RX" file picker (supports JPG, PNG, PDF, HEIC, TIFF, BMP, WebP); camera remains on mobile.
     - **Document Scanning**: Uses GPT-4o vision and `sharp` to detect and crop document boundaries, correct rotation, and enhance quality.
     - **PDF Generation**: Converts scanned images into multi-page PDFs.
     - **Smile Preview**: AI-powered feature for teeth whitening and symmetry restoration using OpenAI's gpt-image-1 model.
