@@ -527,7 +527,7 @@ function TechDashboard() {
 
   return (
     <>
-    <View style={[styles.container, { backgroundColor: "transparent" }]}>
+    <View style={[styles.container, { backgroundColor: Colors.light.backgroundSolid }]}>
       <View style={[styles.topBar, { position: "absolute", top: Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: "transparent" }]}>
         <Pressable
           onPress={() => setDrawerOpen(true)}

@@ -27,8 +27,8 @@ const TransparentNavTheme = {
   dark: false,
   colors: {
     primary: Colors.light.tint,
-    background: "transparent",
-    card: "transparent",
+    background: Colors.light.backgroundSolid,
+    card: Colors.light.backgroundSolid,
     text: Colors.light.text,
     border: Colors.light.border,
     notification: Colors.light.error,
@@ -46,7 +46,7 @@ SplashScreen.preventAutoHideAsync();
 function RootLayoutNav() {
   return (
     <NavThemeProvider value={TransparentNavTheme}>
-      <Stack screenOptions={{ headerBackTitle: "Back", contentStyle: { backgroundColor: "transparent" } }}>
+      <Stack screenOptions={{ headerBackTitle: "Back", contentStyle: { backgroundColor: Colors.light.backgroundSolid } }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen
           name="case/[id]"

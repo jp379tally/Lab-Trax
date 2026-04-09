@@ -21,7 +21,7 @@ function ClassicTabLayout() {
   return (
     <View style={{ flex: 1, maxWidth: isWeb ? 600 : undefined, alignSelf: isWeb ? "center" as const : undefined, width: isWeb ? "100%" : undefined }}>
       <Tabs
-        sceneContainerStyle={{ backgroundColor: "transparent" }}
+        sceneContainerStyle={{ backgroundColor: colors.backgroundSolid }}
         screenOptions={{
           tabBarActiveTintColor: colors.tint,
           tabBarInactiveTintColor: colors.tabIconDefault,
