@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -10,11 +10,32 @@ import {
   TextInput,
   Alert,
   KeyboardAvoidingView,
+  FlatList,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Invoice, InvoiceLineItem } from "@/lib/data";
 import { formatInvNum } from "@/lib/data";
+
+export const PRICE_LIST_ITEMS = [
+  { key: "zirconia_crown", label: "Zirconia Crown" },
+  { key: "emax_crown", label: "Emax Crown" },
+  { key: "pfm_crown", label: "PFM Crown" },
+  { key: "pfz_crown", label: "PFZ Crown" },
+  { key: "denture", label: "Denture" },
+  { key: "partial", label: "Partial" },
+  { key: "flipper", label: "Flipper" },
+  { key: "implant", label: "Implant" },
+  { key: "night_guard", label: "Night Guard" },
+  { key: "temporary", label: "Temporary" },
+  { key: "essix", label: "Essix" },
+] as const;
+
+interface DoctorPricingItem {
+  key: string;
+  label: string;
+  price: number;
+}
 
 interface InvoicePDFViewerProps {
   visible: boolean;
@@ -22,6 +43,7 @@ interface InvoicePDFViewerProps {
   invoice: Invoice | null;
   editable?: boolean;
   onSave?: (updatedInvoice: Invoice) => void;
+  doctorPricing?: Record<string, number>;
 }
 
 function formatDate(ts: number) {
@@ -37,7 +59,7 @@ function formatCurrency(amount: number) {
   return "$" + amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave }: InvoicePDFViewerProps) {
+export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing }: InvoicePDFViewerProps) {
   const insets = useSafeAreaInsets();
   const [editMode, setEditMode] = useState(false);
   const [editLineItems, setEditLineItems] = useState<InvoiceLineItem[]>([]);
@@ -48,6 +70,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   const [newItemQty, setNewItemQty] = useState("1");
   const [newItemRate, setNewItemRate] = useState("");
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [showItemDropdown, setShowItemDropdown] = useState(false);
   const [showDiscount, setShowDiscount] = useState(false);
   const [discountIdx, setDiscountIdx] = useState<number | null>(null);
   const [discountType, setDiscountType] = useState<"percent" | "flat">("percent");
@@ -76,12 +99,29 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
     }
   }, [invoice?.id, visible]);
 
+  const pricedItems: DoctorPricingItem[] = useMemo(() => {
+    if (!doctorPricing) return [];
+    return PRICE_LIST_ITEMS
+      .filter(item => doctorPricing[item.key] !== undefined && doctorPricing[item.key] > 0)
+      .map(item => ({ key: item.key, label: item.label, price: doctorPricing[item.key] }));
+  }, [doctorPricing]);
+
   if (!invoice) return null;
 
   const displayItems = editMode ? editLineItems : invoice.lineItems;
   const subtotal = displayItems.reduce((sum, li) => sum + li.amount, 0);
   const credits = editMode ? editCredits : (invoice.credits || 0);
   const total = subtotal - credits;
+
+  const teethDisplay = invoice.teeth || "";
+
+  function handleSelectPricedItem(item: DoctorPricingItem) {
+    setNewItemName(item.label);
+    setNewItemRate(item.price.toString());
+    const desc = teethDisplay ? `${item.label} - tooth ${teethDisplay}` : item.label;
+    setNewItemDesc(desc);
+    setShowItemDropdown(false);
+  }
 
   const statusColor =
     invoice.status === "paid" ? "#10B981" :
@@ -133,6 +173,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
     setNewItemDesc("");
     setNewItemQty("1");
     setNewItemRate("");
+    setShowItemDropdown(false);
   }
 
   function handleRemoveItem(idx: number) {
@@ -444,17 +485,48 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
 
         <Modal visible={showAddItem} transparent animationType="fade">
           <Pressable style={s.modalOverlay} onPress={resetItemForm}>
-            <Pressable style={s.modalCard} onPress={(e) => e.stopPropagation()}>
+            <Pressable style={s.modalCard} onPress={(e) => { e.stopPropagation(); setShowItemDropdown(false); }}>
               <Text style={s.modalTitle}>{editingIdx !== null ? "Edit Item" : "Add Item"}</Text>
 
               <Text style={s.fieldLabel}>Item Name</Text>
-              <TextInput
-                style={s.fieldInput}
-                value={newItemName}
-                onChangeText={setNewItemName}
-                placeholder="e.g. Zirconia Crown"
-                placeholderTextColor="#94A3B8"
-              />
+              <View>
+                <Pressable
+                  style={s.dropdownTrigger}
+                  onPress={() => pricedItems.length > 0 ? setShowItemDropdown(!showItemDropdown) : undefined}
+                >
+                  <TextInput
+                    style={[s.fieldInput, { flex: 1, marginBottom: 0 }]}
+                    value={newItemName}
+                    onChangeText={(text) => { setNewItemName(text); setShowItemDropdown(false); }}
+                    placeholder="e.g. Zirconia Crown"
+                    placeholderTextColor="#94A3B8"
+                  />
+                  {pricedItems.length > 0 && (
+                    <Pressable
+                      onPress={() => setShowItemDropdown(!showItemDropdown)}
+                      style={s.dropdownArrow}
+                    >
+                      <Ionicons name={showItemDropdown ? "chevron-up" : "chevron-down"} size={20} color="#64748B" />
+                    </Pressable>
+                  )}
+                </Pressable>
+                {showItemDropdown && pricedItems.length > 0 && (
+                  <View style={s.dropdownList}>
+                    <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                      {pricedItems.map((item) => (
+                        <Pressable
+                          key={item.key}
+                          style={({ pressed }) => [s.dropdownItem, pressed && { backgroundColor: "#F1F5F9" }]}
+                          onPress={() => handleSelectPricedItem(item)}
+                        >
+                          <Text style={s.dropdownItemLabel}>{item.label}</Text>
+                          <Text style={s.dropdownItemPrice}>{formatCurrency(item.price)}</Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
 
               <Text style={s.fieldLabel}>Description</Text>
               <TextInput
@@ -1042,5 +1114,48 @@ const s = StyleSheet.create({
   discountToggleTextActive: {
     fontFamily: "Inter_700Bold",
     color: "#1E293B",
+  },
+  dropdownTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 0,
+  },
+  dropdownArrow: {
+    position: "absolute" as const,
+    right: 10,
+    top: 10,
+    padding: 4,
+    zIndex: 1,
+  },
+  dropdownList: {
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 10,
+    backgroundColor: "#FFF",
+    marginTop: 4,
+    marginBottom: 4,
+    ...Platform.select({
+      web: { boxShadow: "0 4px 12px rgba(0,0,0,0.12)" },
+      default: {},
+    }),
+  },
+  dropdownItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E2E8F0",
+  },
+  dropdownItemLabel: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: "#1E293B",
+  },
+  dropdownItemPrice: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+    color: "#2563EB",
   },
 });

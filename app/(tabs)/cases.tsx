@@ -23,7 +23,7 @@ import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients } = useApp();
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [search, setSearch] = useState("");
@@ -492,6 +492,15 @@ export default function CasesScreen() {
           onClose={() => setInvoiceCase(null)}
           invoice={getCaseInvoice(invoiceCase)}
           editable={isAdmin}
+          doctorPricing={(() => {
+            const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
+            const drName = stripDr(invoiceCase.doctorName || "");
+            const matchedClient = clients.find(c =>
+              stripDr(c.leadDoctor) === drName ||
+              (c.additionalProviders || []).some(p => stripDr(p) === drName)
+            );
+            return matchedClient?.customPricing || undefined;
+          })()}
           onSave={(updatedInv) => {
             if (invoiceCase.invoiceId) {
               updateInvoice(invoiceCase.invoiceId, {

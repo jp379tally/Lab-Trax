@@ -3215,6 +3215,15 @@ export default function CaseDetailScreen() {
         onClose={() => setShowInvoiceModal(false)}
         invoice={caseInvoice}
         editable={isAdmin}
+        doctorPricing={(() => {
+          const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
+          const drName = stripDr(caseItem.doctorName || "");
+          const matchedClient = clients.find(c =>
+            stripDr(c.leadDoctor) === drName ||
+            (c.additionalProviders || []).some(p => stripDr(p) === drName)
+          );
+          return matchedClient?.customPricing || undefined;
+        })()}
         onSave={(updatedInv) => {
           if (caseItem.invoiceId) {
             updateInvoice(caseItem.invoiceId, {
