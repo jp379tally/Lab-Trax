@@ -27,7 +27,7 @@ function ClassicTabLayout() {
           headerShown: false,
           tabBarStyle: {
             position: "absolute" as const,
-            backgroundColor: isIOS ? "transparent" : isDark ? "#000" : "#fff",
+            backgroundColor: isIOS ? "transparent" : isDark ? "#000" : "rgba(224,237,251,0.95)",
             borderTopWidth: isWeb ? 1 : 0,
             borderTopColor: isDark ? "#333" : "#E2E8F0",
             elevation: 0,
@@ -44,7 +44,7 @@ function ClassicTabLayout() {
               <View
                 style={[
                   StyleSheet.absoluteFill,
-                  { backgroundColor: isDark ? "#000" : "#fff" },
+                  { backgroundColor: isDark ? "#000" : "rgba(224,237,251,0.95)" },
                 ]}
               />
             ) : null,

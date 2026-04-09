@@ -5,6 +5,7 @@ import React, { useEffect, useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet, PanResponder } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
+import { LinearGradient } from "expo-linear-gradient";
 import {
   useFonts,
   Inter_400Regular,
@@ -100,7 +101,23 @@ function AuthGate() {
     <ThemeProvider>
       <AppProvider>
         <InactivityWrapper>
-          <RootLayoutNav />
+          <View style={{ flex: 1, backgroundColor: "#E0EDFB" }}>
+            <LinearGradient
+              colors={["rgba(255,255,255,0.7)", "rgba(255,255,255,0)", "rgba(255,255,255,0)", "rgba(255,255,255,0.7)"]}
+              locations={[0, 0.12, 0.88, 1]}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
+            <LinearGradient
+              colors={["rgba(255,255,255,0.6)", "rgba(255,255,255,0)", "rgba(255,255,255,0)", "rgba(255,255,255,0.6)"]}
+              locations={[0, 0.1, 0.9, 1]}
+              start={{ x: 0, y: 0.5 }}
+              end={{ x: 1, y: 0.5 }}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
+            <RootLayoutNav />
+          </View>
         </InactivityWrapper>
       </AppProvider>
     </ThemeProvider>

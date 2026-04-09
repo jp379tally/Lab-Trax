@@ -908,7 +908,7 @@ export default function SettingsScreen() {
 
               <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Lab Name</Text>
               <TextInput
-                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                 value={editLabName}
                 onChangeText={setEditLabName}
                 placeholder="Enter lab name"
@@ -917,7 +917,7 @@ export default function SettingsScreen() {
 
               <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Address</Text>
               <TextInput
-                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                 value={editLabAddress}
                 onChangeText={setEditLabAddress}
                 placeholder="Enter address"
@@ -926,7 +926,7 @@ export default function SettingsScreen() {
 
               <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Phone</Text>
               <TextInput
-                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                 value={editLabPhone}
                 onChangeText={setEditLabPhone}
                 placeholder="Enter phone number"
@@ -936,7 +936,7 @@ export default function SettingsScreen() {
 
               <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Email</Text>
               <TextInput
-                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                 value={editLabEmail}
                 onChangeText={setEditLabEmail}
                 placeholder="Enter email address"
@@ -988,7 +988,7 @@ export default function SettingsScreen() {
 
               <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: colors.textSecondary, marginBottom: 6 }}>Email Address</Text>
               <TextInput
-                style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]}
+                style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                 value={editLabEmail}
                 onChangeText={setEditLabEmail}
                 placeholder="Enter email address"

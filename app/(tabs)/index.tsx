@@ -526,8 +526,8 @@ function TechDashboard() {
 
   return (
     <>
-    <View style={[styles.container, { backgroundColor: themeColors.background }]}>
-      <View style={[styles.topBar, { position: "absolute", top: Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: themeColors.background }]}>
+    <View style={[styles.container, { backgroundColor: "transparent" }]}>
+      <View style={[styles.topBar, { position: "absolute", top: Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: "transparent" }]}>
         <Pressable
           onPress={() => setDrawerOpen(true)}
           style={({ pressed }) => [styles.hamburgerBtn, pressed && { opacity: 0.6 }]}
@@ -1071,7 +1071,7 @@ function TechDashboard() {
       statusBarTranslucent
       onRequestClose={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); batchScannedIdsRef.current.clear(); }}
     >
-      <View style={{ flex: 1, backgroundColor: batchLocationSelect ? Colors.light.background : "#000" }}>
+      <View style={{ flex: 1, backgroundColor: batchLocationSelect ? Colors.light.backgroundSolid : "#000" }}>
         <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: batchLocationSelect ? Colors.light.surface : "rgba(0,0,0,0.8)" }}>
           <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: batchLocationSelect ? Colors.light.text : "#FFF" }}>
             {batchLocationSelect ? "Select Location" : "Batch Scan"}
@@ -7937,7 +7937,7 @@ function ProviderDashboard() {
                 </ScrollView>
 
                 {selectedInvoiceIds.length > 0 && (
-                  <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: 16, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16, backgroundColor: Colors.light.background, borderTopWidth: 1, borderTopColor: Colors.light.border }}>
+                  <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: 16, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 16, backgroundColor: Colors.light.backgroundSolid, borderTopWidth: 1, borderTopColor: Colors.light.border }}>
                     <Pressable
                       onPress={() => setPayStep("card")}
                       style={({ pressed }) => ({
