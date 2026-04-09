@@ -496,4 +496,70 @@ router.delete(
   })
 );
 
+async function findLabCreatorId(labName: string): Promise<string | null> {
+  const org = await db.query.organizations.findFirst({
+    where: eq(organizations.name, labName),
+  });
+  if (org?.createdByUserId) return org.createdByUserId;
+  const labAdmins = await db.select().from(users).where(eq(users.role, "admin"));
+  const matching = labAdmins
+    .filter((u) => u.practiceName?.toLowerCase().trim() === labName.toLowerCase().trim())
+    .sort((a, b) => {
+      const aT = a.createdAt ? new Date(a.createdAt).getTime() : Infinity;
+      const bT = b.createdAt ? new Date(b.createdAt).getTime() : Infinity;
+      return aT - bT;
+    });
+  return matching.length > 0 ? matching[0].id : null;
+}
+
+router.get(
+  "/lab-creator",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = (req as any).user;
+    if (!user.practiceName) {
+      return res.json({ isLabCreator: false });
+    }
+    const creatorId = await findLabCreatorId(user.practiceName);
+    res.json({ isLabCreator: creatorId === user.id });
+  })
+);
+
+router.delete(
+  "/delete-lab",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = (req as any).user;
+    if (!user.practiceName) {
+      throw new HttpError(400, "You are not associated with any lab.");
+    }
+    const labName = user.practiceName;
+    const creatorId = await findLabCreatorId(labName);
+    if (!creatorId || creatorId !== user.id) {
+      throw new HttpError(403, "Only the admin who created this lab can delete it.");
+    }
+    const labNameLower = labName.toLowerCase().trim();
+    const allLabUsers = await db.select().from(users);
+    const labMembers = allLabUsers.filter(
+      (u) => u.practiceName?.toLowerCase().trim() === labNameLower
+    );
+    const memberIds = labMembers.map((m) => m.id);
+    if (memberIds.length > 0) {
+      await db
+        .update(users)
+        .set({ practiceName: null })
+        .where(inArray(users.id, memberIds));
+    }
+    await writeAuditLog({
+      req,
+      userId: user.id,
+      action: "lab_deleted",
+      entityType: "organization",
+      entityId: labNameLower,
+      details: { labName, membersRemoved: memberIds.length },
+    });
+    res.json({ success: true, membersRemoved: memberIds.length });
+  })
+);
+
 export default router;

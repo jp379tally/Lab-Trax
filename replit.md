@@ -69,7 +69,7 @@ Preferred communication style: Simple, everyday language.
 
 ## Server Route Modules
 
-- `server/routes/auth.ts` — Register (with optional org creation/join), login (JWT), refresh, logout, /me, user CRUD, password change
+- `server/routes/auth.ts` — Register (with optional org creation/join), login (JWT), refresh, logout, /me, user CRUD, password change, lab-creator check, delete-lab
 - `server/routes/organizations.ts` — CRUD orgs, members, invites, join requests, connections (all require JWT auth)
 - `server/routes.ts` — Composes all route modules + legacy endpoints + AI/utility/SMS routes; public `GET /api/labs/groups` endpoint (no auth)
 - `server/routes/cases.ts` — Normalized case CRUD with restorations, notes, events, locations, submissions (all require JWT auth)

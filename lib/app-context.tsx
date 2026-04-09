@@ -111,6 +111,8 @@ interface AppContextValue {
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
   userIsAffiliated: boolean;
   leaveLab: () => Promise<{ success: boolean; error?: string }>;
+  deleteLab: () => Promise<{ success: boolean; error?: string }>;
+  isLabCreator: boolean;
   removeClient: (clientId: string) => void;
   deactivateClient: (clientId: string) => void;
   reactivateClient: (clientId: string) => void;
@@ -1454,6 +1456,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  const [isLabCreator, setIsLabCreator] = useState(false);
+
+  useEffect(() => {
+    if (!currentUserId || !currentUserProfile?.practiceName) {
+      setIsLabCreator(false);
+      return;
+    }
+    const apiUrl = getApiUrl();
+    const url = new URL("/api/auth/lab-creator", apiUrl);
+    resilientFetch(url.toString())
+      .then((res) => res.json())
+      .then((data) => setIsLabCreator(!!data.isLabCreator))
+      .catch(() => setIsLabCreator(false));
+  }, [currentUserId, currentUserProfile?.practiceName]);
+
   async function leaveLab(): Promise<{ success: boolean; error?: string }> {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
@@ -1468,6 +1485,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message || "Failed to leave lab" };
+    }
+  }
+
+  async function deleteLab(): Promise<{ success: boolean; error?: string }> {
+    if (!currentUserId) return { success: false, error: "Not logged in" };
+    try {
+      const apiUrl = getApiUrl();
+      const url = new URL("/api/auth/delete-lab", apiUrl);
+      const res = await resilientFetch(url.toString(), { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        return { success: false, error: data.message || data.error || "Failed to delete lab" };
+      }
+      setIsLabCreator(false);
+      await refreshUsers();
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || "Failed to delete lab" };
     }
   }
 
@@ -1723,6 +1758,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateStationLabel,
       userIsAffiliated,
       leaveLab,
+      deleteLab,
+      isLabCreator,
       removeClient,
       deactivateClient,
       reactivateClient,
@@ -1730,7 +1767,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       inactiveClients: clients.filter(c => c.status === "inactive"),
       refreshCases,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, deletedClientInvoices],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

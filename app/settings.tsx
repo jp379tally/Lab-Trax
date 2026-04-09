@@ -27,7 +27,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest, leaveLab, sendLabInvite } = useApp();
+  const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
@@ -129,7 +129,7 @@ export default function SettingsScreen() {
   const isLabAdmin = userType === "lab" && currentUserData?.role === "admin";
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View style={[styles.container, { backgroundColor: colors.backgroundSolid || colors.surface }]}>
       <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12, backgroundColor: colors.surface, borderBottomColor: colors.borderLight }]}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
@@ -464,6 +464,46 @@ export default function SettingsScreen() {
                     </View>
                     <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
                   </Pressable>
+
+                  {isLabCreator && (
+                    <>
+                      <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+                      <Pressable
+                        style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                        onPress={() => {
+                          Alert.alert(
+                            "Delete Lab",
+                            "Are you sure you want to delete the lab? All users will be removed from the lab and the lab will be deleted.",
+                            [
+                              { text: "No", style: "cancel" },
+                              {
+                                text: "Yes, Delete Lab",
+                                style: "destructive",
+                                onPress: async () => {
+                                  const result = await deleteLab();
+                                  if (result.success) {
+                                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                    Alert.alert("Lab Deleted", "The lab has been deleted and all users have been removed from it.");
+                                  } else {
+                                    Alert.alert("Error", result.error || "Failed to delete lab.");
+                                  }
+                                },
+                              },
+                            ]
+                          );
+                        }}
+                      >
+                        <View style={[styles.menuIcon, { backgroundColor: "#FEE2E2" }]}>
+                          <Ionicons name="trash" size={18} color="#DC2626" />
+                        </View>
+                        <View style={styles.menuInfo}>
+                          <Text style={[styles.menuTitle, { color: "#DC2626" }]}>Delete Lab</Text>
+                          <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Remove all users and delete this lab</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                      </Pressable>
+                    </>
+                  )}
                 </View>
               </>
             ) : (
