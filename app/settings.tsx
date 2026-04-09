@@ -27,7 +27,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest, leaveLab } = useApp();
+  const { sendGroupJoinRequest, leaveLab, sendLabInvite } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
@@ -45,6 +45,10 @@ export default function SettingsScreen() {
   const [labSearchDone, setLabSearchDone] = useState(false);
   const [addLabSending, setAddLabSending] = useState(false);
   const [companyLogoUri, setCompanyLogoUri] = useState<string | null>(null);
+  const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [addUserSearch, setAddUserSearch] = useState("");
+  const [addUserSelected, setAddUserSelected] = useState<{ username: string; email: string } | null>(null);
+  const [addUserRole, setAddUserRole] = useState<"user" | "admin">("user");
 
   type UserStatus = "active" | "inactive" | "on_lunch" | "out_of_office" | "on_break";
   const [userStatus, setUserStatus] = useState<UserStatus>("active");
@@ -415,6 +419,30 @@ export default function SettingsScreen() {
                     </View>
                     <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
                   </Pressable>
+
+                  {isLabAdmin && (
+                    <>
+                      <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+                      <Pressable
+                        style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                        onPress={() => {
+                          setShowAddUserModal(true);
+                          setAddUserSearch("");
+                          setAddUserSelected(null);
+                          setAddUserRole("user");
+                        }}
+                      >
+                        <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
+                          <Ionicons name="person-add" size={18} color="#2563EB" />
+                        </View>
+                        <View style={styles.menuInfo}>
+                          <Text style={[styles.menuTitle, { color: colors.text }]}>Add User to Lab</Text>
+                          <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Invite a user to join your lab</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                      </Pressable>
+                    </>
+                  )}
 
                   <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
 
@@ -990,6 +1018,176 @@ export default function SettingsScreen() {
                 <Text style={styles.sendBtnText}>{editEmailSaving ? "Saving..." : "Save Email"}</Text>
               </Pressable>
             </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showAddUserModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowAddUserModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" }}
+        >
+          <View style={[joinStyles.sheet, { backgroundColor: colors.surface }]}>
+            <View style={joinStyles.handle} />
+            <View style={joinStyles.header}>
+              <Pressable onPress={() => { setShowAddUserModal(false); setAddUserSearch(""); setAddUserSelected(null); }}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </Pressable>
+              <Text style={[joinStyles.title, { color: colors.text }]}>Add User to Lab</Text>
+              <View style={{ width: 24 }} />
+            </View>
+
+            {!addUserSelected ? (
+              <>
+                <Text style={[joinStyles.desc, { color: colors.textSecondary }]}>
+                  Search for a user by username to invite them to your lab.
+                </Text>
+                <TextInput
+                  style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+                  placeholder="Type username to search..."
+                  placeholderTextColor={colors.textTertiary}
+                  value={addUserSearch}
+                  onChangeText={setAddUserSearch}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                {addUserSearch.trim().length > 0 && (
+                  <View style={{ maxHeight: 240, marginTop: 4 }}>
+                    <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                      {registeredUsers
+                        .filter(u => {
+                          const q = addUserSearch.toLowerCase().trim();
+                          const isSelf = u.username.toLowerCase() === (currentUser || "").toLowerCase();
+                          const uLab = (u.practiceName ?? "").toLowerCase().trim();
+                          const myLab = (currentUserData?.practiceName ?? "").toLowerCase().trim();
+                          const alreadyInLab = myLab.length > 0 && uLab === myLab;
+                          return !isSelf && !alreadyInLab && u.username.toLowerCase().includes(q);
+                        })
+                        .slice(0, 10)
+                        .map(u => (
+                          <Pressable
+                            key={u.username}
+                            style={({ pressed }) => [{
+                              flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14,
+                              borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary,
+                              marginBottom: 8, gap: 12,
+                            }, pressed && { opacity: 0.7 }]}
+                            onPress={() => {
+                              setAddUserSelected({ username: u.username, email: u.email || "" });
+                              setAddUserRole("user");
+                            }}
+                          >
+                            <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
+                              <Ionicons name="person" size={20} color="#2563EB" />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>{u.username}</Text>
+                              {u.email && <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>{u.email}</Text>}
+                              {u.practiceName && <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textTertiary, marginTop: 2 }}>Lab: {u.practiceName}</Text>}
+                            </View>
+                            <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                          </Pressable>
+                        ))}
+                      {registeredUsers.filter(u => {
+                        const q = addUserSearch.toLowerCase().trim();
+                        const isSelf = u.username.toLowerCase() === (currentUser || "").toLowerCase();
+                        const uLab = (u.practiceName ?? "").toLowerCase().trim();
+                        const myLab = (currentUserData?.practiceName ?? "").toLowerCase().trim();
+                        const alreadyInLab = myLab.length > 0 && uLab === myLab;
+                        return !isSelf && !alreadyInLab && u.username.toLowerCase().includes(q);
+                      }).length === 0 && (
+                        <View style={{ alignItems: "center", paddingVertical: 16, gap: 8 }}>
+                          <Ionicons name="alert-circle-outline" size={36} color={colors.textTertiary} />
+                          <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>No users found</Text>
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center" }}>
+                            No user matching "{addUserSearch}" was found.
+                          </Text>
+                        </View>
+                      )}
+                    </ScrollView>
+                  </View>
+                )}
+              </>
+            ) : (
+              <View style={{ gap: 16 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, gap: 12 }}>
+                  <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
+                    <Ionicons name="person" size={20} color="#2563EB" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: colors.text }}>{addUserSelected.username}</Text>
+                    {addUserSelected.email ? <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>{addUserSelected.email}</Text> : null}
+                  </View>
+                  <Pressable onPress={() => { setAddUserSelected(null); setAddUserSearch(""); }}>
+                    <Ionicons name="close-circle" size={22} color={colors.textTertiary} />
+                  </Pressable>
+                </View>
+
+                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: colors.text }}>Assign Role</Text>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  <Pressable
+                    style={({ pressed }) => [{
+                      flex: 1, paddingVertical: 14, borderRadius: 12, borderWidth: 2, alignItems: "center", gap: 4,
+                      borderColor: addUserRole === "user" ? "#2563EB" : colors.border,
+                      backgroundColor: addUserRole === "user" ? "#EFF6FF" : colors.surfaceSecondary,
+                    }, pressed && { opacity: 0.7 }]}
+                    onPress={() => setAddUserRole("user")}
+                  >
+                    <Ionicons name="person-outline" size={22} color={addUserRole === "user" ? "#2563EB" : colors.textSecondary} />
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: addUserRole === "user" ? "#2563EB" : colors.text }}>User</Text>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center" }}>Standard access</Text>
+                  </Pressable>
+                  <Pressable
+                    style={({ pressed }) => [{
+                      flex: 1, paddingVertical: 14, borderRadius: 12, borderWidth: 2, alignItems: "center", gap: 4,
+                      borderColor: addUserRole === "admin" ? "#F59E0B" : colors.border,
+                      backgroundColor: addUserRole === "admin" ? "#FFFBEB" : colors.surfaceSecondary,
+                    }, pressed && { opacity: 0.7 }]}
+                    onPress={() => setAddUserRole("admin")}
+                  >
+                    <Ionicons name="shield-outline" size={22} color={addUserRole === "admin" ? "#F59E0B" : colors.textSecondary} />
+                    <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: addUserRole === "admin" ? "#F59E0B" : colors.text }}>Admin</Text>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary, textAlign: "center" }}>Full access</Text>
+                  </Pressable>
+                </View>
+
+                <Pressable
+                  style={({ pressed }) => [joinStyles.sendBtn, pressed && { opacity: 0.85 }]}
+                  onPress={() => {
+                    Alert.alert(
+                      "Confirm Invitation",
+                      `Are you sure you want to add ${addUserSelected.username} to your lab as ${addUserRole === "admin" ? "an Admin" : "a User"}?`,
+                      [
+                        { text: "No", style: "cancel" },
+                        {
+                          text: "Yes, Send Invite",
+                          onPress: () => {
+                            const result = sendLabInvite(addUserSelected!.username, addUserSelected!.email, addUserRole);
+                            if (result.success) {
+                              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                              Alert.alert("Invitation Sent", `An invitation has been sent to ${addUserSelected!.username}. They will need to accept it in their notifications.`);
+                              setShowAddUserModal(false);
+                              setAddUserSearch("");
+                              setAddUserSelected(null);
+                            } else {
+                              Alert.alert("Unable to Send", result.error || "Something went wrong.");
+                            }
+                          },
+                        },
+                      ]
+                    );
+                  }}
+                >
+                  <Ionicons name="send" size={18} color="#FFF" />
+                  <Text style={joinStyles.sendBtnText}>Send Invitation</Text>
+                </Pressable>
+              </View>
+            )}
           </View>
         </KeyboardAvoidingView>
       </Modal>
