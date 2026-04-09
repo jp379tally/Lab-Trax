@@ -484,102 +484,104 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
         </View>
 
         <Modal visible={showAddItem} transparent animationType="fade">
-          <Pressable style={s.modalOverlay} onPress={resetItemForm}>
-            <Pressable style={s.modalCard} onPress={(e) => { e.stopPropagation(); setShowItemDropdown(false); }}>
-              <Text style={s.modalTitle}>{editingIdx !== null ? "Edit Item" : "Add Item"}</Text>
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={0}>
+            <Pressable style={s.modalOverlay} onPress={resetItemForm}>
+              <Pressable style={s.modalCard} onPress={(e) => { e.stopPropagation(); setShowItemDropdown(false); }}>
+                <Text style={s.modalTitle}>{editingIdx !== null ? "Edit Item" : "Add Item"}</Text>
 
-              <Text style={s.fieldLabel}>Item Name</Text>
-              <View>
-                <Pressable
-                  style={s.dropdownTrigger}
-                  onPress={() => pricedItems.length > 0 ? setShowItemDropdown(!showItemDropdown) : undefined}
-                >
-                  <TextInput
-                    style={[s.fieldInput, { flex: 1, marginBottom: 0 }]}
-                    value={newItemName}
-                    onChangeText={(text) => { setNewItemName(text); setShowItemDropdown(false); }}
-                    placeholder="e.g. Zirconia Crown"
-                    placeholderTextColor="#94A3B8"
-                  />
-                  {pricedItems.length > 0 && (
-                    <Pressable
-                      onPress={() => setShowItemDropdown(!showItemDropdown)}
-                      style={s.dropdownArrow}
-                    >
-                      <Ionicons name={showItemDropdown ? "chevron-up" : "chevron-down"} size={20} color="#64748B" />
-                    </Pressable>
+                <Text style={s.fieldLabel}>Item Name</Text>
+                <View>
+                  <Pressable
+                    style={s.dropdownTrigger}
+                    onPress={() => pricedItems.length > 0 ? setShowItemDropdown(!showItemDropdown) : undefined}
+                  >
+                    <TextInput
+                      style={[s.fieldInput, { flex: 1, marginBottom: 0 }]}
+                      value={newItemName}
+                      onChangeText={(text) => { setNewItemName(text); setShowItemDropdown(false); }}
+                      placeholder="e.g. Zirconia Crown"
+                      placeholderTextColor="#94A3B8"
+                    />
+                    {pricedItems.length > 0 && (
+                      <Pressable
+                        onPress={() => setShowItemDropdown(!showItemDropdown)}
+                        style={s.dropdownArrow}
+                      >
+                        <Ionicons name={showItemDropdown ? "chevron-up" : "chevron-down"} size={20} color="#64748B" />
+                      </Pressable>
+                    )}
+                  </Pressable>
+                  {showItemDropdown && pricedItems.length > 0 && (
+                    <View style={s.dropdownList}>
+                      <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                        {pricedItems.map((item) => (
+                          <Pressable
+                            key={item.key}
+                            style={({ pressed }) => [s.dropdownItem, pressed && { backgroundColor: "#F1F5F9" }]}
+                            onPress={() => handleSelectPricedItem(item)}
+                          >
+                            <Text style={s.dropdownItemLabel}>{item.label}</Text>
+                            <Text style={s.dropdownItemPrice}>{formatCurrency(item.price)}</Text>
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                    </View>
                   )}
-                </Pressable>
-                {showItemDropdown && pricedItems.length > 0 && (
-                  <View style={s.dropdownList}>
-                    <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                      {pricedItems.map((item) => (
-                        <Pressable
-                          key={item.key}
-                          style={({ pressed }) => [s.dropdownItem, pressed && { backgroundColor: "#F1F5F9" }]}
-                          onPress={() => handleSelectPricedItem(item)}
-                        >
-                          <Text style={s.dropdownItemLabel}>{item.label}</Text>
-                          <Text style={s.dropdownItemPrice}>{formatCurrency(item.price)}</Text>
-                        </Pressable>
-                      ))}
-                    </ScrollView>
+                </View>
+
+                <Text style={s.fieldLabel}>Description</Text>
+                <TextInput
+                  style={s.fieldInput}
+                  value={newItemDesc}
+                  onChangeText={setNewItemDesc}
+                  placeholder="e.g. Full contour zirconia - tooth #14"
+                  placeholderTextColor="#94A3B8"
+                />
+
+                <View style={s.fieldRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.fieldLabel}>Qty</Text>
+                    <TextInput
+                      style={s.fieldInput}
+                      value={newItemQty}
+                      onChangeText={setNewItemQty}
+                      keyboardType="number-pad"
+                      placeholderTextColor="#94A3B8"
+                    />
                   </View>
-                )}
-              </View>
-
-              <Text style={s.fieldLabel}>Description</Text>
-              <TextInput
-                style={s.fieldInput}
-                value={newItemDesc}
-                onChangeText={setNewItemDesc}
-                placeholder="e.g. Full contour zirconia - tooth #14"
-                placeholderTextColor="#94A3B8"
-              />
-
-              <View style={s.fieldRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.fieldLabel}>Qty</Text>
-                  <TextInput
-                    style={s.fieldInput}
-                    value={newItemQty}
-                    onChangeText={setNewItemQty}
-                    keyboardType="number-pad"
-                    placeholderTextColor="#94A3B8"
-                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.fieldLabel}>Rate ($)</Text>
+                    <TextInput
+                      style={s.fieldInput}
+                      value={newItemRate}
+                      onChangeText={setNewItemRate}
+                      keyboardType="decimal-pad"
+                      placeholder="0.00"
+                      placeholderTextColor="#94A3B8"
+                    />
+                  </View>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.fieldLabel}>Rate ($)</Text>
-                  <TextInput
-                    style={s.fieldInput}
-                    value={newItemRate}
-                    onChangeText={setNewItemRate}
-                    keyboardType="decimal-pad"
-                    placeholder="0.00"
-                    placeholderTextColor="#94A3B8"
-                  />
+
+                {(newItemQty && newItemRate) ? (
+                  <Text style={s.previewAmt}>
+                    Amount: {formatCurrency((parseInt(newItemQty) || 0) * (parseFloat(newItemRate) || 0))}
+                  </Text>
+                ) : null}
+
+                <View style={s.modalBtnRow}>
+                  <Pressable onPress={resetItemForm} style={[s.modalBtn, s.modalBtnCancel]}>
+                    <Text style={s.modalBtnCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleSaveItem}
+                    style={[s.modalBtn, s.modalBtnSave]}
+                  >
+                    <Text style={s.modalBtnSaveText}>{editingIdx !== null ? "Update" : "Add"}</Text>
+                  </Pressable>
                 </View>
-              </View>
-
-              {(newItemQty && newItemRate) ? (
-                <Text style={s.previewAmt}>
-                  Amount: {formatCurrency((parseInt(newItemQty) || 0) * (parseFloat(newItemRate) || 0))}
-                </Text>
-              ) : null}
-
-              <View style={s.modalBtnRow}>
-                <Pressable onPress={resetItemForm} style={[s.modalBtn, s.modalBtnCancel]}>
-                  <Text style={s.modalBtnCancelText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  onPress={handleSaveItem}
-                  style={[s.modalBtn, s.modalBtnSave]}
-                >
-                  <Text style={s.modalBtnSaveText}>{editingIdx !== null ? "Update" : "Add"}</Text>
-                </Pressable>
-              </View>
+              </Pressable>
             </Pressable>
-          </Pressable>
+          </KeyboardAvoidingView>
         </Modal>
 
         <Modal visible={showDiscount} transparent animationType="fade">
