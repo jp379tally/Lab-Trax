@@ -700,73 +700,6 @@ function TechDashboard() {
         </View>
       </View>
 
-      <Modal
-        transparent
-        visible={picModalVisible}
-        animationType="fade"
-        statusBarTranslucent
-        onRequestClose={() => setPicModalVisible(false)}
-      >
-        <Pressable
-          style={styles.picModalOverlay}
-          onPress={() => setPicModalVisible(false)}
-        >
-          <View style={styles.picModalContent}>
-            <View style={styles.picModalHandle} />
-            <Text style={styles.picModalTitle}>Profile Photo</Text>
-
-            <Pressable
-              onPress={handleTakeProfilePhoto}
-              style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
-              testID="take-photo-btn"
-            >
-              <View style={[styles.picModalOptionIcon, { backgroundColor: "#EFF6FF" }]}>
-                <Ionicons name="camera" size={22} color={Colors.light.tint} />
-              </View>
-              <Text style={styles.picModalOptionText}>Take Photo</Text>
-              <Feather name="chevron-right" size={18} color="#94A3B8" />
-            </Pressable>
-
-            <Pressable
-              onPress={handlePickProfilePhoto}
-              style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
-              testID="photo-library-btn"
-            >
-              <View style={[styles.picModalOptionIcon, { backgroundColor: "#F0FDF4" }]}>
-                <Ionicons name="images" size={22} color="#22C55E" />
-              </View>
-              <Text style={styles.picModalOptionText}>Photo Library</Text>
-              <Feather name="chevron-right" size={18} color="#94A3B8" />
-            </Pressable>
-
-            {profilePicUri && (
-              <Pressable
-                onPress={() => {
-                  setProfilePicUri(null);
-                  setPicModalVisible(false);
-                }}
-                style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#FEF2F2" }]}
-                testID="remove-photo-btn"
-              >
-                <View style={[styles.picModalOptionIcon, { backgroundColor: "#FEF2F2" }]}>
-                  <Ionicons name="trash" size={22} color="#EF4444" />
-                </View>
-                <Text style={[styles.picModalOptionText, { color: "#EF4444" }]}>Remove Photo</Text>
-                <Feather name="chevron-right" size={18} color="#94A3B8" />
-              </Pressable>
-            )}
-
-            <Pressable
-              onPress={() => setPicModalVisible(false)}
-              style={styles.picModalCancel}
-              testID="cancel-photo-btn"
-            >
-              <Text style={styles.picModalCancelText}>Cancel</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
-
       <View style={styles.headerRow}>
         <View>
           <Text style={[styles.greeting, { color: themeColors.textSecondary }]}>Lab Floor</Text>
@@ -1074,6 +1007,73 @@ function TechDashboard() {
       </Pressable>
     </ScrollView>
     </View>
+
+    <Modal
+      transparent
+      visible={picModalVisible}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={() => setPicModalVisible(false)}
+    >
+      <Pressable
+        style={styles.picModalOverlay}
+        onPress={() => setPicModalVisible(false)}
+      >
+        <View style={styles.picModalContent}>
+          <View style={styles.picModalHandle} />
+          <Text style={styles.picModalTitle}>Profile Photo</Text>
+
+          <Pressable
+            onPress={handleTakeProfilePhoto}
+            style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
+            testID="take-photo-btn"
+          >
+            <View style={[styles.picModalOptionIcon, { backgroundColor: "#EFF6FF" }]}>
+              <Ionicons name="camera" size={22} color={Colors.light.tint} />
+            </View>
+            <Text style={styles.picModalOptionText}>Take Photo</Text>
+            <Feather name="chevron-right" size={18} color="#94A3B8" />
+          </Pressable>
+
+          <Pressable
+            onPress={handlePickProfilePhoto}
+            style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
+            testID="photo-library-btn"
+          >
+            <View style={[styles.picModalOptionIcon, { backgroundColor: "#F0FDF4" }]}>
+              <Ionicons name="images" size={22} color="#22C55E" />
+            </View>
+            <Text style={styles.picModalOptionText}>Photo Library</Text>
+            <Feather name="chevron-right" size={18} color="#94A3B8" />
+          </Pressable>
+
+          {profilePicUri && (
+            <Pressable
+              onPress={() => {
+                setProfilePicUri(null);
+                setPicModalVisible(false);
+              }}
+              style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#FEF2F2" }]}
+              testID="remove-photo-btn"
+            >
+              <View style={[styles.picModalOptionIcon, { backgroundColor: "#FEF2F2" }]}>
+                <Ionicons name="trash" size={22} color="#EF4444" />
+              </View>
+              <Text style={[styles.picModalOptionText, { color: "#EF4444" }]}>Remove Photo</Text>
+              <Feather name="chevron-right" size={18} color="#94A3B8" />
+            </Pressable>
+          )}
+
+          <Pressable
+            onPress={() => setPicModalVisible(false)}
+            style={styles.picModalCancel}
+            testID="cancel-photo-btn"
+          >
+            <Text style={styles.picModalCancelText}>Cancel</Text>
+          </Pressable>
+        </View>
+      </Pressable>
+    </Modal>
 
     <Modal
       transparent
