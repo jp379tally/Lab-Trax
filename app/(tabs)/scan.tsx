@@ -1762,12 +1762,12 @@ export default function ScanScreen() {
       if (wasInCameraPhase) {
         setCameraReady(false);
         setCameraPaused(true);
-        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(undefined))));
+        await new Promise((r) => setTimeout(r, Platform.OS === "ios" ? 400 : 200));
       }
 
       const result = await DocumentPicker.getDocumentAsync({
         type: ["image/*", "application/pdf"],
-        multiple: true,
+        multiple: Platform.OS !== "ios",
         copyToCacheDirectory: true,
       });
 
@@ -1878,7 +1878,12 @@ export default function ScanScreen() {
       if (wasInCameraPhase) setCameraPaused(false);
       isPickingFilesRef.current = false;
       console.error("Attach files error:", e);
-      if (e?.message?.includes("cancel") || e?.code === "DOCUMENT_PICKER_CANCELED") {
+      if (
+        e?.message?.includes("cancel") ||
+        e?.message?.includes("Cancel") ||
+        e?.code === "DOCUMENT_PICKER_CANCELED" ||
+        e?.code === "ERR_CANCELED"
+      ) {
         return;
       }
       Alert.alert("Error", "Could not attach files. Please try again.");
