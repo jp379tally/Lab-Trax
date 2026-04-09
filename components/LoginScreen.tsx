@@ -103,11 +103,11 @@ export default function LoginScreen() {
   const [labZip, setLabZip] = useState("");
   const [labPhone, setLabPhone] = useState("");
   const [labEmail, setLabEmail] = useState("");
-  const [matchingLabGroup, setMatchingLabGroup] = useState<{ practiceName: string; username: string; practiceAddress?: string } | null>(null);
+  const [matchingLabGroup, setMatchingLabGroup] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string } | null>(null);
   const [labJoinRequestSent, setLabJoinRequestSent] = useState(false);
   const [checkingLabName, setCheckingLabName] = useState(false);
   const [browseExistingLabs, setBrowseExistingLabs] = useState(false);
-  const [allLabGroups, setAllLabGroups] = useState<{ practiceName: string; username: string; practiceAddress?: string }[]>([]);
+  const [allLabGroups, setAllLabGroups] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string; memberCount?: number }[]>([]);
   const [labSearchFilter, setLabSearchFilter] = useState("");
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
@@ -499,6 +499,7 @@ export default function LoginScreen() {
         phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
         role: selectedRole || "user",
         accountNumber: acctNum,
+        createOrganization: true,
       });
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");
@@ -743,15 +744,9 @@ export default function LoginScreen() {
 
   async function loadAllLabGroups() {
     try {
-      const res = await apiRequest("GET", "/api/auth/users");
-      const users: any[] = res || [];
-      const labAdmins = users.filter((u: any) => u.userType === "lab" && u.role === "admin" && u.practiceName);
-      const uniqueLabs = new Map<string, { practiceName: string; username: string; practiceAddress?: string }>();
-      for (const u of labAdmins) {
-        const key = u.practiceName.toLowerCase().trim();
-        if (!uniqueLabs.has(key)) uniqueLabs.set(key, { practiceName: u.practiceName, username: u.username, practiceAddress: u.practiceAddress });
-      }
-      setAllLabGroups(Array.from(uniqueLabs.values()));
+      const res = await apiRequest("GET", "/api/labs/groups");
+      const groups: any[] = res?.groups || [];
+      setAllLabGroups(groups);
     } catch {
       setAllLabGroups([]);
     }
@@ -765,14 +760,13 @@ export default function LoginScreen() {
     setCheckingLabName(true);
     setSignUpError(null);
     try {
-      const res = await apiRequest("GET", "/api/auth/users");
-      const users: any[] = res || [];
-      const labAdmins = users.filter((u: any) => u.userType === "lab" && u.role === "admin" && u.practiceName);
-      const match = labAdmins.find(
-        (u: any) => u.practiceName.toLowerCase().trim() === labName.toLowerCase().trim()
+      const res = await apiRequest("GET", "/api/labs/groups");
+      const groups: any[] = res?.groups || [];
+      const match = groups.find(
+        (g: any) => g.practiceName.toLowerCase().trim() === labName.toLowerCase().trim()
       );
       if (match) {
-        setMatchingLabGroup({ practiceName: match.practiceName, username: match.username, practiceAddress: match.practiceAddress });
+        setMatchingLabGroup({ organizationId: match.organizationId, practiceName: match.practiceName, username: match.username, practiceAddress: match.practiceAddress });
         setCheckingLabName(false);
       } else {
         setMatchingLabGroup(null);
@@ -789,28 +783,20 @@ export default function LoginScreen() {
   async function handleJoinExistingLab() {
     if (!matchingLabGroup) return;
     try {
-      const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
-      const existing: GroupJoinRequest[] = stored ? JSON.parse(stored) : [];
-      const alreadyPending = existing.find(
-        (r) =>
-          r.requestingUsername.toLowerCase() === signUpUsername.trim().toLowerCase() &&
-          r.targetAdminUsername.toLowerCase() === matchingLabGroup.username.toLowerCase() &&
-          r.status === "pending"
-      );
-      if (alreadyPending) {
-        setSignUpError("You already have a pending request to join this lab.");
+      const regResult = await register({
+        username: signUpUsername.trim(),
+        password: signUpPassword,
+        email: signUpEmail.trim(),
+        phone: signUpPhone.trim(),
+        userType: signUpUserType as any,
+        role: signUpRole as any,
+        practiceName: matchingLabGroup.practiceName,
+        joinOrganizationId: matchingLabGroup.organizationId,
+      });
+      if (!regResult.success) {
+        setSignUpError(regResult.error || "Could not send request. Please try again.");
         return;
       }
-      const request: GroupJoinRequest = {
-        id: generateId(),
-        requestingUsername: signUpUsername.trim(),
-        targetAdminUsername: matchingLabGroup.username,
-        message: `${signUpUsername.trim()} would like to join ${matchingLabGroup.practiceName}.`,
-        status: "pending",
-        createdAt: Date.now(),
-      };
-      const updated = [...existing, request];
-      await AsyncStorage.setItem("@drivesync_group_join_requests", JSON.stringify(updated));
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setLabJoinRequestSent(true);
     } catch {

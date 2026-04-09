@@ -47,7 +47,7 @@ Preferred communication style: Simple, everyday language.
 - **Case Workflow**: Tracks cases through predefined stations (INTAKE, DESIGN, etc.) with `routeHistory`.
 - **Barcode System**: Supports scanning for case intake, location, and batch processing.
 - **Remake Detection**: Specific flow for identifying and managing remakes.
-- **Lab-Based Membership & Sharing**: Users belong to a lab based on `practiceName`, enabling shared case visibility and join requests. Cases are synced between local storage and server for all lab members.
+- **Lab-Based Membership & Sharing**: Users belong to a lab based on `practiceName`, enabling shared case visibility and join requests. Cases are synced between local storage and server for all lab members. Join requests are persisted server-side via the `organization_join_requests` DB table. New lab users auto-create an `organizations` record on registration. Users joining an existing lab send a server-side join request during signup.
 - **Data Isolation (HIPAA)**: Cases filtered by lab membership.
 - **Client Management**: Admins can delete or deactivate clients, with safeguards for open invoices.
 - **Duplicate Registration Prevention**: Checks for existing accounts by email, phone, and address during sign-up.
@@ -69,11 +69,11 @@ Preferred communication style: Simple, everyday language.
 
 ## Server Route Modules
 
-- `server/routes/auth.ts` — Register, login (JWT), refresh, logout, /me, user CRUD, password change
+- `server/routes/auth.ts` — Register (with optional org creation/join), login (JWT), refresh, logout, /me, user CRUD, password change
 - `server/routes/organizations.ts` — CRUD orgs, members, invites, join requests, connections (all require JWT auth)
+- `server/routes.ts` — Composes all route modules + legacy endpoints + AI/utility/SMS routes; public `GET /api/labs/groups` endpoint (no auth)
 - `server/routes/cases.ts` — Normalized case CRUD with restorations, notes, events, locations, submissions (all require JWT auth)
 - `server/routes/invoices.ts` — Generate from case restorations, CRUD, payments, sales reports (all require JWT auth)
-- `server/routes.ts` — Composes all route modules + legacy endpoints + AI/utility/SMS routes
 
 ## Server Utility Modules
 

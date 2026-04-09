@@ -254,7 +254,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }): Promise<{ success: boolean; error?: string }> {
+  async function register(data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; createOrganization?: boolean }): Promise<{ success: boolean; error?: string; message?: string; pendingJoinRequest?: boolean }> {
     try {
       const res = await resilientFetch("/api/auth/register", {
         method: "POST",
@@ -286,7 +286,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await AsyncStorage.setItem("@drivesync_role", data.role);
       }
       await fetchAllUsers();
-      return { success: true };
+      return { success: true, message: result.message, pendingJoinRequest: result.pendingJoinRequest };
     } catch (e: any) {
       console.error("Register error:", e);
       const apiUrl = getApiUrl();

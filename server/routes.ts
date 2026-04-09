@@ -4,8 +4,8 @@ import OpenAI from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "./db";
-import { users, labCases } from "../shared/schema";
-import { eq, inArray } from "drizzle-orm";
+import { users, labCases, organizations, organizationMemberships } from "../shared/schema";
+import { eq, and, inArray } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
 
@@ -62,6 +62,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/health", (_req, res) => {
     res.status(200).json({ ok: true, timestamp: new Date().toISOString() });
+  });
+
+  app.get("/api/labs/groups", async (_req, res) => {
+    try {
+      const orgs = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.type, "lab"));
+
+      const memberships = orgs.length
+        ? await db
+            .select()
+            .from(organizationMemberships)
+            .where(
+              and(
+                inArray(
+                  organizationMemberships.organizationId,
+                  orgs.map((o) => o.id)
+                ),
+                eq(organizationMemberships.status, "active")
+              )
+            )
+        : [];
+
+      const memberUserIds = [
+        ...new Set(memberships.map((m) => m.userId)),
+      ];
+      const memberUsers = memberUserIds.length
+        ? await db
+            .select()
+            .from(users)
+            .where(inArray(users.id, memberUserIds))
+        : [];
+      const userMap = new Map(memberUsers.map((u) => [u.id, u]));
+
+      const groups = orgs.map((org) => {
+        const orgMemberships = memberships.filter(
+          (m) => m.organizationId === org.id
+        );
+        const adminMembership = orgMemberships.find(
+          (m) => m.role === "owner" || m.role === "admin"
+        );
+        const adminUser = adminMembership
+          ? userMap.get(adminMembership.userId)
+          : undefined;
+        return {
+          organizationId: org.id,
+          practiceName: org.displayName || org.name,
+          username: adminUser?.username || "",
+          practiceAddress: [org.addressLine1, org.city, org.state, org.zip]
+            .filter(Boolean)
+            .join(", "),
+          memberCount: orgMemberships.length,
+        };
+      });
+
+      res.json({ groups });
+    } catch (error: any) {
+      console.error("List lab groups error:", error?.message || error);
+      res.status(500).json({ error: "Failed to fetch lab groups" });
+    }
   });
 
   app.use("/api/auth", authRoutes);

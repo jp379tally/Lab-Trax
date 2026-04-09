@@ -4,6 +4,7 @@ import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
+  organizationJoinRequests,
   organizationMemberships,
   organizations,
   userSessions,
@@ -62,6 +63,8 @@ const registerSchema = z.object({
   phoneContactName: z.string().optional(),
   accountNumber: z.string().optional(),
   wantsUpdates: z.boolean().optional(),
+  joinOrganizationId: z.string().optional(),
+  createOrganization: z.boolean().optional(),
 });
 
 router.post(
@@ -141,11 +144,67 @@ router.post(
       entityId: user.id,
     });
 
+    let responseMessage = "Account created.";
+    let pendingJoinRequest = false;
+    let organizationInfo: any = null;
+
+    if (input.joinOrganizationId) {
+      const [org] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, input.joinOrganizationId));
+      if (org) {
+        await db.insert(organizationJoinRequests).values({
+          organizationId: org.id,
+          requestedByUserId: user.id,
+          requestedRole: input.role === "admin" ? "admin" : "user",
+          message: `${user.username} would like to join ${org.displayName || org.name}.`,
+          status: "pending",
+        });
+        await db
+          .update(users)
+          .set({ practiceName: org.displayName || org.name })
+          .where(eq(users.id, user.id));
+        organizationInfo = { id: org.id, name: org.displayName || org.name };
+        pendingJoinRequest = true;
+        responseMessage = `Your request to join ${org.displayName || org.name} has been sent to the lab admin.`;
+      }
+    } else if (
+      input.createOrganization &&
+      input.practiceName?.trim() &&
+      (input.userType === "lab" || input.userType === "provider")
+    ) {
+      const orgType = input.userType === "provider" ? "provider" : "lab";
+      const [org] = await db
+        .insert(organizations)
+        .values({
+          type: orgType,
+          name: input.practiceName.trim(),
+          displayName: input.practiceName.trim(),
+          addressLine1: input.practiceAddress || null,
+          phone: input.practicePhone || null,
+          billingEmail: input.email || null,
+          createdByUserId: user.id,
+        })
+        .returning();
+      await db.insert(organizationMemberships).values({
+        organizationId: org.id,
+        userId: user.id,
+        role: "owner",
+        status: "active",
+      });
+      organizationInfo = { id: org.id, name: org.displayName || org.name };
+      responseMessage = `${org.displayName || org.name} created and linked to your account.`;
+    }
+
     return res.json({
       success: true,
       accessToken,
       refreshToken: rawRefreshToken,
       user: safeUser(user),
+      message: responseMessage,
+      pendingJoinRequest,
+      organization: organizationInfo,
     });
   })
 );
