@@ -122,18 +122,20 @@ function AuthGate() {
     <ThemeProvider>
       <AppProvider>
         <InactivityWrapper>
-          <View style={{ flex: 1, backgroundColor: "#E0EDFB" }}>
+          <View style={{ flex: 1, backgroundColor: Colors.light.backgroundSolid }}>
             <LinearGradient
-              colors={["rgba(255,255,255,0.7)", "rgba(255,255,255,0)", "rgba(255,255,255,0)", "rgba(255,255,255,0.7)"]}
-              locations={[0, 0.12, 0.88, 1]}
+              colors={["rgba(20,93,160,0.14)", "rgba(20,93,160,0.03)", "rgba(244,247,251,0)"]}
+              locations={[0, 0.35, 1]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
               style={StyleSheet.absoluteFill}
               pointerEvents="none"
             />
             <LinearGradient
-              colors={["rgba(255,255,255,0.6)", "rgba(255,255,255,0)", "rgba(255,255,255,0)", "rgba(255,255,255,0.6)"]}
-              locations={[0, 0.1, 0.9, 1]}
-              start={{ x: 0, y: 0.5 }}
-              end={{ x: 1, y: 0.5 }}
+              colors={["rgba(15,118,110,0.08)", "rgba(15,118,110,0)", "rgba(8,17,29,0.06)"]}
+              locations={[0, 0.45, 1]}
+              start={{ x: 1, y: 0 }}
+              end={{ x: 0, y: 1 }}
               style={StyleSheet.absoluteFill}
               pointerEvents="none"
             />

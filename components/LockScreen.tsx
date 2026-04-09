@@ -79,14 +79,14 @@ export default function LockScreen() {
   }
 
   return (
-    <LinearGradient colors={["#0F172A", "#1E293B", "#0F172A"]} style={styles.container}>
+    <LinearGradient colors={["#08111D", "#122033", "#08111D"]} style={styles.container}>
       <View style={[styles.content, { paddingTop: Platform.OS === "web" ? 100 : insets.top + 60 }]}>
         <View style={styles.lockIcon}>
-          <Ionicons name="lock-closed" size={48} color="#FFF" />
+          <Ionicons name="lock-closed" size={44} color={Colors.light.tint} />
         </View>
         <Text style={styles.title}>Welcome Back</Text>
         <Text style={styles.subtitle}>
-          Please authenticate to continue.
+          Authenticate to reopen your secure workspace.
         </Text>
         {currentUser && (
           <View style={styles.userBadge}>
@@ -180,17 +180,20 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     paddingHorizontal: 32,
+    width: "100%",
+    maxWidth: 460,
+    alignSelf: "center",
   },
   lockIcon: {
     width: 96,
     height: 96,
     borderRadius: 48,
-    backgroundColor: "rgba(99,102,241,0.2)",
+    backgroundColor: "rgba(20,93,160,0.18)",
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 24,
     borderWidth: 2,
-    borderColor: "rgba(99,102,241,0.3)",
+    borderColor: "rgba(20,93,160,0.32)",
   },
   title: {
     fontSize: 28,
@@ -247,7 +250,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    backgroundColor: "#6366F1",
+    backgroundColor: Colors.light.tint,
     borderRadius: 14,
     paddingVertical: 16,
     width: "100%",
@@ -290,7 +293,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.12)",
   },
   unlockBtn: {
-    backgroundColor: "#6366F1",
+    backgroundColor: Colors.light.tint,
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: "center",

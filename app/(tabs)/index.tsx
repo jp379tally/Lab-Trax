@@ -1766,7 +1766,9 @@ function AdminDashboard() {
     })();
   }, []);
 
-  const labPortalUsers = registeredUsers.filter(u => (u.userType === "lab" || (!u.userType && u.username !== "JPPhillips")) && u.username !== "JPPhillips");
+  const labPortalUsers = registeredUsers.filter(
+    (u) => (u.userType === "lab" || !u.userType) && u.userType !== "master_admin",
+  );
 
   function resetClientForm() {
     setNewClientName("");
@@ -8431,7 +8433,7 @@ function MasterAdminDashboard() {
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         {renderBackHeader("All Users")}
-        {registeredUsers.filter(u => u.username !== "JPPhillips").map((u, idx) => (
+        {registeredUsers.filter((u) => u.userType !== "master_admin").map((u, idx) => (
             <View key={u.username + idx} style={[adm.menuItem, { marginHorizontal: 20 }]}>
               <View style={[adm.menuIcon, { backgroundColor: u.userType === "provider" ? "#DBEAFE" : u.userType === "master_admin" ? "#FEF3C7" : "#E0F2FE" }]}>
                 <Ionicons name={u.userType === "provider" ? "medical" : u.userType === "master_admin" ? "shield-checkmark" : "person"} size={20} color={u.userType === "provider" ? "#3B82F6" : u.userType === "master_admin" ? "#D97706" : "#0EA5E9"} />
@@ -8452,7 +8454,9 @@ function MasterAdminDashboard() {
 
   function renderLabPortal() {
     const totalRevenue = cases.reduce((sum, c) => sum + c.price, 0);
-    const labUsers = registeredUsers.filter(u => u.userType === "lab" || (!u.userType && u.username !== "JPPhillips"));
+    const labUsers = registeredUsers.filter(
+      (u) => (u.userType === "lab" || !u.userType) && u.userType !== "master_admin",
+    );
     const openInvoiceCount = invoices.filter(i => i.status === "open" || i.status === "overdue").length;
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
@@ -9804,4 +9808,3 @@ const invStyles = StyleSheet.create({
     color: Colors.light.text,
   },
 });
-

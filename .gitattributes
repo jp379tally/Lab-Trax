@@ -1,3 +1,4 @@
 labtrax-full-source.tar.gz filter=lfs diff=lfs merge=lfs -text
 labtrax-complete.tar.gz filter=lfs diff=lfs merge=lfs -text
 attached_assets/2-labtrax-upload-second-attached-assets-part-a_1775763149244.zip filter=lfs diff=lfs merge=lfs -text
+attached_assets/3-labtrax-upload-third-attached-assets-part-b_1775763194440.zip filter=lfs diff=lfs merge=lfs -text

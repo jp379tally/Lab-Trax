@@ -11,6 +11,7 @@ import React, {
 import { AppState, AppStateStatus, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
+import * as SecureStore from "expo-secure-store";
 import { logAudit } from "./audit";
 import { getApiUrl, resilientFetch, saveTokens, clearTokens, loadTokens } from "./query-client";
 
@@ -42,7 +43,7 @@ interface AuthContextValue {
   setProfilePicUri: (uri: string | null) => void;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   loginWithBiometric: () => Promise<{ success: boolean; error?: string }>;
-  register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string }) => Promise<{ success: boolean; error?: string }>;
+  register: (data: { username: string; password: string; email: string; phone?: string; wantsUpdates?: boolean; userType?: "provider" | "lab" | "master_admin"; licenseNumber?: string; practiceName?: string; doctorName?: string; practiceAddress?: string; practicePhone?: string; phoneContactName?: string; role?: "user" | "admin"; accountNumber?: string; joinOrganizationId?: string; createOrganization?: boolean }) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   deleteAccount: () => Promise<{ success: boolean; error?: string }>;
   registeredUsers: StoredUser[];
@@ -59,9 +60,104 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const AUTH_KEY = "@drivesync_auth";
 const PROFILE_PIC_KEY = "@drivesync_profile_pic";
+const AUTH_PASSWORD_KEY = "@drivesync_auth_password";
 const BIOMETRIC_USER_KEY = "@drivesync_biometric_user";
 
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000;
+
+type SessionStore = {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+  removeItem: (key: string) => void;
+};
+
+function getWebSessionStorage(): SessionStore | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+async function getSensitiveItem(key: string): Promise<string | null> {
+  if (Platform.OS === "web") {
+    const sessionStorage = getWebSessionStorage();
+    const sessionValue = sessionStorage?.getItem(key);
+    if (sessionValue !== null && sessionValue !== undefined) {
+      return sessionValue;
+    }
+
+    try {
+      const legacyValue = await AsyncStorage.getItem(key);
+      if (legacyValue !== null) {
+        sessionStorage?.setItem(key, legacyValue);
+        await AsyncStorage.removeItem(key);
+        return legacyValue;
+      }
+    } catch {}
+
+    return null;
+  }
+
+  if (Platform.OS !== "web") {
+    try {
+      const secureValue = await SecureStore.getItemAsync(key);
+      if (secureValue !== null) {
+        return secureValue;
+      }
+    } catch {}
+  }
+
+  try {
+    return await AsyncStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+async function setSensitiveItem(key: string, value: string): Promise<void> {
+  if (Platform.OS === "web") {
+    const sessionStorage = getWebSessionStorage();
+    sessionStorage?.setItem(key, value);
+    await AsyncStorage.removeItem(key);
+    return;
+  }
+
+  if (Platform.OS !== "web") {
+    try {
+      await SecureStore.setItemAsync(key, value);
+      await AsyncStorage.removeItem(key);
+      return;
+    } catch {}
+  }
+
+  await AsyncStorage.setItem(key, value);
+}
+
+async function removeSensitiveItem(key: string): Promise<void> {
+  if (Platform.OS === "web") {
+    const sessionStorage = getWebSessionStorage();
+    sessionStorage?.removeItem(key);
+    try {
+      await AsyncStorage.removeItem(key);
+    } catch {}
+    return;
+  }
+
+  if (Platform.OS !== "web") {
+    try {
+      await SecureStore.deleteItemAsync(key);
+    } catch {}
+  }
+
+  try {
+    await AsyncStorage.removeItem(key);
+  } catch {}
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -136,6 +232,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (savedAuth) {
         const auth = JSON.parse(savedAuth);
+        const storedPassword = auth.password || await getSensitiveItem(AUTH_PASSWORD_KEY);
+        if (auth.password) {
+          await setSensitiveItem(AUTH_PASSWORD_KEY, auth.password);
+          const migratedAuth = { ...auth };
+          delete migratedAuth.password;
+          await AsyncStorage.setItem(AUTH_KEY, JSON.stringify(migratedAuth));
+        }
+
         if (auth.loggedIn && auth.username) {
           try {
             const meRes = await resilientFetch("/api/auth/me");
@@ -146,7 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               setCurrentUser(user.username);
               setCurrentUserId(user.id);
               setUserType(user.userType || "lab");
-              setCurrentPassword(auth.password || null);
+              setCurrentPassword(storedPassword);
               setIsLocked(true);
               const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
               const savedPic = await AsyncStorage.getItem(userPicKey);
@@ -156,7 +260,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               setCurrentUser(auth.username);
               setCurrentUserId(auth.userId || null);
               setUserType(auth.userType || "lab");
-              setCurrentPassword(auth.password || null);
+              setCurrentPassword(storedPassword);
               setIsLocked(true);
               const userPicKey = `${PROFILE_PIC_KEY}_${auth.userId || auth.username}`;
               const savedPic = await AsyncStorage.getItem(userPicKey);
@@ -167,7 +271,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setCurrentUser(auth.username);
             setCurrentUserId(auth.userId || null);
             setUserType(auth.userType || "lab");
-            setCurrentPassword(auth.password || null);
+            setCurrentPassword(storedPassword);
             setIsLocked(true);
           }
         } else {
@@ -217,11 +321,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setCurrentUserId(user.id);
       setUserType(user.userType || "lab");
       setCurrentPassword(password);
+      await setSensitiveItem(AUTH_PASSWORD_KEY, password);
       await AsyncStorage.setItem(
         AUTH_KEY,
-        JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || "lab", password }),
+        JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || "lab" }),
       );
-      await AsyncStorage.setItem(
+      await setSensitiveItem(
         BIOMETRIC_USER_KEY,
         JSON.stringify({ username: user.username, password }),
       );
@@ -243,7 +348,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function loginWithBiometric(): Promise<{ success: boolean; error?: string }> {
     try {
-      const stored = await AsyncStorage.getItem(BIOMETRIC_USER_KEY);
+      const stored = await getSensitiveItem(BIOMETRIC_USER_KEY);
       if (!stored) {
         return { success: false, error: "No saved credentials. Please sign in with your password first." };
       }
@@ -278,9 +383,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setCurrentUserId(user.id);
       setUserType(user.userType || data.userType || "lab");
       setCurrentPassword(data.password);
+      await setSensitiveItem(AUTH_PASSWORD_KEY, data.password);
       await AsyncStorage.setItem(
         AUTH_KEY,
-        JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || data.userType || "lab", password: data.password }),
+        JSON.stringify({ loggedIn: true, username: user.username, userId: user.id, userType: user.userType || data.userType || "lab" }),
+      );
+      await setSensitiveItem(
+        BIOMETRIC_USER_KEY,
+        JSON.stringify({ username: user.username, password: data.password }),
       );
       if (data.role) {
         await AsyncStorage.setItem("@drivesync_role", data.role);
@@ -308,7 +418,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCurrentPassword(null);
     setProfilePicUriState(null);
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
-    AsyncStorage.removeItem(AUTH_KEY);
+    await removeSensitiveItem(AUTH_PASSWORD_KEY);
+    await AsyncStorage.removeItem(AUTH_KEY);
   }
 
   async function deleteAccount(): Promise<{ success: boolean; error?: string }> {
@@ -328,6 +439,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLocked(false);
         setCurrentPassword(null);
         if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+        await removeSensitiveItem(AUTH_PASSWORD_KEY);
+        await removeSensitiveItem(BIOMETRIC_USER_KEY);
         await AsyncStorage.removeItem(AUTH_KEY);
         await AsyncStorage.removeItem("@drivesync_role");
         setRegisteredUsers((prev) => prev.filter((u) => u.id !== currentUserId));
@@ -374,14 +487,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { success: false, error: data.error || data.message || "Failed to change password" };
       }
       setCurrentPassword(newPassword);
-      await AsyncStorage.setItem(
+      await setSensitiveItem(AUTH_PASSWORD_KEY, newPassword);
+      await setSensitiveItem(
         BIOMETRIC_USER_KEY,
         JSON.stringify({ username: currentUser, password: newPassword }),
       );
       const savedAuth = await AsyncStorage.getItem(AUTH_KEY);
       if (savedAuth) {
         const auth = JSON.parse(savedAuth);
-        auth.password = newPassword;
+        delete auth.password;
         await AsyncStorage.setItem(AUTH_KEY, JSON.stringify(auth));
       }
       return { success: true };

@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "node:http";
+import { randomBytes } from "node:crypto";
 import OpenAI from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
@@ -14,46 +15,71 @@ import organizationRoutes from "./routes/organizations";
 import caseRoutes from "./routes/cases";
 import invoiceRoutes from "./routes/invoices";
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
-
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
+const DEMO_SEED_USERS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
+let cachedOpenAIClient: OpenAI | null | undefined;
+
+function getOpenAIClient(): OpenAI | null {
+  if (cachedOpenAIClient !== undefined) {
+    return cachedOpenAIClient;
+  }
+
+  const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
+  if (!apiKey) {
+    cachedOpenAIClient = null;
+    return null;
+  }
+
+  const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
+  cachedOpenAIClient = new OpenAI({
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+  });
+
+  return cachedOpenAIClient;
+}
 
 function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 function generateResetToken(): string {
-  return require("crypto").randomBytes(32).toString("hex");
+  return randomBytes(32).toString("hex");
 }
 
 const DEFAULT_USERS = [
-  { username: "admin", password: "123", userType: "lab", role: "user" },
-  { username: "tech", password: "tech123", userType: "lab", role: "user" },
-  { username: "JPPhillips", password: "Master1!", email: "john.phillips3@yahoo.com", phone: "850-363-3336", userType: "master_admin", role: "admin", accountNumber: "MA-001" },
+  { username: "labadmin_demo", password: "LabTraxDemo#2026", userType: "lab", role: "admin", email: "labadmin_demo@labtrax.local", accountNumber: "LAB-001" },
+  { username: "labtech_demo", password: "LabTraxDemo#2026", userType: "lab", role: "user", email: "labtech_demo@labtrax.local", accountNumber: "LAB-002" },
+  { username: "master_demo", password: "LabTraxDemo#2026", userType: "master_admin", role: "admin", email: "master_demo@labtrax.local", accountNumber: "MA-001" },
 ];
 
 async function seedDefaultUsers() {
+  if (!DEMO_SEED_USERS_ENABLED) {
+    return;
+  }
+
+  const existingUsers = await db.select().from(users);
+  const existingUsernames = new Set(existingUsers.map((user) => user.username.toLowerCase()));
+
   for (const def of DEFAULT_USERS) {
-    const allUsers = await db.select().from(users);
-    const existing = allUsers.find(u => u.username.toLowerCase() === def.username.toLowerCase());
-    if (!existing) {
-      const hashed = await hashPassword(def.password);
-      await db.insert(users).values({
-        username: def.username,
-        password: hashed,
-        email: (def as any).email || null,
-        phone: (def as any).phone || null,
-        userType: def.userType,
-        role: def.role,
-        accountNumber: (def as any).accountNumber || null,
-        initials: def.username.slice(0, 2).toUpperCase(),
-      });
-      console.log(`[SEED] Created default user: ${def.username}`);
+    if (existingUsernames.has(def.username.toLowerCase())) {
+      continue;
     }
+
+    const hashed = await hashPassword(def.password);
+    await db.insert(users).values({
+      username: def.username,
+      password: hashed,
+      email: (def as any).email || null,
+      phone: (def as any).phone || null,
+      userType: def.userType,
+      role: def.role,
+      accountNumber: (def as any).accountNumber || null,
+      initials: def.username.slice(0, 2).toUpperCase(),
+    });
+    existingUsernames.add(def.username.toLowerCase());
+    console.log(`[SEED] Created demo user: ${def.username}`);
   }
 }
 
@@ -447,6 +473,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/analyze-prescription", async (req, res) => {
     try {
+      const openai = getOpenAIClient();
+      if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
+
       const { imageBase64, additionalImages } = req.body;
       if (!imageBase64) return res.status(400).json({ success: false, error: "No image provided" });
 
@@ -541,6 +570,9 @@ Important rules:
 
   app.post("/api/crop-document", async (req, res) => {
     try {
+      const openai = getOpenAIClient();
+      if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
+
       const { imageBase64 } = req.body;
       if (!imageBase64) return res.status(400).json({ error: "No image provided" });
 
@@ -671,6 +703,9 @@ Important rules:
 
   app.post("/api/smile-process", async (req, res) => {
     try {
+      const openai = getOpenAIClient();
+      if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
+
       const { imageBase64, mode } = req.body;
       if (!imageBase64) return res.status(400).json({ error: "No image provided" });
 
@@ -692,7 +727,9 @@ Important rules:
   app.delete("/api/admin/cleanup-email", async (req, res) => {
     try {
       const { email, adminKey } = req.body;
-      if (adminKey !== "labtrax-cleanup-2026") return res.status(403).json({ error: "Unauthorized" });
+      const cleanupKey = process.env.LABTRAX_ADMIN_CLEANUP_KEY;
+      if (!cleanupKey) return res.status(404).json({ error: "Not found" });
+      if (adminKey !== cleanupKey) return res.status(403).json({ error: "Unauthorized" });
       if (!email) return res.status(400).json({ error: "Email required" });
       const allUsers = await db.select().from(users);
       const matches = allUsers.filter(u => u.email && u.email.toLowerCase() === email.toLowerCase());

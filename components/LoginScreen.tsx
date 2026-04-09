@@ -393,8 +393,8 @@ export default function LoginScreen() {
       } else {
         setSignUpError(data.error || "Incorrect code.");
       }
-    } catch {
-      setSignUpStep("phone_contact_name");
+    } catch (e: any) {
+      setSignUpError(e?.message || "We couldn't verify that code. Please try again.");
     }
     setSignUpLoading(false);
   }
@@ -431,8 +431,8 @@ export default function LoginScreen() {
       } else {
         setSignUpError(data.error || "Incorrect code.");
       }
-    } catch {
-      setSignUpStep("updates_opt_in");
+    } catch (e: any) {
+      setSignUpError(e?.message || "We couldn't verify that code. Please try again.");
     }
     setSignUpLoading(false);
   }
@@ -458,10 +458,6 @@ export default function LoginScreen() {
       } else {
         acctNum = "DS-" + Date.now().toString().slice(-6);
       }
-
-      try {
-        await apiRequest("POST", "/api/register", { username: signUpUsername.trim() });
-      } catch {}
 
       const isLab = (userType || "provider") === "lab";
       const resolvedAddress = isLab
@@ -745,7 +741,8 @@ export default function LoginScreen() {
   async function loadAllLabGroups() {
     try {
       const res = await apiRequest("GET", "/api/labs/groups");
-      const groups: any[] = res?.groups || [];
+      const data = await res.json();
+      const groups: any[] = Array.isArray(data.groups) ? data.groups : [];
       setAllLabGroups(groups);
     } catch {
       setAllLabGroups([]);
@@ -761,7 +758,8 @@ export default function LoginScreen() {
     setSignUpError(null);
     try {
       const res = await apiRequest("GET", "/api/labs/groups");
-      const groups: any[] = res?.groups || [];
+      const data = await res.json();
+      const groups: any[] = Array.isArray(data.groups) ? data.groups : [];
       const match = groups.find(
         (g: any) => g.practiceName.toLowerCase().trim() === labName.toLowerCase().trim()
       );
@@ -787,9 +785,11 @@ export default function LoginScreen() {
         username: signUpUsername.trim(),
         password: signUpPassword,
         email: signUpEmail.trim(),
-        phone: signUpPhone.trim(),
-        userType: signUpUserType as any,
-        role: signUpRole as any,
+        phone: wantsUpdates ? signUpPhone.trim() : undefined,
+        wantsUpdates,
+        userType: userType || "lab",
+        role: selectedRole || "user",
+        licenseNumber: licenseNumber.trim(),
         practiceName: matchingLabGroup.practiceName,
         joinOrganizationId: matchingLabGroup.organizationId,
       });
