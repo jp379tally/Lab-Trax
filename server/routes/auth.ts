@@ -1,14 +1,26 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { and, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
   organizationJoinRequests,
   organizationMemberships,
+  organizationInvites,
+  organizationConnections,
   organizations,
   userSessions,
   users,
+  labCases,
+  cases,
+  caseNotes,
+  caseAttachments,
+  caseLocations,
+  caseEvents,
+  caseSubmissionQueue,
+  invoices,
+  payments,
+  auditLogs,
 } from "../../shared/schema";
 import {
   signAccessToken,
@@ -484,10 +496,33 @@ router.delete(
     });
     if (!user) throw new HttpError(404, "User not found");
 
-    await db.delete(users).where(eq(users.id, id));
+    await db.transaction(async (tx) => {
+      await tx.delete(userSessions).where(eq(userSessions.userId, id));
+      await tx.delete(labCases).where(eq(labCases.ownerId, id));
+      await tx.delete(organizationMemberships).where(eq(organizationMemberships.userId, id));
+      await tx.delete(organizationJoinRequests).where(eq(organizationJoinRequests.requestedByUserId, id));
+      await tx.delete(organizationInvites).where(eq(organizationInvites.invitedByUserId, id));
+      await tx.update(organizationInvites).set({ acceptedByUserId: null }).where(eq(organizationInvites.acceptedByUserId, id));
+      await tx.delete(organizationConnections).where(eq(organizationConnections.requestedByUserId, id));
+      await tx.update(organizationConnections).set({ approvedByUserId: null }).where(eq(organizationConnections.approvedByUserId, id));
+      await tx.update(organizations).set({ createdByUserId: null }).where(eq(organizations.createdByUserId, id));
+      await tx.execute(sql`UPDATE cases SET created_by_user_id = NULL WHERE created_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE case_notes SET author_user_id = NULL WHERE author_user_id = ${id}`);
+      await tx.execute(sql`UPDATE case_attachments SET uploaded_by_user_id = NULL WHERE uploaded_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE case_locations SET moved_by_user_id = NULL WHERE moved_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE case_submission_queue SET submitted_by_user_id = NULL WHERE submitted_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE case_submission_queue SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE case_events SET actor_user_id = NULL WHERE actor_user_id = ${id}`);
+      await tx.execute(sql`UPDATE invoices SET created_by_user_id = NULL WHERE created_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE invoices SET updated_by_user_id = NULL WHERE updated_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE payments SET recorded_by_user_id = NULL WHERE recorded_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE audit_logs SET user_id = NULL WHERE user_id = ${id}`);
+      await tx.delete(users).where(eq(users.id, id));
+    });
+
     await writeAuditLog({
       req,
-      userId: id,
+      userId: null as any,
       action: "user_deleted",
       entityType: "user",
       entityId: id,

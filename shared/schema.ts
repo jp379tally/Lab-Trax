@@ -227,8 +227,7 @@ export const cases = pgTable(
       .defaultNow()
       .notNull(),
     createdByUserId: varchar("created_by_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
+      .references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -300,8 +299,7 @@ export const caseNotes = pgTable("case_notes", {
     .notNull()
     .references(() => cases.id, { onDelete: "cascade" }),
   authorUserId: varchar("author_user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "restrict" }),
+    .references(() => users.id, { onDelete: "set null" }),
   authorOrganizationId: varchar("author_organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "restrict" }),
@@ -319,8 +317,7 @@ export const caseAttachments = pgTable("case_attachments", {
     .notNull()
     .references(() => cases.id, { onDelete: "cascade" }),
   uploadedByUserId: varchar("uploaded_by_user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "restrict" }),
+    .references(() => users.id, { onDelete: "set null" }),
   uploadedByOrganizationId: varchar("uploaded_by_organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "restrict" }),
@@ -341,8 +338,7 @@ export const caseLocations = pgTable("case_locations", {
   locationCode: text("location_code").notNull(),
   locationName: text("location_name").notNull(),
   movedByUserId: varchar("moved_by_user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "restrict" }),
+    .references(() => users.id, { onDelete: "set null" }),
   movedAt: timestamp("moved_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -357,8 +353,7 @@ export const caseSubmissionQueue = pgTable("case_submission_queue", {
     .notNull()
     .references(() => cases.id, { onDelete: "cascade" }),
   submittedByUserId: varchar("submitted_by_user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "restrict" }),
+    .references(() => users.id, { onDelete: "set null" }),
   submittedByOrganizationId: varchar("submitted_by_organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "restrict" }),
@@ -407,8 +402,7 @@ export const invoices = pgTable(
     issuedAt: timestamp("issued_at", { withTimezone: true }),
     dueAt: timestamp("due_at", { withTimezone: true }),
     createdByUserId: varchar("created_by_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
+      .references(() => users.id, { onDelete: "set null" }),
     updatedByUserId: varchar("updated_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -458,8 +452,7 @@ export const payments = pgTable("payments", {
   referenceNumber: text("reference_number"),
   paidAt: timestamp("paid_at", { withTimezone: true }).defaultNow().notNull(),
   recordedByUserId: varchar("recorded_by_user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "restrict" }),
+    .references(() => users.id, { onDelete: "set null" }),
   createdAt: createdAt(),
 });
 
