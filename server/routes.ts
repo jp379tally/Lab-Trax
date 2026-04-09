@@ -9,6 +9,7 @@ import { users, labCases, organizations, organizationMemberships } from "../shar
 import { eq, and, inArray } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
+import { requireAuth } from "./middleware/auth";
 
 import authRoutes from "./routes/auth";
 import organizationRoutes from "./routes/organizations";
@@ -170,7 +171,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ available: !existing });
   });
 
-  app.post("/api/legacy/cases", async (req, res) => {
+  app.post("/api/legacy/cases", requireAuth, async (req, res) => {
     try {
       const { id, ownerId, caseData } = req.body;
       if (!id || !ownerId || !caseData) {
@@ -192,7 +193,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/legacy/cases", async (req, res) => {
+  app.get("/api/legacy/cases", requireAuth, async (req, res) => {
     try {
       const ownerIdsParam = req.query.ownerIds as string;
       if (!ownerIdsParam) {
@@ -211,7 +212,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/legacy/cases/:caseId", async (req, res) => {
+  app.delete("/api/legacy/cases/:caseId", requireAuth, async (req, res) => {
     try {
       const { caseId } = req.params;
       await db.delete(labCases).where(eq(labCases.id, caseId));
@@ -443,7 +444,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/send-case-update-text", async (req, res) => {
+  app.post("/api/send-case-update-text", requireAuth, async (req, res) => {
     const { providerPhone, caseNumber, patientName, status, message } = req.body;
     if (!providerPhone || !caseNumber) return res.status(400).json({ error: "Provider phone and case number required" });
 
@@ -471,7 +472,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/analyze-prescription", async (req, res) => {
+  app.post("/api/analyze-prescription", requireAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
@@ -568,7 +569,7 @@ Important rules:
     }
   });
 
-  app.post("/api/crop-document", async (req, res) => {
+  app.post("/api/crop-document", requireAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
@@ -632,7 +633,7 @@ Important rules:
     } catch { return res.status(500).json({ error: "Unable to process this image." }); }
   });
 
-  app.post("/api/detect-document", async (req, res) => {
+  app.post("/api/detect-document", requireAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
@@ -674,7 +675,7 @@ Important rules:
     } catch { return res.status(500).json({ error: "Unable to process this image." }); }
   });
 
-  app.post("/api/apply-crop", async (req, res) => {
+  app.post("/api/apply-crop", requireAuth, async (req, res) => {
     try {
       const { imageBase64, crop } = req.body;
       if (!imageBase64 || !crop) return res.status(400).json({ error: "Image and crop coordinates required" });
@@ -704,7 +705,7 @@ Important rules:
     } catch { return res.status(500).json({ error: "Unable to crop image." }); }
   });
 
-  app.post("/api/document-to-pdf", async (req, res) => {
+  app.post("/api/document-to-pdf", requireAuth, async (req, res) => {
     try {
       const { images } = req.body;
       if (!images || !Array.isArray(images) || images.length === 0) return res.status(400).json({ error: "No images provided" });
@@ -773,7 +774,7 @@ Important rules:
     } catch (err: any) { res.status(500).json({ error: "PDF generation failed" }); }
   });
 
-  app.post("/api/smile-process", async (req, res) => {
+  app.post("/api/smile-process", requireAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
@@ -806,9 +807,33 @@ Important rules:
       const allUsers = await db.select().from(users);
       const matches = allUsers.filter(u => u.email && u.email.toLowerCase() === email.toLowerCase());
       if (matches.length === 0) return res.json({ success: true, deleted: 0, message: "No users found" });
+      const { sql } = await import("drizzle-orm");
       let deletedCount = 0;
       for (const u of matches) {
-        await db.delete(users).where(eq(users.id, u.id));
+        await db.transaction(async (tx) => {
+          const uid = u.id;
+          await tx.execute(sql`DELETE FROM user_sessions WHERE user_id = ${uid}`);
+          await tx.execute(sql`DELETE FROM lab_cases WHERE owner_id = ${uid}`);
+          await tx.execute(sql`DELETE FROM organization_memberships WHERE user_id = ${uid}`);
+          await tx.execute(sql`DELETE FROM organization_join_requests WHERE requested_by_user_id = ${uid}`);
+          await tx.execute(sql`DELETE FROM organization_invites WHERE invited_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE organization_invites SET accepted_by_user_id = NULL WHERE accepted_by_user_id = ${uid}`);
+          await tx.execute(sql`DELETE FROM organization_connections WHERE requested_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE organization_connections SET approved_by_user_id = NULL WHERE approved_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE organizations SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE cases SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE case_notes SET author_user_id = NULL WHERE author_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE case_attachments SET uploaded_by_user_id = NULL WHERE uploaded_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE case_locations SET moved_by_user_id = NULL WHERE moved_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE case_submission_queue SET submitted_by_user_id = NULL WHERE submitted_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE case_submission_queue SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE case_events SET actor_user_id = NULL WHERE actor_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE invoices SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE invoices SET updated_by_user_id = NULL WHERE updated_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE payments SET recorded_by_user_id = NULL WHERE recorded_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE audit_logs SET user_id = NULL WHERE user_id = ${uid}`);
+          await tx.delete(users).where(eq(users.id, uid));
+        });
         deletedCount++;
       }
       res.json({ success: true, deleted: deletedCount, found: matches.length });

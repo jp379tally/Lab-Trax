@@ -920,7 +920,7 @@ export default function SettingsScreen() {
                                 ]
                               );
                             }}
-                            testID={`join-lab-${lab.id}`}
+                            testID={`join-lab-${lab.username}`}
                           >
                             <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Join</Text>
                           </Pressable>

@@ -297,6 +297,19 @@ router.post(
       })
       .where(eq(organizationInvites.id, invite.id));
 
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, invite.organizationId),
+    });
+    if (org) {
+      await db
+        .update(users)
+        .set({
+          practiceName: org.name,
+          role: invite.roleToAssign === "admin" || invite.roleToAssign === "owner" ? "admin" : "user",
+        })
+        .where(eq(users.id, userId));
+    }
+
     await writeAuditLog({
       req,
       organizationId: invite.organizationId,
@@ -433,6 +446,19 @@ router.post(
       })
       .where(eq(organizationJoinRequests.id, request.id))
       .returning();
+
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, request.organizationId),
+    });
+    if (org) {
+      await db
+        .update(users)
+        .set({
+          practiceName: org.name,
+          role: roleToAssign === "admin" || roleToAssign === "owner" ? "admin" : "user",
+        })
+        .where(eq(users.id, request.requestedByUserId));
+    }
 
     await writeAuditLog({
       req,

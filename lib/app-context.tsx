@@ -1303,6 +1303,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
       status: "pending",
       createdAt: Date.now(),
     };
+
+    const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === targetAdminUsername.toLowerCase());
+    if (adminProfile?.practiceName) {
+      resilientFetch("/api/labs/groups")
+        .then(r => r.json())
+        .then((resp: { groups?: Array<{ practiceName: string; organizationId: string }> }) => {
+          const match = (resp.groups || []).find(g => g.practiceName.toLowerCase() === adminProfile.practiceName!.toLowerCase());
+          if (match?.organizationId) {
+            return resilientFetch(`/api/organizations/${match.organizationId}/join-requests`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ requestedRole: "user", message: request.message }),
+            }).then(r => r.json()).then(data => {
+              if (data?.data?.id) {
+                request.serverJoinRequestId = data.data.id;
+                const latest = [...groupJoinRequests, request];
+                setGroupJoinRequests(latest);
+                AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(latest));
+              }
+            });
+          }
+        })
+        .catch(() => {});
+    }
+
     const updated = [...groupJoinRequests, request];
     setGroupJoinRequests(updated);
     AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
@@ -1326,15 +1351,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const requestingUser = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
 
     if (accept) {
-      if (adminProfile?.practiceName && requestingUser?.id) {
-        const apiUrl = getApiUrl();
-        const url = new URL(`/api/auth/users/${requestingUser.id}/profile`, apiUrl);
-        const profileUpdate: Record<string, string> = { practiceName: adminProfile.practiceName };
-        if (role) profileUpdate.role = role;
-        resilientFetch(url.toString(), {
+      if (request.serverJoinRequestId) {
+        resilientFetch(`/api/organizations/join-requests/${request.serverJoinRequestId}/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: role || "user" }),
+        }).then(() => {
+          refreshUsers();
+        }).catch(() => {});
+      } else if (adminProfile?.practiceName && requestingUser?.id) {
+        resilientFetch(`/api/auth/users/${requestingUser.id}/profile`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(profileUpdate),
+          body: JSON.stringify({ practiceName: adminProfile.practiceName, ...(role ? { role } : {}) }),
         }).then(() => {
           refreshUsers();
         }).catch(() => {});
@@ -1429,15 +1458,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const targetUser = registeredUsers.find(u => u.username.toLowerCase() === invite.targetUsername.toLowerCase());
 
     if (accept) {
-      if (targetUser?.id) {
-        const apiUrl = getApiUrl();
-        const url = new URL(`/api/auth/users/${targetUser.id}/profile`, apiUrl);
-        const profileUpdate: Record<string, string> = { practiceName: invite.adminLabName };
-        profileUpdate.role = invite.role;
-        resilientFetch(url.toString(), {
+      if (invite.serverInviteToken) {
+        resilientFetch(`/api/organizations/invites/${invite.serverInviteToken}/accept`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }).then(() => {
+          refreshUsers();
+        }).catch(() => {});
+      } else if (targetUser?.id) {
+        resilientFetch(`/api/auth/users/${targetUser.id}/profile`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(profileUpdate),
+          body: JSON.stringify({ practiceName: invite.adminLabName, role: invite.role }),
         }).then(() => {
           refreshUsers();
         }).catch(() => {});

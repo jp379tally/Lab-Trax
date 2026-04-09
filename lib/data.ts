@@ -190,6 +190,7 @@ export interface GroupJoinRequest {
   message: string;
   status: "pending" | "accepted" | "declined";
   createdAt: number;
+  serverJoinRequestId?: string;
 }
 
 export interface LabInvitation {
@@ -201,6 +202,7 @@ export interface LabInvitation {
   role: "admin" | "user";
   status: "pending" | "accepted" | "declined";
   createdAt: number;
+  serverInviteToken?: string;
 }
 
 export function getStationInfo(status: CaseStatus, customLabels?: Record<string, string>) {

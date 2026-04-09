@@ -378,6 +378,7 @@ router.get(
 
 router.get(
   "/users",
+  requireAuth,
   asyncHandler(async (_req, res) => {
     const allUsers = await db.select().from(users);
     res.json({
@@ -392,7 +393,34 @@ router.put(
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const authUserId = (req as any).auth.userId;
-    if (authUserId !== id) {
+    const isSelf = authUserId === id;
+    let isLabAdmin = false;
+
+    if (!isSelf) {
+      const adminMemberships = await db.query.organizationMemberships.findMany({
+        where: and(
+          eq(organizationMemberships.userId, authUserId),
+          eq(organizationMemberships.status, "active"),
+        ),
+      });
+      const adminOrgIds = adminMemberships
+        .filter(m => ["owner", "admin"].includes(m.role))
+        .map(m => m.organizationId);
+
+      if (adminOrgIds.length > 0) {
+        const targetMembership = await db.query.organizationMemberships.findFirst({
+          where: and(
+            eq(organizationMemberships.userId, id),
+            eq(organizationMemberships.status, "active"),
+            inArray(organizationMemberships.organizationId, adminOrgIds),
+          ),
+        });
+        if (targetMembership) {
+          isLabAdmin = true;
+        }
+      }
+    }
+    if (!isSelf && !isLabAdmin) {
       throw new HttpError(403, "Unauthorized");
     }
     const user = await db.query.users.findFirst({
@@ -573,27 +601,44 @@ router.delete(
     if (!creatorId || creatorId !== user.id) {
       throw new HttpError(403, "Only the admin who created this lab can delete it.");
     }
-    const labNameLower = labName.toLowerCase().trim();
-    const allLabUsers = await db.select().from(users);
-    const labMembers = allLabUsers.filter(
-      (u) => u.practiceName?.toLowerCase().trim() === labNameLower
-    );
-    const memberIds = labMembers.map((m) => m.id);
-    if (memberIds.length > 0) {
-      await db
-        .update(users)
-        .set({ practiceName: null })
-        .where(inArray(users.id, memberIds));
-    }
+
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.name, labName),
+    });
+
+    await db.transaction(async (tx) => {
+      if (org) {
+        await tx.delete(organizationInvites).where(eq(organizationInvites.organizationId, org.id));
+        await tx.delete(organizationJoinRequests).where(eq(organizationJoinRequests.organizationId, org.id));
+        await tx.delete(organizationConnections).where(eq(organizationConnections.labOrganizationId, org.id));
+        await tx.delete(organizationConnections).where(eq(organizationConnections.providerOrganizationId, org.id));
+        await tx.delete(organizationMemberships).where(eq(organizationMemberships.organizationId, org.id));
+        await tx.update(organizations).set({ isActive: false }).where(eq(organizations.id, org.id));
+      }
+
+      const labNameLower = labName.toLowerCase().trim();
+      const allLabUsers = await tx.select().from(users);
+      const labMembers = allLabUsers.filter(
+        (u) => u.practiceName?.toLowerCase().trim() === labNameLower
+      );
+      const memberIds = labMembers.map((m) => m.id);
+      if (memberIds.length > 0) {
+        await tx
+          .update(users)
+          .set({ practiceName: null })
+          .where(inArray(users.id, memberIds));
+      }
+    });
+
     await writeAuditLog({
       req,
       userId: user.id,
       action: "lab_deleted",
       entityType: "organization",
-      entityId: labNameLower,
-      details: { labName, membersRemoved: memberIds.length },
+      entityId: org?.id || labName,
+      metadataJson: { labName, organizationId: org?.id },
     });
-    res.json({ success: true, membersRemoved: memberIds.length });
+    res.json({ success: true });
   })
 );
 
