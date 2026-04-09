@@ -24,3 +24,9 @@ id = "9zst1VvP1V3D9mmoHbBIN"
 uri = "file://labtrax-full-source.tar.gz"
 type = "unspecified"
 title = "LabTrax Full Source Code + Assets (202MB)"
+
+[[outputs]]
+id = "ZQs1OTEjuxqIbCx8hegVY"
+uri = "file://labtrax-source.tar.gz"
+type = "unspecified"
+title = "LabTrax Source Code (v1.0.6, build 51)"
