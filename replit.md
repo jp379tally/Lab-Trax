@@ -27,6 +27,7 @@ Preferred communication style: Simple, everyday language.
 - **Audit Logging**: All significant actions logged to `audit_logs` table via `server/lib/audit.ts`.
 - **CORS**: Dynamically configured for Replit and local development. Allows `Authorization` header.
 - **Static Serving**: Serves pre-built Expo web bundle in production.
+- **Landing Page**: Full-featured marketing page at `server/templates/landing-page.html` with Inter font, feature grid (9 cards), workflow steps, QR code for mobile, and compliance section. Placeholders replaced at serve time: `APP_NAME_PLACEHOLDER`, `EXPS_URL_PLACEHOLDER`, `BASE_URL_PLACEHOLDER`.
 
 ### Data Storage
 - **Server-side**: PostgreSQL via Drizzle ORM.
