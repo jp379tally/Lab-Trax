@@ -24,7 +24,8 @@ import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, refreshCases } = useApp();
+  const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
@@ -386,6 +387,12 @@ export default function CasesScreen() {
           { paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 },
         ]}
         showsVerticalScrollIndicator={false}
+        refreshing={refreshing}
+        onRefresh={async () => {
+          setRefreshing(true);
+          await refreshCases();
+          setRefreshing(false);
+        }}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <Feather

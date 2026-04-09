@@ -116,6 +116,7 @@ interface AppContextValue {
   reactivateClient: (clientId: string) => void;
   deletedClientInvoices: DeletedClientInvoice[];
   inactiveClients: Client[];
+  refreshCases: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -240,6 +241,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const syncReadyRef = useRef(false);
   const fetchingRef = useRef(false);
 
+  async function refreshCases() {
+    if (fetchingRef.current || labMemberIds.size === 0) return;
+    fetchingRef.current = true;
+    try {
+      const ownerIds = Array.from(labMemberIds);
+      const serverCases = await fetchCasesFromServer(ownerIds);
+      mergeServerCases(serverCases);
+    } catch (e) {
+      console.log("Could not refresh cases:", e);
+    } finally {
+      fetchingRef.current = false;
+    }
+  }
+
+  function mergeServerCases(serverCases: LabCase[]) {
+    if (serverCases.length === 0) return;
+    setAllCases(prev => {
+      const localMap = new Map(prev.map(c => [c.id, c]));
+      let changed = false;
+      for (const sc of serverCases) {
+        const local = localMap.get(sc.id);
+        if (!local) {
+          localMap.set(sc.id, sc);
+          changed = true;
+        } else if (sc.updatedAt && local.updatedAt && sc.updatedAt > local.updatedAt) {
+          localMap.set(sc.id, sc);
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      const merged = Array.from(localMap.values());
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(merged));
+      prevCasesRef.current = merged;
+      return merged;
+    });
+  }
+
   useEffect(() => {
     if (!currentUserId || labMemberIds.size === 0) return;
     syncReadyRef.current = false;
@@ -247,25 +285,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const ownerIds = Array.from(labMemberIds);
     fetchCasesFromServer(ownerIds).then(serverCases => {
       if (serverCases.length > 0) {
-        setAllCases(prev => {
-          const localMap = new Map(prev.map(c => [c.id, c]));
-          for (const sc of serverCases) {
-            const local = localMap.get(sc.id);
-            if (!local || (sc.updatedAt && local.updatedAt && sc.updatedAt > local.updatedAt)) {
-              localMap.set(sc.id, sc);
-            }
-          }
-          const merged = Array.from(localMap.values());
-          AsyncStorage.setItem(CASES_KEY, JSON.stringify(merged));
-          prevCasesRef.current = merged;
-          return merged;
-        });
+        mergeServerCases(serverCases);
       } else {
         prevCasesRef.current = allCases;
       }
       fetchingRef.current = false;
       syncReadyRef.current = true;
     });
+  }, [currentUserId, labMemberIds]);
+
+  useEffect(() => {
+    if (!currentUserId || labMemberIds.size === 0) return;
+    const ownerIds = Array.from(labMemberIds);
+    const interval = setInterval(() => {
+      if (fetchingRef.current) return;
+      fetchingRef.current = true;
+      fetchCasesFromServer(ownerIds).then(serverCases => {
+        mergeServerCases(serverCases);
+        fetchingRef.current = false;
+      }).catch(() => { fetchingRef.current = false; });
+    }, 15000);
+    return () => clearInterval(interval);
   }, [currentUserId, labMemberIds]);
 
   useEffect(() => {
@@ -504,6 +544,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const updated = [newCase, ...allCases];
     setAllCases(updated);
     AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+    syncCaseToServer(newCase);
 
     const newNotif: Notification = {
       id: generateId(),
@@ -535,7 +576,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
-          return {
+          const updatedCase = {
             ...c,
             status: newStatus,
             updatedAt: now,
@@ -546,6 +587,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ],
             activityLog: [...(c.activityLog || []), stationEntry],
           };
+          syncCaseToServer(updatedCase);
+          return updatedCase;
         }
         return c;
       });
@@ -764,7 +807,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
-          return { ...c, ...updates, updatedAt: Date.now() };
+          const updatedCase = { ...c, ...updates, updatedAt: Date.now() };
+          syncCaseToServer(updatedCase);
+          return updatedCase;
         }
         return c;
       });
@@ -779,6 +824,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
       return updated;
     });
+    deleteCaseFromServer(caseId);
   }
 
   function removeInvoice(invoiceId: string) {
@@ -1682,6 +1728,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       reactivateClient,
       deletedClientInvoices,
       inactiveClients: clients.filter(c => c.status === "inactive"),
+      refreshCases,
     }),
     [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, deletedClientInvoices],
   );
