@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   StyleSheet,
   View,
@@ -26,6 +27,12 @@ export default function CasesScreen() {
   const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients } = useApp();
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
+  const [companyLogo, setCompanyLogo] = useState<string | null>(null);
+  useEffect(() => {
+    AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
+      if (uri) setCompanyLogo(uri);
+    });
+  }, []);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<CaseStatus | "ALL">("ALL");
   const [showBarcodeLocate, setShowBarcodeLocate] = useState(false);
@@ -492,6 +499,7 @@ export default function CasesScreen() {
           onClose={() => setInvoiceCase(null)}
           invoice={getCaseInvoice(invoiceCase)}
           editable={isAdmin}
+          companyLogo={companyLogo}
           doctorPricing={(() => {
             const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
             const drName = stripDr(invoiceCase.doctorName || "");

@@ -1,4 +1,5 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   StyleSheet,
   View,
@@ -36,6 +37,12 @@ export default function CaseDetailScreen() {
   const { currentUser, userType } = useAuth();
   const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
   const insets = useSafeAreaInsets();
+  const [companyLogo, setCompanyLogo] = useState<string | null>(null);
+  useEffect(() => {
+    AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
+      if (uri) setCompanyLogo(uri);
+    });
+  }, []);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [noteText, setNoteText] = useState("");
@@ -3215,6 +3222,7 @@ export default function CaseDetailScreen() {
         onClose={() => setShowInvoiceModal(false)}
         invoice={caseInvoice}
         editable={isAdmin}
+        companyLogo={companyLogo}
         doctorPricing={(() => {
           const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
           const drName = stripDr(caseItem.doctorName || "");

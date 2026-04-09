@@ -10,8 +10,8 @@ import {
   TextInput,
   Alert,
   KeyboardAvoidingView,
-  FlatList,
 } from "react-native";
+import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Invoice, InvoiceLineItem } from "@/lib/data";
@@ -44,6 +44,10 @@ interface InvoicePDFViewerProps {
   editable?: boolean;
   onSave?: (updatedInvoice: Invoice) => void;
   doctorPricing?: Record<string, number>;
+  companyLogo?: string | null;
+  labName?: string;
+  labAddress?: string;
+  labPhone?: string;
 }
 
 function formatDate(ts: number) {
@@ -59,7 +63,7 @@ function formatCurrency(amount: number) {
   return "$" + amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing }: InvoicePDFViewerProps) {
+export default function InvoicePDFViewer({ visible, onClose, invoice, editable = false, onSave, doctorPricing, companyLogo, labName, labAddress, labPhone }: InvoicePDFViewerProps) {
   const insets = useSafeAreaInsets();
   const [editMode, setEditMode] = useState(false);
   const [editLineItems, setEditLineItems] = useState<InvoiceLineItem[]>([]);
@@ -324,16 +328,25 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
               <View style={s.paperTopStripe} />
 
               <View style={s.paperContent}>
+                {/* Header: Logo/Company + Invoice title */}
                 <View style={s.topRow}>
-                  <View>
-                    <Text style={s.labName}>LabTrax</Text>
-                    <Text style={s.labDetail}>Dental Laboratory Services</Text>
-                    <Text style={s.labDetail}>1234 Innovation Dr, Suite 100</Text>
-                    <Text style={s.labDetail}>Pensacola, FL 32501</Text>
-                    <Text style={s.labDetail}>(850) 555-0100</Text>
+                  <View style={s.topRowLeft}>
+                    {companyLogo ? (
+                      <Image
+                        source={{ uri: companyLogo }}
+                        style={s.companyLogo}
+                        contentFit="contain"
+                      />
+                    ) : null}
+                    <View style={companyLogo ? s.labInfoWithLogo : undefined}>
+                      <Text style={s.labName}>{labName || "LabTrax"}</Text>
+                      {labAddress ? <Text style={s.labDetail}>{labAddress}</Text> : null}
+                      {labPhone ? <Text style={s.labDetail}>{labPhone}</Text> : null}
+                    </View>
                   </View>
                   <View style={s.invoiceBadgeCol}>
                     <Text style={s.invoiceLabel}>INVOICE</Text>
+                    <Text style={s.invoiceNumber}>{formatInvNum(invoice.invoiceNumber)}</Text>
                     <View style={[s.statusPill, { backgroundColor: statusColor + "18" }]}>
                       <View style={[s.statusDot, { backgroundColor: statusColor }]} />
                       <Text style={[s.statusPillText, { color: statusColor }]}>
@@ -345,23 +358,21 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
 
                 <View style={s.divider} />
 
-                <View style={s.metaRow}>
-                  <View style={s.metaCol}>
-                    <Text style={s.metaLabel}>Invoice</Text>
-                    <Text style={s.metaValue}>{formatInvNum(invoice.invoiceNumber)}</Text>
+                {/* Dates row */}
+                <View style={s.datesRow}>
+                  <View style={s.dateItem}>
+                    <Text style={s.dateLabel}>Issue Date</Text>
+                    <Text style={s.dateValue}>{formatDate(invoice.issuedAt)}</Text>
                   </View>
-                  <View style={s.metaCol}>
-                    <Text style={s.metaLabel}>Issue Date</Text>
-                    <Text style={s.metaValue}>{formatDate(invoice.issuedAt)}</Text>
-                  </View>
-                  <View style={s.metaCol}>
-                    <Text style={s.metaLabel}>Due Date</Text>
-                    <Text style={s.metaValue}>{formatDate(invoice.dueAt)}</Text>
+                  <View style={s.dateItem}>
+                    <Text style={s.dateLabel}>Due Date</Text>
+                    <Text style={s.dateValue}>{formatDate(invoice.dueAt)}</Text>
                   </View>
                 </View>
 
+                {/* Bill To / Patient */}
                 <View style={s.billToSection}>
-                  <View style={s.billToCol}>
+                  <View style={[s.billToCol, { flex: 1.2 }]}>
                     <Text style={s.billToLabel}>BILL TO</Text>
                     {editMode ? (
                       <TextInput
@@ -372,16 +383,18 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                         placeholderTextColor="#94A3B8"
                       />
                     ) : (
-                      <Text style={s.billToName}>{invoice.billTo}</Text>
+                      <Text style={s.billToName} numberOfLines={2}>{invoice.billTo}</Text>
                     )}
                     <Text style={s.billToDetail}>{invoice.clientName}</Text>
                   </View>
-                  <View style={s.billToCol}>
+                  <View style={s.billToDivider} />
+                  <View style={[s.billToCol, { flex: 0.8 }]}>
                     <Text style={s.billToLabel}>PATIENT</Text>
                     <Text style={s.billToName}>{invoice.patientName}</Text>
                   </View>
                 </View>
 
+                {/* Case details */}
                 <View style={s.caseInfoBar}>
                   <View style={s.caseInfoItem}>
                     <Text style={s.caseInfoLabel}>Case Type</Text>
@@ -399,22 +412,26 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   </View>
                 </View>
 
+                {/* Line items table - simplified columns */}
                 <View style={s.tableHeader}>
-                  <Text style={[s.tableHeaderText, s.colQty]}>QTY</Text>
-                  <Text style={[s.tableHeaderText, s.colItem]}>ITEM</Text>
-                  <Text style={[s.tableHeaderText, s.colDesc]}>DESCRIPTION</Text>
-                  <Text style={[s.tableHeaderText, s.colRate]}>RATE</Text>
-                  <Text style={[s.tableHeaderText, s.colAmount]}>AMOUNT</Text>
-                  {editMode && <View style={{ width: 60 }} />}
+                  <Text style={[s.tableHeaderText, s.colItem2]}>ITEM</Text>
+                  <Text style={[s.tableHeaderText, s.colQty2]}>QTY</Text>
+                  <Text style={[s.tableHeaderText, s.colRate2]}>RATE</Text>
+                  <Text style={[s.tableHeaderText, s.colAmount2]}>AMOUNT</Text>
+                  {editMode && <View style={{ width: 56 }} />}
                 </View>
 
                 {displayItems.map((li, idx) => (
                   <View key={idx} style={[s.tableRow, idx % 2 === 0 && s.tableRowAlt]}>
-                    <Text style={[s.tableCell, s.colQty]}>{li.qty}</Text>
-                    <Text style={[s.tableCell, s.colItem, s.tableCellBold]}>{li.item}</Text>
-                    <Text style={[s.tableCell, s.colDesc]} numberOfLines={2}>{li.description}</Text>
-                    <Text style={[s.tableCell, s.colRate]}>{formatCurrency(li.rate)}</Text>
-                    <Text style={[s.tableCell, s.colAmount, s.tableCellBold]}>{formatCurrency(li.amount)}</Text>
+                    <View style={s.colItem2}>
+                      <Text style={s.tableCellBold} numberOfLines={1}>{li.item}</Text>
+                      {li.description && li.description !== li.item ? (
+                        <Text style={s.tableCellDesc} numberOfLines={1}>{li.description}</Text>
+                      ) : null}
+                    </View>
+                    <Text style={[s.tableCell, s.colQty2]}>{li.qty}</Text>
+                    <Text style={[s.tableCell, s.colRate2]}>{formatCurrency(li.rate)}</Text>
+                    <Text style={[s.tableCell, s.colAmount2, s.tableCellBold]}>{formatCurrency(li.amount)}</Text>
                     {editMode && (
                       <View style={s.rowActions}>
                         <Pressable onPress={() => handleEditItem(idx)} hitSlop={8}>
@@ -441,6 +458,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   </Pressable>
                 )}
 
+                {/* Totals */}
                 <View style={s.totalsSection}>
                   <View style={s.totalRow}>
                     <Text style={s.totalLabel}>Subtotal</Text>
@@ -459,6 +477,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   </View>
                 </View>
 
+                {/* Notes */}
                 {editMode ? (
                   <View style={s.notesSection}>
                     <Text style={s.notesLabel}>NOTES</Text>
@@ -478,6 +497,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   </View>
                 ) : null}
 
+                {/* Footer */}
                 <View style={s.footer}>
                   <View style={s.footerDivider} />
                   <Text style={s.footerText}>Thank you for your business</Text>
@@ -721,11 +741,25 @@ const s = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "flex-start",
   },
+  topRowLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    gap: 12,
+  },
+  companyLogo: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+  },
+  labInfoWithLogo: {
+    flex: 1,
+  },
   labName: {
-    fontSize: 20,
+    fontSize: 18,
     fontFamily: "Inter_700Bold",
     color: "#1E293B",
-    marginBottom: 2,
+    marginBottom: 1,
   },
   labDetail: {
     fontSize: 11,
@@ -735,12 +769,19 @@ const s = StyleSheet.create({
   },
   invoiceBadgeCol: {
     alignItems: "flex-end",
+    marginLeft: 12,
   },
   invoiceLabel: {
-    fontSize: 24,
+    fontSize: 22,
     fontFamily: "Inter_700Bold",
     color: "#2563EB",
     letterSpacing: 2,
+  },
+  invoiceNumber: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: "#64748B",
+    marginTop: 2,
   },
   statusPill: {
     flexDirection: "row",
@@ -766,15 +807,13 @@ const s = StyleSheet.create({
     backgroundColor: "#E2E8F0",
     marginVertical: 16,
   },
-  metaRow: {
+  datesRow: {
     flexDirection: "row",
-    gap: 16,
+    gap: 24,
     marginBottom: 16,
   },
-  metaCol: {
-    flex: 1,
-  },
-  metaLabel: {
+  dateItem: {},
+  dateLabel: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
     color: "#94A3B8",
@@ -782,21 +821,25 @@ const s = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 3,
   },
-  metaValue: {
+  dateValue: {
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: "#1E293B",
   },
   billToSection: {
     flexDirection: "row",
-    gap: 20,
     marginBottom: 16,
     backgroundColor: "#F8FAFC",
     padding: 14,
     borderRadius: 10,
+    alignItems: "flex-start",
   },
-  billToCol: {
-    flex: 1,
+  billToCol: {},
+  billToDivider: {
+    width: 1,
+    backgroundColor: "#E2E8F0",
+    alignSelf: "stretch",
+    marginHorizontal: 14,
   },
   billToLabel: {
     fontSize: 9,
@@ -878,28 +921,31 @@ const s = StyleSheet.create({
     color: "#334155",
   },
   tableCellBold: {
+    fontSize: 12,
     fontFamily: "Inter_600SemiBold",
     color: "#1E293B",
   },
-  colQty: {
-    width: 32,
+  tableCellDesc: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: "#94A3B8",
+    marginTop: 1,
+  },
+  colItem2: {
+    flex: 1,
+    paddingRight: 8,
+  },
+  colQty2: {
+    width: 36,
     textAlign: "center",
   },
-  colItem: {
-    width: 80,
-    paddingRight: 6,
-  },
-  colDesc: {
-    flex: 1,
-    paddingRight: 6,
-  },
-  colRate: {
-    width: 60,
+  colRate2: {
+    width: 64,
     textAlign: "right",
-    paddingRight: 6,
+    paddingRight: 8,
   },
-  colAmount: {
-    width: 65,
+  colAmount2: {
+    width: 72,
     textAlign: "right",
   },
   rowActions: {
