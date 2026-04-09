@@ -786,6 +786,41 @@ export default function ScanScreen() {
     }
   }
 
+  const [webDragOver, setWebDragOver] = useState(false);
+
+  async function processWebFiles(files: FileList | File[]) {
+    if (!files || (files as any).length === 0) return;
+    setPhase("scanning");
+    setCapturedUri(null);
+    const uploadedUris: string[] = [];
+    const fileArray = Array.from(files);
+    for (const file of fileArray) {
+      const validTypes = ["image/", "application/pdf"];
+      const validExts = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tiff", ".webp", ".pdf"];
+      const isValid = validTypes.some((t) => file.type.startsWith(t)) || validExts.some((ext) => file.name.toLowerCase().endsWith(ext));
+      if (!isValid) continue;
+      try {
+        const dataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsDataURL(file);
+        });
+        uploadedUris.push(dataUri);
+      } catch (err: any) {
+        console.log("Web upload: failed to read file:", file.name, err?.message);
+      }
+    }
+    if (uploadedUris.length === 0) {
+      Alert.alert("Upload Error", "Could not read the selected file(s). Please try again with a supported format.");
+      setPhase("camera");
+      return;
+    }
+    setCasePhotos(uploadedUris);
+    setCapturedUri(uploadedUris[0]);
+    setPhase("review");
+  }
+
   async function handleWebUploadRx() {
     if (Platform.OS !== "web") return;
     const input = document.createElement("input");
@@ -793,36 +828,62 @@ export default function ScanScreen() {
     input.accept = "image/*,.pdf,.jpg,.jpeg,.png,.heic,.heif,.bmp,.tiff,.webp";
     input.multiple = true;
     input.onchange = async () => {
-      const files = input.files;
-      if (!files || files.length === 0) return;
-      setPhase("scanning");
-      setCapturedUri(null);
-      const uploadedUris: string[] = [];
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        try {
-          const dataUri = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = () => reject(new Error("Failed to read file"));
-            reader.readAsDataURL(file);
-          });
-          uploadedUris.push(dataUri);
-        } catch (err: any) {
-          console.log("Web upload: failed to read file:", file.name, err?.message);
-        }
-      }
-      if (uploadedUris.length === 0) {
-        Alert.alert("Upload Error", "Could not read the selected file(s). Please try again.");
-        setPhase("camera");
-        return;
-      }
-      setCasePhotos(uploadedUris);
-      setCapturedUri(uploadedUris[0]);
-      setPhase("review");
+      if (input.files) await processWebFiles(input.files);
     };
     input.click();
   }
+
+  const dropZoneRef = useRef<View>(null);
+  const dragCounterRef = useRef(0);
+
+  async function processWebFilesAsAttachments(files: FileList | File[]) {
+    const fileArray = Array.from(files);
+    const newUris: string[] = [];
+    for (const file of fileArray) {
+      const validTypes = ["image/", "application/pdf"];
+      const validExts = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tiff", ".webp", ".pdf"];
+      const isValid = validTypes.some((t) => file.type.startsWith(t)) || validExts.some((ext) => file.name.toLowerCase().endsWith(ext));
+      if (!isValid) continue;
+      try {
+        const dataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsDataURL(file);
+        });
+        newUris.push(dataUri);
+      } catch {}
+    }
+    if (newUris.length > 0) {
+      setCasePhotos((prev) => [...prev, ...newUris]);
+    }
+  }
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const allowedPhases = ["camera", "form"];
+    if (!allowedPhases.includes(phase)) return;
+    dragCounterRef.current = 0;
+    const onDragEnter = (e: DragEvent) => { e.preventDefault(); dragCounterRef.current++; setWebDragOver(true); };
+    const onDragOver = (e: DragEvent) => { e.preventDefault(); };
+    const onDragLeave = (e: DragEvent) => { e.preventDefault(); dragCounterRef.current--; if (dragCounterRef.current <= 0) { dragCounterRef.current = 0; setWebDragOver(false); } };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setWebDragOver(false);
+      if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return;
+      if (phase === "camera") {
+        processWebFiles(e.dataTransfer.files);
+      } else {
+        processWebFilesAsAttachments(e.dataTransfer.files);
+      }
+    };
+    document.addEventListener("dragenter", onDragEnter);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
+    document.addEventListener("drop", onDrop);
+    return () => { document.removeEventListener("dragenter", onDragEnter); document.removeEventListener("dragover", onDragOver); document.removeEventListener("dragleave", onDragLeave); document.removeEventListener("drop", onDrop); };
+  }, [phase]);
 
   function handleAddMoreFromReview() {
     setCapturedUri(null);
@@ -2477,6 +2538,13 @@ export default function ScanScreen() {
   if (phase === "form") {
     return (
       <View style={[styles.container, { backgroundColor: Colors.light.background }]}>
+        {Platform.OS === "web" && webDragOver && (
+          <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(37,99,235,0.12)", zIndex: 999, justifyContent: "center", alignItems: "center", borderWidth: 3, borderColor: "#2563EB", borderStyle: "dashed", borderRadius: 16 }} pointerEvents="none">
+            <Ionicons name="arrow-down-circle" size={48} color="#2563EB" />
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 12 }}>Drop files to attach</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#4B7BDB", marginTop: 4 }}>Files will be added as attachments</Text>
+          </View>
+        )}
         <View
           style={[
             styles.formHeader,
@@ -3688,24 +3756,28 @@ export default function ScanScreen() {
             </Text>
 
             <Pressable
+              ref={dropZoneRef as any}
               onPress={handleWebUploadRx}
               style={({ pressed }) => ({
                 width: "100%",
                 borderWidth: 2,
-                borderColor: Colors.light.tint,
+                borderColor: webDragOver ? "#2563EB" : Colors.light.tint,
                 borderStyle: "dashed" as const,
                 borderRadius: 16,
                 paddingVertical: 36,
                 paddingHorizontal: 24,
                 alignItems: "center",
-                backgroundColor: pressed ? "rgba(37,99,235,0.08)" : "rgba(37,99,235,0.04)",
+                backgroundColor: webDragOver ? "rgba(37,99,235,0.15)" : pressed ? "rgba(37,99,235,0.08)" : "rgba(37,99,235,0.04)",
+                transform: webDragOver ? [{ scale: 1.02 }] : [],
               })}
               testID="upload-rx-btn"
             >
-              <Ionicons name="cloud-upload-outline" size={36} color={Colors.light.tint} />
-              <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: Colors.light.tint, marginTop: 12 }}>Upload RX</Text>
+              <Ionicons name={webDragOver ? "arrow-down-circle" : "cloud-upload-outline"} size={36} color={webDragOver ? "#2563EB" : Colors.light.tint} />
+              <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: webDragOver ? "#2563EB" : Colors.light.tint, marginTop: 12 }}>
+                {webDragOver ? "Drop Files Here" : "Upload RX"}
+              </Text>
               <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 6, textAlign: "center" }}>
-                Browse files from your computer, OneDrive, or any folder
+                {webDragOver ? "Release to upload your files" : "Drag & drop files here, or click to browse"}
               </Text>
               <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>
                 Supports JPG, PNG, PDF, HEIC, TIFF, BMP, WebP
