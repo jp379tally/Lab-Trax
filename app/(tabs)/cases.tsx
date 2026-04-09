@@ -10,6 +10,7 @@ import {
   Platform,
   Modal,
   Alert,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather } from "@expo/vector-icons";
@@ -308,6 +309,23 @@ export default function CasesScreen() {
               </Pressable>
             )}
           </View>
+          {Platform.OS === "web" && (
+            <Pressable
+              style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
+              onPress={async () => {
+                setRefreshing(true);
+                await refreshCases();
+                setRefreshing(false);
+              }}
+            >
+              {refreshing ? (
+                <ActivityIndicator size={16} color={Colors.light.tint} />
+              ) : (
+                <Ionicons name="refresh" size={18} color={Colors.light.tint} />
+              )}
+              <Text style={styles.barcodeLocateBtnText}>Sync Cases</Text>
+            </Pressable>
+          )}
           {userType !== "provider" && (
             <Pressable
               style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}

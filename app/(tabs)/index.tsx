@@ -13,6 +13,7 @@ import {
   Modal,
   Dimensions,
   Linking,
+  RefreshControl,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -277,7 +278,8 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases } = useApp();
+  const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -533,7 +535,25 @@ function TechDashboard() {
         >
           <Ionicons name="menu" size={26} color={themeColors.text} />
         </Pressable>
-        <ChatButton />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          {Platform.OS === "web" && (
+            <Pressable
+              onPress={async () => {
+                setRefreshing(true);
+                await refreshCases();
+                setRefreshing(false);
+              }}
+              style={({ pressed }) => [{ padding: 6, borderRadius: 8, backgroundColor: pressed ? "rgba(0,0,0,0.05)" : "transparent" }]}
+            >
+              {refreshing ? (
+                <ActivityIndicator size={18} color={themeColors.text} />
+              ) : (
+                <Ionicons name="refresh" size={22} color={themeColors.text} />
+              )}
+            </Pressable>
+          )}
+          <ChatButton />
+        </View>
       </View>
     <ScrollView
       style={{ flex: 1 }}
@@ -542,6 +562,18 @@ function TechDashboard() {
         paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
       }}
       showsVerticalScrollIndicator={false}
+      refreshControl={
+        Platform.OS !== "web" ? (
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await refreshCases();
+              setRefreshing(false);
+            }}
+          />
+        ) : undefined
+      }
     >
       <View style={styles.avatarSection}>
         <Pressable
