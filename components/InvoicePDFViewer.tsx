@@ -123,6 +123,21 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
     setShowItemDropdown(false);
   }
 
+  function handleItemNameChange(text: string) {
+    setNewItemName(text);
+    setShowItemDropdown(false);
+    if (!text.trim() || pricedItems.length === 0) return;
+    const lower = text.trim().toLowerCase();
+    const match = pricedItems.find(
+      (item) => item.label.toLowerCase().startsWith(lower) || item.label.toLowerCase().includes(lower)
+    );
+    if (match) {
+      setNewItemRate(match.price.toString());
+      const desc = teethDisplay ? `${match.label} - tooth ${teethDisplay}` : match.label;
+      setNewItemDesc(desc);
+    }
+  }
+
   const statusColor =
     invoice.status === "paid" ? "#10B981" :
     invoice.status === "overdue" ? "#EF4444" :
@@ -498,7 +513,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                     <TextInput
                       style={[s.fieldInput, { flex: 1, marginBottom: 0 }]}
                       value={newItemName}
-                      onChangeText={(text) => { setNewItemName(text); setShowItemDropdown(false); }}
+                      onChangeText={handleItemNameChange}
                       placeholder="e.g. Zirconia Crown"
                       placeholderTextColor="#94A3B8"
                     />
