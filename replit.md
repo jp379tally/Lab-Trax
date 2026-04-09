@@ -119,7 +119,7 @@ Preferred communication style: Simple, everyday language.
 - **OpenAI API**: Used for GPT-4o vision (prescription and document scanning) and gpt-image-1 (smile preview).
 
 ## Version Info
-- **Version**: 1.0.6, build **51**
+- **Version**: 1.0.6, build **59**
 - **Safe area**: All admin screens use `paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16`
 - **ESM config files**: All CommonJS config files must use `.cjs` extension
 - **Web app**: `static-build/` serves Expo web export; `baseUrl: "/app"` in app.json
