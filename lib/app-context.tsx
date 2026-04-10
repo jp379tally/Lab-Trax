@@ -1531,6 +1531,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ practiceName: "" }),
       });
+      setAllCases([]);
+      setClients([]);
+      setInvoices([]);
+      setInventory([]);
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify([]));
+      AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify([]));
+      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify([]));
       await refreshUsers();
       return { success: true };
     } catch (e: any) {
@@ -1549,6 +1556,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return { success: false, error: data.message || data.error || "Failed to delete lab" };
       }
       setIsLabCreator(false);
+      setAllCases([]);
+      setClients([]);
+      setInvoices([]);
+      setInventory([]);
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify([]));
+      AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify([]));
+      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify([]));
       await refreshUsers();
       return { success: true };
     } catch (e: any) {
