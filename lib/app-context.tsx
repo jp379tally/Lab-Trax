@@ -306,9 +306,101 @@ export function AppProvider({ children }: { children: ReactNode }) {
         mergeServerCases(serverCases);
         fetchingRef.current = false;
       }).catch(() => { fetchingRef.current = false; });
-    }, 15000);
+    }, 10000);
     return () => clearInterval(interval);
   }, [currentUserId, labMemberIds]);
+
+  async function fetchServerJoinRequestsAndInvites() {
+    try {
+      const resp = await resilientFetch("/api/labs/groups");
+      const data = await resp.json();
+      const groups: Array<{ practiceName: string; organizationId: string }> = data.groups || [];
+      const myLabName = currentUserProfile?.practiceName?.toLowerCase()?.trim();
+      if (!myLabName) return;
+      const match = groups.find(g => g.practiceName.toLowerCase().trim() === myLabName);
+      if (!match?.organizationId) return;
+      const orgId = match.organizationId;
+
+      const [jrResp, invResp] = await Promise.all([
+        resilientFetch(`/api/organizations/${orgId}/join-requests`).then(r => r.json()).catch(() => ({ data: [] })),
+        resilientFetch(`/api/organizations/${orgId}/invites`).then(r => r.json()).catch(() => ({ data: [] })),
+      ]);
+
+      const serverJoinReqs: any[] = jrResp.data || [];
+      if (serverJoinReqs.length > 0) {
+        setGroupJoinRequests(prev => {
+          let changed = false;
+          const updated = [...prev];
+          for (const sjr of serverJoinReqs) {
+            const existing = updated.find(r => r.serverJoinRequestId === sjr.id);
+            if (!existing) {
+              const requester = registeredUsers.find(u => u.id === sjr.userId);
+              updated.push({
+                id: generateId(),
+                serverJoinRequestId: sjr.id,
+                requestingUsername: requester?.username || sjr.userId,
+                targetAdminUsername: currentUser || "",
+                message: sjr.message || `${requester?.username || "Someone"} would like to join your lab.`,
+                status: sjr.status === "approved" ? "accepted" : sjr.status === "rejected" ? "declined" : "pending",
+                createdAt: sjr.createdAt ? new Date(sjr.createdAt).getTime() : Date.now(),
+              });
+              changed = true;
+            } else if (sjr.status === "approved" && existing.status === "pending") {
+              existing.status = "accepted";
+              changed = true;
+            } else if (sjr.status === "rejected" && existing.status === "pending") {
+              existing.status = "declined";
+              changed = true;
+            }
+          }
+          if (!changed) return prev;
+          AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
+          return updated;
+        });
+      }
+
+      const serverInvites: any[] = invResp.data || [];
+      if (serverInvites.length > 0) {
+        setLabInvitations(prev => {
+          let changed = false;
+          const updated = [...prev];
+          for (const si of serverInvites) {
+            const existing = updated.find(inv => inv.serverInviteToken === si.token || inv.serverInviteToken === si.id);
+            if (!existing) {
+              const invitee = registeredUsers.find(u => u.email === si.email);
+              updated.push({
+                id: generateId(),
+                serverInviteToken: si.token || si.id,
+                invitedUsername: invitee?.username || si.email || "",
+                invitedEmail: si.email || "",
+                adminLabName: currentUserProfile?.practiceName || "",
+                adminUsername: currentUser || "",
+                role: si.role || "user",
+                status: si.status === "accepted" ? "accepted" : si.status === "expired" || si.status === "revoked" ? "declined" : "pending",
+                createdAt: si.createdAt ? new Date(si.createdAt).getTime() : Date.now(),
+              });
+              changed = true;
+            } else if (si.status === "accepted" && existing.status === "pending") {
+              existing.status = "accepted";
+              changed = true;
+            }
+          }
+          if (!changed) return prev;
+          AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
+          return updated;
+        });
+      }
+    } catch (e) {
+      console.log("Could not fetch join requests/invites:", e);
+    }
+  }
+
+  useEffect(() => {
+    if (!currentUserId || !currentUserProfile?.practiceName) return;
+    fetchServerJoinRequestsAndInvites();
+    const interval = setInterval(fetchServerJoinRequestsAndInvites, 10000);
+    return () => clearInterval(interval);
+  }, [currentUserId, currentUserProfile?.practiceName, registeredUsers]);
 
   useEffect(() => {
     if (!syncReadyRef.current || fetchingRef.current || !currentUserId) return;
