@@ -58,6 +58,7 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
   const [selectedCase, setSelectedCase] = useState<LabCase | null>(null);
   const [providerDropdownOpen, setProviderDropdownOpen] = useState(false);
   const [patientDropdownOpen, setPatientDropdownOpen] = useState(false);
+  const [previewUri, setPreviewUri] = useState<string | null>(null);
 
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
@@ -363,13 +364,15 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
                       }}
                       style={s.fileRow}
                     >
-                      {isImage ? (
-                        <Image source={{ uri: file.uri }} style={s.fileThumb} contentFit="cover" />
-                      ) : (
-                        <View style={[s.fileThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#FEF3C7" }]}>
-                          <Ionicons name="videocam" size={20} color="#D97706" />
-                        </View>
-                      )}
+                      <Pressable onPress={() => { if (isImage) setPreviewUri(file.uri); }}>
+                        {isImage ? (
+                          <Image source={{ uri: file.uri }} style={s.fileThumb} contentFit="cover" />
+                        ) : (
+                          <View style={[s.fileThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#FEF3C7" }]}>
+                            <Ionicons name="videocam" size={20} color="#D97706" />
+                          </View>
+                        )}
+                      </Pressable>
                       <View style={{ flex: 1 }}>
                         <Text style={s.fileName} numberOfLines={1}>{file.fileName}</Text>
                         <Text style={s.fileMeta}>
@@ -479,6 +482,34 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
           )}
         </View>
       </Modal>
+      ) : null}
+
+      {previewUri ? (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setPreviewUri(null)}
+        >
+          <Pressable
+            style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.92)", justifyContent: "center", alignItems: "center" }}
+            onPress={() => setPreviewUri(null)}
+          >
+            <Pressable
+              onPress={() => setPreviewUri(null)}
+              hitSlop={16}
+              style={{ position: "absolute", top: Platform.OS === "web" ? 20 : insets.top + 8, right: 20, zIndex: 10, backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 20, padding: 8 }}
+            >
+              <Ionicons name="close" size={24} color="#FFF" />
+            </Pressable>
+            <Image
+              source={{ uri: previewUri }}
+              style={{ width: "90%", height: "75%" }}
+              contentFit="contain"
+            />
+          </Pressable>
+        </Modal>
       ) : null}
     </>
   );
