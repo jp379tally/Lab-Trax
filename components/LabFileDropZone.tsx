@@ -13,6 +13,7 @@ import {
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Colors from "@/constants/colors";
@@ -42,6 +43,7 @@ interface LabFileDropZoneProps {
 }
 
 export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAdmin, isFocused = true }: LabFileDropZoneProps) {
+  const insets = useSafeAreaInsets();
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -319,10 +321,10 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
         onRequestClose={() => setReviewOpen(false)}
       >
         <View style={s.modal}>
-          <View style={s.modalHeader}>
+          <View style={[s.modalHeader, { paddingTop: Platform.OS === "web" ? 20 : insets.top + 12 }]}>
             <Text style={s.modalTitle}>File Review</Text>
-            <Pressable onPress={() => setReviewOpen(false)} hitSlop={12}>
-              <Ionicons name="close" size={24} color={Colors.light.text} />
+            <Pressable onPress={() => setReviewOpen(false)} hitSlop={16} style={{ padding: 4 }}>
+              <Ionicons name="close" size={26} color={Colors.light.text} />
             </Pressable>
           </View>
 
@@ -551,7 +553,6 @@ const s = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === "web" ? 20 : 16,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
