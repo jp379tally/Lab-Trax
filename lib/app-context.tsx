@@ -345,7 +345,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       if (savedCases) {
         const parsedCases: LabCase[] = JSON.parse(savedCases);
-        setAllCases(parsedCases);
+        const cleaned = parsedCases.map((c) => {
+          if (!c.activityLog || c.activityLog.length === 0) return c;
+          const seen = new Set<string>();
+          const deduped = c.activityLog.filter((e) => {
+            if (e.type !== "barcode_assigned" && e.type !== "barcode_unassigned") return true;
+            const key = `${e.type}|${e.description}|${Math.floor((e.timestamp || 0) / 60000)}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          if (deduped.length !== c.activityLog.length) {
+            return { ...c, activityLog: deduped };
+          }
+          return c;
+        });
+        setAllCases(cleaned);
+        if (cleaned !== parsedCases) {
+          AsyncStorage.setItem(CASES_KEY, JSON.stringify(cleaned));
+        }
       } else {
         setAllCases([]);
       }
@@ -1564,6 +1582,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCases((prev) => {
       const updated = prev.map((c) => {
         if (c.id === caseId) {
+          if (c.assignedBarcode === barcode) return c;
           const entry: ActivityEntry = {
             id: generateId(),
             type: "barcode_assigned",
