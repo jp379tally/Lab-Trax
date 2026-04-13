@@ -10,6 +10,8 @@ import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications
 import { LinearGradient } from "expo-linear-gradient";
 import Colors from "@/constants/colors";
 
+const SIDEBAR_WIDTH = 220;
+
 function DesktopSidebar({ state, descriptors, navigation }: any) {
   const { isDark, colors } = useTheme();
   const filteredNotifs = useProviderFilteredNotifications();
@@ -17,7 +19,12 @@ function DesktopSidebar({ state, descriptors, navigation }: any) {
 
   return (
     <View style={{
-      width: 220,
+      position: "absolute",
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: SIDEBAR_WIDTH,
+      zIndex: 100,
       backgroundColor: isDark ? "#0B1120" : "#F1F5FB",
       borderRightWidth: 1,
       borderRightColor: isDark ? "#1E293B" : "#D6E4F0",
@@ -129,7 +136,10 @@ function ClassicTabLayout() {
   return (
     <View style={{ flex: 1 }}>
       <Tabs
-        sceneContainerStyle={{ backgroundColor: colors.backgroundSolid }}
+        sceneContainerStyle={{
+          backgroundColor: colors.backgroundSolid,
+          ...(isDesktop ? { marginLeft: SIDEBAR_WIDTH } : {}),
+        }}
         tabBar={isDesktop ? (props) => <DesktopSidebar {...props} /> : undefined}
         screenOptions={{
           tabBarActiveTintColor: colors.tint,
