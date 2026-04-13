@@ -10,6 +10,7 @@ import {
   Modal,
   Animated as RNAnimated,
   PanResponder,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -104,6 +105,8 @@ export default function NotificationsScreen() {
   const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
   const [confirmLabInvite, setConfirmLabInvite] = useState<{ invite: LabInvitation; accept: boolean } | null>(null);
   const filteredNotifications = useProviderFilteredNotifications();
@@ -237,7 +240,7 @@ export default function NotificationsScreen() {
       <View
         style={[
           styles.header,
-          { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
+          { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12, ...(isDesktop ? { paddingHorizontal: 32 } : {}) },
         ]}
       >
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -251,7 +254,7 @@ export default function NotificationsScreen() {
         renderItem={renderNotification}
         contentContainerStyle={[
           styles.listContent,
-          { paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 },
+          { paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100, ...(isDesktop ? { paddingHorizontal: 32 } : {}) },
         ]}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={

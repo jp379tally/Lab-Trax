@@ -14,6 +14,7 @@ import {
   Dimensions,
   Linking,
   RefreshControl,
+  useWindowDimensions,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -285,6 +286,8 @@ function TechDashboard() {
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
   const [pendingPicAction, setPendingPicAction] = useState<"take" | "pick" | null>(null);
@@ -530,7 +533,8 @@ function TechDashboard() {
   return (
     <>
     <View style={[styles.container, { backgroundColor: Colors.light.backgroundSolid }]}>
-      <View style={[styles.topBar, { position: "absolute", top: Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: "transparent" }]}>
+      <View style={[styles.topBar, { position: "absolute", top: isDesktop ? 0 : Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: isDesktop ? (isDarkMode ? "rgba(15,23,42,0.95)" : "rgba(224,237,251,0.97)") : "transparent", borderBottomWidth: isDesktop ? 1 : 0, borderBottomColor: isDarkMode ? "#1E293B" : "#D6E4F0", paddingVertical: isDesktop ? 12 : 0, paddingHorizontal: isDesktop ? 32 : 0 }]}>
+        {!isDesktop && (
         <Pressable
           onPress={() => setDrawerOpen(true)}
           style={({ pressed }) => [styles.hamburgerBtn, pressed && { opacity: 0.6 }]}
@@ -538,6 +542,13 @@ function TechDashboard() {
         >
           <Ionicons name="menu" size={26} color={themeColors.text} />
         </Pressable>
+        )}
+        {isDesktop && (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+            <Text style={{ fontFamily: "Inter_700Bold", fontSize: 20, color: themeColors.text }}>LabTrax</Text>
+            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: themeColors.textSecondary }}>Production Dashboard</Text>
+          </View>
+        )}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           {Platform.OS === "web" && (
             <Pressable
@@ -561,8 +572,9 @@ function TechDashboard() {
     <ScrollView
       style={{ flex: 1 }}
       contentContainerStyle={{
-        paddingTop: (Platform.OS === "web" ? 67 : insets.top) + 56,
-        paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        paddingTop: isDesktop ? 64 : (Platform.OS === "web" ? 67 : insets.top) + 56,
+        paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+        ...(isDesktop ? { paddingHorizontal: 32 } : {}),
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={
@@ -578,6 +590,40 @@ function TechDashboard() {
         ) : undefined
       }
     >
+      {isDesktop ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 16, marginBottom: 24 }}>
+          <Pressable onPress={() => setPicModalVisible(true)} testID="profile-pic-btn">
+            <LinearGradient colors={[Colors.light.tint, "#3B82F6"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ width: 52, height: 52, borderRadius: 26, justifyContent: "center", alignItems: "center" }}>
+              {profilePicUri ? (
+                <Image source={{ uri: profilePicUri }} style={{ width: 46, height: 46, borderRadius: 23 }} contentFit="cover" />
+              ) : (
+                <View style={{ width: 46, height: 46, borderRadius: 23, backgroundColor: "#FFF", justifyContent: "center", alignItems: "center" }}>
+                  <Ionicons name="person" size={22} color={Colors.light.tint} />
+                </View>
+              )}
+            </LinearGradient>
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              {currentUser && <Text style={{ fontFamily: "Inter_700Bold", fontSize: 16, color: themeColors.text }}>{currentUser}</Text>}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: "#22C55E" }} />
+                <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: "#22C55E" }}>Available</Text>
+              </View>
+            </View>
+            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: themeColors.textSecondary, marginTop: 2 }}>
+              {(currentUserData?.role === "admin" || role === "admin") ? "Administrator" : "User"}
+              {currentUserData?.practiceName ? ` · ${currentUserData.practiceName}` : ""}
+            </Text>
+          </View>
+          {!userIsAffiliated && (
+            <View style={{ padding: 10, backgroundColor: isDarkMode ? "#1E293B" : "#FFF7ED", borderRadius: 10, flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: isDarkMode ? "#334155" : "#FDE68A", maxWidth: 320 }}>
+              <Ionicons name="information-circle-outline" size={18} color={isDarkMode ? "#FBBF24" : "#D97706"} />
+              <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: isDarkMode ? "#E2E8F0" : "#92400E", flex: 1, lineHeight: 16 }}>Join a lab to collaborate with your team.</Text>
+            </View>
+          )}
+        </View>
+      ) : (
       <View style={styles.avatarSection}>
         <Pressable
           onPress={() => {
@@ -631,6 +677,7 @@ function TechDashboard() {
           </View>
         )}
       </View>
+      )}
 
       <LabFileDropZone
         cases={cases}
@@ -641,11 +688,12 @@ function TechDashboard() {
         isFocused={dashboardFocused}
       />
 
-      <View style={styles.headerQuickActions}>
+      <View style={[styles.headerQuickActions, isDesktop && { gap: 16, paddingHorizontal: 0 }]}>
         <Pressable
           style={({ pressed }) => [
             styles.headerQuickBtn,
             pressed && styles.quickBtnPressed,
+            isDesktop && { flexDirection: "row", gap: 12, alignItems: "center", paddingHorizontal: 20, paddingVertical: 14 },
           ]}
           onPress={() => router.push("/(tabs)/scan")}
         >
@@ -658,6 +706,7 @@ function TechDashboard() {
           style={({ pressed }) => [
             styles.headerQuickBtn,
             pressed && styles.quickBtnPressed,
+            isDesktop && { flexDirection: "row", gap: 12, alignItems: "center", paddingHorizontal: 20, paddingVertical: 14 },
           ]}
           onPress={() => router.push("/(tabs)/cases")}
         >
@@ -670,6 +719,7 @@ function TechDashboard() {
           style={({ pressed }) => [
             styles.headerQuickBtn,
             pressed && styles.quickBtnPressed,
+            isDesktop && { flexDirection: "row", gap: 12, alignItems: "center", paddingHorizontal: 20, paddingVertical: 14 },
           ]}
           onPress={async () => {
             if (Platform.OS === "web") {
@@ -702,18 +752,20 @@ function TechDashboard() {
         </Pressable>
       </View>
 
+      {!isDesktop && (
       <View style={styles.headerRow}>
         <View>
           <Text style={[styles.greeting, { color: themeColors.textSecondary }]}>Lab Floor</Text>
           <Text style={[styles.headerTitle, { color: themeColors.text }]}>Production Dashboard</Text>
         </View>
       </View>
+      )}
 
       <LinearGradient
         colors={["#2563EB", "#1D4ED8"]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={styles.heroCard}
+        style={[styles.heroCard, isDesktop && { marginHorizontal: 0 }]}
       >
         <Text style={styles.heroLabel}>LAB STATUS</Text>
         <Text style={styles.heroCount}>{activeCaseCount} Active Cases</Text>
@@ -1085,7 +1137,7 @@ function TechDashboard() {
       onRequestClose={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); batchScannedIdsRef.current.clear(); }}
     >
       <View style={{ flex: 1, backgroundColor: batchLocationSelect ? Colors.light.backgroundSolid : "#000" }}>
-        <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: batchLocationSelect ? Colors.light.surface : "rgba(0,0,0,0.8)" }}>
+        <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: batchLocationSelect ? Colors.light.surface : "rgba(0,0,0,0.8)" }}>
           <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: batchLocationSelect ? Colors.light.text : "#FFF" }}>
             {batchLocationSelect ? "Select Location" : "Batch Scan"}
           </Text>
@@ -1441,6 +1493,8 @@ function TechDashboard() {
 function AdminLockScreen() {
   const { setAdminUnlocked } = useApp();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [authStatus, setAuthStatus] = useState<string>("");
   const [biometricType, setBiometricType] = useState<string>("Face ID");
   const [biometricAvailable, setBiometricAvailable] = useState(false);
@@ -1508,7 +1562,7 @@ function AdminLockScreen() {
       style={[
         styles.lockContainer,
         {
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
         },
       ]}
     >
@@ -1622,6 +1676,8 @@ function AdminDashboard() {
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [adminView, setAdminView] = useState<AdminView>("hub");
 
   const totalRevenue = cases.reduce((sum, c) => sum + c.price, 0);
@@ -1998,8 +2054,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2072,8 +2128,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2109,8 +2165,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2143,8 +2199,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2287,8 +2343,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -2507,8 +2563,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2558,8 +2614,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2661,8 +2717,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -2775,8 +2831,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2818,8 +2874,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2888,8 +2944,8 @@ function AdminDashboard() {
       <ScrollView
         style={{ flex: 1, backgroundColor: "#f5f5f0" }}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -3092,8 +3148,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -3250,8 +3306,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -3392,8 +3448,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -3444,7 +3500,7 @@ function AdminDashboard() {
     const overdueCount = invoices.filter(i => i.status === "overdue").length;
     const allCount = invoices.length;
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         {renderBackHeader("Invoices", "financial-hub")}
         <View style={adm.listArea}>
           <View style={adm.invoiceSummary}>
@@ -3540,7 +3596,7 @@ function AdminDashboard() {
         ? invoices.filter(i => i.status === "overdue")
         : invoices;
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -3585,7 +3641,7 @@ function AdminDashboard() {
 
   function renderSendInvoice() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -3705,7 +3761,7 @@ function AdminDashboard() {
     }
 
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => { setAdminView("invoices-hub"); setSelectedInvoiceIds([]); }} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -3799,7 +3855,7 @@ function AdminDashboard() {
 
   function renderTextInvoice() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -3880,7 +3936,7 @@ function AdminDashboard() {
     const clientsWithOpen = [...new Set(allOpen.map(inv => inv.clientName))].length;
     const totalOpenAmt = allOpen.reduce((s, inv) => s + inv.amount, 0);
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         {renderBackHeader("Statements", "financial-hub")}
         <View style={adm.listArea}>
           <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 14, padding: 16, marginBottom: 16, flexDirection: "row", justifyContent: "space-around" }}>
@@ -4011,7 +4067,7 @@ function AdminDashboard() {
       return cInvs.length > 0;
     });
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4070,7 +4126,7 @@ function AdminDashboard() {
     let runningBalance = 0;
 
     return (
-      <ScrollView style={{ flex: 1, backgroundColor: "#f5f5f0" }} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={{ flex: 1, backgroundColor: "#f5f5f0" }} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => { setStatementViewClient(null); setAdminView("view-statements"); }} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4186,7 +4242,7 @@ function AdminDashboard() {
   function renderPickStatementToSend() {
     const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue")));
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4254,7 +4310,7 @@ function AdminDashboard() {
 
   function renderTextStatement() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("pick-statement-to-send")} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4353,7 +4409,7 @@ function AdminDashboard() {
 
   function renderSendStatement() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4428,7 +4484,7 @@ function AdminDashboard() {
     const previewData = emailPreviewStmtData || [];
 
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView(emailPreviewBackView)} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4583,7 +4639,7 @@ function AdminDashboard() {
 
   function renderEditStatementMessage() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4648,7 +4704,7 @@ function AdminDashboard() {
       : clientsWithBalance;
 
     return (
-      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingBottom: 40 }}>
+      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingBottom: 40, ...(isDesktop ? { paddingHorizontal: 32 } : {}) }}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
           <Pressable onPress={() => { setAdminView("client-hub"); setClientSearchQuery(""); }} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -5254,8 +5310,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -5397,8 +5453,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -5607,8 +5663,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -5796,8 +5852,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -5923,8 +5979,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6191,8 +6247,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6251,8 +6307,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6314,8 +6370,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6519,8 +6575,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6734,8 +6790,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -6814,8 +6870,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6871,8 +6927,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6968,6 +7024,8 @@ function ProviderDashboard() {
   const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
 
   const [showSettings, setShowSettings] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -7044,7 +7102,7 @@ function ProviderDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
           paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
         }}
         showsVerticalScrollIndicator={false}
@@ -7185,7 +7243,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowSettings(false)}
       >
         <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
             <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Settings</Text>
             <Pressable onPress={() => setShowSettings(false)}>
               <Ionicons name="close" size={28} color={Colors.light.text} />
@@ -7438,7 +7496,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowAddLab(false)}
       >
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-start" }}>
-          <View style={{ backgroundColor: "#FFF", borderBottomLeftRadius: 24, borderBottomRightRadius: 24, maxHeight: "70%", paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingBottom: 16 }}>
+          <View style={{ backgroundColor: "#FFF", borderBottomLeftRadius: 24, borderBottomRightRadius: 24, maxHeight: "70%", paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingBottom: 16 }}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 }}>
               <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Add a Lab</Text>
               <Pressable onPress={() => setShowAddLab(false)} hitSlop={12}>
@@ -7658,7 +7716,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowUsersAdmin(false)}
       >
         <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
             <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Users</Text>
             <Pressable onPress={() => setShowUsersAdmin(false)}>
               <Ionicons name="close" size={28} color={Colors.light.text} />
@@ -7700,7 +7758,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowProviderInvoices(false)}
       >
         <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
             <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Invoices</Text>
             <Pressable onPress={() => setShowProviderInvoices(false)}>
               <Ionicons name="close" size={28} color={Colors.light.text} />
@@ -7807,7 +7865,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowPayInvoices(false)}
       >
         <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
               {payStep !== "select" && payStep !== "receipt" && (
                 <Pressable onPress={() => setPayStep("select")}>
@@ -8188,7 +8246,7 @@ function ProviderDashboard() {
       >
         {viewingInvoice && (
           <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-            <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+            <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                 <Pressable onPress={() => setViewingInvoice(null)}>
                   <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -8346,6 +8404,8 @@ function MasterAdminDashboard() {
   const { cases, clients, users, invoices } = useApp();
   const { currentUser, registeredUsers, logout } = useAuth();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
 
   const [masterView, setMasterView] = useState<MasterView>("hub");
   const [groupSearch, setGroupSearch] = useState("");
@@ -8369,8 +8429,8 @@ function MasterAdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -8433,7 +8493,7 @@ function MasterAdminDashboard() {
 
   function renderAllUsers() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         {renderBackHeader("All Users")}
         {registeredUsers.filter((u) => u.userType !== "master_admin").map((u, idx) => (
             <View key={u.username + idx} style={[adm.menuItem, { marginHorizontal: 20 }]}>
@@ -8461,7 +8521,7 @@ function MasterAdminDashboard() {
     );
     const openInvoiceCount = invoices.filter(i => i.status === "open" || i.status === "overdue").length;
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         {renderBackHeader("Lab Portal Overview")}
         <View style={{ marginHorizontal: 20, gap: 12 }}>
           <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
@@ -8506,7 +8566,7 @@ function MasterAdminDashboard() {
   function renderProviderPortal() {
     const providers = registeredUsers.filter(u => u.userType === "provider");
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         {renderBackHeader("Provider Portal Overview")}
         <View style={{ marginHorizontal: 20, gap: 12 }}>
           <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>

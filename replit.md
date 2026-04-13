@@ -12,7 +12,7 @@ Preferred communication style: Simple, everyday language.
 
 ### Frontend
 - **Framework**: Expo SDK 54 with React Native 0.81, using `expo-router` for file-based routing.
-- **Navigation**: Tab-based layouts for lab users (5 tabs) and providers (4 tabs), with a dedicated case detail screen.
+- **Navigation**: Tab-based layouts for lab users (5 tabs) and providers (4 tabs), with a dedicated case detail screen. On desktop web (viewport >= 768px), a custom `DesktopSidebar` component replaces the bottom tab bar with a left sidebar navigation (220px wide) featuring LabTrax branding. The `isDesktop` pattern (`Platform.OS === "web" && windowWidth >= 768`) is used across all screens to adjust padding and layout for full-screen desktop use.
 - **State Management**: React Context for global state, persisted locally with AsyncStorage.
 - **Styling**: React Native StyleSheet with a centralized color theme.
 - **Data Fetching**: TanStack React Query for server state management and data fetching.

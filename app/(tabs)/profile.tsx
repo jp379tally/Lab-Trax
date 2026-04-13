@@ -9,6 +9,7 @@ import {
   Image,
   Modal,
   TextInput,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -24,6 +25,8 @@ export default function ProfileScreen() {
   const { role, setRole, adminUnlocked, setAdminUnlocked } = useApp();
   const { logout, currentUser, profilePicUri, changePassword, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [workStatus, setWorkStatus] = useState<WorkStatus>("available");
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
@@ -84,8 +87,9 @@ export default function ProfileScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={{
-        paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-        paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
+        paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+        paddingBottom: isDesktop ? 40 : Platform.OS === "web" ? 84 + 40 : 120,
+        ...(isDesktop ? { paddingHorizontal: 32, maxWidth: 800, alignSelf: "center" as const, width: "100%" as any } : {}),
       }}
       showsVerticalScrollIndicator={false}
     >

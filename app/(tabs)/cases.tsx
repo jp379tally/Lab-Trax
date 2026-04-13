@@ -11,6 +11,7 @@ import {
   Modal,
   Alert,
   ActivityIndicator,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather } from "@expo/vector-icons";
@@ -29,6 +30,8 @@ export default function CasesScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -277,7 +280,8 @@ export default function CasesScreen() {
         style={[
           styles.header,
           {
-            paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12,
+            paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12,
+            ...(isDesktop ? { paddingHorizontal: 32 } : {}),
           },
         ]}
       >
@@ -402,7 +406,7 @@ export default function CasesScreen() {
         renderItem={renderCaseItem}
         contentContainerStyle={[
           styles.listContent,
-          { paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 },
+          { paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100, ...(isDesktop ? { paddingHorizontal: 32 } : {}) },
         ]}
         showsVerticalScrollIndicator={false}
         refreshing={refreshing}
@@ -431,7 +435,7 @@ export default function CasesScreen() {
         onRequestClose={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }}
       >
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
+          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan to Locate Case</Text>
             <Pressable onPress={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }}>
               <Ionicons name="close" size={28} color="#FFF" />

@@ -12,6 +12,7 @@ import {
   Modal,
   KeyboardAvoidingView,
   Image,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -26,6 +27,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const { mode, setMode, colors, isDark } = useTheme();
   const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword } = useAuth();
@@ -130,7 +133,7 @@ export default function SettingsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.backgroundSolid || colors.surface }]}>
-      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12, backgroundColor: colors.surface, borderBottomColor: colors.borderLight }]}>
+      <View style={[styles.header, { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12, backgroundColor: colors.surface, borderBottomColor: colors.borderLight }]}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </Pressable>

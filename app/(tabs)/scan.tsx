@@ -12,6 +12,7 @@ import {
   Animated as RNAnimated,
   ActivityIndicator,
   Dimensions,
+  useWindowDimensions,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -161,6 +162,8 @@ function CropOverlay({ rawCapturedUri, cropRegion, setCropRegion, isDetectingDoc
 
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
+  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const router = useRouter();
   const isFocused = useIsFocused();
   const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode } = useApp();
@@ -2639,7 +2642,7 @@ export default function ScanScreen() {
         onRequestClose={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
       >
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
+          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Attach Barcode</Text>
             <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}>
               <Ionicons name="close" size={28} color="#FFF" />
@@ -2743,7 +2746,7 @@ export default function ScanScreen() {
         <View
           style={[
             styles.formHeader,
-            { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
+            { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
           ]}
         >
           <Pressable onPress={resetForm} style={styles.backBtn}>
@@ -3939,15 +3942,17 @@ export default function ScanScreen() {
 
   if (Platform.OS === "web" && phase === "camera") {
     return (
-      <View style={[styles.container, { paddingTop: 67 + 16, backgroundColor: Colors.light.backgroundSolid }]}>
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 32 }}>
-          <View style={{ width: "100%", maxWidth: 420, alignItems: "center" }}>
+      <View style={[styles.container, { paddingTop: isDesktop ? 24 : 67 + 16, backgroundColor: Colors.light.backgroundSolid }]}>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: isDesktop ? 48 : 32 }}>
+          <View style={{ width: "100%", maxWidth: isDesktop ? 600 : 420, alignItems: "center" }}>
             <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: "rgba(37,99,235,0.1)", justifyContent: "center", alignItems: "center", marginBottom: 24 }}>
-              <Ionicons name="document-text-outline" size={40} color={Colors.light.tint} />
+              <Ionicons name="cloud-upload-outline" size={40} color={Colors.light.tint} />
             </View>
-            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 8, textAlign: "center" }}>AI Intake</Text>
-            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center", marginBottom: 32, lineHeight: 20 }}>
-              Upload a prescription image or document and AI will automatically read and fill in the case details.
+            <Text style={{ fontSize: isDesktop ? 26 : 22, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 8, textAlign: "center" }}>
+              {isDesktop ? "Upload Prescription" : "AI Intake"}
+            </Text>
+            <Text style={{ fontSize: isDesktop ? 15 : 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center", marginBottom: 32, lineHeight: 22 }}>
+              {isDesktop ? "Drag and drop prescription files from your computer, or click to browse. AI will automatically extract case details." : "Upload a prescription image or document and AI will automatically read and fill in the case details."}
             </Text>
 
             <Pressable
@@ -4032,7 +4037,7 @@ export default function ScanScreen() {
 
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>
-            <View style={{ paddingTop: 67, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{ paddingTop: isDesktop ? 16 : 67, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Enter Barcode</Text>
               <Pressable onPress={() => setShowBarcodeScanner(false)}>
                 <Ionicons name="close" size={28} color="#FFF" />
@@ -4120,7 +4125,7 @@ export default function ScanScreen() {
 
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>
-            <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
               <Pressable onPress={() => setShowBarcodeScanner(false)}>
                 <Ionicons name="close" size={28} color="#FFF" />
@@ -4249,7 +4254,7 @@ export default function ScanScreen() {
           </View>
         )}
 
-        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+        <View style={[styles.cameraHeaderOverlay, { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
           <Text style={styles.scanTitle}>AI Intake</Text>
           <Text style={styles.scanSubtitle}>
             {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "cropping" ? "Adjust the crop frame" : phase === "review" ? "Add more pages or continue" : "RX recognized"}
@@ -4495,7 +4500,7 @@ export default function ScanScreen() {
 
       <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
             <Pressable onPress={() => setShowBarcodeScanner(false)}>
               <Ionicons name="close" size={28} color="#FFF" />
