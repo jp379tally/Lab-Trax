@@ -791,15 +791,10 @@ export default function SettingsScreen() {
               disabled={!adminUsername.trim()}
               onPress={() => {
                 if (!currentUser) return;
-                const result = sendGroupJoinRequest(adminUsername.trim(), currentUser);
-                if (result.success) {
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  Alert.alert("Request Sent", `Your request to join has been sent to ${adminUsername.trim()}. You'll be notified when they respond.`);
-                  setShowJoinModal(false);
-                  setAdminUsername("");
-                } else {
-                  Alert.alert("Unable to Send", result.error || "Something went wrong.");
-                }
+                sendGroupJoinRequest(adminUsername.trim(), currentUser);
+                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                setShowJoinModal(false);
+                setAdminUsername("");
               }}
             >
               <Ionicons name="send" size={18} color="#FFF" />
@@ -906,18 +901,13 @@ export default function SettingsScreen() {
                                     text: "Yes, Join Lab",
                                     onPress: () => {
                                       setAddLabSending(true);
-                                      const result = sendGroupJoinRequest(lab.username, currentUser, `${currentUser} would like to join ${lab.practiceName}.`);
+                                      sendGroupJoinRequest(lab.username, currentUser, `${currentUser} would like to join ${lab.practiceName}.`);
                                       setAddLabSending(false);
-                                      if (result.success) {
-                                        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                        Alert.alert("Request Sent", `A request to join this lab has been sent to the lab admin. You will be notified if accepted.`);
-                                        setShowAddLabModal(false);
-                                        setLabSearchName("");
-                                        setMatchedLabs([]);
-                                        setLabSearchDone(false);
-                                      } else {
-                                        Alert.alert("Unable to Send", result.error || "Something went wrong.");
-                                      }
+                                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                      setShowAddLabModal(false);
+                                      setLabSearchName("");
+                                      setMatchedLabs([]);
+                                      setLabSearchDone(false);
                                     },
                                   },
                                 ]
@@ -1213,7 +1203,6 @@ export default function SettingsScreen() {
                             const result = sendLabInvite(addUserSelected!.username, addUserSelected!.email, addUserRole);
                             if (result.success) {
                               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                              Alert.alert("Invitation Sent", `An invitation has been sent to ${addUserSelected!.username}. They will need to accept it in their notifications.`);
                               setShowAddUserModal(false);
                               setAddUserSearch("");
                               setAddUserSelected(null);

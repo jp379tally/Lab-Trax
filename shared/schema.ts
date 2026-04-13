@@ -508,6 +508,27 @@ export const userSessions = pgTable(
   })
 );
 
+export const serverNotifications = pgTable(
+  "server_notifications",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    dataJson: jsonb("data_json").default({}).notNull(),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    userIdx: index("server_notifications_user_idx").on(table.userId),
+  })
+);
+
 export const usersRelations = relations(users, ({ many }) => ({
   memberships: many(organizationMemberships),
 }));

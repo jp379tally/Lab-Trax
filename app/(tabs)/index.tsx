@@ -2694,7 +2694,6 @@ function AdminDashboard() {
               const result = sendLabInvite(inviteUsername.trim(), inviteEmail.trim(), inviteRole);
               if (result.success) {
                 if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                Alert.alert("Invitation Sent", `An invitation has been sent to ${inviteUsername.trim()}.`);
                 setInviteUsername("");
                 setInviteEmail("");
                 setInviteRole("user");

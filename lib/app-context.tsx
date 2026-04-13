@@ -7,6 +7,7 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
+import { Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApiUrl, resilientFetch } from "./query-client";
 import {
@@ -327,37 +328,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ]);
 
           const serverJoinReqs: any[] = jrResp.data || [];
-          if (serverJoinReqs.length > 0) {
-            setGroupJoinRequests(prev => {
-              let changed = false;
-              const updated = [...prev];
-              for (const sjr of serverJoinReqs) {
-                const existing = updated.find(r => r.serverJoinRequestId === sjr.id);
-                if (!existing) {
-                  const requester = registeredUsers.find(u => u.id === sjr.requestedByUserId);
-                  updated.push({
-                    id: generateId(),
-                    serverJoinRequestId: sjr.id,
-                    requestingUsername: requester?.username || sjr.requestedByUserId,
-                    targetAdminUsername: currentUser || "",
-                    message: sjr.message || `${requester?.username || "Someone"} would like to join your lab.`,
-                    status: sjr.status === "approved" ? "accepted" : sjr.status === "rejected" ? "declined" : "pending",
-                    createdAt: sjr.createdAt ? new Date(sjr.createdAt).getTime() : Date.now(),
-                  });
-                  changed = true;
-                } else if (sjr.status === "approved" && existing.status === "pending") {
-                  existing.status = "accepted";
-                  changed = true;
-                } else if (sjr.status === "rejected" && existing.status === "pending") {
-                  existing.status = "declined";
-                  changed = true;
-                }
+          const serverJoinReqIds = new Set(serverJoinReqs.map((s: any) => s.id));
+          setGroupJoinRequests(prev => {
+            let changed = false;
+            const updated = prev.filter(r => {
+              if (r.serverJoinRequestId && r.status === "pending" && !serverJoinReqIds.has(r.serverJoinRequestId)) {
+                changed = true;
+                return false;
               }
-              if (!changed) return prev;
-              AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
-              return updated;
-            });
-          }
+              return true;
+            }).map(r => r);
+            const mutable = [...updated];
+            for (const sjr of serverJoinReqs) {
+              const existing = mutable.find(r => r.serverJoinRequestId === sjr.id);
+              if (!existing) {
+                const requester = registeredUsers.find(u => u.id === sjr.requestedByUserId);
+                mutable.push({
+                  id: generateId(),
+                  serverJoinRequestId: sjr.id,
+                  requestingUsername: requester?.username || sjr.requestedByUserId,
+                  targetAdminUsername: currentUser || "",
+                  message: sjr.message || `${requester?.username || "Someone"} would like to join your lab.`,
+                  status: sjr.status === "approved" ? "accepted" : sjr.status === "rejected" ? "declined" : "pending",
+                  createdAt: sjr.createdAt ? new Date(sjr.createdAt).getTime() : Date.now(),
+                });
+                changed = true;
+              } else if (sjr.status === "approved" && existing.status === "pending") {
+                existing.status = "accepted";
+                changed = true;
+              } else if (sjr.status === "rejected" && existing.status === "pending") {
+                existing.status = "declined";
+                changed = true;
+              }
+            }
+            if (!changed) return prev;
+            AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(mutable));
+            return mutable;
+          });
 
           const serverInvites: any[] = invResp.data || [];
           if (serverInvites.length > 0) {
@@ -1448,52 +1455,69 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  async function sendGroupJoinRequestAsync(targetAdminUsername: string, requestingUsername: string, message?: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === targetAdminUsername.toLowerCase());
+      if (!adminProfile?.practiceName) {
+        return { success: false, error: "Could not find that lab admin." };
+      }
+
+      const groupsResp = await resilientFetch("/api/labs/groups");
+      const groupsData = await groupsResp.json();
+      const groups: Array<{ practiceName: string; organizationId: string }> = groupsData.groups || [];
+      const match = groups.find(g => g.practiceName.toLowerCase().trim() === adminProfile.practiceName!.toLowerCase().trim());
+      if (!match?.organizationId) {
+        return { success: false, error: "Could not find this lab on the server. Please try again later." };
+      }
+
+      const resp = await resilientFetch(`/api/organizations/${match.organizationId}/join-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestedRole: "user",
+          message: message || `${requestingUsername} would like to join your lab.`,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        const errMsg = data?.message || data?.error || "Failed to send join request.";
+        return { success: false, error: errMsg };
+      }
+
+      if (data?.data?.id) {
+        const request: GroupJoinRequest = {
+          id: generateId(),
+          requestingUsername,
+          targetAdminUsername,
+          message: message || `${requestingUsername} would like to join your lab.`,
+          status: "pending",
+          createdAt: Date.now(),
+          serverJoinRequestId: data.data.id,
+        };
+        setGroupJoinRequests(prev => {
+          const updated = [...prev, request];
+          AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
+          return updated;
+        });
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      console.log("sendGroupJoinRequest error:", e);
+      return { success: false, error: "Network error. Please check your connection and try again." };
+    }
+  }
+
   function sendGroupJoinRequest(targetAdminUsername: string, requestingUsername: string, message?: string): { success: boolean; error?: string } {
-    const existing = groupJoinRequests.find(
-      r => r.requestingUsername.toLowerCase() === requestingUsername.toLowerCase()
-        && r.targetAdminUsername.toLowerCase() === targetAdminUsername.toLowerCase()
-        && r.status === "pending"
-    );
-    if (existing) {
-      return { success: false, error: "You already have a pending request to this admin." };
-    }
-
-    const request: GroupJoinRequest = {
-      id: generateId(),
-      requestingUsername,
-      targetAdminUsername,
-      message: message || `${requestingUsername} would like to join your group.`,
-      status: "pending",
-      createdAt: Date.now(),
-    };
-
-    const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === targetAdminUsername.toLowerCase());
-    if (adminProfile?.practiceName) {
-      resilientFetch("/api/labs/groups")
-        .then(r => r.json())
-        .then((resp: { groups?: Array<{ practiceName: string; organizationId: string }> }) => {
-          const match = (resp.groups || []).find(g => g.practiceName.toLowerCase() === adminProfile.practiceName!.toLowerCase());
-          if (match?.organizationId) {
-            return resilientFetch(`/api/organizations/${match.organizationId}/join-requests`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ requestedRole: "user", message: request.message }),
-            }).then(r => r.json()).then(data => {
-              if (data?.data?.id) {
-                request.serverJoinRequestId = data.data.id;
-                const latest = [...groupJoinRequests, request];
-                setGroupJoinRequests(latest);
-                AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(latest));
-              }
-            });
-          }
-        })
-        .catch(() => {});
-    }
-
-    const updated = [...groupJoinRequests, request];
-    setGroupJoinRequests(updated);
-    AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
+    sendGroupJoinRequestAsync(targetAdminUsername, requestingUsername, message)
+      .then(result => {
+        if (!result.success && result.error) {
+          Alert.alert("Unable to Send", result.error);
+        } else if (result.success) {
+          Alert.alert("Request Sent", "Your join request has been sent to the lab administrator.");
+          fetchServerJoinRequestsAndInvites();
+        }
+      });
     return { success: true };
   }
 
@@ -1513,24 +1537,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === request.targetAdminUsername.toLowerCase());
     const requestingUser = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
 
+    const serverReqId = request.serverJoinRequestId;
+    if (serverReqId) {
+      const endpoint = accept
+        ? `/api/organizations/join-requests/${serverReqId}/approve`
+        : `/api/organizations/join-requests/${serverReqId}/reject`;
+      resilientFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: role || "user" }),
+      }).then(() => {
+        refreshUsers();
+        fetchServerJoinRequestsAndInvites();
+      }).catch((e) => {
+        console.log("Failed to update join request on server:", e);
+        Alert.alert("Error", "Failed to update the join request on the server. Please try again.");
+      });
+    } else if (accept && adminProfile?.practiceName && requestingUser?.id) {
+      resilientFetch(`/api/auth/users/${requestingUser.id}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ practiceName: adminProfile.practiceName, ...(role ? { role } : {}) }),
+      }).then(() => {
+        refreshUsers();
+      }).catch(() => {});
+    }
+
     if (accept) {
-      if (request.serverJoinRequestId) {
-        resilientFetch(`/api/organizations/join-requests/${request.serverJoinRequestId}/approve`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: role || "user" }),
-        }).then(() => {
-          refreshUsers();
-        }).catch(() => {});
-      } else if (adminProfile?.practiceName && requestingUser?.id) {
-        resilientFetch(`/api/auth/users/${requestingUser.id}/profile`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ practiceName: adminProfile.practiceName, ...(role ? { role } : {}) }),
-        }).then(() => {
-          refreshUsers();
-        }).catch(() => {});
-      }
       if (requestingUser && requestingUser.userType === "provider") {
         const doctorLabel = requestingUser.doctorName
           ? (requestingUser.accountNumber ? `Dr. ${requestingUser.doctorName} ${formatAcctNum(requestingUser.accountNumber)}` : `Dr. ${requestingUser.doctorName}`)
@@ -1576,61 +1609,67 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!targetUser) {
       return { success: false, error: "No user found with that username and email combination." };
     }
-    const existing = labInvitations.find(
-      i => i.invitedUsername?.toLowerCase() === targetUsername.toLowerCase()
-        && i.adminUsername.toLowerCase() === currentUser.toLowerCase()
-        && i.status === "pending"
-    );
-    if (existing) {
-      return { success: false, error: "You already have a pending invitation for this user." };
-    }
-    const invite: LabInvitation = {
-      id: generateId(),
-      adminUsername: currentUser,
-      adminLabName: currentUserProfile.practiceName,
-      invitedUsername: targetUser.username,
-      invitedEmail: targetUser.email || targetEmail,
-      role,
-      status: "pending",
-      createdAt: Date.now(),
-    };
-    const updated = [...labInvitations, invite];
-    setLabInvitations(updated);
-    AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
 
-    resilientFetch("/api/labs/groups")
-      .then(r => r.json())
-      .then((resp: { groups?: Array<{ practiceName: string; organizationId: string }> }) => {
+    (async () => {
+      try {
+        const groupsResp = await resilientFetch("/api/labs/groups");
+        const groupsData = await groupsResp.json();
+        const groups: Array<{ practiceName: string; organizationId: string }> = groupsData.groups || [];
         const myLabName = currentUserProfile!.practiceName!.toLowerCase().trim();
-        const match = (resp.groups || []).find(g => g.practiceName.toLowerCase().trim() === myLabName);
-        if (match?.organizationId) {
-          return resilientFetch(`/api/organizations/${match.organizationId}/invites`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              email: (targetUser.email || targetEmail).toLowerCase(),
-              phone: targetUser.phone || undefined,
-              roleToAssign: role === "admin" ? "admin" : "user",
-              expiresInDays: 7,
-            }),
-          }).then(r => r.json()).then(data => {
-            if (data?.data?.token) {
-              setLabInvitations(prev => {
-                const u = prev.map(i => i.id === invite.id ? { ...i, serverInviteToken: data.data.token } : i);
-                AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(u));
-                return u;
-              });
-            }
+        const match = groups.find(g => g.practiceName.toLowerCase().trim() === myLabName);
+        if (!match?.organizationId) {
+          Alert.alert("Error", "Could not find your lab on the server.");
+          return;
+        }
+
+        const resp = await resilientFetch(`/api/organizations/${match.organizationId}/invites`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: (targetUser.email || targetEmail).toLowerCase(),
+            phone: targetUser.phone || undefined,
+            roleToAssign: role === "admin" ? "admin" : "user",
+            expiresInDays: 7,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          Alert.alert("Error", data?.message || "Failed to send invitation.");
+          return;
+        }
+
+        if (data?.data?.token || data?.data?.id) {
+          const invite: LabInvitation = {
+            id: generateId(),
+            adminUsername: currentUser!,
+            adminLabName: currentUserProfile!.practiceName!,
+            invitedUsername: targetUser.username,
+            invitedEmail: targetUser.email || targetEmail,
+            role,
+            status: "pending",
+            createdAt: Date.now(),
+            serverInviteToken: data.data.token || data.data.id,
+          };
+          setLabInvitations(prev => {
+            const updated = [...prev, invite];
+            AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
+            return updated;
           });
         }
-      })
-      .catch(e => console.log("Failed to create server invite:", e));
 
-    addNotification({
-      title: "Lab Invitation Sent",
-      message: `Invitation sent to ${targetUser.username} to join ${currentUserProfile.practiceName} as ${role === "admin" ? "an admin" : "a user"}.`,
-      type: "update",
-    });
+        addNotification({
+          title: "Lab Invitation Sent",
+          message: `Invitation sent to ${targetUser.username} to join ${currentUserProfile!.practiceName} as ${role === "admin" ? "an admin" : "a user"}.`,
+          type: "update",
+        });
+        Alert.alert("Invitation Sent", `Invitation sent to ${targetUser.username}.`);
+        fetchServerJoinRequestsAndInvites();
+      } catch (e) {
+        console.log("Failed to create server invite:", e);
+        Alert.alert("Error", "Network error. Please check your connection and try again.");
+      }
+    })();
+
     return { success: true };
   }
 
@@ -1648,25 +1687,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
 
     const invitedName = invite.invitedUsername || invite.targetUsername || "";
-    const targetUser = registeredUsers.find(u => u.username.toLowerCase() === invitedName.toLowerCase());
+
+    if (invite.serverInviteToken) {
+      const endpoint = accept
+        ? `/api/organizations/invites/${invite.serverInviteToken}/accept`
+        : `/api/organizations/invites/${invite.serverInviteToken}/reject`;
+      resilientFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }).then(() => {
+        refreshUsers();
+        fetchServerJoinRequestsAndInvites();
+      }).catch((e) => {
+        console.log("Failed to respond to invite on server:", e);
+        Alert.alert("Error", "Failed to update the invitation on the server. Please try again.");
+      });
+    }
 
     if (accept) {
-      if (invite.serverInviteToken) {
-        resilientFetch(`/api/organizations/invites/${invite.serverInviteToken}/accept`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }).then(() => {
-          refreshUsers();
-        }).catch(() => {});
-      } else if (targetUser?.id) {
-        resilientFetch(`/api/auth/users/${targetUser.id}/profile`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ practiceName: invite.adminLabName, role: invite.role }),
-        }).then(() => {
-          refreshUsers();
-        }).catch(() => {});
-      }
       addNotification({
         title: "Lab Invitation Accepted",
         message: `${invitedName} has joined ${invite.adminLabName} as ${invite.role === "admin" ? "an admin" : "a user"}.`,

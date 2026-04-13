@@ -92,6 +92,54 @@ router.get(
 );
 
 router.get(
+  "/my-invites",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+    });
+    if (!user?.email && !user?.phone) return ok(res, []);
+    const conditions = [];
+    if (user.email) conditions.push(eq(organizationInvites.email, user.email.toLowerCase()));
+    const invites = await db.query.organizationInvites.findMany({
+      where: and(
+        conditions.length ? conditions[0] : undefined,
+        eq(organizationInvites.status, "pending")
+      ),
+    });
+    const enriched = await Promise.all(
+      invites.map(async (inv) => {
+        const org = await db.query.organizations.findFirst({
+          where: eq(organizations.id, inv.organizationId),
+        });
+        const inviter = inv.invitedByUserId
+          ? await db.query.users.findFirst({
+              where: eq(users.id, inv.invitedByUserId),
+            })
+          : null;
+        return {
+          ...inv,
+          organizationName: org?.displayName || org?.name || "Unknown Lab",
+          inviterUsername: inviter?.username || "Admin",
+        };
+      })
+    );
+    return ok(res, enriched);
+  })
+);
+
+router.get(
+  "/my-join-requests",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const requests = await db.query.organizationJoinRequests.findMany({
+      where: eq(organizationJoinRequests.requestedByUserId, userId),
+    });
+    return ok(res, requests);
+  })
+);
+
+router.get(
   "/:organizationId",
   asyncHandler(async (req, res) => {
     await requireMembership(
@@ -264,6 +312,15 @@ router.post(
 
     const userId = (req as any).auth.userId;
 
+    const authUser = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (authUser && invite.email) {
+      const inviteEmail = invite.email.toLowerCase().trim();
+      const userEmail = (authUser.email || "").toLowerCase().trim();
+      if (inviteEmail && userEmail && inviteEmail !== userEmail) {
+        throw new HttpError(403, "This invitation was sent to a different email address.");
+      }
+    }
+
     await db
       .insert(organizationMemberships)
       .values({
@@ -322,6 +379,46 @@ router.post(
   })
 );
 
+router.post(
+  "/invites/:token/reject",
+  asyncHandler(async (req, res) => {
+    const invite = await db.query.organizationInvites.findFirst({
+      where: and(
+        eq(organizationInvites.token, req.params.token),
+        eq(organizationInvites.status, "pending")
+      ),
+    });
+    if (!invite) throw new HttpError(404, "Invite not found or already used.");
+
+    const userId = (req as any).auth.userId;
+    const authUser = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (authUser && invite.email) {
+      const inviteEmail = invite.email.toLowerCase().trim();
+      const userEmail = (authUser.email || "").toLowerCase().trim();
+      if (inviteEmail && userEmail && inviteEmail !== userEmail) {
+        throw new HttpError(403, "This invitation was sent to a different email address.");
+      }
+    }
+
+    await db
+      .update(organizationInvites)
+      .set({
+        status: "declined",
+      })
+      .where(eq(organizationInvites.id, invite.id));
+
+    await writeAuditLog({
+      req,
+      organizationId: invite.organizationId,
+      action: "organization_invite_declined",
+      entityType: "organization_invite",
+      entityId: invite.id,
+    });
+
+    return ok(res, { declined: true });
+  })
+);
+
 const joinRequestSchema = z.object({
   requestedRole: z
     .enum(["admin", "user", "billing", "read_only"])
@@ -349,6 +446,20 @@ router.post(
       throw new HttpError(
         409,
         "You already have a membership record for this organization."
+      );
+
+    const existingPending =
+      await db.query.organizationJoinRequests.findFirst({
+        where: and(
+          eq(organizationJoinRequests.organizationId, organizationId),
+          eq(organizationJoinRequests.requestedByUserId, (req as any).auth.userId),
+          eq(organizationJoinRequests.status, "pending")
+        ),
+      });
+    if (existingPending)
+      throw new HttpError(
+        409,
+        "You already have a pending join request for this lab."
       );
 
     const [request] = await db
