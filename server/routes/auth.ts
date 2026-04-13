@@ -4,9 +4,9 @@ import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
-  organizationJoinRequests,
-  organizationMemberships,
-  organizationInvites,
+  joinRequests,
+  labMemberships,
+  labInvites,
   organizationConnections,
   organizations,
   userSessions,
@@ -166,11 +166,10 @@ router.post(
         .from(organizations)
         .where(eq(organizations.id, input.joinOrganizationId));
       if (org) {
-        await db.insert(organizationJoinRequests).values({
-          organizationId: org.id,
-          requestedByUserId: user.id,
+        await db.insert(joinRequests).values({
+          labId: org.id,
+          userId: user.id,
           requestedRole: input.role === "admin" ? "admin" : "user",
-          message: `${user.username} would like to join ${org.displayName || org.name}.`,
           status: "pending",
         });
         await db
@@ -199,8 +198,8 @@ router.post(
           createdByUserId: user.id,
         })
         .returning();
-      await db.insert(organizationMemberships).values({
-        organizationId: org.id,
+      await db.insert(labMemberships).values({
+        labId: org.id,
         userId: user.id,
         role: "owner",
         status: "active",
@@ -348,13 +347,13 @@ router.get(
   asyncHandler(async (req, res) => {
     const user = (req as any).user;
     const memberships =
-      await db.query.organizationMemberships.findMany({
+      await db.query.labMemberships.findMany({
         where: eq(
-          organizationMemberships.userId,
+          labMemberships.userId,
           (req as any).auth.userId
         ),
       });
-    const orgIds = memberships.map((m: any) => m.organizationId);
+    const orgIds = memberships.map((m: any) => m.labId);
     const orgs = orgIds.length
       ? await db
           .select()
@@ -369,8 +368,8 @@ router.get(
         id: m.id,
         role: m.role,
         status: m.status,
-        organizationId: m.organizationId,
-        organization: orgs.find((org) => org.id === m.organizationId) ?? null,
+        organizationId: m.labId,
+        organization: orgs.find((org) => org.id === m.labId) ?? null,
       })),
     });
   })
@@ -397,22 +396,22 @@ router.put(
     let isLabAdmin = false;
 
     if (!isSelf) {
-      const adminMemberships = await db.query.organizationMemberships.findMany({
+      const adminMemberships = await db.query.labMemberships.findMany({
         where: and(
-          eq(organizationMemberships.userId, authUserId),
-          eq(organizationMemberships.status, "active"),
+          eq(labMemberships.userId, authUserId),
+          eq(labMemberships.status, "active"),
         ),
       });
       const adminOrgIds = adminMemberships
         .filter(m => ["owner", "admin"].includes(m.role))
-        .map(m => m.organizationId);
+        .map(m => m.labId);
 
       if (adminOrgIds.length > 0) {
-        const targetMembership = await db.query.organizationMemberships.findFirst({
+        const targetMembership = await db.query.labMemberships.findFirst({
           where: and(
-            eq(organizationMemberships.userId, id),
-            eq(organizationMemberships.status, "active"),
-            inArray(organizationMemberships.organizationId, adminOrgIds),
+            eq(labMemberships.userId, id),
+            eq(labMemberships.status, "active"),
+            inArray(labMemberships.labId, adminOrgIds),
           ),
         });
         if (targetMembership) {
@@ -527,16 +526,14 @@ router.delete(
     await db.transaction(async (tx) => {
       await tx.delete(userSessions).where(eq(userSessions.userId, id));
       await tx.delete(labCases).where(eq(labCases.ownerId, id));
-      await tx.delete(organizationMemberships).where(eq(organizationMemberships.userId, id));
-      await tx.delete(organizationJoinRequests).where(eq(organizationJoinRequests.requestedByUserId, id));
-      await tx.delete(organizationInvites).where(eq(organizationInvites.invitedByUserId, id));
-      await tx.update(organizationInvites).set({ acceptedByUserId: null }).where(eq(organizationInvites.acceptedByUserId, id));
+      await tx.delete(labMemberships).where(eq(labMemberships.userId, id));
+      await tx.delete(joinRequests).where(eq(joinRequests.userId, id));
+      await tx.update(labInvites).set({ invitedUserId: null }).where(eq(labInvites.invitedUserId, id));
+      await tx.execute(sql`UPDATE lab_invites SET created_by_user_id = NULL WHERE created_by_user_id = ${id}`);
       await tx.delete(organizationConnections).where(eq(organizationConnections.requestedByUserId, id));
       await tx.update(organizationConnections).set({ approvedByUserId: null }).where(eq(organizationConnections.approvedByUserId, id));
       await tx.update(organizations).set({ createdByUserId: null }).where(eq(organizations.createdByUserId, id));
-      await tx.execute(sql`UPDATE organization_memberships SET invited_by_user_id = NULL WHERE invited_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE organization_memberships SET approved_by_user_id = NULL WHERE approved_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE organization_join_requests SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE join_requests SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${id}`);
       await tx.execute(sql`UPDATE cases SET created_by_user_id = NULL WHERE created_by_user_id = ${id}`);
       await tx.execute(sql`UPDATE case_notes SET author_user_id = NULL WHERE author_user_id = ${id}`);
       await tx.execute(sql`UPDATE case_attachments SET uploaded_by_user_id = NULL WHERE uploaded_by_user_id = ${id}`);
@@ -615,11 +612,11 @@ router.delete(
 
     await db.transaction(async (tx) => {
       if (org) {
-        await tx.delete(organizationInvites).where(eq(organizationInvites.organizationId, org.id));
-        await tx.delete(organizationJoinRequests).where(eq(organizationJoinRequests.organizationId, org.id));
+        await tx.delete(labInvites).where(eq(labInvites.labId, org.id));
+        await tx.delete(joinRequests).where(eq(joinRequests.labId, org.id));
         await tx.delete(organizationConnections).where(eq(organizationConnections.labOrganizationId, org.id));
         await tx.delete(organizationConnections).where(eq(organizationConnections.providerOrganizationId, org.id));
-        await tx.delete(organizationMemberships).where(eq(organizationMemberships.organizationId, org.id));
+        await tx.delete(labMemberships).where(eq(labMemberships.labId, org.id));
         await tx.update(organizations).set({ isActive: false }).where(eq(organizations.id, org.id));
       }
 

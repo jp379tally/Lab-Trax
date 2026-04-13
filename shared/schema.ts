@@ -75,13 +75,13 @@ export const organizations = pgTable("organizations", {
   updatedAt: updatedAt(),
 });
 
-export const organizationMemberships = pgTable(
-  "organization_memberships",
+export const labMemberships = pgTable(
+  "lab_memberships",
   {
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    organizationId: varchar("organization_id")
+    labId: varchar("lab_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     userId: varchar("user_id")
@@ -89,83 +89,69 @@ export const organizationMemberships = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: text("role").notNull(),
     status: text("status").default("active").notNull(),
-    invitedByUserId: varchar("invited_by_user_id").references(() => users.id, {
-      onDelete: "set null",
-    }),
-    approvedByUserId: varchar("approved_by_user_id").references(
-      () => users.id,
-      { onDelete: "set null" }
-    ),
-    joinedAt: timestamp("joined_at", { withTimezone: true }),
     createdAt: createdAt(),
-    updatedAt: updatedAt(),
   },
   (table) => ({
-    uniqueMemberPerOrg: uniqueIndex("memberships_org_user_unique").on(
-      table.organizationId,
+    uniqueMemberPerLab: uniqueIndex("lab_memberships_lab_user_unique").on(
+      table.labId,
       table.userId
     ),
-    orgIdx: index("memberships_org_idx").on(table.organizationId),
-    userIdx: index("memberships_user_idx").on(table.userId),
+    labIdx: index("lab_memberships_lab_idx").on(table.labId),
+    userIdx: index("lab_memberships_user_idx").on(table.userId),
   })
 );
 
-export const organizationJoinRequests = pgTable(
-  "organization_join_requests",
+export const joinRequests = pgTable(
+  "join_requests",
   {
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    organizationId: varchar("organization_id")
+    labId: varchar("lab_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    requestedByUserId: varchar("requested_by_user_id")
+    userId: varchar("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    requestedRole: text("requested_role").notNull(),
-    message: text("message"),
+    requestedRole: text("requested_role").default("user").notNull(),
     status: text("status").default("pending").notNull(),
+    createdAt: createdAt(),
     reviewedByUserId: varchar("reviewed_by_user_id").references(
       () => users.id,
       { onDelete: "set null" }
     ),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  }
+  },
+  (table) => ({
+    uniquePending: uniqueIndex("join_requests_lab_user_status_unique").on(
+      table.labId,
+      table.userId,
+      table.status
+    ),
+  })
 );
 
-export const organizationInvites = pgTable(
-  "organization_invites",
+export const labInvites = pgTable(
+  "lab_invites",
   {
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    organizationId: varchar("organization_id")
+    labId: varchar("lab_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    email: text("email").notNull(),
-    phone: text("phone"),
-    roleToAssign: text("role_to_assign").notNull(),
-    token: text("token").notNull(),
+    invitedUserId: varchar("invited_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    invitedPhone: text("invited_phone"),
+    role: text("role").notNull(),
     status: text("status").default("pending").notNull(),
-    invitedByUserId: varchar("invited_by_user_id")
+    createdByUserId: varchar("created_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    acceptedByUserId: varchar("accepted_by_user_id").references(
-      () => users.id,
-      { onDelete: "set null" }
-    ),
-    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (table) => ({
-    tokenUnique: uniqueIndex("organization_invites_token_unique").on(
-      table.token
-    ),
-  })
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+  }
 );
 
 export const organizationConnections = pgTable(
@@ -508,8 +494,8 @@ export const userSessions = pgTable(
   })
 );
 
-export const serverNotifications = pgTable(
-  "server_notifications",
+export const notifications = pgTable(
+  "notifications",
   {
     id: varchar("id")
       .primaryKey()
@@ -525,27 +511,27 @@ export const serverNotifications = pgTable(
     createdAt: createdAt(),
   },
   (table) => ({
-    userIdx: index("server_notifications_user_idx").on(table.userId),
+    userIdx: index("notifications_user_idx").on(table.userId),
   })
 );
 
 export const usersRelations = relations(users, ({ many }) => ({
-  memberships: many(organizationMemberships),
+  memberships: many(labMemberships),
 }));
 
 export const organizationsRelations = relations(organizations, ({ many }) => ({
-  memberships: many(organizationMemberships),
+  memberships: many(labMemberships),
 }));
 
-export const organizationMembershipsRelations = relations(
-  organizationMemberships,
+export const labMembershipsRelations = relations(
+  labMemberships,
   ({ one }) => ({
-    organization: one(organizations, {
-      fields: [organizationMemberships.organizationId],
+    lab: one(organizations, {
+      fields: [labMemberships.labId],
       references: [organizations.id],
     }),
     user: one(users, {
-      fields: [organizationMemberships.userId],
+      fields: [labMemberships.userId],
       references: [users.id],
     }),
   })

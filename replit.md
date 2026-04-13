@@ -36,11 +36,12 @@ Preferred communication style: Simple, everyday language.
 
 ### Database Tables
 - **Core**: `users`, `user_sessions`
-- **Organizations**: `organizations`, `organization_memberships`, `organization_join_requests`, `organization_invites`, `organization_connections`
+- **Lab Management**: `organizations`, `lab_memberships` (labId, userId, role, status), `join_requests` (labId, userId, requestedRole), `lab_invites` (labId, invitedUserId, invitedPhone, role), `organization_connections`, `notifications` (userId, type, title, body, dataJson)
 - **Cases (Normalized)**: `cases`, `case_restorations`, `case_events`, `case_notes`, `case_attachments`, `case_locations`, `case_submission_queue`
 - **Invoices**: `invoices`, `invoice_line_items`, `payments`
 - **Audit**: `audit_logs`
 - **Legacy**: `lab_cases` (JSON blob storage, still used by frontend app-context), `chat_conversations`, `chat_messages`
+- **Deprecated (still in DB)**: `organization_memberships`, `organization_join_requests`, `organization_invites`, `server_notifications` — replaced by new tables above
 
 ### Key Features and Design Patterns
 - **3-Portal Architecture**: Differentiated access for Master Admin, Lab Portal, and Provider Portal based on `userType`.

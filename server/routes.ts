@@ -5,7 +5,7 @@ import OpenAI from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "./db";
-import { users, labCases, organizations, organizationMemberships } from "../shared/schema";
+import { users, labCases, organizations, labMemberships } from "../shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
@@ -101,14 +101,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const memberships = orgs.length
         ? await db
             .select()
-            .from(organizationMemberships)
+            .from(labMemberships)
             .where(
               and(
                 inArray(
-                  organizationMemberships.organizationId,
+                  labMemberships.labId,
                   orgs.map((o) => o.id)
                 ),
-                eq(organizationMemberships.status, "active")
+                eq(labMemberships.status, "active")
               )
             )
         : [];

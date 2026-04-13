@@ -342,11 +342,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
             for (const sjr of serverJoinReqs) {
               const existing = mutable.find(r => r.serverJoinRequestId === sjr.id);
               if (!existing) {
-                const requester = registeredUsers.find(u => u.id === sjr.requestedByUserId);
+                const requester = registeredUsers.find(u => u.id === sjr.userId);
                 mutable.push({
                   id: generateId(),
                   serverJoinRequestId: sjr.id,
-                  requestingUsername: requester?.username || sjr.requestedByUserId,
+                  requestingUsername: requester?.username || sjr.userId,
                   targetAdminUsername: currentUser || "",
                   message: sjr.message || `${requester?.username || "Someone"} would like to join your lab.`,
                   status: sjr.status === "approved" ? "accepted" : sjr.status === "rejected" ? "declined" : "pending",
@@ -372,18 +372,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
               let changed = false;
               const updated = [...prev];
               for (const si of serverInvites) {
-                const existing = updated.find(inv => inv.serverInviteToken === si.token || inv.serverInviteToken === si.id);
+                const existing = updated.find(inv => inv.serverInviteToken === si.id);
                 if (!existing) {
-                  const invitee = registeredUsers.find(u => u.email?.toLowerCase() === si.email?.toLowerCase());
+                  const invitee = registeredUsers.find(u => u.id === si.invitedUserId);
                   updated.push({
                     id: generateId(),
-                    serverInviteToken: si.token || si.id,
-                    invitedUsername: invitee?.username || si.email || "",
-                    invitedEmail: si.email || "",
+                    serverInviteToken: si.id,
+                    invitedUsername: invitee?.username || si.invitedUserId || "",
+                    invitedEmail: invitee?.email || "",
                     adminLabName: currentUserProfile?.practiceName || "",
                     adminUsername: currentUser || "",
-                    role: si.roleToAssign === "admin" ? "admin" : "user",
-                    status: si.status === "accepted" ? "accepted" : si.status === "expired" || si.status === "revoked" ? "declined" : "pending",
+                    role: si.role === "admin" ? "admin" : "user",
+                    status: si.status === "accepted" ? "accepted" : si.status === "rejected" || si.status === "expired" || si.status === "revoked" ? "declined" : "pending",
                     createdAt: si.createdAt ? new Date(si.createdAt).getTime() : Date.now(),
                   });
                   changed = true;
@@ -407,16 +407,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           let changed = false;
           const updated = [...prev];
           for (const si of myInvites) {
-            const existing = updated.find(inv => inv.serverInviteToken === si.token || inv.serverInviteToken === si.id);
+            const existing = updated.find(inv => inv.serverInviteToken === si.id);
             if (!existing) {
               updated.push({
                 id: generateId(),
-                serverInviteToken: si.token || si.id,
+                serverInviteToken: si.id,
                 invitedUsername: currentUser || "",
-                invitedEmail: si.email || currentUserProfile?.email || "",
+                invitedEmail: currentUserProfile?.email || "",
                 adminLabName: si.organizationName || "A Lab",
                 adminUsername: si.inviterUsername || "Admin",
-                role: si.roleToAssign === "admin" ? "admin" : "user",
+                role: si.role === "admin" ? "admin" : "user",
                 status: "pending",
                 createdAt: si.createdAt ? new Date(si.createdAt).getTime() : Date.now(),
               });
@@ -1626,10 +1626,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            email: (targetUser.email || targetEmail).toLowerCase(),
-            phone: targetUser.phone || undefined,
-            roleToAssign: role === "admin" ? "admin" : "user",
-            expiresInDays: 7,
+            invitedUserId: targetUser.id,
+            invitedPhone: targetUser.phone || undefined,
+            role: role === "admin" ? "admin" : "user",
           }),
         });
         const data = await resp.json();
@@ -1638,7 +1637,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        if (data?.data?.token || data?.data?.id) {
+        if (data?.data?.id) {
           const invite: LabInvitation = {
             id: generateId(),
             adminUsername: currentUser!,
@@ -1648,7 +1647,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             role,
             status: "pending",
             createdAt: Date.now(),
-            serverInviteToken: data.data.token || data.data.id,
+            serverInviteToken: data.data.id,
           };
           setLabInvitations(prev => {
             const updated = [...prev, invite];

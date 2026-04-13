@@ -8,7 +8,7 @@ import {
   cases,
   invoiceLineItems,
   invoices,
-  organizationMemberships,
+  labMemberships,
   payments,
 } from "../../shared/schema";
 import { writeAuditLog } from "../lib/audit";
@@ -128,15 +128,15 @@ router.get(
   "/",
   asyncHandler(async (req, res) => {
     const memberships =
-      await db.query.organizationMemberships.findMany({
+      await db.query.labMemberships.findMany({
         where: eq(
-          organizationMemberships.userId,
+          labMemberships.userId,
           (req as any).auth.userId
         ),
       });
     const orgIds = memberships
       .filter((m: any) => m.status === "active")
-      .map((m: any) => m.organizationId);
+      .map((m: any) => m.labId);
 
     const rows = orgIds.length
       ? await db.query.invoices.findMany({

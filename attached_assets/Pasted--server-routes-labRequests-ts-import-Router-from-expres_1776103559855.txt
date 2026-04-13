@@ -1,0 +1,258 @@
+// server/routes/labRequests.ts
+import { Router } from "express";
+import { db } from "../db";
+import { requireAuth } from "../middleware/requireAuth";
+
+const router = Router();
+
+async function requireLabAdmin(userId: number, labId: number) {
+  const result = await db.query(
+    `
+    SELECT 1
+    FROM lab_memberships
+    WHERE user_id = $1
+      AND lab_id = $2
+      AND status = 'active'
+      AND role IN ('owner','admin')
+    `,
+    [userId, labId]
+  );
+  return result.rowCount > 0;
+}
+
+router.post("/api/labs/:labId/join-requests", requireAuth, async (req, res) => {
+  const labId = Number(req.params.labId);
+  const userId = req.user.id;
+
+  const membership = await db.query(
+    `SELECT 1 FROM lab_memberships WHERE lab_id = $1 AND user_id = $2`,
+    [labId, userId]
+  );
+  if (membership.rowCount > 0) {
+    return res.status(400).json({ error: "User is already linked to this lab." });
+  }
+
+  const existing = await db.query(
+    `
+    SELECT 1
+    FROM join_requests
+    WHERE lab_id = $1 AND user_id = $2 AND status = 'pending'
+    `,
+    [labId, userId]
+  );
+  if (existing.rowCount > 0) {
+    return res.status(400).json({ error: "A join request is already pending." });
+  }
+
+  const created = await db.query(
+    `
+    INSERT INTO join_requests (lab_id, user_id, requested_role)
+    VALUES ($1, $2, 'user')
+    RETURNING *
+    `,
+    [labId, userId]
+  );
+
+  const admins = await db.query(
+    `
+    SELECT user_id
+    FROM lab_memberships
+    WHERE lab_id = $1
+      AND status = 'active'
+      AND role IN ('owner','admin')
+    `,
+    [labId]
+  );
+
+  for (const row of admins.rows) {
+    await db.query(
+      `
+      INSERT INTO notifications (user_id, type, title, body, data_json)
+      VALUES ($1, 'join_request', 'New join request', 'A user requested to join your lab.', $2)
+      `,
+      [row.user_id, JSON.stringify({ joinRequestId: created.rows[0].id, labId })]
+    );
+  }
+
+  return res.status(201).json({ joinRequest: created.rows[0] });
+});
+
+router.get("/api/labs/:labId/join-requests", requireAuth, async (req, res) => {
+  const labId = Number(req.params.labId);
+  const isAdmin = await requireLabAdmin(req.user.id, labId);
+  if (!isAdmin) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const result = await db.query(
+    `
+    SELECT jr.*, u.username, u.phone_e164
+    FROM join_requests jr
+    JOIN users u ON u.id = jr.user_id
+    WHERE jr.lab_id = $1
+      AND jr.status = 'pending'
+    ORDER BY jr.created_at DESC
+    `,
+    [labId]
+  );
+
+  return res.json({ joinRequests: result.rows });
+});
+
+router.post("/api/join-requests/:id/approve", requireAuth, async (req, res) => {
+  const joinRequestId = Number(req.params.id);
+
+  const jr = await db.query(
+    `SELECT * FROM join_requests WHERE id = $1`,
+    [joinRequestId]
+  );
+  if (jr.rowCount === 0) {
+    return res.status(404).json({ error: "Join request not found" });
+  }
+
+  const request = jr.rows[0];
+  const isAdmin = await requireLabAdmin(req.user.id, request.lab_id);
+  if (!isAdmin) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  await db.query("BEGIN");
+  try {
+    await db.query(
+      `
+      INSERT INTO lab_memberships (lab_id, user_id, role, status)
+      VALUES ($1, $2, 'user', 'active')
+      ON CONFLICT (lab_id, user_id)
+      DO UPDATE SET status = 'active'
+      `,
+      [request.lab_id, request.user_id]
+    );
+
+    await db.query(
+      `
+      UPDATE join_requests
+      SET status = 'approved',
+          reviewed_by_user_id = $1,
+          reviewed_at = NOW()
+      WHERE id = $2
+      `,
+      [req.user.id, joinRequestId]
+    );
+
+    await db.query(
+      `
+      INSERT INTO notifications (user_id, type, title, body, data_json)
+      VALUES ($1, 'join_request_approved', 'Request approved', 'Your request to join the lab was approved.', $2)
+      `,
+      [request.user_id, JSON.stringify({ labId: request.lab_id })]
+    );
+
+    await db.query("COMMIT");
+    return res.json({ ok: true });
+  } catch (e) {
+    await db.query("ROLLBACK");
+    throw e;
+  }
+});
+
+router.post("/api/labs/:labId/invites", requireAuth, async (req, res) => {
+  const labId = Number(req.params.labId);
+  const { invitedUserId, invitedPhone, role = "user" } = req.body;
+
+  const isAdmin = await requireLabAdmin(req.user.id, labId);
+  if (!isAdmin) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  if (!invitedUserId && !invitedPhone) {
+    return res.status(400).json({ error: "invitedUserId or invitedPhone is required" });
+  }
+
+  const invite = await db.query(
+    `
+    INSERT INTO lab_invites (lab_id, invited_user_id, invited_phone, role, created_by_user_id)
+    VALUES ($1, $2, $3, $4, $5)
+    RETURNING *
+    `,
+    [labId, invitedUserId || null, invitedPhone || null, role, req.user.id]
+  );
+
+  if (invitedUserId) {
+    await db.query(
+      `
+      INSERT INTO notifications (user_id, type, title, body, data_json)
+      VALUES ($1, 'lab_invite', 'Lab invite', 'You were invited to join a lab.', $2)
+      `,
+      [invitedUserId, JSON.stringify({ inviteId: invite.rows[0].id, labId })]
+    );
+  }
+
+  return res.status(201).json({ invite: invite.rows[0] });
+});
+
+router.get("/api/users/me/invites", requireAuth, async (req, res) => {
+  const result = await db.query(
+    `
+    SELECT *
+    FROM lab_invites
+    WHERE status = 'pending'
+      AND (invited_user_id = $1 OR invited_phone = $2)
+    ORDER BY created_at DESC
+    `,
+    [req.user.id, req.user.phone_e164]
+  );
+
+  res.json({ invites: result.rows });
+});
+
+router.post("/api/invites/:id/accept", requireAuth, async (req, res) => {
+  const inviteId = Number(req.params.id);
+  const result = await db.query(
+    `SELECT * FROM lab_invites WHERE id = $1`,
+    [inviteId]
+  );
+  if (result.rowCount === 0) {
+    return res.status(404).json({ error: "Invite not found" });
+  }
+
+  const invite = result.rows[0];
+  const canAccept =
+    invite.invited_user_id === req.user.id ||
+    (invite.invited_phone && invite.invited_phone === req.user.phone_e164);
+
+  if (!canAccept) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  await db.query("BEGIN");
+  try {
+    await db.query(
+      `
+      INSERT INTO lab_memberships (lab_id, user_id, role, status)
+      VALUES ($1, $2, $3, 'active')
+      ON CONFLICT (lab_id, user_id)
+      DO UPDATE SET role = EXCLUDED.role, status = 'active'
+      `,
+      [invite.lab_id, req.user.id, invite.role]
+    );
+
+    await db.query(
+      `
+      UPDATE lab_invites
+      SET status = 'accepted',
+          responded_at = NOW(),
+          invited_user_id = $1
+      WHERE id = $2
+      `,
+      [req.user.id, inviteId]
+    );
+
+    await db.query("COMMIT");
+    res.json({ ok: true });
+  } catch (e) {
+    await db.query("ROLLBACK");
+    throw e;
+  }
+});
+
+export default router;

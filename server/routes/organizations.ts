@@ -4,13 +4,12 @@ import { z } from "zod";
 import { db } from "../db";
 import {
   organizationConnections,
-  organizationInvites,
-  organizationJoinRequests,
-  organizationMemberships,
+  labInvites,
+  joinRequests,
+  labMemberships,
   organizations,
   users,
 } from "../../shared/schema";
-import { generateInviteToken } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
@@ -46,13 +45,11 @@ router.post(
       })
       .returning();
 
-    await db.insert(organizationMemberships).values({
-      organizationId: organization.id,
+    await db.insert(labMemberships).values({
+      labId: organization.id,
       userId: (req as any).auth.userId,
       role: "owner",
       status: "active",
-      approvedByUserId: (req as any).auth.userId,
-      joinedAt: new Date(),
     });
 
     await writeAuditLog({
@@ -72,15 +69,15 @@ router.get(
   "/",
   asyncHandler(async (req, res) => {
     const memberships =
-      await db.query.organizationMemberships.findMany({
+      await db.query.labMemberships.findMany({
         where: eq(
-          organizationMemberships.userId,
+          labMemberships.userId,
           (req as any).auth.userId
         ),
       });
     const orgIds = memberships
       .filter((m: any) => m.status === "active")
-      .map((m: any) => m.organizationId);
+      .map((m: any) => m.labId);
     const orgs = orgIds.length
       ? await db
           .select()
@@ -95,32 +92,26 @@ router.get(
   "/my-invites",
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId;
-    const user = await db.query.users.findFirst({
-      where: eq(users.id, userId),
-    });
-    if (!user?.email && !user?.phone) return ok(res, []);
-    const conditions = [];
-    if (user.email) conditions.push(eq(organizationInvites.email, user.email.toLowerCase()));
-    const invites = await db.query.organizationInvites.findMany({
+    const invites = await db.query.labInvites.findMany({
       where: and(
-        conditions.length ? conditions[0] : undefined,
-        eq(organizationInvites.status, "pending")
+        eq(labInvites.invitedUserId, userId),
+        eq(labInvites.status, "pending")
       ),
     });
     const enriched = await Promise.all(
       invites.map(async (inv) => {
         const org = await db.query.organizations.findFirst({
-          where: eq(organizations.id, inv.organizationId),
+          where: eq(organizations.id, inv.labId),
         });
-        const inviter = inv.invitedByUserId
+        const creator = inv.createdByUserId
           ? await db.query.users.findFirst({
-              where: eq(users.id, inv.invitedByUserId),
+              where: eq(users.id, inv.createdByUserId),
             })
           : null;
         return {
           ...inv,
           organizationName: org?.displayName || org?.name || "Unknown Lab",
-          inviterUsername: inviter?.username || "Admin",
+          inviterUsername: creator?.username || "Admin",
         };
       })
     );
@@ -132,8 +123,8 @@ router.get(
   "/my-join-requests",
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId;
-    const requests = await db.query.organizationJoinRequests.findMany({
-      where: eq(organizationJoinRequests.requestedByUserId, userId),
+    const requests = await db.query.joinRequests.findMany({
+      where: eq(joinRequests.userId, userId),
     });
     return ok(res, requests);
   })
@@ -199,9 +190,9 @@ router.get(
     );
 
     const memberships =
-      await db.query.organizationMemberships.findMany({
+      await db.query.labMemberships.findMany({
         where: eq(
-          organizationMemberships.organizationId,
+          labMemberships.labId,
           organizationId
         ),
       });
@@ -214,33 +205,30 @@ router.get(
 
     return ok(
       res,
-      memberships.map((membership: any) => ({
-        ...membership,
-        user: allUsers.find((user) => user.id === membership.userId)
-          ? {
-              id: allUsers.find((user) => user.id === membership.userId)!.id,
-              username: allUsers.find((user) => user.id === membership.userId)!
-                .username,
-              email: allUsers.find((user) => user.id === membership.userId)!
-                .email,
-              firstName: allUsers.find((user) => user.id === membership.userId)!
-                .firstName,
-              lastName: allUsers.find((user) => user.id === membership.userId)!
-                .lastName,
-              initials: allUsers.find((user) => user.id === membership.userId)!
-                .initials,
-            }
-          : null,
-      }))
+      memberships.map((membership: any) => {
+        const u = allUsers.find((user) => user.id === membership.userId);
+        return {
+          ...membership,
+          user: u
+            ? {
+                id: u.id,
+                username: u.username,
+                email: u.email,
+                firstName: u.firstName,
+                lastName: u.lastName,
+                initials: u.initials,
+              }
+            : null,
+        };
+      })
     );
   })
 );
 
 const inviteSchema = z.object({
-  email: z.string().email(),
-  phone: z.string().optional(),
-  roleToAssign: z.enum(["owner", "admin", "user", "billing", "read_only"]),
-  expiresInDays: z.coerce.number().int().min(1).max(30).default(7),
+  invitedUserId: z.string().min(1),
+  invitedPhone: z.string().optional(),
+  role: z.enum(["admin", "user", "billing", "read_only"]),
 });
 
 router.post(
@@ -252,28 +240,37 @@ router.post(
       organizationId,
       ADMIN_ROLES
     );
-    const input = inviteSchema.parse(req.body);
+
+    let input: z.infer<typeof inviteSchema>;
+    if (req.body.email) {
+      const targetUser = await db.query.users.findFirst({
+        where: eq(users.email, req.body.email.toLowerCase()),
+      });
+      input = inviteSchema.parse({
+        invitedUserId: targetUser?.id || req.body.email,
+        invitedPhone: req.body.phone,
+        role: req.body.roleToAssign || req.body.role || "user",
+      });
+    } else {
+      input = inviteSchema.parse(req.body);
+    }
 
     const [invite] = await db
-      .insert(organizationInvites)
+      .insert(labInvites)
       .values({
-        organizationId,
-        email: input.email.toLowerCase(),
-        phone: input.phone ?? null,
-        roleToAssign: input.roleToAssign,
-        token: generateInviteToken(),
-        invitedByUserId: (req as any).auth.userId,
-        expiresAt: new Date(
-          Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000
-        ),
+        labId: organizationId,
+        invitedUserId: input.invitedUserId,
+        invitedPhone: input.invitedPhone ?? null,
+        role: input.role,
+        createdByUserId: (req as any).auth.userId,
       })
       .returning();
 
     await writeAuditLog({
       req,
       organizationId,
-      action: "organization_invite_created",
-      entityType: "organization_invite",
+      action: "lab_invite_created",
+      entityType: "lab_invite",
       entityId: invite.id,
       afterJson: invite,
     });
@@ -290,88 +287,74 @@ router.get(
       organizationId,
       ADMIN_ROLES
     );
-    const invites = await db.query.organizationInvites.findMany({
-      where: eq(organizationInvites.organizationId, organizationId),
+    const invites = await db.query.labInvites.findMany({
+      where: eq(labInvites.labId, organizationId),
     });
     return ok(res, invites);
   })
 );
 
 router.post(
-  "/invites/:token/accept",
+  "/invites/:inviteId/accept",
   asyncHandler(async (req, res) => {
-    const invite = await db.query.organizationInvites.findFirst({
+    const invite = await db.query.labInvites.findFirst({
       where: and(
-        eq(organizationInvites.token, req.params.token),
-        eq(organizationInvites.status, "pending")
+        eq(labInvites.id, req.params.inviteId),
+        eq(labInvites.status, "pending")
       ),
     });
     if (!invite) throw new HttpError(404, "Invite not found or already used.");
-    if (new Date() > invite.expiresAt)
-      throw new HttpError(410, "Invite has expired.");
 
     const userId = (req as any).auth.userId;
-
-    const authUser = await db.query.users.findFirst({ where: eq(users.id, userId) });
-    if (authUser && invite.email) {
-      const inviteEmail = invite.email.toLowerCase().trim();
-      const userEmail = (authUser.email || "").toLowerCase().trim();
-      if (inviteEmail && userEmail && inviteEmail !== userEmail) {
-        throw new HttpError(403, "This invitation was sent to a different email address.");
-      }
+    if (invite.invitedUserId && invite.invitedUserId !== userId) {
+      throw new HttpError(403, "This invitation was sent to a different user.");
     }
 
     await db
-      .insert(organizationMemberships)
+      .insert(labMemberships)
       .values({
-        organizationId: invite.organizationId,
+        labId: invite.labId,
         userId,
-        role: invite.roleToAssign,
+        role: invite.role,
         status: "active",
-        invitedByUserId: invite.invitedByUserId,
-        approvedByUserId: invite.invitedByUserId,
-        joinedAt: new Date(),
       })
       .onConflictDoUpdate({
         target: [
-          organizationMemberships.organizationId,
-          organizationMemberships.userId,
+          labMemberships.labId,
+          labMemberships.userId,
         ],
         set: {
-          role: invite.roleToAssign,
+          role: invite.role,
           status: "active",
-          invitedByUserId: invite.invitedByUserId,
-          joinedAt: new Date(),
         },
       });
 
     await db
-      .update(organizationInvites)
+      .update(labInvites)
       .set({
         status: "accepted",
-        acceptedByUserId: userId,
-        acceptedAt: new Date(),
+        respondedAt: new Date(),
       })
-      .where(eq(organizationInvites.id, invite.id));
+      .where(eq(labInvites.id, invite.id));
 
     const org = await db.query.organizations.findFirst({
-      where: eq(organizations.id, invite.organizationId),
+      where: eq(organizations.id, invite.labId),
     });
     if (org) {
       await db
         .update(users)
         .set({
           practiceName: org.name,
-          role: invite.roleToAssign === "admin" || invite.roleToAssign === "owner" ? "admin" : "user",
+          role: invite.role === "admin" || invite.role === "owner" ? "admin" : "user",
         })
         .where(eq(users.id, userId));
     }
 
     await writeAuditLog({
       req,
-      organizationId: invite.organizationId,
-      action: "organization_invite_accepted",
-      entityType: "organization_invite",
+      organizationId: invite.labId,
+      action: "lab_invite_accepted",
+      entityType: "lab_invite",
       entityId: invite.id,
     });
 
@@ -380,42 +363,38 @@ router.post(
 );
 
 router.post(
-  "/invites/:token/reject",
+  "/invites/:inviteId/reject",
   asyncHandler(async (req, res) => {
-    const invite = await db.query.organizationInvites.findFirst({
+    const invite = await db.query.labInvites.findFirst({
       where: and(
-        eq(organizationInvites.token, req.params.token),
-        eq(organizationInvites.status, "pending")
+        eq(labInvites.id, req.params.inviteId),
+        eq(labInvites.status, "pending")
       ),
     });
     if (!invite) throw new HttpError(404, "Invite not found or already used.");
 
     const userId = (req as any).auth.userId;
-    const authUser = await db.query.users.findFirst({ where: eq(users.id, userId) });
-    if (authUser && invite.email) {
-      const inviteEmail = invite.email.toLowerCase().trim();
-      const userEmail = (authUser.email || "").toLowerCase().trim();
-      if (inviteEmail && userEmail && inviteEmail !== userEmail) {
-        throw new HttpError(403, "This invitation was sent to a different email address.");
-      }
+    if (invite.invitedUserId && invite.invitedUserId !== userId) {
+      throw new HttpError(403, "This invitation was sent to a different user.");
     }
 
     await db
-      .update(organizationInvites)
+      .update(labInvites)
       .set({
-        status: "declined",
+        status: "rejected",
+        respondedAt: new Date(),
       })
-      .where(eq(organizationInvites.id, invite.id));
+      .where(eq(labInvites.id, invite.id));
 
     await writeAuditLog({
       req,
-      organizationId: invite.organizationId,
-      action: "organization_invite_declined",
-      entityType: "organization_invite",
+      organizationId: invite.labId,
+      action: "lab_invite_rejected",
+      entityType: "lab_invite",
       entityId: invite.id,
     });
 
-    return ok(res, { declined: true });
+    return ok(res, { rejected: true });
   })
 );
 
@@ -433,11 +412,11 @@ router.post(
     const input = joinRequestSchema.parse(req.body);
 
     const alreadyMember =
-      await db.query.organizationMemberships.findFirst({
+      await db.query.labMemberships.findFirst({
         where: and(
-          eq(organizationMemberships.organizationId, organizationId),
+          eq(labMemberships.labId, organizationId),
           eq(
-            organizationMemberships.userId,
+            labMemberships.userId,
             (req as any).auth.userId
           )
         ),
@@ -449,11 +428,11 @@ router.post(
       );
 
     const existingPending =
-      await db.query.organizationJoinRequests.findFirst({
+      await db.query.joinRequests.findFirst({
         where: and(
-          eq(organizationJoinRequests.organizationId, organizationId),
-          eq(organizationJoinRequests.requestedByUserId, (req as any).auth.userId),
-          eq(organizationJoinRequests.status, "pending")
+          eq(joinRequests.labId, organizationId),
+          eq(joinRequests.userId, (req as any).auth.userId),
+          eq(joinRequests.status, "pending")
         ),
       });
     if (existingPending)
@@ -463,20 +442,19 @@ router.post(
       );
 
     const [request] = await db
-      .insert(organizationJoinRequests)
+      .insert(joinRequests)
       .values({
-        organizationId,
-        requestedByUserId: (req as any).auth.userId,
+        labId: organizationId,
+        userId: (req as any).auth.userId,
         requestedRole: input.requestedRole,
-        message: input.message ?? null,
       })
       .returning();
 
     await writeAuditLog({
       req,
       organizationId,
-      action: "organization_join_requested",
-      entityType: "organization_join_request",
+      action: "join_request_created",
+      entityType: "join_request",
       entityId: request.id,
       afterJson: request,
     });
@@ -494,9 +472,9 @@ router.get(
       ADMIN_ROLES
     );
     const requests =
-      await db.query.organizationJoinRequests.findMany({
+      await db.query.joinRequests.findMany({
         where: eq(
-          organizationJoinRequests.organizationId,
+          joinRequests.labId,
           organizationId
         ),
       });
@@ -508,9 +486,9 @@ router.post(
   "/join-requests/:joinRequestId/approve",
   asyncHandler(async (req, res) => {
     const request =
-      await db.query.organizationJoinRequests.findFirst({
+      await db.query.joinRequests.findFirst({
         where: eq(
-          organizationJoinRequests.id,
+          joinRequests.id,
           req.params.joinRequestId
         ),
       });
@@ -518,48 +496,44 @@ router.post(
 
     await requireAnyRole(
       (req as any).auth.userId,
-      request.organizationId,
+      request.labId,
       ADMIN_ROLES
     );
 
     const roleToAssign = req.body.role || request.requestedRole;
 
     const [membership] = await db
-      .insert(organizationMemberships)
+      .insert(labMemberships)
       .values({
-        organizationId: request.organizationId,
-        userId: request.requestedByUserId,
+        labId: request.labId,
+        userId: request.userId,
         role: roleToAssign,
         status: "active",
-        approvedByUserId: (req as any).auth.userId,
-        joinedAt: new Date(),
       })
       .onConflictDoUpdate({
         target: [
-          organizationMemberships.organizationId,
-          organizationMemberships.userId,
+          labMemberships.labId,
+          labMemberships.userId,
         ],
         set: {
           role: roleToAssign,
           status: "active",
-          approvedByUserId: (req as any).auth.userId,
-          joinedAt: new Date(),
         },
       })
       .returning();
 
     const [updatedRequest] = await db
-      .update(organizationJoinRequests)
+      .update(joinRequests)
       .set({
         status: "approved",
         reviewedByUserId: (req as any).auth.userId,
         reviewedAt: new Date(),
       })
-      .where(eq(organizationJoinRequests.id, request.id))
+      .where(eq(joinRequests.id, request.id))
       .returning();
 
     const org = await db.query.organizations.findFirst({
-      where: eq(organizations.id, request.organizationId),
+      where: eq(organizations.id, request.labId),
     });
     if (org) {
       await db
@@ -568,14 +542,14 @@ router.post(
           practiceName: org.name,
           role: roleToAssign === "admin" || roleToAssign === "owner" ? "admin" : "user",
         })
-        .where(eq(users.id, request.requestedByUserId));
+        .where(eq(users.id, request.userId));
     }
 
     await writeAuditLog({
       req,
-      organizationId: request.organizationId,
-      action: "organization_join_approved",
-      entityType: "organization_join_request",
+      organizationId: request.labId,
+      action: "join_request_approved",
+      entityType: "join_request",
       entityId: request.id,
       afterJson: updatedRequest,
     });
@@ -587,34 +561,34 @@ router.post(
   "/join-requests/:joinRequestId/reject",
   asyncHandler(async (req, res) => {
     const request =
-      await db.query.organizationJoinRequests.findFirst({
+      await db.query.joinRequests.findFirst({
         where: eq(
-          organizationJoinRequests.id,
+          joinRequests.id,
           req.params.joinRequestId
         ),
       });
     if (!request) throw new HttpError(404, "Join request not found.");
     await requireAnyRole(
       (req as any).auth.userId,
-      request.organizationId,
+      request.labId,
       ADMIN_ROLES
     );
 
     const [updated] = await db
-      .update(organizationJoinRequests)
+      .update(joinRequests)
       .set({
         status: "rejected",
         reviewedByUserId: (req as any).auth.userId,
         reviewedAt: new Date(),
       })
-      .where(eq(organizationJoinRequests.id, request.id))
+      .where(eq(joinRequests.id, request.id))
       .returning();
 
     await writeAuditLog({
       req,
-      organizationId: request.organizationId,
-      action: "organization_join_rejected",
-      entityType: "organization_join_request",
+      organizationId: request.labId,
+      action: "join_request_rejected",
+      entityType: "join_request",
       entityId: request.id,
       afterJson: updated,
     });
@@ -720,36 +694,36 @@ router.patch(
           .enum(["owner", "admin", "user", "billing", "read_only"])
           .optional(),
         status: z
-          .enum(["active", "pending", "invited", "suspended"])
+          .enum(["active", "suspended"])
           .optional(),
       })
       .parse(req.body);
 
     const membership =
-      await db.query.organizationMemberships.findFirst({
+      await db.query.labMemberships.findFirst({
         where: eq(
-          organizationMemberships.id,
+          labMemberships.id,
           req.params.membershipId
         ),
       });
     if (!membership) throw new HttpError(404, "Membership not found.");
     await requireAnyRole(
       (req as any).auth.userId,
-      membership.organizationId,
+      membership.labId,
       ADMIN_ROLES
     );
 
     const [updated] = await db
-      .update(organizationMemberships)
+      .update(labMemberships)
       .set(input)
-      .where(eq(organizationMemberships.id, membership.id))
+      .where(eq(labMemberships.id, membership.id))
       .returning();
 
     await writeAuditLog({
       req,
-      organizationId: membership.organizationId,
+      organizationId: membership.labId,
       action: "membership_updated",
-      entityType: "organization_membership",
+      entityType: "lab_membership",
       entityId: membership.id,
       beforeJson: membership,
       afterJson: updated,
@@ -762,9 +736,9 @@ router.delete(
   "/memberships/:membershipId",
   asyncHandler(async (req, res) => {
     const membership =
-      await db.query.organizationMemberships.findFirst({
+      await db.query.labMemberships.findFirst({
         where: eq(
-          organizationMemberships.id,
+          labMemberships.id,
           req.params.membershipId
         ),
       });
@@ -775,20 +749,20 @@ router.delete(
     if (!isOwnMembership) {
       await requireAnyRole(
         (req as any).auth.userId,
-        membership.organizationId,
+        membership.labId,
         ADMIN_ROLES
       );
     }
 
     await db
-      .delete(organizationMemberships)
-      .where(eq(organizationMemberships.id, membership.id));
+      .delete(labMemberships)
+      .where(eq(labMemberships.id, membership.id));
 
     await writeAuditLog({
       req,
-      organizationId: membership.organizationId,
+      organizationId: membership.labId,
       action: "membership_removed",
-      entityType: "organization_membership",
+      entityType: "lab_membership",
       entityId: membership.id,
       beforeJson: membership,
     });

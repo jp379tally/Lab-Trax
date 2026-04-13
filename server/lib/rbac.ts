@@ -1,31 +1,31 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
-import { organizationMemberships } from "../../shared/schema";
+import { labMemberships } from "../../shared/schema";
 import { HttpError } from "./http";
 
 export type MembershipRole = "owner" | "admin" | "user" | "billing" | "read_only";
 
-export async function getActiveMembership(userId: string, organizationId: string) {
-  const membership = await db.query.organizationMemberships.findFirst({
+export async function getActiveMembership(userId: string, labId: string) {
+  const membership = await db.query.labMemberships.findFirst({
     where: and(
-      eq(organizationMemberships.userId, userId),
-      eq(organizationMemberships.organizationId, organizationId),
-      eq(organizationMemberships.status, "active")
+      eq(labMemberships.userId, userId),
+      eq(labMemberships.labId, labId),
+      eq(labMemberships.status, "active")
     ),
   });
   return membership ?? null;
 }
 
-export async function requireMembership(userId: string, organizationId: string) {
-  const membership = await getActiveMembership(userId, organizationId);
+export async function requireMembership(userId: string, labId: string) {
+  const membership = await getActiveMembership(userId, labId);
   if (!membership) {
     throw new HttpError(403, "You do not belong to this organization.");
   }
   return membership;
 }
 
-export async function requireAnyRole(userId: string, organizationId: string, roles: MembershipRole[]) {
-  const membership = await requireMembership(userId, organizationId);
+export async function requireAnyRole(userId: string, labId: string, roles: MembershipRole[]) {
+  const membership = await requireMembership(userId, labId);
   if (!roles.includes(membership.role as MembershipRole)) {
     throw new HttpError(403, "You do not have permission for this action.");
   }

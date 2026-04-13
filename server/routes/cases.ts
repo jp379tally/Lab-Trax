@@ -11,7 +11,7 @@ import {
   caseSubmissionQueue,
   cases,
   organizationConnections,
-  organizationMemberships,
+  labMemberships,
 } from "../../shared/schema";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
@@ -153,13 +153,13 @@ router.get(
     const membershipOrgIds = organizationId
       ? [organizationId]
       : (
-          await db.query.organizationMemberships.findMany({
+          await db.query.labMemberships.findMany({
             where: eq(
-              organizationMemberships.userId,
+              labMemberships.userId,
               (req as any).auth.userId
             ),
           })
-        ).map((m: any) => m.organizationId);
+        ).map((m: any) => m.labId);
 
     const rows = membershipOrgIds.length
       ? await db.query.cases.findMany({
