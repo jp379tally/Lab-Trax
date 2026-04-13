@@ -101,10 +101,11 @@ interface AppContextValue {
   batchLocateCases: (caseIds: string[], newStatus: CaseStatus) => void;
   groupJoinRequests: GroupJoinRequest[];
   sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => { success: boolean; error?: string };
-  respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => void;
+  respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => Promise<void>;
   labInvitations: LabInvitation[];
   sendLabInvite: (targetUsername: string, targetEmail: string, role: "admin" | "user") => { success: boolean; error?: string };
-  respondToLabInvite: (inviteId: string, accept: boolean) => void;
+  respondToLabInvite: (inviteId: string, accept: boolean) => Promise<void>;
+  refreshJoinData: () => Promise<void>;
   addConversation: (conv: Conversation) => void;
   removeConversation: (conversationId: string) => void;
   addNotification: (notif: Omit<Notification, "id" | "read" | "timestamp">) => void;
@@ -1521,47 +1522,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return { success: true };
   }
 
-  function respondToGroupJoinRequest(requestId: string, accept: boolean, role?: "admin" | "user") {
+  async function respondToGroupJoinRequest(requestId: string, accept: boolean, role?: "admin" | "user") {
     const request = groupJoinRequests.find(r => r.id === requestId);
     if (!request) return;
-
-    const updated = groupJoinRequests.map(r => {
-      if (r.id === requestId) {
-        return { ...r, status: accept ? "accepted" as const : "declined" as const };
-      }
-      return r;
-    });
-    setGroupJoinRequests(updated);
-    AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
 
     const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === request.targetAdminUsername.toLowerCase());
     const requestingUser = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
 
     const serverReqId = request.serverJoinRequestId;
     if (serverReqId) {
-      const endpoint = accept
-        ? `/api/organizations/join-requests/${serverReqId}/approve`
-        : `/api/organizations/join-requests/${serverReqId}/reject`;
-      resilientFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: role || "user" }),
-      }).then(() => {
-        refreshUsers();
-        fetchServerJoinRequestsAndInvites();
-      }).catch((e) => {
+      try {
+        const endpoint = accept
+          ? `/api/organizations/join-requests/${serverReqId}/approve`
+          : `/api/organizations/join-requests/${serverReqId}/reject`;
+        const resp = await resilientFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: role || "user" }),
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          Alert.alert("Error", data?.message || "Failed to update join request on server.");
+          return;
+        }
+      } catch (e) {
         console.log("Failed to update join request on server:", e);
-        Alert.alert("Error", "Failed to update the join request on the server. Please try again.");
-      });
+        Alert.alert("Error", "Network error. Please check your connection and try again.");
+        return;
+      }
     } else if (accept && adminProfile?.practiceName && requestingUser?.id) {
-      resilientFetch(`/api/auth/users/${requestingUser.id}/profile`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ practiceName: adminProfile.practiceName, ...(role ? { role } : {}) }),
-      }).then(() => {
-        refreshUsers();
-      }).catch(() => {});
+      try {
+        await resilientFetch(`/api/auth/users/${requestingUser.id}/profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ practiceName: adminProfile.practiceName, ...(role ? { role } : {}) }),
+        });
+      } catch {}
     }
+
+    setGroupJoinRequests(prev => {
+      const updated = prev.map(r =>
+        r.id === requestId ? { ...r, status: accept ? "accepted" as const : "declined" as const } : r
+      );
+      AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
+      return updated;
+    });
 
     if (accept) {
       if (requestingUser && requestingUser.userType === "provider") {
@@ -1597,6 +1602,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         type: "alert",
       });
     }
+
+    refreshUsers();
+    fetchServerJoinRequestsAndInvites();
   }
 
   function sendLabInvite(targetUsername: string, targetEmail: string, role: "admin" | "user"): { success: boolean; error?: string } {
@@ -1672,36 +1680,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return { success: true };
   }
 
-  function respondToLabInvite(inviteId: string, accept: boolean) {
+  async function respondToLabInvite(inviteId: string, accept: boolean) {
     const invite = labInvitations.find(i => i.id === inviteId);
     if (!invite) return;
-
-    const updated = labInvitations.map(i => {
-      if (i.id === inviteId) {
-        return { ...i, status: accept ? "accepted" as const : "declined" as const };
-      }
-      return i;
-    });
-    setLabInvitations(updated);
-    AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
 
     const invitedName = invite.invitedUsername || invite.targetUsername || "";
 
     if (invite.serverInviteToken) {
-      const endpoint = accept
-        ? `/api/organizations/invites/${invite.serverInviteToken}/accept`
-        : `/api/organizations/invites/${invite.serverInviteToken}/reject`;
-      resilientFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }).then(() => {
-        refreshUsers();
-        fetchServerJoinRequestsAndInvites();
-      }).catch((e) => {
+      try {
+        const endpoint = accept
+          ? `/api/organizations/invites/${invite.serverInviteToken}/accept`
+          : `/api/organizations/invites/${invite.serverInviteToken}/reject`;
+        const resp = await resilientFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          Alert.alert("Error", data?.message || "Failed to update invitation on server.");
+          return;
+        }
+      } catch (e) {
         console.log("Failed to respond to invite on server:", e);
-        Alert.alert("Error", "Failed to update the invitation on the server. Please try again.");
-      });
+        Alert.alert("Error", "Network error. Please check your connection and try again.");
+        return;
+      }
     }
+
+    setLabInvitations(prev => {
+      const updated = prev.map(i =>
+        i.id === inviteId ? { ...i, status: accept ? "accepted" as const : "declined" as const } : i
+      );
+      AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
+      return updated;
+    });
 
     if (accept) {
       addNotification({
@@ -1716,6 +1728,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         type: "alert",
       });
     }
+
+    refreshUsers();
+    fetchServerJoinRequestsAndInvites();
   }
 
   const [isLabCreator, setIsLabCreator] = useState(false);
@@ -2028,6 +2043,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       labInvitations,
       sendLabInvite,
       respondToLabInvite,
+      refreshJoinData: fetchServerJoinRequestsAndInvites,
       addConversation,
       removeConversation,
       addNotification,

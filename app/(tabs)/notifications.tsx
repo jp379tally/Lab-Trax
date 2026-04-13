@@ -102,18 +102,20 @@ function SwipeableNotifRow({ children, onDelete }: { children: React.ReactNode; 
 }
 
 export default function NotificationsScreen() {
-  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite } = useApp();
+  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite, refreshJoinData } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
   const [confirmLabInvite, setConfirmLabInvite] = useState<{ invite: LabInvitation; accept: boolean } | null>(null);
+  const [processingId, setProcessingId] = useState<string | null>(null);
   const filteredNotifications = useProviderFilteredNotifications();
 
   useFocusEffect(
     useCallback(() => {
       markAllNotificationsRead();
+      refreshJoinData();
     }, [])
   );
 
@@ -365,13 +367,18 @@ export default function NotificationsScreen() {
             <View style={styles.confirmBtns}>
               <Pressable
                 style={({ pressed }) => [styles.confirmYesBtn, !confirmJoinRequest?.accept && { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
-                onPress={() => {
-                  if (!confirmJoinRequest) return;
-                  respondToGroupJoinRequest(confirmJoinRequest.request.id, confirmJoinRequest.accept, confirmJoinRequest.role);
-                  if (Platform.OS !== "web") {
-                    Haptics.notificationAsync(confirmJoinRequest.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                onPress={async () => {
+                  if (!confirmJoinRequest || processingId) return;
+                  setProcessingId(confirmJoinRequest.request.id);
+                  try {
+                    await respondToGroupJoinRequest(confirmJoinRequest.request.id, confirmJoinRequest.accept, confirmJoinRequest.role);
+                    if (Platform.OS !== "web") {
+                      Haptics.notificationAsync(confirmJoinRequest.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                    }
+                    setConfirmJoinRequest(null);
+                  } finally {
+                    setProcessingId(null);
                   }
-                  setConfirmJoinRequest(null);
                 }}
               >
                 <Text style={styles.confirmYesText}>
@@ -410,13 +417,18 @@ export default function NotificationsScreen() {
             <View style={styles.confirmBtns}>
               <Pressable
                 style={({ pressed }) => [styles.confirmYesBtn, confirmLabInvite?.accept ? { backgroundColor: "#7C3AED" } : { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
-                onPress={() => {
-                  if (!confirmLabInvite) return;
-                  respondToLabInvite(confirmLabInvite.invite.id, confirmLabInvite.accept);
-                  if (Platform.OS !== "web") {
-                    Haptics.notificationAsync(confirmLabInvite.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                onPress={async () => {
+                  if (!confirmLabInvite || processingId) return;
+                  setProcessingId(confirmLabInvite.invite.id);
+                  try {
+                    await respondToLabInvite(confirmLabInvite.invite.id, confirmLabInvite.accept);
+                    if (Platform.OS !== "web") {
+                      Haptics.notificationAsync(confirmLabInvite.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                    }
+                    setConfirmLabInvite(null);
+                  } finally {
+                    setProcessingId(null);
                   }
-                  setConfirmLabInvite(null);
                 }}
               >
                 <Text style={styles.confirmYesText}>

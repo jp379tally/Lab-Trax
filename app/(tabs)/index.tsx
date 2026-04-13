@@ -281,7 +281,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, clients, addCasePhoto } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, clients, addCasePhoto, refreshJoinData } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
@@ -301,6 +301,7 @@ function TechDashboard() {
   const [batchLocationSelect, setBatchLocationSelect] = useState(false);
   const [batchManualInput, setBatchManualInput] = useState("");
   const [confirmJoinReq, setConfirmJoinReq] = useState<{ requestId: string; username: string; accept: boolean } | null>(null);
+  const [joinReqProcessing, setJoinReqProcessing] = useState(false);
   const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
   const dashboardFocused = useIsFocused();
@@ -1423,33 +1424,42 @@ function TechDashboard() {
             <View style={styles.joinReqConfirmBtns}>
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmYesBtn, pressed && { opacity: 0.85 }]}
-                onPress={() => {
-                  if (!confirmJoinReq) return;
-                  respondToGroupJoinRequest(confirmJoinReq.requestId, true, "user");
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  setConfirmJoinReq(null);
+                onPress={async () => {
+                  if (!confirmJoinReq || joinReqProcessing) return;
+                  setJoinReqProcessing(true);
+                  try {
+                    await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "user");
+                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    setConfirmJoinReq(null);
+                  } finally { setJoinReqProcessing(false); }
                 }}
               >
                 <Text style={styles.joinReqConfirmYesText}>Accept as User</Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
-                onPress={() => {
-                  if (!confirmJoinReq) return;
-                  respondToGroupJoinRequest(confirmJoinReq.requestId, true, "admin");
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  setConfirmJoinReq(null);
+                onPress={async () => {
+                  if (!confirmJoinReq || joinReqProcessing) return;
+                  setJoinReqProcessing(true);
+                  try {
+                    await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "admin");
+                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    setConfirmJoinReq(null);
+                  } finally { setJoinReqProcessing(false); }
                 }}
               >
                 <Text style={styles.joinReqConfirmYesText}>Accept as Admin</Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
-                onPress={() => {
-                  if (!confirmJoinReq) return;
-                  respondToGroupJoinRequest(confirmJoinReq.requestId, false);
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                  setConfirmJoinReq(null);
+                onPress={async () => {
+                  if (!confirmJoinReq || joinReqProcessing) return;
+                  setJoinReqProcessing(true);
+                  try {
+                    await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
+                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                    setConfirmJoinReq(null);
+                  } finally { setJoinReqProcessing(false); }
                 }}
               >
                 <Text style={styles.joinReqConfirmYesText}>Decline</Text>
@@ -1465,18 +1475,21 @@ function TechDashboard() {
             <View style={styles.joinReqConfirmBtns}>
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
-                onPress={() => {
-                  if (!confirmJoinReq) return;
-                  respondToGroupJoinRequest(confirmJoinReq.requestId, false);
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                  setConfirmJoinReq(null);
+                onPress={async () => {
+                  if (!confirmJoinReq || joinReqProcessing) return;
+                  setJoinReqProcessing(true);
+                  try {
+                    await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
+                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                    setConfirmJoinReq(null);
+                  } finally { setJoinReqProcessing(false); }
                 }}
               >
                 <Text style={styles.joinReqConfirmYesText}>Decline</Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
-                onPress={() => setConfirmJoinReq(null)}
+                onPress={() => { if (!joinReqProcessing) setConfirmJoinReq(null); }}
               >
                 <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
               </Pressable>
