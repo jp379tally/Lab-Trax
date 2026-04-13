@@ -534,6 +534,9 @@ router.delete(
       await tx.delete(organizationConnections).where(eq(organizationConnections.requestedByUserId, id));
       await tx.update(organizationConnections).set({ approvedByUserId: null }).where(eq(organizationConnections.approvedByUserId, id));
       await tx.update(organizations).set({ createdByUserId: null }).where(eq(organizations.createdByUserId, id));
+      await tx.execute(sql`UPDATE organization_memberships SET invited_by_user_id = NULL WHERE invited_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE organization_memberships SET approved_by_user_id = NULL WHERE approved_by_user_id = ${id}`);
+      await tx.execute(sql`UPDATE organization_join_requests SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${id}`);
       await tx.execute(sql`UPDATE cases SET created_by_user_id = NULL WHERE created_by_user_id = ${id}`);
       await tx.execute(sql`UPDATE case_notes SET author_user_id = NULL WHERE author_user_id = ${id}`);
       await tx.execute(sql`UPDATE case_attachments SET uploaded_by_user_id = NULL WHERE uploaded_by_user_id = ${id}`);
@@ -548,13 +551,17 @@ router.delete(
       await tx.delete(users).where(eq(users.id, id));
     });
 
-    await writeAuditLog({
-      req,
-      userId: null as any,
-      action: "user_deleted",
-      entityType: "user",
-      entityId: id,
-    });
+    try {
+      await db.insert(auditLogs).values({
+        userId: null,
+        action: "user_deleted",
+        entityType: "user",
+        entityId: id,
+        ipAddress: req.ip ?? null,
+        userAgent: req.get("user-agent") ?? null,
+        metadataJson: { deletedUsername: user.username, deletedEmail: user.email },
+      });
+    } catch {}
     res.json({ success: true });
   })
 );

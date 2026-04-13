@@ -821,6 +821,9 @@ Important rules:
           await tx.execute(sql`DELETE FROM organization_connections WHERE requested_by_user_id = ${uid}`);
           await tx.execute(sql`UPDATE organization_connections SET approved_by_user_id = NULL WHERE approved_by_user_id = ${uid}`);
           await tx.execute(sql`UPDATE organizations SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE organization_memberships SET invited_by_user_id = NULL WHERE invited_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE organization_memberships SET approved_by_user_id = NULL WHERE approved_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE organization_join_requests SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${uid}`);
           await tx.execute(sql`UPDATE cases SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
           await tx.execute(sql`UPDATE case_notes SET author_user_id = NULL WHERE author_user_id = ${uid}`);
           await tx.execute(sql`UPDATE case_attachments SET uploaded_by_user_id = NULL WHERE uploaded_by_user_id = ${uid}`);
