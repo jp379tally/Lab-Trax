@@ -119,7 +119,7 @@ export default function NotificationsScreen() {
   );
 
   const pendingLabInvites = labInvitations.filter(
-    i => i.targetUsername.toLowerCase() === (currentUser || "").toLowerCase() && i.status === "pending"
+    i => (i.invitedUsername || i.targetUsername || "").toLowerCase() === (currentUser || "").toLowerCase() && i.status === "pending"
   );
 
   const currentUserProfile = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());

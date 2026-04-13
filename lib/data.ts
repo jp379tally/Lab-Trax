@@ -197,8 +197,10 @@ export interface LabInvitation {
   id: string;
   adminUsername: string;
   adminLabName: string;
-  targetUsername: string;
-  targetEmail: string;
+  invitedUsername: string;
+  invitedEmail: string;
+  targetUsername?: string;
+  targetEmail?: string;
   role: "admin" | "user";
   status: "pending" | "accepted" | "declined";
   createdAt: number;

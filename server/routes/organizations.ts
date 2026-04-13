@@ -249,6 +249,52 @@ router.get(
   })
 );
 
+router.get(
+  "/my-invites",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+    });
+    if (!user?.email) return ok(res, []);
+    const invites = await db.query.organizationInvites.findMany({
+      where: and(
+        eq(organizationInvites.email, user.email.toLowerCase()),
+        eq(organizationInvites.status, "pending")
+      ),
+    });
+    const enriched = await Promise.all(
+      invites.map(async (inv) => {
+        const org = await db.query.organizations.findFirst({
+          where: eq(organizations.id, inv.organizationId),
+        });
+        const inviter = inv.invitedByUserId
+          ? await db.query.users.findFirst({
+              where: eq(users.id, inv.invitedByUserId),
+            })
+          : null;
+        return {
+          ...inv,
+          organizationName: org?.displayName || org?.name || "Unknown Lab",
+          inviterUsername: inviter?.username || "Admin",
+        };
+      })
+    );
+    return ok(res, enriched);
+  })
+);
+
+router.get(
+  "/my-join-requests",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const requests = await db.query.organizationJoinRequests.findMany({
+      where: eq(organizationJoinRequests.requestedByUserId, userId),
+    });
+    return ok(res, requests);
+  })
+);
+
 router.post(
   "/invites/:token/accept",
   asyncHandler(async (req, res) => {
