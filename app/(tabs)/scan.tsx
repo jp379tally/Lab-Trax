@@ -1235,8 +1235,8 @@ export default function ScanScreen() {
     }
   }
 
-  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any }> {
-    const { getApiUrl } = await import("@/lib/query-client");
+  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
+    const { getApiUrl, getAccessToken, resilientFetch } = await import("@/lib/query-client");
     const payload: any = { imageBase64: base64Data };
     if (additionalImages && additionalImages.length > 0) {
       payload.additionalImages = additionalImages;
@@ -1244,70 +1244,79 @@ export default function ScanScreen() {
     const jsonBody = JSON.stringify(payload);
     console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
 
-    const urls: string[] = [];
     try {
-      const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
-      urls.push(primaryUrl);
-    } catch (e: any) {
-      console.log("AI: Primary URL construction failed:", e?.message);
-    }
-    const host = process.env.EXPO_PUBLIC_DOMAIN;
-    if (host) {
-      try {
-        const cleanHost = host.includes(":") ? host : host;
-        const fallbackUrl = new URL("/api/analyze-prescription", `https://${cleanHost}`).toString();
-        if (!urls.includes(fallbackUrl)) urls.push(fallbackUrl);
-      } catch (e: any) {
-        console.log("AI: Fallback URL construction failed:", e?.message);
+      const timeoutController = new AbortController();
+      const timer = setTimeout(() => timeoutController.abort(), 90000);
+
+      const res = await resilientFetch("/api/analyze-prescription", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+        body: jsonBody,
+        signal: timeoutController.signal,
+      });
+
+      clearTimeout(timer);
+      console.log("AI: Response status:", res.status);
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.log("AI response error:", res.status, errText.substring(0, 200));
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error && errJson.error.includes("HEIC")) {
+            return { success: false, error: errJson.error };
+          }
+        } catch {}
+        return { success: false, error: `Server error (${res.status})` };
       }
-    }
+      const result = await res.json();
+      console.log("AI: Parsed result success:", result?.success);
+      return result;
+    } catch (err: any) {
+      console.log("AI: Request failed:", err?.message || String(err));
 
-    if (urls.length === 0) {
-      console.log("AI: No valid URLs constructed. EXPO_PUBLIC_DOMAIN:", host);
-      return { success: false };
-    }
-
-    let lastErr: any = null;
-    for (const url of urls) {
       try {
-        console.log("AI: Trying URL:", url);
-        const fetchPromise = globalThis.fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-          },
-          body: jsonBody,
-        });
-
-        const timeoutPromise = new Promise<Response>((_, reject) => {
-          setTimeout(() => reject(new Error("Request timeout after 90s")), 90000);
-        });
-
-        const res = await Promise.race([fetchPromise, timeoutPromise]);
-        console.log("AI: Response status:", res.status);
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          console.log("AI response error:", res.status, errText.substring(0, 200));
+        const token = getAccessToken();
+        const urls: string[] = [];
+        try {
+          urls.push(new URL("/api/analyze-prescription", getApiUrl()).toString());
+        } catch {}
+        const host = process.env.EXPO_PUBLIC_DOMAIN;
+        if (host) {
           try {
-            const errJson = JSON.parse(errText);
-            if (errJson.error && errJson.error.includes("HEIC")) {
-              return { success: false, error: errJson.error };
-            }
+            urls.push(new URL("/api/analyze-prescription", `https://${host}`).toString());
           } catch {}
-          lastErr = new Error(`HTTP ${res.status}: ${errText.substring(0, 100)}`);
-          continue;
         }
-        const result = await res.json();
-        console.log("AI: Parsed result success:", result?.success);
-        return result;
-      } catch (err: any) {
-        console.log("AI: URL failed:", url, err?.message || String(err));
-        lastErr = err;
-      }
+
+        for (const url of urls) {
+          try {
+            console.log("AI: Fallback trying URL:", url);
+            const headers: Record<string, string> = {
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+            };
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+
+            const res = await Promise.race([
+              globalThis.fetch(url, { method: "POST", headers, body: jsonBody }),
+              new Promise<Response>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 90000)),
+            ]);
+            if (res.ok) {
+              const result = await res.json();
+              console.log("AI: Fallback succeeded");
+              return result;
+            }
+          } catch (e: any) {
+            console.log("AI: Fallback URL failed:", url, e?.message);
+          }
+        }
+      } catch {}
+
+      return { success: false, error: err?.message || "Network error" };
     }
-    console.log("AI: All URLs failed. Last error:", lastErr?.message || String(lastErr));
-    return { success: false };
   }
 
   async function handleSavePDF() {
