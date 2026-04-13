@@ -2221,6 +2221,20 @@ export default function CaseDetailScreen() {
                     <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
                   </Pressable>
                 ))}
+                <Pressable
+                  onPress={() => setShowAddItemModal(false)}
+                  style={({ pressed }) => ({
+                    marginTop: 12,
+                    paddingVertical: 14,
+                    borderRadius: 14,
+                    alignItems: "center" as const,
+                    backgroundColor: pressed ? "#F1F5F9" : "#F8FAFC",
+                    borderWidth: 1,
+                    borderColor: "#E2E8F0",
+                  })}
+                >
+                  <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Cancel</Text>
+                </Pressable>
               </View>
             )}
 
