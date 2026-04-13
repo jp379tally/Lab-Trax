@@ -68,6 +68,11 @@ export const organizations = pgTable("organizations", {
   state: text("state"),
   zip: text("zip"),
   isActive: boolean("is_active").default(true).notNull(),
+  deletedAt: timestamp("deleted_at"),
+  recoverableUntil: timestamp("recoverable_until"),
+  deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, {
     onDelete: "set null",
   }),

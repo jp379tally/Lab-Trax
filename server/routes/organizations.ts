@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
@@ -82,7 +82,7 @@ router.get(
       ? await db
           .select()
           .from(organizations)
-          .where(inArray(organizations.id, orgIds))
+          .where(and(inArray(organizations.id, orgIds), isNull(organizations.deletedAt)))
       : [];
     return ok(res, orgs);
   })

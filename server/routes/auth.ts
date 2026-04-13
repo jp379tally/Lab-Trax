@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
@@ -610,39 +610,139 @@ router.delete(
       where: eq(organizations.name, labName),
     });
 
-    await db.transaction(async (tx) => {
-      if (org) {
-        await tx.delete(labInvites).where(eq(labInvites.labId, org.id));
-        await tx.delete(joinRequests).where(eq(joinRequests.labId, org.id));
-        await tx.delete(organizationConnections).where(eq(organizationConnections.labOrganizationId, org.id));
-        await tx.delete(organizationConnections).where(eq(organizationConnections.providerOrganizationId, org.id));
-        await tx.delete(labMemberships).where(eq(labMemberships.labId, org.id));
-        await tx.update(organizations).set({ isActive: false }).where(eq(organizations.id, org.id));
-      }
+    if (!org) {
+      throw new HttpError(404, "Lab not found.");
+    }
 
-      const labNameLower = labName.toLowerCase().trim();
-      const allLabUsers = await tx.select().from(users);
-      const labMembers = allLabUsers.filter(
-        (u) => u.practiceName?.toLowerCase().trim() === labNameLower
-      );
-      const memberIds = labMembers.map((m) => m.id);
-      if (memberIds.length > 0) {
-        await tx
-          .update(users)
-          .set({ practiceName: null })
-          .where(inArray(users.id, memberIds));
-      }
-    });
+    if (org.deletedAt) {
+      throw new HttpError(400, "Lab is already deleted.");
+    }
+
+    const now = new Date();
+    const recoverableUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    await db
+      .update(organizations)
+      .set({
+        deletedAt: now,
+        recoverableUntil,
+        deletedByUserId: user.id,
+        isActive: false,
+        updatedAt: now,
+      })
+      .where(eq(organizations.id, org.id));
 
     await writeAuditLog({
       req,
       userId: user.id,
-      action: "lab_deleted",
+      action: "lab_soft_deleted",
       entityType: "organization",
-      entityId: org?.id || labName,
-      metadataJson: { labName, organizationId: org?.id },
+      entityId: org.id,
+      metadataJson: { labName, organizationId: org.id, recoverableUntil },
     });
-    res.json({ success: true });
+    res.json({ success: true, recoverableUntil: recoverableUntil.toISOString() });
+  })
+);
+
+router.get(
+  "/deleted-labs",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = (req as any).user;
+    const now = new Date();
+
+    const membershipRows = await db
+      .select({
+        org: organizations,
+        role: labMemberships.role,
+      })
+      .from(labMemberships)
+      .innerJoin(organizations, eq(labMemberships.labId, organizations.id))
+      .where(
+        and(
+          eq(labMemberships.userId, user.id),
+          eq(labMemberships.status, "active"),
+          isNotNull(organizations.deletedAt)
+        )
+      );
+
+    const deletedLabs = membershipRows
+      .filter(
+        (row) =>
+          ["owner", "admin"].includes(row.role) &&
+          row.org.recoverableUntil &&
+          new Date(row.org.recoverableUntil) > now
+      )
+      .map((row) => ({
+        id: row.org.id,
+        name: row.org.name,
+        displayName: row.org.displayName,
+        deletedAt: row.org.deletedAt,
+        recoverableUntil: row.org.recoverableUntil,
+        role: row.role,
+      }));
+
+    res.json({ deletedLabs });
+  })
+);
+
+router.post(
+  "/restore-lab/:labId",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = (req as any).user;
+    const { labId } = req.params;
+    const now = new Date();
+
+    const membership = await db.query.labMemberships.findFirst({
+      where: and(
+        eq(labMemberships.userId, user.id),
+        eq(labMemberships.labId, labId),
+        eq(labMemberships.status, "active")
+      ),
+    });
+
+    if (!membership || !["owner", "admin"].includes(membership.role)) {
+      throw new HttpError(403, "Forbidden.");
+    }
+
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, labId),
+    });
+
+    if (!org) {
+      throw new HttpError(404, "Lab not found.");
+    }
+
+    if (!org.deletedAt) {
+      throw new HttpError(400, "Lab is not deleted.");
+    }
+
+    if (org.recoverableUntil && new Date(org.recoverableUntil) < now) {
+      throw new HttpError(400, "Recovery window has expired.");
+    }
+
+    await db
+      .update(organizations)
+      .set({
+        deletedAt: null,
+        recoverableUntil: null,
+        deletedByUserId: null,
+        isActive: true,
+        updatedAt: now,
+      })
+      .where(eq(organizations.id, labId));
+
+    await writeAuditLog({
+      req,
+      userId: user.id,
+      action: "lab_restored",
+      entityType: "organization",
+      entityId: org.id,
+      metadataJson: { labName: org.name },
+    });
+
+    res.json({ success: true, lab: { id: org.id, name: org.name } });
   })
 );
 

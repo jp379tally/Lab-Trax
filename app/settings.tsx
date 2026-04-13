@@ -30,7 +30,7 @@ export default function SettingsScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite } = useApp();
+  const { sendGroupJoinRequest, leaveLab, deleteLab, restoreLab, getDeletedLabs, createLabFromSettings, isLabCreator, sendLabInvite } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
@@ -48,6 +48,16 @@ export default function SettingsScreen() {
   const [labSearchDone, setLabSearchDone] = useState(false);
   const [addLabSending, setAddLabSending] = useState(false);
   const [companyLogoUri, setCompanyLogoUri] = useState<string | null>(null);
+  const [showCreateLabModal, setShowCreateLabModal] = useState(false);
+  const [createLabName, setCreateLabName] = useState("");
+  const [createLabPhone, setCreateLabPhone] = useState("");
+  const [createLabAddress, setCreateLabAddress] = useState("");
+  const [createLabCity, setCreateLabCity] = useState("");
+  const [createLabState, setCreateLabState] = useState("");
+  const [createLabZip, setCreateLabZip] = useState("");
+  const [createLabSaving, setCreateLabSaving] = useState(false);
+  const [deletedLabs, setDeletedLabs] = useState<{ id: string; name: string; deletedAt: string; recoverableUntil: string; role: string }[]>([]);
+  const [restoringLabId, setRestoringLabId] = useState<string | null>(null);
   const [showAddUserModal, setShowAddUserModal] = useState(false);
   const [addUserSearch, setAddUserSearch] = useState("");
   const [addUserSelected, setAddUserSelected] = useState<{ username: string; email: string } | null>(null);
@@ -70,6 +80,66 @@ export default function SettingsScreen() {
       if (s) setUserStatus(s as UserStatus);
     });
   }, [currentUser]);
+
+  useEffect(() => {
+    getDeletedLabs().then(setDeletedLabs);
+  }, []);
+
+  async function handleCreateLab() {
+    if (!createLabName.trim()) {
+      Alert.alert("Error", "Lab name is required.");
+      return;
+    }
+    setCreateLabSaving(true);
+    const result = await createLabFromSettings(
+      createLabName.trim(),
+      undefined,
+      createLabPhone || undefined,
+      createLabAddress || undefined,
+      createLabCity || undefined,
+      createLabState || undefined,
+      createLabZip || undefined
+    );
+    setCreateLabSaving(false);
+    if (result.success) {
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowCreateLabModal(false);
+      setCreateLabName("");
+      setCreateLabPhone("");
+      setCreateLabAddress("");
+      setCreateLabCity("");
+      setCreateLabState("");
+      setCreateLabZip("");
+      Alert.alert("Lab Created", "Your lab has been created. You are now the owner.");
+    } else {
+      Alert.alert("Error", result.error || "Failed to create lab.");
+    }
+  }
+
+  async function handleRestoreLab(labId: string, labName: string) {
+    Alert.alert(
+      "Restore Lab",
+      `Restore "${labName}"? It will become active again.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Restore",
+          onPress: async () => {
+            setRestoringLabId(labId);
+            const result = await restoreLab(labId);
+            setRestoringLabId(null);
+            if (result.success) {
+              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              setDeletedLabs((prev) => prev.filter((l) => l.id !== labId));
+              Alert.alert("Restored", `"${labName}" has been restored.`);
+            } else {
+              Alert.alert("Error", result.error || "Failed to restore lab.");
+            }
+          },
+        },
+      ]
+    );
+  }
 
   function handleStatusChange(status: UserStatus) {
     setUserStatus(status);
@@ -476,7 +546,7 @@ export default function SettingsScreen() {
                         onPress={() => {
                           Alert.alert(
                             "Delete Lab",
-                            "Are you sure you want to delete the lab? All users will be removed from the lab and the lab will be deleted.",
+                            "Are you sure? The lab will be soft-deleted. You have 30 days to restore it from this screen before it is permanently removed.",
                             [
                               { text: "No", style: "cancel" },
                               {
@@ -486,7 +556,8 @@ export default function SettingsScreen() {
                                   const result = await deleteLab();
                                   if (result.success) {
                                     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                    Alert.alert("Lab Deleted", "The lab has been deleted and all users have been removed from it.");
+                                    getDeletedLabs().then(setDeletedLabs);
+                                    Alert.alert("Lab Deleted", "The lab has been soft-deleted. You can restore it within 30 days from the Deleted Labs section below.");
                                   } else {
                                     Alert.alert("Error", result.error || "Failed to delete lab.");
                                   }
@@ -529,6 +600,53 @@ export default function SettingsScreen() {
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
                 </Pressable>
+                <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+                <Pressable
+                  style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                  onPress={() => setShowCreateLabModal(true)}
+                >
+                  <View style={[styles.menuIcon, { backgroundColor: "#D1FAE5" }]}>
+                    <Ionicons name="business" size={18} color="#059669" />
+                  </View>
+                  <View style={styles.menuInfo}>
+                    <Text style={[styles.menuTitle, { color: colors.text }]}>Create a Lab</Text>
+                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Start your own lab — you become the owner</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                </Pressable>
+              </View>
+            )}
+
+            {deletedLabs.length > 0 && (
+              <View style={{ marginTop: 20 }}>
+                <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>DELETED LABS (RECOVERABLE)</Text>
+                <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  {deletedLabs.map((lab, idx) => {
+                    const daysLeft = Math.ceil((new Date(lab.recoverableUntil).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                    const isRestoring = restoringLabId === lab.id;
+                    return (
+                      <React.Fragment key={lab.id}>
+                        {idx > 0 && <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />}
+                        <Pressable
+                          style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                          onPress={() => !isRestoring && handleRestoreLab(lab.id, lab.name)}
+                          disabled={isRestoring}
+                        >
+                          <View style={[styles.menuIcon, { backgroundColor: "#FEF3C7" }]}>
+                            <Ionicons name="refresh-circle" size={18} color="#D97706" />
+                          </View>
+                          <View style={styles.menuInfo}>
+                            <Text style={[styles.menuTitle, { color: colors.text }]}>{lab.name}</Text>
+                            <Text style={[styles.menuSub, { color: "#D97706" }]}>
+                              {isRestoring ? "Restoring…" : `${daysLeft} day${daysLeft !== 1 ? "s" : ""} left to restore`}
+                            </Text>
+                          </View>
+                          <Ionicons name="arrow-undo-circle-outline" size={20} color="#D97706" />
+                        </Pressable>
+                      </React.Fragment>
+                    );
+                  })}
+                </View>
               </View>
             )}
           </View>
@@ -799,6 +917,93 @@ export default function SettingsScreen() {
             >
               <Ionicons name="send" size={18} color="#FFF" />
               <Text style={joinStyles.sendBtnText}>Send Request</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showCreateLabModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowCreateLabModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" }}
+        >
+          <View style={[joinStyles.sheet, { backgroundColor: colors.surface }]}>
+            <View style={joinStyles.handle} />
+            <View style={joinStyles.header}>
+              <Pressable onPress={() => setShowCreateLabModal(false)}>
+                <Ionicons name="close" size={24} color={colors.textSecondary} />
+              </Pressable>
+              <Text style={[joinStyles.title, { color: colors.text }]}>Create a Lab</Text>
+              <View style={{ width: 24 }} />
+            </View>
+            <Text style={[joinStyles.desc, { color: colors.textSecondary }]}>
+              Set up a new lab. You will automatically become the owner.
+            </Text>
+            <TextInput
+              style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+              placeholder="Lab name *"
+              placeholderTextColor={colors.textTertiary}
+              value={createLabName}
+              onChangeText={setCreateLabName}
+              autoCapitalize="words"
+              autoCorrect={false}
+            />
+            <TextInput
+              style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+              placeholder="Phone (optional)"
+              placeholderTextColor={colors.textTertiary}
+              value={createLabPhone}
+              onChangeText={setCreateLabPhone}
+              keyboardType="phone-pad"
+            />
+            <TextInput
+              style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+              placeholder="Address (optional)"
+              placeholderTextColor={colors.textTertiary}
+              value={createLabAddress}
+              onChangeText={setCreateLabAddress}
+              autoCapitalize="words"
+            />
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <TextInput
+                style={[joinStyles.input, { flex: 1, backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+                placeholder="City"
+                placeholderTextColor={colors.textTertiary}
+                value={createLabCity}
+                onChangeText={setCreateLabCity}
+                autoCapitalize="words"
+              />
+              <TextInput
+                style={[joinStyles.input, { width: 60, backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+                placeholder="ST"
+                placeholderTextColor={colors.textTertiary}
+                value={createLabState}
+                onChangeText={setCreateLabState}
+                autoCapitalize="characters"
+                maxLength={2}
+              />
+              <TextInput
+                style={[joinStyles.input, { width: 90, backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
+                placeholder="ZIP"
+                placeholderTextColor={colors.textTertiary}
+                value={createLabZip}
+                onChangeText={setCreateLabZip}
+                keyboardType="numeric"
+                maxLength={5}
+              />
+            </View>
+            <Pressable
+              style={({ pressed }) => [joinStyles.sendBtn, { opacity: createLabSaving || pressed ? 0.7 : 1 }]}
+              onPress={handleCreateLab}
+              disabled={createLabSaving}
+            >
+              <Ionicons name="business" size={18} color="#FFF" />
+              <Text style={joinStyles.sendBtnText}>{createLabSaving ? "Creating…" : "Create Lab"}</Text>
             </Pressable>
           </View>
         </KeyboardAvoidingView>

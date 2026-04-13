@@ -6,7 +6,7 @@ import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "./db";
 import { users, labCases, organizations, labMemberships } from "../shared/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
 import { requireAuth } from "./middleware/auth";
@@ -96,7 +96,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const orgs = await db
         .select()
         .from(organizations)
-        .where(eq(organizations.type, "lab"));
+        .where(and(eq(organizations.type, "lab"), isNull(organizations.deletedAt)));
 
       const memberships = orgs.length
         ? await db

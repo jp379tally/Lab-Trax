@@ -113,7 +113,10 @@ interface AppContextValue {
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
   userIsAffiliated: boolean;
   leaveLab: () => Promise<{ success: boolean; error?: string }>;
-  deleteLab: () => Promise<{ success: boolean; error?: string }>;
+  deleteLab: () => Promise<{ success: boolean; error?: string; recoverableUntil?: string }>;
+  restoreLab: (labId: string) => Promise<{ success: boolean; error?: string }>;
+  getDeletedLabs: () => Promise<{ id: string; name: string; deletedAt: string; recoverableUntil: string; role: string }[]>;
+  createLabFromSettings: (name: string, displayName?: string, phone?: string, addressLine1?: string, city?: string, state?: string, zip?: string) => Promise<{ success: boolean; error?: string }>;
   isLabCreator: boolean;
   removeClient: (clientId: string) => void;
   deactivateClient: (clientId: string) => void;
@@ -1772,7 +1775,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function deleteLab(): Promise<{ success: boolean; error?: string }> {
+  async function deleteLab(): Promise<{ success: boolean; error?: string; recoverableUntil?: string }> {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
       const apiUrl = getApiUrl();
@@ -1791,9 +1794,68 @@ export function AppProvider({ children }: { children: ReactNode }) {
       AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify([]));
       AsyncStorage.setItem(INVOICES_KEY, JSON.stringify([]));
       await refreshUsers();
-      return { success: true };
+      return { success: true, recoverableUntil: data.recoverableUntil };
     } catch (e: any) {
       return { success: false, error: e?.message || "Failed to delete lab" };
+    }
+  }
+
+  async function getDeletedLabs(): Promise<{ id: string; name: string; deletedAt: string; recoverableUntil: string; role: string }[]> {
+    try {
+      const apiUrl = getApiUrl();
+      const url = new URL("/api/auth/deleted-labs", apiUrl);
+      const res = await resilientFetch(url.toString());
+      const data = await res.json();
+      if (!res.ok) return [];
+      return data.deletedLabs || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function restoreLab(labId: string): Promise<{ success: boolean; error?: string }> {
+    if (!currentUserId) return { success: false, error: "Not logged in" };
+    try {
+      const apiUrl = getApiUrl();
+      const url = new URL(`/api/auth/restore-lab/${labId}`, apiUrl);
+      const res = await resilientFetch(url.toString(), { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        return { success: false, error: data.message || data.error || "Failed to restore lab" };
+      }
+      await refreshUsers();
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || "Failed to restore lab" };
+    }
+  }
+
+  async function createLabFromSettings(
+    name: string,
+    displayName?: string,
+    phone?: string,
+    addressLine1?: string,
+    city?: string,
+    state?: string,
+    zip?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!currentUserId) return { success: false, error: "Not logged in" };
+    try {
+      const apiUrl = getApiUrl();
+      const url = new URL("/api/organizations", apiUrl);
+      const res = await resilientFetch(url.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "lab", name, displayName, phone, addressLine1, city, state, zip }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { success: false, error: data.message || data.error || "Failed to create lab" };
+      }
+      await refreshUsers();
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e?.message || "Failed to create lab" };
     }
   }
 
@@ -2052,6 +2114,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       userIsAffiliated,
       leaveLab,
       deleteLab,
+      restoreLab,
+      getDeletedLabs,
+      createLabFromSettings,
       isLabCreator,
       removeClient,
       deactivateClient,
