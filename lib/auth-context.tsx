@@ -259,17 +259,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               const savedPic = await AsyncStorage.getItem(userPicKey);
               setProfilePicUriState(savedPic);
             } else {
-              setIsAuthenticated(true);
-              setCurrentUser(auth.username);
-              setCurrentUserId(auth.userId || null);
-              setUserType(auth.userType || "lab");
-              setCurrentPassword(storedPassword);
-              setIsLocked(true);
-              const userPicKey = `${PROFILE_PIC_KEY}_${auth.userId || auth.username}`;
-              const savedPic = await AsyncStorage.getItem(userPicKey);
-              setProfilePicUriState(savedPic);
+              // Token is invalid (401) or server rejected it — wipe credentials
+              // and leave isAuthenticated=false so the app routes to login.
+              await clearTokens();
+              await AsyncStorage.removeItem(AUTH_KEY);
+              await removeSensitiveItem(AUTH_PASSWORD_KEY);
+              setProfilePicUriState(null);
             }
           } catch {
+            // Network error only — allow offline auth with cached credentials
+            // so the user isn't forced to log in every time they have bad signal.
             setIsAuthenticated(true);
             setCurrentUser(auth.username);
             setCurrentUserId(auth.userId || null);
