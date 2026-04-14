@@ -14,7 +14,6 @@ import {
   Dimensions,
   Linking,
   RefreshControl,
-  useWindowDimensions,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -48,6 +47,35 @@ import * as SecureStore from "expo-secure-store";
 
 function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
+}
+
+function deriveDisplayInitials(input?: {
+  firstName?: string | null;
+  lastName?: string | null;
+  label?: string | null;
+}) {
+  const firstInitial = input?.firstName?.trim()?.[0];
+  const lastInitial = input?.lastName?.trim()?.[0];
+  if (firstInitial && lastInitial) {
+    return `${firstInitial}${lastInitial}`.toUpperCase();
+  }
+
+  const normalizedLabel = input?.label?.trim() || "";
+  if (!normalizedLabel) {
+    return "??";
+  }
+
+  const parts = normalizedLabel
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+  }
+
+  return normalizedLabel.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "??";
 }
 
 const DRAWER_WIDTH = Dimensions.get("window").width * 0.78;
@@ -281,13 +309,11 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, clients, addCasePhoto, refreshJoinData } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, clients, addCasePhoto } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [picModalVisible, setPicModalVisible] = useState(false);
   const [pendingPicAction, setPendingPicAction] = useState<"take" | "pick" | null>(null);
@@ -301,19 +327,26 @@ function TechDashboard() {
   const [batchLocationSelect, setBatchLocationSelect] = useState(false);
   const [batchManualInput, setBatchManualInput] = useState("");
   const [confirmJoinReq, setConfirmJoinReq] = useState<{ requestId: string; username: string; accept: boolean } | null>(null);
-  const [joinReqProcessing, setJoinReqProcessing] = useState(false);
   const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
   const dashboardFocused = useIsFocused();
 
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
+  const currentUserInitials = deriveDisplayInitials({
+    firstName: currentUserData?.firstName,
+    lastName: currentUserData?.lastName,
+    label: currentUserData?.username || currentUser,
+  });
   const isLabAdmin = currentUserData?.role === "admin";
   const pendingJoinRequests = groupJoinRequests.filter(
     r => r.targetAdminUsername.toLowerCase() === (currentUser || "").toLowerCase() && r.status === "pending"
   );
-  const recentCases = cases
+  const recentCases = [...cases]
     .filter((c) => c.status !== "COMPLETE")
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .sort(
+      (a, b) =>
+        (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)
+    )
     .slice(0, 5);
 
   const intakeCases = cases.filter((c) => c.status === "INTAKE");
@@ -535,8 +568,7 @@ function TechDashboard() {
   return (
     <>
     <View style={[styles.container, { backgroundColor: themeColors.backgroundSolid }]}>
-      <View style={[styles.topBar, { position: "absolute", top: isDesktop ? 0 : Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: isDesktop ? (isDarkMode ? "rgba(15,23,42,0.95)" : "rgba(224,237,251,0.97)") : "transparent", borderBottomWidth: isDesktop ? 1 : 0, borderBottomColor: isDarkMode ? "#1E293B" : "#D6E4F0", paddingVertical: isDesktop ? 12 : 0, paddingHorizontal: isDesktop ? 32 : 0 }]}>
-        {!isDesktop && (
+      <View style={[styles.topBar, { position: "absolute", top: Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: "transparent" }]}>
         <Pressable
           onPress={() => setDrawerOpen(true)}
           style={({ pressed }) => [styles.hamburgerBtn, pressed && { opacity: 0.6 }]}
@@ -544,19 +576,12 @@ function TechDashboard() {
         >
           <Ionicons name="menu" size={26} color={themeColors.text} />
         </Pressable>
-        )}
-        {isDesktop && (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <Text style={{ fontFamily: "Inter_700Bold", fontSize: 20, color: themeColors.text }}>LabTrax</Text>
-            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: themeColors.textSecondary }}>Production Dashboard</Text>
-          </View>
-        )}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           {Platform.OS === "web" && (
             <Pressable
               onPress={async () => {
                 setRefreshing(true);
-                await refreshCases(true);
+                await refreshCases();
                 setRefreshing(false);
               }}
               style={({ pressed }) => [{ padding: 6, borderRadius: 8, backgroundColor: pressed ? "rgba(0,0,0,0.05)" : "transparent" }]}
@@ -574,9 +599,8 @@ function TechDashboard() {
     <ScrollView
       style={{ flex: 1 }}
       contentContainerStyle={{
-        paddingTop: isDesktop ? 64 : (Platform.OS === "web" ? 67 : insets.top) + 56,
-        paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
-        ...(isDesktop ? { paddingHorizontal: 32 } : {}),
+        paddingTop: (Platform.OS === "web" ? 67 : insets.top) + 56,
+        paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
       }}
       showsVerticalScrollIndicator={false}
       refreshControl={
@@ -585,47 +609,13 @@ function TechDashboard() {
             refreshing={refreshing}
             onRefresh={async () => {
               setRefreshing(true);
-              await refreshCases(true);
+              await refreshCases();
               setRefreshing(false);
             }}
           />
         ) : undefined
       }
     >
-      {isDesktop ? (
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 16, marginBottom: 24 }}>
-          <Pressable onPress={() => setPicModalVisible(true)} testID="profile-pic-btn">
-            <LinearGradient colors={[Colors.light.tint, "#3B82F6"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ width: 52, height: 52, borderRadius: 26, justifyContent: "center", alignItems: "center" }}>
-              {profilePicUri ? (
-                <Image source={{ uri: profilePicUri }} style={{ width: 46, height: 46, borderRadius: 23 }} contentFit="cover" />
-              ) : (
-                <View style={{ width: 46, height: 46, borderRadius: 23, backgroundColor: "#FFF", justifyContent: "center", alignItems: "center" }}>
-                  <Ionicons name="person" size={22} color={Colors.light.tint} />
-                </View>
-              )}
-            </LinearGradient>
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-              {currentUser && <Text style={{ fontFamily: "Inter_700Bold", fontSize: 16, color: themeColors.text }}>{currentUser}</Text>}
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: "#22C55E" }} />
-                <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: "#22C55E" }}>Available</Text>
-              </View>
-            </View>
-            <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: themeColors.textSecondary, marginTop: 2 }}>
-              {(currentUserData?.role === "admin" || role === "admin") ? "Administrator" : "User"}
-              {currentUserData?.practiceName ? ` · ${currentUserData.practiceName}` : ""}
-            </Text>
-          </View>
-          {!userIsAffiliated && (
-            <View style={{ padding: 10, backgroundColor: isDarkMode ? "#1E293B" : "#FFF7ED", borderRadius: 10, flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: isDarkMode ? "#334155" : "#FDE68A", maxWidth: 320 }}>
-              <Ionicons name="information-circle-outline" size={18} color={isDarkMode ? "#FBBF24" : "#D97706"} />
-              <Text style={{ fontFamily: "Inter_400Regular", fontSize: 12, color: isDarkMode ? "#E2E8F0" : "#92400E", flex: 1, lineHeight: 16 }}>Join a lab to collaborate with your team.</Text>
-            </View>
-          )}
-        </View>
-      ) : (
       <View style={styles.avatarSection}>
         <Pressable
           onPress={() => {
@@ -671,103 +661,154 @@ function TechDashboard() {
         </View>
 
         {!userIsAffiliated && (
-          <View style={{ marginTop: 16, padding: 14, backgroundColor: isDarkMode ? "#1E293B" : "#FFF7ED", borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: isDarkMode ? "#334155" : "#FDE68A", marginHorizontal: 20 }}>
+          <View style={{ marginTop: 16, padding: 14, backgroundColor: isDarkMode ? "#1E293B" : "#FFF7ED", borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: isDarkMode ? "#334155" : "#FDE68A" }}>
             <Ionicons name="information-circle-outline" size={22} color={isDarkMode ? "#FBBF24" : "#D97706"} />
             <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: isDarkMode ? "#E2E8F0" : "#92400E", flex: 1, lineHeight: 18 }}>
               Join a lab to collaborate with your team and access shared features.
             </Text>
           </View>
         )}
-      </View>
-      )}
-
-      <LabFileDropZone
-        cases={cases}
-        clients={clients}
-        currentUser={currentUser}
-        onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUser || undefined)}
-        isAdmin={isLabAdmin}
-        isFocused={dashboardFocused}
-      />
-
-      <View style={[styles.headerQuickActions, isDesktop && { gap: 16, paddingHorizontal: 0 }]}>
-        <Pressable
-          style={({ pressed }) => [
-            styles.headerQuickBtn,
-            pressed && styles.quickBtnPressed,
-            isDesktop && { flexDirection: "row", gap: 12, alignItems: "center", paddingHorizontal: 20, paddingVertical: 14 },
-          ]}
-          onPress={() => router.push("/(tabs)/scan")}
-        >
-          <View style={[styles.quickIcon, { backgroundColor: Colors.light.tintLight }]}>
-            <Ionicons name="add" size={24} color={Colors.light.tint} />
-          </View>
-          <Text style={styles.quickLabel}>New Case</Text>
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [
-            styles.headerQuickBtn,
-            pressed && styles.quickBtnPressed,
-            isDesktop && { flexDirection: "row", gap: 12, alignItems: "center", paddingHorizontal: 20, paddingVertical: 14 },
-          ]}
-          onPress={() => router.push("/(tabs)/cases")}
-        >
-          <View style={[styles.quickIcon, { backgroundColor: Colors.light.accentLight }]}>
-            <Feather name="search" size={22} color={Colors.light.accent} />
-          </View>
-          <Text style={[styles.quickLabel, { color: themeColors.text }]}>Search Cases</Text>
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [
-            styles.headerQuickBtn,
-            pressed && styles.quickBtnPressed,
-            isDesktop && { flexDirection: "row", gap: 12, alignItems: "center", paddingHorizontal: 20, paddingVertical: 14 },
-          ]}
-          onPress={async () => {
-            if (Platform.OS === "web") {
+        <View style={styles.headerQuickActions}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.headerQuickBtn,
+              pressed && styles.quickBtnPressed,
+            ]}
+            onPress={() => router.push("/(tabs)/scan")}
+          >
+            <View style={[styles.quickIcon, { backgroundColor: Colors.light.tintLight }]}>
+              <Ionicons name="add" size={24} color={Colors.light.tint} />
+            </View>
+            <Text style={styles.quickLabel}>New Case</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              styles.headerQuickBtn,
+              pressed && styles.quickBtnPressed,
+            ]}
+            onPress={() => router.push("/(tabs)/cases")}
+          >
+            <View style={[styles.quickIcon, { backgroundColor: Colors.light.accentLight }]}>
+              <Feather name="search" size={22} color={Colors.light.accent} />
+            </View>
+            <Text style={[styles.quickLabel, { color: themeColors.text }]}>Search Cases</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              styles.headerQuickBtn,
+              pressed && styles.quickBtnPressed,
+            ]}
+            onPress={async () => {
+              if (Platform.OS === "web") {
+                setBatchLocateOpen(true);
+                return;
+              }
+              if (!camPermission?.granted) {
+                Alert.alert(
+                  "Camera Access",
+                  "This feature uses your camera to scan barcodes for batch case location.",
+                  [{
+                    text: "Continue",
+                    onPress: async () => {
+                      const result = await requestCamPermission();
+                      if (result.granted) {
+                        setBatchLocateOpen(true);
+                      }
+                    },
+                  }]
+                );
+                return;
+              }
               setBatchLocateOpen(true);
-              return;
-            }
-            if (!camPermission?.granted) {
-              Alert.alert(
-                "Camera Access",
-                "This feature uses your camera to scan barcodes for batch case location.",
-                [{
-                  text: "Continue",
-                  onPress: async () => {
-                    const result = await requestCamPermission();
-                    if (result.granted) {
-                      setBatchLocateOpen(true);
-                    }
-                  },
-                }]
-              );
-              return;
-            }
-            setBatchLocateOpen(true);
-          }}
-        >
-          <View style={[styles.quickIcon, { backgroundColor: "#FEF3C7" }]}>
-            <MaterialCommunityIcons name="barcode-scan" size={22} color="#D97706" />
-          </View>
-          <Text style={[styles.quickLabel, { color: themeColors.text }]}>Batch Locate</Text>
-        </Pressable>
+            }}
+          >
+            <View style={[styles.quickIcon, { backgroundColor: "#FEF3C7" }]}>
+              <MaterialCommunityIcons name="barcode-scan" size={22} color="#D97706" />
+            </View>
+            <Text style={[styles.quickLabel, { color: themeColors.text }]}>Batch Locate</Text>
+          </Pressable>
+        </View>
       </View>
 
-      {!isDesktop && (
+      <Modal
+        transparent
+        visible={picModalVisible}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setPicModalVisible(false)}
+      >
+        <Pressable
+          style={styles.picModalOverlay}
+          onPress={() => setPicModalVisible(false)}
+        >
+          <View style={styles.picModalContent}>
+            <View style={styles.picModalHandle} />
+            <Text style={styles.picModalTitle}>Profile Photo</Text>
+
+            <Pressable
+              onPress={handleTakeProfilePhoto}
+              style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
+              testID="take-photo-btn"
+            >
+              <View style={[styles.picModalOptionIcon, { backgroundColor: "#EFF6FF" }]}>
+                <Ionicons name="camera" size={22} color={Colors.light.tint} />
+              </View>
+              <Text style={styles.picModalOptionText}>Take Photo</Text>
+              <Feather name="chevron-right" size={18} color="#94A3B8" />
+            </Pressable>
+
+            <Pressable
+              onPress={handlePickProfilePhoto}
+              style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
+              testID="photo-library-btn"
+            >
+              <View style={[styles.picModalOptionIcon, { backgroundColor: "#F0FDF4" }]}>
+                <Ionicons name="images" size={22} color="#22C55E" />
+              </View>
+              <Text style={styles.picModalOptionText}>Photo Library</Text>
+              <Feather name="chevron-right" size={18} color="#94A3B8" />
+            </Pressable>
+
+            {profilePicUri && (
+              <Pressable
+                onPress={() => {
+                  setProfilePicUri(null);
+                  setPicModalVisible(false);
+                }}
+                style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#FEF2F2" }]}
+                testID="remove-photo-btn"
+              >
+                <View style={[styles.picModalOptionIcon, { backgroundColor: "#FEF2F2" }]}>
+                  <Ionicons name="trash" size={22} color="#EF4444" />
+                </View>
+                <Text style={[styles.picModalOptionText, { color: "#EF4444" }]}>Remove Photo</Text>
+                <Feather name="chevron-right" size={18} color="#94A3B8" />
+              </Pressable>
+            )}
+
+            <Pressable
+              onPress={() => setPicModalVisible(false)}
+              style={styles.picModalCancel}
+              testID="cancel-photo-btn"
+            >
+              <Text style={styles.picModalCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+
       <View style={styles.headerRow}>
         <View>
           <Text style={[styles.greeting, { color: themeColors.textSecondary }]}>Lab Floor</Text>
           <Text style={[styles.headerTitle, { color: themeColors.text }]}>Production Dashboard</Text>
         </View>
       </View>
-      )}
 
       <LinearGradient
         colors={["#2563EB", "#1D4ED8"]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={[styles.heroCard, isDesktop && { marginHorizontal: 0 }]}
+        style={styles.heroCard}
       >
         <Text style={styles.heroLabel}>LAB STATUS</Text>
         <Text style={styles.heroCount}>{activeCaseCount} Active Cases</Text>
@@ -800,6 +841,15 @@ function TechDashboard() {
           </Pressable>
         </View>
       </LinearGradient>
+
+      <LabFileDropZone
+        cases={cases}
+        clients={clients}
+        currentUser={currentUser}
+        onAddToCase={(caseId, fileUri) => addCasePhoto(caseId, fileUri, currentUserInitials)}
+        isAdmin={isLabAdmin}
+        isFocused={dashboardFocused}
+      />
 
       {pendingJoinRequests.length > 0 && (
         <View style={styles.joinRequestSection}>
@@ -983,10 +1033,7 @@ function TechDashboard() {
       <View style={styles.caseList}>
         {recentCases.map((c) => {
           const stationInfo = getStationInfo(c.status, customStationLabels);
-          const ownerUser = registeredUsers.find(u => u.id === c.ownerId);
-          const userInit = ownerUser?.initials
-            || (ownerUser?.username ? ownerUser.username.slice(0, 2).toUpperCase() : null)
-            || (currentUser ? currentUser.slice(0, 2).toUpperCase() : "??");
+          const userInit = currentUser ? currentUser.split(" ").map((w: string) => w.charAt(0).toUpperCase()).join("").slice(0, 2) : "??";
           const caseInvoice = invoices.find(inv => inv.caseIds.includes(c.id));
           return (
             <Pressable
@@ -1069,80 +1116,13 @@ function TechDashboard() {
 
     <Modal
       transparent
-      visible={picModalVisible}
-      animationType="fade"
-      statusBarTranslucent
-      onRequestClose={() => setPicModalVisible(false)}
-    >
-      <Pressable
-        style={styles.picModalOverlay}
-        onPress={() => setPicModalVisible(false)}
-      >
-        <View style={styles.picModalContent}>
-          <View style={styles.picModalHandle} />
-          <Text style={styles.picModalTitle}>Profile Photo</Text>
-
-          <Pressable
-            onPress={handleTakeProfilePhoto}
-            style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
-            testID="take-photo-btn"
-          >
-            <View style={[styles.picModalOptionIcon, { backgroundColor: "#EFF6FF" }]}>
-              <Ionicons name="camera" size={22} color={Colors.light.tint} />
-            </View>
-            <Text style={styles.picModalOptionText}>Take Photo</Text>
-            <Feather name="chevron-right" size={18} color="#94A3B8" />
-          </Pressable>
-
-          <Pressable
-            onPress={handlePickProfilePhoto}
-            style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#F1F5F9" }]}
-            testID="photo-library-btn"
-          >
-            <View style={[styles.picModalOptionIcon, { backgroundColor: "#F0FDF4" }]}>
-              <Ionicons name="images" size={22} color="#22C55E" />
-            </View>
-            <Text style={styles.picModalOptionText}>Photo Library</Text>
-            <Feather name="chevron-right" size={18} color="#94A3B8" />
-          </Pressable>
-
-          {profilePicUri && (
-            <Pressable
-              onPress={() => {
-                setProfilePicUri(null);
-                setPicModalVisible(false);
-              }}
-              style={({ pressed }) => [styles.picModalOption, pressed && { backgroundColor: "#FEF2F2" }]}
-              testID="remove-photo-btn"
-            >
-              <View style={[styles.picModalOptionIcon, { backgroundColor: "#FEF2F2" }]}>
-                <Ionicons name="trash" size={22} color="#EF4444" />
-              </View>
-              <Text style={[styles.picModalOptionText, { color: "#EF4444" }]}>Remove Photo</Text>
-              <Feather name="chevron-right" size={18} color="#94A3B8" />
-            </Pressable>
-          )}
-
-          <Pressable
-            onPress={() => setPicModalVisible(false)}
-            style={styles.picModalCancel}
-            testID="cancel-photo-btn"
-          >
-            <Text style={styles.picModalCancelText}>Cancel</Text>
-          </Pressable>
-        </View>
-      </Pressable>
-    </Modal>
-
-    <Modal
-      transparent
       visible={batchLocateOpen}
       animationType="slide"
       statusBarTranslucent
       onRequestClose={() => { setBatchLocateOpen(false); setBatchScannedCases([]); setBatchScanning(true); setBatchLocationSelect(false); batchScannedIdsRef.current.clear(); }}
     >
       <View style={{ flex: 1, backgroundColor: batchLocationSelect ? Colors.light.backgroundSolid : "#000" }}>
-        <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: batchLocationSelect ? Colors.light.surface : "rgba(0,0,0,0.8)" }}>
+        <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: batchLocationSelect ? Colors.light.surface : "rgba(0,0,0,0.8)" }}>
           <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: batchLocationSelect ? Colors.light.text : "#FFF" }}>
             {batchLocationSelect ? "Select Location" : "Batch Scan"}
           </Text>
@@ -1429,13 +1409,14 @@ function TechDashboard() {
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmYesBtn, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinReq || joinReqProcessing) return;
-                  setJoinReqProcessing(true);
-                  try {
-                    await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "user");
-                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    setConfirmJoinReq(null);
-                  } finally { setJoinReqProcessing(false); }
+                  if (!confirmJoinReq) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "user");
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
+                  }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setConfirmJoinReq(null);
                 }}
               >
                 <Text style={styles.joinReqConfirmYesText}>Accept as User</Text>
@@ -1443,13 +1424,14 @@ function TechDashboard() {
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinReq || joinReqProcessing) return;
-                  setJoinReqProcessing(true);
-                  try {
-                    await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "admin");
-                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    setConfirmJoinReq(null);
-                  } finally { setJoinReqProcessing(false); }
+                  if (!confirmJoinReq) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "admin");
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
+                  }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setConfirmJoinReq(null);
                 }}
               >
                 <Text style={styles.joinReqConfirmYesText}>Accept as Admin</Text>
@@ -1457,13 +1439,14 @@ function TechDashboard() {
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinReq || joinReqProcessing) return;
-                  setJoinReqProcessing(true);
-                  try {
-                    await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
-                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                    setConfirmJoinReq(null);
-                  } finally { setJoinReqProcessing(false); }
+                  if (!confirmJoinReq) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
+                  }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                  setConfirmJoinReq(null);
                 }}
               >
                 <Text style={styles.joinReqConfirmYesText}>Decline</Text>
@@ -1480,20 +1463,21 @@ function TechDashboard() {
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinReq || joinReqProcessing) return;
-                  setJoinReqProcessing(true);
-                  try {
-                    await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
-                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                    setConfirmJoinReq(null);
-                  } finally { setJoinReqProcessing(false); }
+                  if (!confirmJoinReq) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
+                  }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                  setConfirmJoinReq(null);
                 }}
               >
                 <Text style={styles.joinReqConfirmYesText}>Decline</Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
-                onPress={() => { if (!joinReqProcessing) setConfirmJoinReq(null); }}
+                onPress={() => setConfirmJoinReq(null)}
               >
                 <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
               </Pressable>
@@ -1510,8 +1494,6 @@ function TechDashboard() {
 function AdminLockScreen() {
   const { setAdminUnlocked } = useApp();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [authStatus, setAuthStatus] = useState<string>("");
   const [biometricType, setBiometricType] = useState<string>("Face ID");
   const [biometricAvailable, setBiometricAvailable] = useState(false);
@@ -1579,7 +1561,7 @@ function AdminLockScreen() {
       style={[
         styles.lockContainer,
         {
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
         },
       ]}
     >
@@ -1693,8 +1675,6 @@ function AdminDashboard() {
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [adminView, setAdminView] = useState<AdminView>("hub");
 
   const totalRevenue = cases.reduce((sum, c) => sum + c.price, 0);
@@ -2071,8 +2051,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2145,8 +2125,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2182,8 +2162,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2216,8 +2196,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2360,8 +2340,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -2580,8 +2560,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2631,8 +2611,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2703,14 +2683,15 @@ function AdminDashboard() {
 
           <Pressable
             style={({ pressed }) => [adm.submitBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
-            onPress={() => {
+            onPress={async () => {
               if (!inviteUsername.trim() || !inviteEmail.trim()) {
                 Alert.alert("Required", "Username and email are required.");
                 return;
               }
-              const result = sendLabInvite(inviteUsername.trim(), inviteEmail.trim(), inviteRole);
+              const result = await sendLabInvite(inviteUsername.trim(), inviteEmail.trim(), inviteRole);
               if (result.success) {
                 if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Alert.alert("Invitation Sent", `An invitation has been sent to ${inviteUsername.trim()}.`);
                 setInviteUsername("");
                 setInviteEmail("");
                 setInviteRole("user");
@@ -2733,8 +2714,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -2847,8 +2828,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2890,8 +2871,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -2960,8 +2941,8 @@ function AdminDashboard() {
       <ScrollView
         style={{ flex: 1, backgroundColor: "#f5f5f0" }}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -3164,8 +3145,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -3322,8 +3303,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -3464,8 +3445,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -3516,7 +3497,11 @@ function AdminDashboard() {
     const overdueCount = invoices.filter(i => i.status === "overdue").length;
     const allCount = invoices.length;
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }}
+        showsVerticalScrollIndicator={false}
+      >
         {renderBackHeader("Invoices", "financial-hub")}
         <View style={adm.listArea}>
           <View style={adm.invoiceSummary}>
@@ -3612,7 +3597,11 @@ function AdminDashboard() {
         ? invoices.filter(i => i.status === "overdue")
         : invoices;
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -3657,7 +3646,7 @@ function AdminDashboard() {
 
   function renderSendInvoice() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -3777,7 +3766,11 @@ function AdminDashboard() {
     }
 
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => { setAdminView("invoices-hub"); setSelectedInvoiceIds([]); }} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -3871,7 +3864,7 @@ function AdminDashboard() {
 
   function renderTextInvoice() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("invoices-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -3952,7 +3945,7 @@ function AdminDashboard() {
     const clientsWithOpen = [...new Set(allOpen.map(inv => inv.clientName))].length;
     const totalOpenAmt = allOpen.reduce((s, inv) => s + inv.amount, 0);
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         {renderBackHeader("Statements", "financial-hub")}
         <View style={adm.listArea}>
           <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 14, padding: 16, marginBottom: 16, flexDirection: "row", justifyContent: "space-around" }}>
@@ -4083,7 +4076,7 @@ function AdminDashboard() {
       return cInvs.length > 0;
     });
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4142,7 +4135,7 @@ function AdminDashboard() {
     let runningBalance = 0;
 
     return (
-      <ScrollView style={{ flex: 1, backgroundColor: "#f5f5f0" }} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={{ flex: 1, backgroundColor: "#f5f5f0" }} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => { setStatementViewClient(null); setAdminView("view-statements"); }} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4258,7 +4251,7 @@ function AdminDashboard() {
   function renderPickStatementToSend() {
     const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue")));
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4326,7 +4319,7 @@ function AdminDashboard() {
 
   function renderTextStatement() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("pick-statement-to-send")} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4425,7 +4418,7 @@ function AdminDashboard() {
 
   function renderSendStatement() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4500,7 +4493,7 @@ function AdminDashboard() {
     const previewData = emailPreviewStmtData || [];
 
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView(emailPreviewBackView)} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4655,7 +4648,7 @@ function AdminDashboard() {
 
   function renderEditStatementMessage() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("statements-hub")} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -4720,7 +4713,7 @@ function AdminDashboard() {
       : clientsWithBalance;
 
     return (
-      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingBottom: 40, ...(isDesktop ? { paddingHorizontal: 32 } : {}) }}>
+      <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingBottom: 40 }}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }}>
           <Pressable onPress={() => { setAdminView("client-hub"); setClientSearchQuery(""); }} style={{ marginRight: 12, width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -5326,8 +5319,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -5469,8 +5462,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -5679,8 +5672,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -5868,8 +5861,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -5995,8 +5988,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6263,8 +6256,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6323,8 +6316,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6386,8 +6379,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6591,8 +6584,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6806,8 +6799,8 @@ function AdminDashboard() {
         <ScrollView
           style={styles.container}
           contentContainerStyle={{
-            paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-            paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+            paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+            paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
           }}
           showsVerticalScrollIndicator={false}
         >
@@ -6886,8 +6879,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -6943,8 +6936,8 @@ function AdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
       >
@@ -7037,11 +7030,15 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated } = useApp();
+  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated, fetchLabDirectory, refreshCases } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
+  type ProviderLabDirectoryEntry = {
+    organizationId: string;
+    practiceName: string;
+    username: string;
+    practiceAddress?: string;
+  };
 
   const [showSettings, setShowSettings] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -7074,13 +7071,20 @@ function ProviderDashboard() {
   const [prefContactOpen, setPrefContactOpen] = useState(false);
   const [showAddLab, setShowAddLab] = useState(false);
   const [labSearchQuery, setLabSearchQuery] = useState("");
+  const [availableLabs, setAvailableLabs] = useState<ProviderLabDirectoryEntry[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const myLabName = currentUserData?.practiceName || "Allied Dental Lab";
   const myDoctorName = currentUserData?.doctorName || currentUser || "";
-  const myCases = userIsAffiliated ? cases.filter(c =>
-    c.doctorName.toLowerCase() === myDoctorName.toLowerCase() ||
-    c.doctorName.toLowerCase().includes((currentUser || "").toLowerCase())
-  ) : [];
+  const myCases = [...cases]
+    .filter(c =>
+      c.doctorName.toLowerCase() === myDoctorName.toLowerCase() ||
+      c.doctorName.toLowerCase().includes((currentUser || "").toLowerCase())
+    )
+    .sort(
+      (a, b) =>
+        (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)
+    );
   const activeCases = myCases.filter(c => c.status !== "COMPLETE" && c.status !== "HOLD");
   const completedCases = myCases.filter(c => c.status === "COMPLETE");
   const inProgressCount = activeCases.length;
@@ -7107,6 +7111,69 @@ function ProviderDashboard() {
     })();
   }, [currentUser]);
 
+  async function loadAvailableLabs(force = false) {
+    if (!force && availableLabs.length > 0) {
+      return availableLabs;
+    }
+
+    const groups = await fetchLabDirectory();
+    const myUsername = (currentUser || "").toLowerCase().trim();
+    const uniqueLabs = new Map<string, ProviderLabDirectoryEntry>();
+
+    for (const group of groups) {
+      if (
+        !group.organizationId ||
+        !group.practiceName?.trim() ||
+        !group.username?.trim()
+      ) {
+        continue;
+      }
+
+      if (group.username.toLowerCase().trim() === myUsername) {
+        continue;
+      }
+
+      uniqueLabs.set(group.organizationId, {
+        organizationId: group.organizationId,
+        practiceName: group.practiceName.trim(),
+        username: group.username.trim(),
+        practiceAddress: group.practiceAddress?.trim() || undefined,
+      });
+    }
+
+    const nextLabs = Array.from(uniqueLabs.values());
+    setAvailableLabs(nextLabs);
+    return nextLabs;
+  }
+
+  useEffect(() => {
+    if (!showAddLab) {
+      return;
+    }
+
+    loadAvailableLabs(true).catch(() => setAvailableLabs([]));
+  }, [showAddLab, currentUser]);
+
+  const filteredAvailableLabs = useMemo(() => {
+    const normalizedCurrentLab = (currentUserData?.practiceName || "").toLowerCase().trim();
+    const baseLabs = availableLabs.filter(
+      (lab) => lab.practiceName.toLowerCase().trim() !== normalizedCurrentLab
+    );
+
+    if (!labSearchQuery.trim()) {
+      return baseLabs;
+    }
+
+    const normalizedQuery = labSearchQuery.trim().toLowerCase();
+    return baseLabs.filter((lab) => {
+      return (
+        lab.practiceName.toLowerCase().includes(normalizedQuery) ||
+        lab.username.toLowerCase().includes(normalizedQuery) ||
+        (lab.practiceAddress || "").toLowerCase().includes(normalizedQuery)
+      );
+    });
+  }, [availableLabs, currentUserData?.practiceName, labSearchQuery]);
+
   const saveProviderPreferences = useCallback(async (occlusion: string, pontic: string, contact: string) => {
     try {
       await AsyncStorage.setItem(prefStorageKey, JSON.stringify({ occlusionType: occlusion, ponticType: pontic, contactType: contact }));
@@ -7118,10 +7185,22 @@ function ProviderDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
           paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
         }}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={async () => {
+                setRefreshing(true);
+                await refreshCases();
+                setRefreshing(false);
+              }}
+            />
+          ) : undefined
+        }
       >
         <View style={styles.headerRow}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
@@ -7140,6 +7219,21 @@ function ProviderDashboard() {
             </View>
           </View>
           <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
+            {Platform.OS === "web" && (
+              <Pressable
+                onPress={async () => {
+                  setRefreshing(true);
+                  await refreshCases();
+                  setRefreshing(false);
+                }}
+              >
+                {refreshing ? (
+                  <ActivityIndicator size={18} color={Colors.light.text} />
+                ) : (
+                  <Ionicons name="refresh" size={22} color={Colors.light.text} />
+                )}
+              </Pressable>
+            )}
             <ChatButton />
             <Pressable onPress={() => setShowSettings(true)}>
               <Ionicons name="settings-outline" size={24} color={Colors.light.text} />
@@ -7259,7 +7353,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowSettings(false)}
       >
         <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
             <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Settings</Text>
             <Pressable onPress={() => setShowSettings(false)}>
               <Ionicons name="close" size={28} color={Colors.light.text} />
@@ -7459,7 +7553,14 @@ function ProviderDashboard() {
                   paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
                   opacity: pressed ? 0.85 : 1,
                 })}
-                onPress={() => { setLabSearchQuery(""); setShowSettings(false); setTimeout(() => setShowAddLab(true), 350); }}
+                onPress={() => {
+                  setLabSearchQuery("");
+                  setShowSettings(false);
+                  setTimeout(() => {
+                    setShowAddLab(true);
+                    void loadAvailableLabs(true);
+                  }, 350);
+                }}
               >
                 <Ionicons name="add" size={16} color={Colors.light.tint} />
                 <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Add a Lab</Text>
@@ -7512,7 +7613,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowAddLab(false)}
       >
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-start" }}>
-          <View style={{ backgroundColor: "#FFF", borderBottomLeftRadius: 24, borderBottomRightRadius: 24, maxHeight: "70%", paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingBottom: 16 }}>
+          <View style={{ backgroundColor: "#FFF", borderBottomLeftRadius: 24, borderBottomRightRadius: 24, maxHeight: "70%", paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingBottom: 16 }}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12 }}>
               <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Add a Lab</Text>
               <Pressable onPress={() => setShowAddLab(false)} hitSlop={12}>
@@ -7538,21 +7639,8 @@ function ProviderDashboard() {
               </View>
             </View>
             <FlatList
-              data={(() => {
-                const labAdmins = registeredUsers.filter(u => u.userType === "lab" && u.role === "admin" && u.practiceName);
-                const uniqueLabs = new Map<string, typeof labAdmins[0]>();
-                for (const u of labAdmins) {
-                  const key = u.practiceName!.toLowerCase().trim();
-                  if (key !== (currentUserData?.practiceName || "").toLowerCase().trim()) {
-                    if (!uniqueLabs.has(key)) uniqueLabs.set(key, u);
-                  }
-                }
-                const available = Array.from(uniqueLabs.values());
-                if (!labSearchQuery.trim()) return available;
-                const q = labSearchQuery.trim().toLowerCase();
-                return available.filter(u => u.practiceName!.toLowerCase().includes(q) || (u.practiceAddress && u.practiceAddress.toLowerCase().includes(q)));
-              })()}
-              keyExtractor={item => item.id || item.username}
+              data={filteredAvailableLabs}
+              keyExtractor={item => item.organizationId || item.username}
               contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 16 }}
               keyboardShouldPersistTaps="handled"
               renderItem={({ item: lab }) => {
@@ -7581,8 +7669,8 @@ function ProviderDashboard() {
                           { text: "Cancel", style: "cancel" },
                           {
                             text: "Send Request",
-                            onPress: () => {
-                              const result = sendGroupJoinRequest(lab.username, currentUser || "", `Provider ${currentUserData?.doctorName || currentUser} would like to join ${lab.practiceName}`);
+                            onPress: async () => {
+                              const result = await sendGroupJoinRequest(lab.username, currentUser || "", `Provider ${currentUserData?.doctorName || currentUser} would like to join ${lab.practiceName}`);
                               if (result.success) {
                                 if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                                 Alert.alert("Request Sent", `Your join request has been sent to ${lab.practiceName}. You'll be notified when it's accepted.`);
@@ -7732,7 +7820,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowUsersAdmin(false)}
       >
         <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
             <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Users</Text>
             <Pressable onPress={() => setShowUsersAdmin(false)}>
               <Ionicons name="close" size={28} color={Colors.light.text} />
@@ -7774,7 +7862,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowProviderInvoices(false)}
       >
         <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
             <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Invoices</Text>
             <Pressable onPress={() => setShowProviderInvoices(false)}>
               <Ionicons name="close" size={28} color={Colors.light.text} />
@@ -7881,7 +7969,7 @@ function ProviderDashboard() {
         onRequestClose={() => setShowPayInvoices(false)}
       >
         <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
               {payStep !== "select" && payStep !== "receipt" && (
                 <Pressable onPress={() => setPayStep("select")}>
@@ -8262,7 +8350,7 @@ function ProviderDashboard() {
       >
         {viewingInvoice && (
           <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-            <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+            <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                 <Pressable onPress={() => setViewingInvoice(null)}>
                   <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
@@ -8417,17 +8505,22 @@ const provStyles = StyleSheet.create({
 type MasterView = "hub" | "all-users" | "lab-portal" | "provider-portal";
 
 function MasterAdminDashboard() {
-  const { cases, clients, users, invoices } = useApp();
+  const { cases, clients, users, invoices, refreshCases } = useApp();
   const { currentUser, registeredUsers, logout } = useAuth();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
 
   const [masterView, setMasterView] = useState<MasterView>("hub");
   const [groupSearch, setGroupSearch] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   const totalUsers = registeredUsers.length;
   const totalCases = cases.length;
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    await refreshCases();
+    setRefreshing(false);
+  }
 
   function renderBackHeader(title: string, backTo: MasterView = "hub") {
     return (
@@ -8445,19 +8538,35 @@ function MasterAdminDashboard() {
       <ScrollView
         style={styles.container}
         contentContainerStyle={{
-          paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100,
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
         }}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+          ) : undefined
+        }
       >
         <View style={styles.headerRow}>
           <View>
             <Text style={styles.greeting}>Master Admin</Text>
             <Text style={styles.headerTitle}>Control Center</Text>
           </View>
-          <Pressable onPress={logout} style={adm.exitBtn}>
-            <Ionicons name="log-out-outline" size={20} color={Colors.light.textSecondary} />
-          </Pressable>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            {Platform.OS === "web" && (
+              <Pressable onPress={handleRefresh}>
+                {refreshing ? (
+                  <ActivityIndicator size={18} color={Colors.light.text} />
+                ) : (
+                  <Ionicons name="refresh" size={22} color={Colors.light.text} />
+                )}
+              </Pressable>
+            )}
+            <Pressable onPress={logout} style={adm.exitBtn}>
+              <Ionicons name="log-out-outline" size={20} color={Colors.light.textSecondary} />
+            </Pressable>
+          </View>
         </View>
 
         <LinearGradient
@@ -8509,7 +8618,16 @@ function MasterAdminDashboard() {
 
   function renderAllUsers() {
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+          ) : undefined
+        }
+      >
         {renderBackHeader("All Users")}
         {registeredUsers.filter((u) => u.userType !== "master_admin").map((u, idx) => (
             <View key={u.username + idx} style={[adm.menuItem, { marginHorizontal: 20 }]}>
@@ -8537,7 +8655,16 @@ function MasterAdminDashboard() {
     );
     const openInvoiceCount = invoices.filter(i => i.status === "open" || i.status === "overdue").length;
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+          ) : undefined
+        }
+      >
         {renderBackHeader("Lab Portal Overview")}
         <View style={{ marginHorizontal: 20, gap: 12 }}>
           <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
@@ -8582,7 +8709,16 @@ function MasterAdminDashboard() {
   function renderProviderPortal() {
     const providers = registeredUsers.filter(u => u.userType === "provider");
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: isDesktop ? 24 : Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+          ) : undefined
+        }
+      >
         {renderBackHeader("Provider Portal Overview")}
         <View style={{ marginHorizontal: 20, gap: 12 }}>
           <View style={{ backgroundColor: Colors.light.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>

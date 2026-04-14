@@ -21,6 +21,9 @@ interface StoredUser {
   password?: string;
   email?: string;
   phone?: string;
+  firstName?: string;
+  lastName?: string;
+  initials?: string;
   wantsUpdates?: boolean;
   userType?: "provider" | "lab" | "master_admin";
   licenseNumber?: string;

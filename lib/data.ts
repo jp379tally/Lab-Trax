@@ -92,7 +92,8 @@ export type CaseTypeValue = "Restorative" | "Removable" | "Appliance" | "Tempora
 export interface LabCase {
   id: string;
   ownerId?: string;
-  labKey?: string;
+  affiliationKey?: string | null;
+  affiliationName?: string | null;
   caseNumber: string;
   doctorName: string;
   patientName: string;
@@ -191,21 +192,21 @@ export interface GroupJoinRequest {
   message: string;
   status: "pending" | "accepted" | "declined";
   createdAt: number;
-  serverJoinRequestId?: string;
+  organizationId?: string;
+  requestingUserId?: string;
 }
 
 export interface LabInvitation {
   id: string;
   adminUsername: string;
   adminLabName: string;
-  invitedUsername: string;
-  invitedEmail: string;
-  targetUsername?: string;
-  targetEmail?: string;
+  targetUsername: string;
+  targetEmail: string;
   role: "admin" | "user";
   status: "pending" | "accepted" | "declined";
   createdAt: number;
-  serverInviteToken?: string;
+  organizationId?: string;
+  token?: string;
 }
 
 export function getStationInfo(status: CaseStatus, customLabels?: Record<string, string>) {

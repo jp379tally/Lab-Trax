@@ -8,7 +8,6 @@ import {
   Pressable,
   Platform,
   ActivityIndicator,
-  useWindowDimensions,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -27,8 +26,6 @@ interface ChatMsg {
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const { cases } = useApp();
   const [messages, setMessages] = useState<ChatMsg[]>([
     {
@@ -119,7 +116,7 @@ export default function ChatScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={Colors.light.text} />
         </Pressable>

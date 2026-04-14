@@ -79,6 +79,19 @@ function shouldShowTimestamp(currentMsg: ChatMessage, prevMsg: ChatMessage | nul
   return (currentMsg.timestamp - prevMsg.timestamp) > 3600000;
 }
 
+function buildDirectConversationId(usernameA?: string | null, usernameB?: string | null) {
+  const normalizedUsers = [usernameA, usernameB]
+    .map((value) => value?.trim().toLowerCase())
+    .filter((value): value is string => !!value)
+    .sort();
+
+  if (normalizedUsers.length < 2) {
+    return null;
+  }
+
+  return `dm:${normalizedUsers.join("::")}`;
+}
+
 function SwipeableRow({ children, onDelete }: { children: React.ReactNode; onDelete: () => void }) {
   const translateX = useRef(new RNAnimated.Value(0)).current;
   const deleteThreshold = -80;
@@ -189,24 +202,38 @@ export function ChatButton() {
   }, [newMessageSearch, allContacts]);
 
   function openConversation(contactName: string) {
+    if (!currentUser) {
+      return;
+    }
+
+    const canonicalConversationId =
+      buildDirectConversationId(currentUser, contactName) || contactName.toLowerCase();
     const existingConv = conversations.find(c =>
+      c.id === canonicalConversationId ||
       c.clientName.toLowerCase() === contactName.toLowerCase()
     );
     if (existingConv) {
-      setActiveConversationId(existingConv.id);
-      markConversationRead(existingConv.id);
+      if (existingConv.id !== canonicalConversationId) {
+        addConversation({
+          ...existingConv,
+          id: canonicalConversationId,
+          clientId: canonicalConversationId,
+          clientName: contactName,
+        });
+      }
+      setActiveConversationId(canonicalConversationId);
+      markConversationRead(canonicalConversationId);
     } else {
-      const newId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
       const newConv: Conversation = {
-        id: newId,
-        clientId: newId,
+        id: canonicalConversationId,
+        clientId: canonicalConversationId,
         clientName: contactName,
         lastMessage: "",
         lastMessageTime: Date.now(),
         unreadCount: 0,
       };
       addConversation(newConv);
-      setActiveConversationId(newId);
+      setActiveConversationId(canonicalConversationId);
     }
     setShowNewMessage(false);
     setNewMessageSearch("");
@@ -557,13 +584,19 @@ export function ChatButton() {
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
           renderItem={({ item, index }: { item: ChatMessage; index: number }) => {
-            const isMe = item.senderType === "lab";
+            const normalizedCurrentUser = (currentUser || "").toLowerCase();
+            const senderKey = item.senderId?.toLowerCase?.() || "";
+            const isMe =
+              senderKey === normalizedCurrentUser || item.senderType === "lab";
             const prevItem = index < activeMsgs.length - 1 ? activeMsgs[index + 1] : null;
             const nextItem = index > 0 ? activeMsgs[index - 1] : null;
+            const prevSenderKey = prevItem?.senderId?.toLowerCase?.() || prevItem?.senderType;
+            const nextSenderKey = nextItem?.senderId?.toLowerCase?.() || nextItem?.senderType;
+            const currentSenderKey = senderKey || item.senderType;
 
             const showTime = shouldShowTimestamp(item, prevItem);
-            const isFirstInGroup = !prevItem || prevItem.senderType !== item.senderType || showTime;
-            const isLastInGroup = !nextItem || nextItem.senderType !== item.senderType || (nextItem && shouldShowTimestamp(nextItem, item));
+            const isFirstInGroup = !prevItem || prevSenderKey !== currentSenderKey || showTime;
+            const isLastInGroup = !nextItem || nextSenderKey !== currentSenderKey || (nextItem && shouldShowTimestamp(nextItem, item));
 
             const showSenderAvatar = !isMe && isLastInGroup;
             const isLastMessage = index === 0;

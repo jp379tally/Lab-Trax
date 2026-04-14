@@ -8,7 +8,7 @@ import {
   cases,
   invoiceLineItems,
   invoices,
-  labMemberships,
+  organizationMemberships,
   payments,
 } from "../../shared/schema";
 import { writeAuditLog } from "../lib/audit";
@@ -128,9 +128,9 @@ router.get(
   "/",
   asyncHandler(async (req, res) => {
     const memberships =
-      await db.query.labMemberships.findMany({
+      await db.query.organizationMemberships.findMany({
         where: eq(
-          labMemberships.userId,
+          organizationMemberships.userId,
           (req as any).auth.userId
         ),
       });

@@ -1,26 +1,14 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { and, eq, gt, inArray, isNull, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
-  joinRequests,
-  labMemberships,
-  labInvites,
-  organizationConnections,
+  organizationJoinRequests,
+  organizationMemberships,
   organizations,
   userSessions,
   users,
-  labCases,
-  cases,
-  caseNotes,
-  caseAttachments,
-  caseLocations,
-  caseEvents,
-  caseSubmissionQueue,
-  invoices,
-  payments,
-  auditLogs,
 } from "../../shared/schema";
 import {
   signAccessToken,
@@ -58,6 +46,127 @@ function safeUser(user: any) {
   };
 }
 
+function mapMembershipRoleToUserRole(role?: string | null): "admin" | "user" {
+  return role === "owner" || role === "admin" ? "admin" : "user";
+}
+
+function buildOrganizationAddress(organization: any): string | null {
+  const address = [
+    organization?.addressLine1,
+    organization?.addressLine2,
+    organization?.city,
+    organization?.state,
+    organization?.zip,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return address || null;
+}
+
+function deriveInitialsFromUsername(username?: string | null) {
+  const normalizedUsername = username?.trim() || "";
+  if (!normalizedUsername) {
+    return "LT";
+  }
+
+  const tokenizedParts = normalizedUsername
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (tokenizedParts.length >= 2) {
+    return (tokenizedParts[0][0] + tokenizedParts[tokenizedParts.length - 1][0]).toUpperCase();
+  }
+
+  const lettersOnly = normalizedUsername.replace(/[^A-Za-z0-9]/g, "");
+  if (lettersOnly.length >= 2) {
+    return (lettersOnly[0] + lettersOnly[1]).toUpperCase();
+  }
+
+  return lettersOnly[0]?.toUpperCase() || "LT";
+}
+
+function deriveUserInitials(input: {
+  firstName?: string | null;
+  lastName?: string | null;
+  username?: string | null;
+}) {
+  const firstInitial = input.firstName?.trim()?.[0];
+  const lastInitial = input.lastName?.trim()?.[0];
+
+  if (firstInitial && lastInitial) {
+    return `${firstInitial}${lastInitial}`.toUpperCase();
+  }
+
+  return deriveInitialsFromUsername(input.username);
+}
+
+async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
+  if (rawUsers.length === 0) {
+    return [];
+  }
+
+  const userIds = rawUsers.map((user) => user.id);
+  const memberships = await db
+    .select()
+    .from(organizationMemberships)
+    .where(
+      and(
+        inArray(organizationMemberships.userId, userIds),
+        eq(organizationMemberships.status, "active")
+      )
+    );
+
+  const organizationIds = [...new Set(memberships.map((membership) => membership.labId))];
+  const membershipOrganizations = organizationIds.length
+    ? await db
+        .select()
+        .from(organizations)
+        .where(inArray(organizations.id, organizationIds))
+    : [];
+
+  const organizationsById = new Map(
+    membershipOrganizations.map((organization) => [organization.id, organization])
+  );
+  const membershipsByUserId = new Map<string, typeof memberships>();
+
+  for (const membership of memberships) {
+    const existingMemberships = membershipsByUserId.get(membership.userId) ?? [];
+    existingMemberships.push(membership);
+    membershipsByUserId.set(membership.userId, existingMemberships);
+  }
+
+  return rawUsers.map((user) => {
+    const base = safeUser(user);
+    const activeMemberships = membershipsByUserId.get(user.id) ?? [];
+    const primaryMembership =
+      activeMemberships.find((membership) => {
+        const organization = organizationsById.get(membership.labId);
+        return organization?.type === "lab";
+      }) ?? activeMemberships[0];
+
+    const primaryOrganization = primaryMembership
+      ? organizationsById.get(primaryMembership.labId)
+      : null;
+
+    return {
+      ...base,
+      practiceName:
+        primaryOrganization?.displayName ||
+        primaryOrganization?.name ||
+        null,
+      practiceAddress:
+        base.practiceAddress || buildOrganizationAddress(primaryOrganization),
+      practicePhone: base.practicePhone || primaryOrganization?.phone || null,
+      role: primaryMembership
+        ? mapMembershipRoleToUserRole(primaryMembership.role)
+        : base.role,
+    };
+  });
+}
+
 const registerSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
@@ -83,6 +192,16 @@ router.post(
   "/register",
   asyncHandler(async (req, res) => {
     const input = registerSchema.parse(req.body);
+    const shouldCreateOrganization =
+      !!input.createOrganization &&
+      !!input.practiceName?.trim() &&
+      (input.userType === "lab" || input.userType === "provider");
+    const normalizedUserRole = shouldCreateOrganization
+      ? "admin"
+      : input.role || "user";
+    const normalizedPracticeName = shouldCreateOrganization
+      ? input.practiceName?.trim() || null
+      : null;
 
     const existing = await db.query.users.findFirst({
       where: eq(users.username, input.username.trim()),
@@ -102,10 +221,11 @@ router.post(
         );
     }
 
-    const initials =
-      input.firstName && input.lastName
-        ? (input.firstName[0] + input.lastName[0]).toUpperCase()
-        : input.username.slice(0, 2).toUpperCase();
+    const initials = deriveUserInitials({
+      firstName: input.firstName,
+      lastName: input.lastName,
+      username: input.username,
+    });
 
     const hashed = await hashPassword(input.password);
 
@@ -120,15 +240,15 @@ router.post(
         lastName: input.lastName || null,
         initials,
         userType: input.userType || "lab",
-        role: input.role || "user",
         licenseNumber: input.licenseNumber || null,
-        practiceName: input.practiceName || null,
         doctorName: input.doctorName || null,
         practiceAddress: input.practiceAddress || null,
         practicePhone: input.practicePhone || null,
         phoneContactName: input.phoneContactName || null,
         accountNumber: input.accountNumber || null,
         wantsUpdates: input.wantsUpdates || false,
+        role: normalizedUserRole,
+        practiceName: normalizedPracticeName,
       })
       .returning();
 
@@ -166,21 +286,18 @@ router.post(
         .from(organizations)
         .where(eq(organizations.id, input.joinOrganizationId));
       if (org) {
-        await db.insert(joinRequests).values({
+        await db.insert(organizationJoinRequests).values({
           labId: org.id,
           userId: user.id,
           requestedRole: input.role === "admin" ? "admin" : "user",
+          message: `${user.username} would like to join ${org.displayName || org.name}.`,
           status: "pending",
         });
         organizationInfo = { id: org.id, name: org.displayName || org.name };
         pendingJoinRequest = true;
         responseMessage = `Your request to join ${org.displayName || org.name} has been sent to the lab admin.`;
       }
-    } else if (
-      input.createOrganization &&
-      input.practiceName?.trim() &&
-      (input.userType === "lab" || input.userType === "provider")
-    ) {
+    } else if (shouldCreateOrganization) {
       const orgType = input.userType === "provider" ? "provider" : "lab";
       const [org] = await db
         .insert(organizations)
@@ -194,21 +311,25 @@ router.post(
           createdByUserId: user.id,
         })
         .returning();
-      await db.insert(labMemberships).values({
-        labId: org.id,
+      await db.insert(organizationMemberships).values({
+        organizationId: org.id,
         userId: user.id,
         role: "owner",
         status: "active",
+        approvedByUserId: user.id,
+        joinedAt: new Date(),
       });
       organizationInfo = { id: org.id, name: org.displayName || org.name };
       responseMessage = `${org.displayName || org.name} created and linked to your account.`;
     }
 
+    const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
+
     return res.json({
       success: true,
       accessToken,
       refreshToken: rawRefreshToken,
-      user: safeUser(user),
+      user: hydratedUser || safeUser(user),
       message: responseMessage,
       pendingJoinRequest,
       organization: organizationInfo,
@@ -287,11 +408,13 @@ router.post(
       entityId: sessionId,
     });
 
+    const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
+
     return res.json({
       success: true,
       accessToken,
       refreshToken: rawRefreshToken,
-      user: safeUser(user),
+      user: hydratedUser || safeUser(user),
     });
   })
 );
@@ -343,9 +466,9 @@ router.get(
   asyncHandler(async (req, res) => {
     const user = (req as any).user;
     const memberships =
-      await db.query.labMemberships.findMany({
+      await db.query.organizationMemberships.findMany({
         where: eq(
-          labMemberships.userId,
+          organizationMemberships.userId,
           (req as any).auth.userId
         ),
       });
@@ -357,9 +480,11 @@ router.get(
           .where(inArray(organizations.id, orgIds))
       : [];
 
+    const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
+
     return res.json({
       success: true,
-      user: safeUser(user),
+      user: hydratedUser || safeUser(user),
       memberships: memberships.map((m: any) => ({
         id: m.id,
         role: m.role,
@@ -373,11 +498,11 @@ router.get(
 
 router.get(
   "/users",
-  requireAuth,
   asyncHandler(async (_req, res) => {
     const allUsers = await db.select().from(users);
+    const hydratedUsers = await hydrateUsersWithActiveMemberships(allUsers);
     res.json({
-      users: allUsers.map((u) => safeUser(u)),
+      users: hydratedUsers,
     });
   })
 );
@@ -388,34 +513,7 @@ router.put(
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const authUserId = (req as any).auth.userId;
-    const isSelf = authUserId === id;
-    let isLabAdmin = false;
-
-    if (!isSelf) {
-      const adminMemberships = await db.query.labMemberships.findMany({
-        where: and(
-          eq(labMemberships.userId, authUserId),
-          eq(labMemberships.status, "active"),
-        ),
-      });
-      const adminOrgIds = adminMemberships
-        .filter(m => ["owner", "admin"].includes(m.role))
-        .map(m => m.labId);
-
-      if (adminOrgIds.length > 0) {
-        const targetMembership = await db.query.labMemberships.findFirst({
-          where: and(
-            eq(labMemberships.userId, id),
-            eq(labMemberships.status, "active"),
-            inArray(labMemberships.labId, adminOrgIds),
-          ),
-        });
-        if (targetMembership) {
-          isLabAdmin = true;
-        }
-      }
-    }
-    if (!isSelf && !isLabAdmin) {
+    if (authUserId !== id) {
       throw new HttpError(403, "Unauthorized");
     }
     const user = await db.query.users.findFirst({
@@ -443,6 +541,13 @@ router.put(
     if (lastName !== undefined) updates.lastName = lastName;
     if (role !== undefined && (role === "admin" || role === "user"))
       updates.role = role;
+    if (firstName !== undefined || lastName !== undefined) {
+      updates.initials = deriveUserInitials({
+        firstName: firstName !== undefined ? firstName : user.firstName,
+        lastName: lastName !== undefined ? lastName : user.lastName,
+        username: user.username,
+      });
+    }
 
     const [updated] = await db
       .update(users)
@@ -519,42 +624,14 @@ router.delete(
     });
     if (!user) throw new HttpError(404, "User not found");
 
-    await db.transaction(async (tx) => {
-      await tx.delete(userSessions).where(eq(userSessions.userId, id));
-      await tx.delete(labCases).where(eq(labCases.ownerId, id));
-      await tx.delete(labMemberships).where(eq(labMemberships.userId, id));
-      await tx.delete(joinRequests).where(eq(joinRequests.userId, id));
-      await tx.update(labInvites).set({ invitedUserId: null }).where(eq(labInvites.invitedUserId, id));
-      await tx.execute(sql`UPDATE lab_invites SET created_by_user_id = NULL WHERE created_by_user_id = ${id}`);
-      await tx.delete(organizationConnections).where(eq(organizationConnections.requestedByUserId, id));
-      await tx.update(organizationConnections).set({ approvedByUserId: null }).where(eq(organizationConnections.approvedByUserId, id));
-      await tx.update(organizations).set({ createdByUserId: null }).where(eq(organizations.createdByUserId, id));
-      await tx.execute(sql`UPDATE join_requests SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE cases SET created_by_user_id = NULL WHERE created_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE case_notes SET author_user_id = NULL WHERE author_user_id = ${id}`);
-      await tx.execute(sql`UPDATE case_attachments SET uploaded_by_user_id = NULL WHERE uploaded_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE case_locations SET moved_by_user_id = NULL WHERE moved_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE case_submission_queue SET submitted_by_user_id = NULL WHERE submitted_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE case_submission_queue SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE case_events SET actor_user_id = NULL WHERE actor_user_id = ${id}`);
-      await tx.execute(sql`UPDATE invoices SET created_by_user_id = NULL WHERE created_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE invoices SET updated_by_user_id = NULL WHERE updated_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE payments SET recorded_by_user_id = NULL WHERE recorded_by_user_id = ${id}`);
-      await tx.execute(sql`UPDATE audit_logs SET user_id = NULL WHERE user_id = ${id}`);
-      await tx.delete(users).where(eq(users.id, id));
+    await db.delete(users).where(eq(users.id, id));
+    await writeAuditLog({
+      req,
+      userId: id,
+      action: "user_deleted",
+      entityType: "user",
+      entityId: id,
     });
-
-    try {
-      await db.insert(auditLogs).values({
-        userId: null,
-        action: "user_deleted",
-        entityType: "user",
-        entityId: id,
-        ipAddress: req.ip ?? null,
-        userAgent: req.get("user-agent") ?? null,
-        metadataJson: { deletedUsername: user.username, deletedEmail: user.email },
-      });
-    } catch {}
     res.json({ success: true });
   })
 );
@@ -601,144 +678,27 @@ router.delete(
     if (!creatorId || creatorId !== user.id) {
       throw new HttpError(403, "Only the admin who created this lab can delete it.");
     }
-
-    const org = await db.query.organizations.findFirst({
-      where: eq(organizations.name, labName),
-    });
-
-    if (!org) {
-      throw new HttpError(404, "Lab not found.");
+    const labNameLower = labName.toLowerCase().trim();
+    const allLabUsers = await db.select().from(users);
+    const labMembers = allLabUsers.filter(
+      (u) => u.practiceName?.toLowerCase().trim() === labNameLower
+    );
+    const memberIds = labMembers.map((m) => m.id);
+    if (memberIds.length > 0) {
+      await db
+        .update(users)
+        .set({ practiceName: null })
+        .where(inArray(users.id, memberIds));
     }
-
-    if (org.deletedAt) {
-      throw new HttpError(400, "Lab is already deleted.");
-    }
-
-    const now = new Date();
-    const recoverableUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-
-    await db
-      .update(organizations)
-      .set({
-        deletedAt: now,
-        recoverableUntil,
-        deletedByUserId: user.id,
-        isActive: false,
-        updatedAt: now,
-      })
-      .where(eq(organizations.id, org.id));
-
     await writeAuditLog({
       req,
       userId: user.id,
-      action: "lab_soft_deleted",
+      action: "lab_deleted",
       entityType: "organization",
-      entityId: org.id,
-      metadataJson: { labName, organizationId: org.id, recoverableUntil },
+      entityId: labNameLower,
+      details: { labName, membersRemoved: memberIds.length },
     });
-    res.json({ success: true, recoverableUntil: recoverableUntil.toISOString() });
-  })
-);
-
-router.get(
-  "/deleted-labs",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const user = (req as any).user;
-    const now = new Date();
-
-    const membershipRows = await db
-      .select({
-        org: organizations,
-        role: labMemberships.role,
-      })
-      .from(labMemberships)
-      .innerJoin(organizations, eq(labMemberships.labId, organizations.id))
-      .where(
-        and(
-          eq(labMemberships.userId, user.id),
-          eq(labMemberships.status, "active"),
-          isNotNull(organizations.deletedAt)
-        )
-      );
-
-    const deletedLabs = membershipRows
-      .filter(
-        (row) =>
-          ["owner", "admin"].includes(row.role) &&
-          row.org.recoverableUntil &&
-          new Date(row.org.recoverableUntil) > now
-      )
-      .map((row) => ({
-        id: row.org.id,
-        name: row.org.name,
-        displayName: row.org.displayName,
-        deletedAt: row.org.deletedAt,
-        recoverableUntil: row.org.recoverableUntil,
-        role: row.role,
-      }));
-
-    res.json({ deletedLabs });
-  })
-);
-
-router.post(
-  "/restore-lab/:labId",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const user = (req as any).user;
-    const { labId } = req.params;
-    const now = new Date();
-
-    const membership = await db.query.labMemberships.findFirst({
-      where: and(
-        eq(labMemberships.userId, user.id),
-        eq(labMemberships.labId, labId),
-        eq(labMemberships.status, "active")
-      ),
-    });
-
-    if (!membership || !["owner", "admin"].includes(membership.role)) {
-      throw new HttpError(403, "Forbidden.");
-    }
-
-    const org = await db.query.organizations.findFirst({
-      where: eq(organizations.id, labId),
-    });
-
-    if (!org) {
-      throw new HttpError(404, "Lab not found.");
-    }
-
-    if (!org.deletedAt) {
-      throw new HttpError(400, "Lab is not deleted.");
-    }
-
-    if (org.recoverableUntil && new Date(org.recoverableUntil) < now) {
-      throw new HttpError(400, "Recovery window has expired.");
-    }
-
-    await db
-      .update(organizations)
-      .set({
-        deletedAt: null,
-        recoverableUntil: null,
-        deletedByUserId: null,
-        isActive: true,
-        updatedAt: now,
-      })
-      .where(eq(organizations.id, labId));
-
-    await writeAuditLog({
-      req,
-      userId: user.id,
-      action: "lab_restored",
-      entityType: "organization",
-      entityId: org.id,
-      metadataJson: { labName: org.name },
-    });
-
-    res.json({ success: true, lab: { id: org.id, name: org.name } });
+    res.json({ success: true, membersRemoved: memberIds.length });
   })
 );
 

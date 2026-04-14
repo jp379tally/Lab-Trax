@@ -49,7 +49,6 @@ export const users = pgTable("users", {
 export const labCases = pgTable("lab_cases", {
   id: varchar("id").primaryKey(),
   ownerId: varchar("owner_id").notNull(),
-  organizationId: varchar("organization_id"),
   caseData: text("case_data").notNull(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -69,11 +68,6 @@ export const organizations = pgTable("organizations", {
   state: text("state"),
   zip: text("zip"),
   isActive: boolean("is_active").default(true).notNull(),
-  deletedAt: timestamp("deleted_at"),
-  recoverableUntil: timestamp("recoverable_until"),
-  deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
-    onDelete: "set null",
-  }),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, {
     onDelete: "set null",
   }),
@@ -81,7 +75,7 @@ export const organizations = pgTable("organizations", {
   updatedAt: updatedAt(),
 });
 
-export const labMemberships = pgTable(
+export const organizationMemberships = pgTable(
   "lab_memberships",
   {
     id: varchar("id")
@@ -95,19 +89,28 @@ export const labMemberships = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: text("role").notNull(),
     status: text("status").default("active").notNull(),
+    invitedByUserId: varchar("invited_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    approvedByUserId: varchar("approved_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    joinedAt: timestamp("joined_at", { withTimezone: true }),
     createdAt: createdAt(),
+    updatedAt: updatedAt(),
   },
   (table) => ({
-    uniqueMemberPerLab: uniqueIndex("lab_memberships_lab_user_unique").on(
+    uniqueMemberPerOrg: uniqueIndex("memberships_org_user_unique").on(
       table.labId,
       table.userId
     ),
-    labIdx: index("lab_memberships_lab_idx").on(table.labId),
-    userIdx: index("lab_memberships_user_idx").on(table.userId),
+    orgIdx: index("memberships_org_idx").on(table.labId),
+    userIdx: index("memberships_user_idx").on(table.userId),
   })
 );
 
-export const joinRequests = pgTable(
+export const organizationJoinRequests = pgTable(
   "join_requests",
   {
     id: varchar("id")
@@ -119,26 +122,20 @@ export const joinRequests = pgTable(
     userId: varchar("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    requestedRole: text("requested_role").default("user").notNull(),
+    requestedRole: text("requested_role").notNull(),
     message: text("message"),
     status: text("status").default("pending").notNull(),
-    createdAt: createdAt(),
     reviewedByUserId: varchar("reviewed_by_user_id").references(
       () => users.id,
       { onDelete: "set null" }
     ),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
-  },
-  (table) => ({
-    uniquePending: uniqueIndex("join_requests_lab_user_status_unique").on(
-      table.labId,
-      table.userId,
-      table.status
-    ),
-  })
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  }
 );
 
-export const labInvites = pgTable(
+export const organizationInvites = pgTable(
   "lab_invites",
   {
     id: varchar("id")
@@ -147,18 +144,28 @@ export const labInvites = pgTable(
     labId: varchar("lab_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    invitedUserId: varchar("invited_user_id").references(() => users.id, {
-      onDelete: "set null",
-    }),
-    invitedPhone: text("invited_phone"),
-    role: text("role").notNull(),
+    email: text("email").notNull(),
+    phone: text("phone"),
+    roleToAssign: text("role_to_assign").notNull(),
+    token: text("token").notNull(),
     status: text("status").default("pending").notNull(),
-    createdByUserId: varchar("created_by_user_id")
+    invitedByUserId: varchar("invited_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedByUserId: varchar("accepted_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     createdAt: createdAt(),
-    respondedAt: timestamp("responded_at", { withTimezone: true }),
-  }
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    tokenUnique: uniqueIndex("lab_invites_token_unique").on(
+      table.token
+    ),
+  })
 );
 
 export const organizationConnections = pgTable(
@@ -220,7 +227,8 @@ export const cases = pgTable(
       .defaultNow()
       .notNull(),
     createdByUserId: varchar("created_by_user_id")
-      .references(() => users.id, { onDelete: "set null" }),
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -292,7 +300,8 @@ export const caseNotes = pgTable("case_notes", {
     .notNull()
     .references(() => cases.id, { onDelete: "cascade" }),
   authorUserId: varchar("author_user_id")
-    .references(() => users.id, { onDelete: "set null" }),
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
   authorOrganizationId: varchar("author_organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "restrict" }),
@@ -310,7 +319,8 @@ export const caseAttachments = pgTable("case_attachments", {
     .notNull()
     .references(() => cases.id, { onDelete: "cascade" }),
   uploadedByUserId: varchar("uploaded_by_user_id")
-    .references(() => users.id, { onDelete: "set null" }),
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
   uploadedByOrganizationId: varchar("uploaded_by_organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "restrict" }),
@@ -331,7 +341,8 @@ export const caseLocations = pgTable("case_locations", {
   locationCode: text("location_code").notNull(),
   locationName: text("location_name").notNull(),
   movedByUserId: varchar("moved_by_user_id")
-    .references(() => users.id, { onDelete: "set null" }),
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
   movedAt: timestamp("moved_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -346,7 +357,8 @@ export const caseSubmissionQueue = pgTable("case_submission_queue", {
     .notNull()
     .references(() => cases.id, { onDelete: "cascade" }),
   submittedByUserId: varchar("submitted_by_user_id")
-    .references(() => users.id, { onDelete: "set null" }),
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
   submittedByOrganizationId: varchar("submitted_by_organization_id")
     .notNull()
     .references(() => organizations.id, { onDelete: "restrict" }),
@@ -395,7 +407,8 @@ export const invoices = pgTable(
     issuedAt: timestamp("issued_at", { withTimezone: true }),
     dueAt: timestamp("due_at", { withTimezone: true }),
     createdByUserId: varchar("created_by_user_id")
-      .references(() => users.id, { onDelete: "set null" }),
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
     updatedByUserId: varchar("updated_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -445,7 +458,8 @@ export const payments = pgTable("payments", {
   referenceNumber: text("reference_number"),
   paidAt: timestamp("paid_at", { withTimezone: true }).defaultNow().notNull(),
   recordedByUserId: varchar("recorded_by_user_id")
-    .references(() => users.id, { onDelete: "set null" }),
+    .notNull()
+    .references(() => users.id, { onDelete: "restrict" }),
   createdAt: createdAt(),
 });
 
@@ -501,48 +515,42 @@ export const userSessions = pgTable(
   })
 );
 
-export const notifications = pgTable(
-  "notifications",
-  {
-    id: varchar("id")
-      .primaryKey()
-      .default(sql`gen_random_uuid()`),
-    userId: varchar("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    type: text("type").notNull(),
-    title: text("title").notNull(),
-    body: text("body").notNull(),
-    dataJson: jsonb("data_json").default({}).notNull(),
-    readAt: timestamp("read_at", { withTimezone: true }),
-    createdAt: createdAt(),
-  },
-  (table) => ({
-    userIdx: index("notifications_user_idx").on(table.userId),
-  })
-);
-
 export const usersRelations = relations(users, ({ many }) => ({
-  memberships: many(labMemberships),
+  memberships: many(organizationMemberships),
 }));
 
 export const organizationsRelations = relations(organizations, ({ many }) => ({
-  memberships: many(labMemberships),
+  memberships: many(organizationMemberships),
 }));
 
-export const labMembershipsRelations = relations(
-  labMemberships,
+export const organizationMembershipsRelations = relations(
+  organizationMemberships,
   ({ one }) => ({
-    lab: one(organizations, {
-      fields: [labMemberships.labId],
+    organization: one(organizations, {
+      fields: [organizationMemberships.labId],
       references: [organizations.id],
     }),
     user: one(users, {
-      fields: [labMemberships.userId],
+      fields: [organizationMemberships.userId],
       references: [users.id],
     }),
   })
 );
+
+export const notifications = pgTable("notifications", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  userId: varchar("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  type: text("type").notNull(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  dataJson: jsonb("data_json"),
+  readAt: timestamp("read_at", { withTimezone: true }),
+  createdAt: createdAt(),
+});
 
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,

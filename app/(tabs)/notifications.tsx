@@ -10,7 +10,6 @@ import {
   Modal,
   Animated as RNAnimated,
   PanResponder,
-  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -102,20 +101,16 @@ function SwipeableNotifRow({ children, onDelete }: { children: React.ReactNode; 
 }
 
 export default function NotificationsScreen() {
-  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite, refreshJoinData } = useApp();
+  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
   const [confirmLabInvite, setConfirmLabInvite] = useState<{ invite: LabInvitation; accept: boolean } | null>(null);
-  const [processingId, setProcessingId] = useState<string | null>(null);
   const filteredNotifications = useProviderFilteredNotifications();
 
   useFocusEffect(
     useCallback(() => {
       markAllNotificationsRead();
-      refreshJoinData();
     }, [])
   );
 
@@ -124,7 +119,7 @@ export default function NotificationsScreen() {
   );
 
   const pendingLabInvites = labInvitations.filter(
-    i => (i.invitedUsername || i.targetUsername || "").toLowerCase() === (currentUser || "").toLowerCase() && i.status === "pending"
+    i => i.targetUsername.toLowerCase() === (currentUser || "").toLowerCase() && i.status === "pending"
   );
 
   const currentUserProfile = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
@@ -242,7 +237,7 @@ export default function NotificationsScreen() {
       <View
         style={[
           styles.header,
-          { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12, ...(isDesktop ? { paddingHorizontal: 32 } : {}) },
+          { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
         ]}
       >
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -256,7 +251,7 @@ export default function NotificationsScreen() {
         renderItem={renderNotification}
         contentContainerStyle={[
           styles.listContent,
-          { paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100, ...(isDesktop ? { paddingHorizontal: 32 } : {}) },
+          { paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 },
         ]}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
@@ -368,17 +363,16 @@ export default function NotificationsScreen() {
               <Pressable
                 style={({ pressed }) => [styles.confirmYesBtn, !confirmJoinRequest?.accept && { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinRequest || processingId) return;
-                  setProcessingId(confirmJoinRequest.request.id);
-                  try {
-                    await respondToGroupJoinRequest(confirmJoinRequest.request.id, confirmJoinRequest.accept, confirmJoinRequest.role);
-                    if (Platform.OS !== "web") {
-                      Haptics.notificationAsync(confirmJoinRequest.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
-                    }
-                    setConfirmJoinRequest(null);
-                  } finally {
-                    setProcessingId(null);
+                  if (!confirmJoinRequest) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinRequest.request.id, confirmJoinRequest.accept, confirmJoinRequest.role);
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
                   }
+                  if (Platform.OS !== "web") {
+                    Haptics.notificationAsync(confirmJoinRequest.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                  }
+                  setConfirmJoinRequest(null);
                 }}
               >
                 <Text style={styles.confirmYesText}>
@@ -418,17 +412,16 @@ export default function NotificationsScreen() {
               <Pressable
                 style={({ pressed }) => [styles.confirmYesBtn, confirmLabInvite?.accept ? { backgroundColor: "#7C3AED" } : { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmLabInvite || processingId) return;
-                  setProcessingId(confirmLabInvite.invite.id);
-                  try {
-                    await respondToLabInvite(confirmLabInvite.invite.id, confirmLabInvite.accept);
-                    if (Platform.OS !== "web") {
-                      Haptics.notificationAsync(confirmLabInvite.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
-                    }
-                    setConfirmLabInvite(null);
-                  } finally {
-                    setProcessingId(null);
+                  if (!confirmLabInvite) return;
+                  const result = await respondToLabInvite(confirmLabInvite.invite.id, confirmLabInvite.accept);
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
                   }
+                  if (Platform.OS !== "web") {
+                    Haptics.notificationAsync(confirmLabInvite.accept ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning);
+                  }
+                  setConfirmLabInvite(null);
                 }}
               >
                 <Text style={styles.confirmYesText}>

@@ -12,7 +12,6 @@ import {
   Modal,
   KeyboardAvoidingView,
   Image,
-  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -21,18 +20,23 @@ import * as WebBrowser from "expo-web-browser";
 import { useTheme } from "@/lib/theme-context";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
+import { resilientFetch } from "@/lib/query-client";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { getApiUrl } from "@/lib/query-client";
+
+type LabDirectoryEntry = {
+  organizationId: string;
+  practiceName: string;
+  username: string;
+  practiceAddress?: string;
+};
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest, leaveLab, deleteLab, restoreLab, getDeletedLabs, createLabFromSettings, isLabCreator, sendLabInvite } = useApp();
-  const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword } = useAuth();
+  const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite, fetchLabDirectory } = useApp();
+  const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword, refreshUsers } = useAuth();
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
   const [editLabName, setEditLabName] = useState("");
@@ -45,21 +49,11 @@ export default function SettingsScreen() {
   const [adminUsername, setAdminUsername] = useState("");
   const [showAddLabModal, setShowAddLabModal] = useState(false);
   const [labSearchName, setLabSearchName] = useState("");
-  const [matchedLabs, setMatchedLabs] = useState<{ practiceName: string; organizationId: string; username?: string; practiceAddress?: string }[]>([]);
-  const [allGroups, setAllGroups] = useState<{ practiceName: string; organizationId: string; username?: string; practiceAddress?: string }[]>([]);
+  const [matchedLabs, setMatchedLabs] = useState<LabDirectoryEntry[]>([]);
+  const [labDirectoryCache, setLabDirectoryCache] = useState<LabDirectoryEntry[]>([]);
   const [labSearchDone, setLabSearchDone] = useState(false);
   const [addLabSending, setAddLabSending] = useState(false);
   const [companyLogoUri, setCompanyLogoUri] = useState<string | null>(null);
-  const [showCreateLabModal, setShowCreateLabModal] = useState(false);
-  const [createLabName, setCreateLabName] = useState("");
-  const [createLabPhone, setCreateLabPhone] = useState("");
-  const [createLabAddress, setCreateLabAddress] = useState("");
-  const [createLabCity, setCreateLabCity] = useState("");
-  const [createLabState, setCreateLabState] = useState("");
-  const [createLabZip, setCreateLabZip] = useState("");
-  const [createLabSaving, setCreateLabSaving] = useState(false);
-  const [deletedLabs, setDeletedLabs] = useState<{ id: string; name: string; deletedAt: string; recoverableUntil: string; role: string }[]>([]);
-  const [restoringLabId, setRestoringLabId] = useState<string | null>(null);
   const [showAddUserModal, setShowAddUserModal] = useState(false);
   const [addUserSearch, setAddUserSearch] = useState("");
   const [addUserSelected, setAddUserSelected] = useState<{ username: string; email: string } | null>(null);
@@ -82,89 +76,6 @@ export default function SettingsScreen() {
       if (s) setUserStatus(s as UserStatus);
     });
   }, [currentUser]);
-
-  useEffect(() => {
-    getDeletedLabs().then(setDeletedLabs);
-  }, []);
-
-  useEffect(() => {
-    if (!showAddLabModal) return;
-    const apiUrl = getApiUrl();
-    const url = new URL("/api/labs/groups", apiUrl).toString();
-    fetch(url, { credentials: "include" })
-      .then(r => r.json())
-      .then(data => {
-        const groups = (data.groups || []).map((g: any) => ({
-          practiceName: g.practiceName || "",
-          organizationId: g.organizationId || "",
-          username: g.username || "",
-          practiceAddress: g.practiceAddress || "",
-        }));
-        setAllGroups(groups);
-        if (labSearchName.trim()) {
-          const q = labSearchName.toLowerCase().trim();
-          setMatchedLabs(groups.filter((g: any) => g.practiceName.toLowerCase().includes(q)));
-          setLabSearchDone(true);
-        }
-      })
-      .catch(() => {});
-  }, [showAddLabModal]);
-
-  async function handleCreateLab() {
-    if (!createLabName.trim()) {
-      Alert.alert("Error", "Lab name is required.");
-      return;
-    }
-    setCreateLabSaving(true);
-    const result = await createLabFromSettings(
-      createLabName.trim(),
-      undefined,
-      createLabPhone || undefined,
-      createLabAddress || undefined,
-      createLabCity || undefined,
-      createLabState || undefined,
-      createLabZip || undefined
-    );
-    setCreateLabSaving(false);
-    if (result.success) {
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setShowCreateLabModal(false);
-      setCreateLabName("");
-      setCreateLabPhone("");
-      setCreateLabAddress("");
-      setCreateLabCity("");
-      setCreateLabState("");
-      setCreateLabZip("");
-      Alert.alert("Lab Created", "Your lab has been created. You are now the owner.");
-    } else {
-      Alert.alert("Error", result.error || "Failed to create lab.");
-    }
-  }
-
-  async function handleRestoreLab(labId: string, labName: string) {
-    Alert.alert(
-      "Restore Lab",
-      `Restore "${labName}"? It will become active again.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Restore",
-          onPress: async () => {
-            setRestoringLabId(labId);
-            const result = await restoreLab(labId);
-            setRestoringLabId(null);
-            if (result.success) {
-              if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              setDeletedLabs((prev) => prev.filter((l) => l.id !== labId));
-              Alert.alert("Restored", `"${labName}" has been restored.`);
-            } else {
-              Alert.alert("Error", result.error || "Failed to restore lab.");
-            }
-          },
-        },
-      ]
-    );
-  }
 
   function handleStatusChange(status: UserStatus) {
     setUserStatus(status);
@@ -226,9 +137,172 @@ export default function SettingsScreen() {
   const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
   const isLabAdmin = userType === "lab" && currentUserData?.role === "admin";
 
+  async function loadLabDirectory(force = false): Promise<LabDirectoryEntry[]> {
+    if (!force && labDirectoryCache.length > 0) {
+      return labDirectoryCache;
+    }
+
+    const groups = await fetchLabDirectory();
+    const myUsername = (currentUser || "").toLowerCase().trim();
+    const uniqueLabs = new Map<string, LabDirectoryEntry>();
+
+    for (const group of groups) {
+      if (
+        !group.organizationId ||
+        !group.practiceName?.trim() ||
+        !group.username?.trim()
+      ) {
+        continue;
+      }
+
+      const normalizedUsername = group.username.toLowerCase().trim();
+      if (normalizedUsername === myUsername) {
+        continue;
+      }
+
+      uniqueLabs.set(group.organizationId, {
+        organizationId: group.organizationId,
+        practiceName: group.practiceName.trim(),
+        username: group.username.trim(),
+        practiceAddress: group.practiceAddress?.trim() || undefined,
+      });
+    }
+
+    const nextDirectory = Array.from(uniqueLabs.values());
+    setLabDirectoryCache(nextDirectory);
+    return nextDirectory;
+  }
+
+  function filterLabDirectory(query: string, directory: LabDirectoryEntry[]) {
+    const normalizedQuery = query.toLowerCase().trim();
+    if (!normalizedQuery) {
+      setMatchedLabs([]);
+      setLabSearchDone(false);
+      return;
+    }
+
+    const normalizedCurrentLab = (currentUserData?.practiceName || "").toLowerCase().trim();
+    const nextMatches = directory.filter((lab) => {
+      const normalizedPracticeName = lab.practiceName.toLowerCase();
+      const normalizedUsername = lab.username.toLowerCase();
+      const normalizedAddress = (lab.practiceAddress || "").toLowerCase();
+      const isCurrentLab = normalizedCurrentLab.length > 0 &&
+        normalizedPracticeName.trim() === normalizedCurrentLab;
+
+      if (isCurrentLab) {
+        return false;
+      }
+
+      return (
+        normalizedPracticeName.includes(normalizedQuery) ||
+        normalizedUsername.includes(normalizedQuery) ||
+        normalizedAddress.includes(normalizedQuery)
+      );
+    });
+
+    setMatchedLabs(nextMatches);
+    setLabSearchDone(true);
+  }
+
+  function openAddLabModal() {
+    setShowAddLabModal(true);
+    setLabSearchName("");
+    setMatchedLabs([]);
+    setLabSearchDone(false);
+    void loadLabDirectory(true);
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  }
+
+  function openLabEditor() {
+    setEditLabName(currentUserData?.practiceName || "");
+    setEditLabAddress(currentUserData?.practiceAddress || "");
+    setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
+    setEditLabEmail(currentUserData?.email || "");
+    setShowEditLab(true);
+  }
+
+  async function fetchCurrentLabMembership() {
+    const response = await resilientFetch("/api/auth/me");
+    if (!response.ok) {
+      throw new Error("Could not load your current lab setup.");
+    }
+
+    const payload = await response.json();
+    const memberships = Array.isArray(payload?.memberships) ? payload.memberships : [];
+    return (
+      memberships.find(
+        (membership: any) =>
+          membership?.status === "active" &&
+          membership?.organization?.type === "lab"
+      ) || null
+    );
+  }
+
+  async function handleSaveLab() {
+    const labName = editLabName.trim();
+    if (!labName) {
+      Alert.alert("Lab Name Required", "Please enter a lab name before saving.");
+      return;
+    }
+
+    setEditLabSaving(true);
+
+    try {
+      const existingMembership = await fetchCurrentLabMembership();
+      const payload = {
+        name: labName,
+        displayName: labName,
+        billingEmail: editLabEmail.trim() || undefined,
+        phone: editLabPhone.trim() || undefined,
+        addressLine1: editLabAddress.trim() || undefined,
+      };
+
+      const response = await resilientFetch(
+        existingMembership?.organizationId
+          ? `/api/organizations/${existingMembership.organizationId}`
+          : "/api/organizations",
+        {
+          method: existingMembership?.organizationId ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            existingMembership?.organizationId
+              ? payload
+              : { ...payload, type: "lab" }
+          ),
+        }
+      );
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.message || data?.error || "Could not save your lab.");
+      }
+
+      await refreshUsers();
+      setLabDirectoryCache([]);
+      setShowEditLab(false);
+
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+
+      Alert.alert(
+        existingMembership?.organizationId ? "Lab Updated" : "Lab Created",
+        existingMembership?.organizationId
+          ? `${labName} has been updated.`
+          : `${labName} is now live and can be found by other users.`
+      );
+    } catch (error: any) {
+      Alert.alert("Unable to Save", error?.message || "Could not save your lab.");
+    } finally {
+      setEditLabSaving(false);
+    }
+  }
+
   return (
     <View style={[styles.container, { backgroundColor: colors.backgroundSolid || colors.surface }]}>
-      <View style={[styles.header, { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12, backgroundColor: colors.surface, borderBottomColor: colors.borderLight }]}>
+      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12, backgroundColor: colors.surface, borderBottomColor: colors.borderLight }]}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </Pressable>
@@ -417,13 +491,7 @@ export default function SettingsScreen() {
             <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <Pressable
                 style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                onPress={() => {
-                  setShowAddLabModal(true);
-                  setLabSearchName("");
-                  setMatchedLabs([]);
-                  setLabSearchDone(false);
-                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                }}
+                onPress={openAddLabModal}
                 testID="add-lab-btn"
               >
                 <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
@@ -449,11 +517,7 @@ export default function SettingsScreen() {
                     style={({ pressed }) => [styles.menuItem, isLabAdmin && pressed && { opacity: 0.7 }]}
                     onPress={() => {
                       if (!isLabAdmin) return;
-                      setEditLabName(currentUserData?.practiceName || "");
-                      setEditLabAddress(currentUserData?.practiceAddress || "");
-                      setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
-                      setEditLabEmail(currentUserData?.email || "");
-                      setShowEditLab(true);
+                      openLabEditor();
                     }}
                   >
                     {companyLogoUri ? (
@@ -546,12 +610,7 @@ export default function SettingsScreen() {
 
                   <Pressable
                     style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                    onPress={() => {
-                      setShowAddLabModal(true);
-                      setLabSearchName("");
-                      setMatchedLabs([]);
-                      setLabSearchDone(false);
-                    }}
+                    onPress={openAddLabModal}
                   >
                     <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
                       <Ionicons name="add-circle" size={18} color="#2563EB" />
@@ -571,7 +630,7 @@ export default function SettingsScreen() {
                         onPress={() => {
                           Alert.alert(
                             "Delete Lab",
-                            "Are you sure? The lab will be soft-deleted. You have 30 days to restore it from this screen before it is permanently removed.",
+                            "Are you sure you want to delete the lab? All users will be removed from the lab and the lab will be deleted.",
                             [
                               { text: "No", style: "cancel" },
                               {
@@ -581,8 +640,7 @@ export default function SettingsScreen() {
                                   const result = await deleteLab();
                                   if (result.success) {
                                     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                    getDeletedLabs().then(setDeletedLabs);
-                                    Alert.alert("Lab Deleted", "The lab has been soft-deleted. You can restore it within 30 days from the Deleted Labs section below.");
+                                    Alert.alert("Lab Deleted", "The lab has been deleted and all users have been removed from it.");
                                   } else {
                                     Alert.alert("Error", result.error || "Failed to delete lab.");
                                   }
@@ -610,11 +668,28 @@ export default function SettingsScreen() {
                 <Pressable
                   style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
                   onPress={() => {
-                    setShowAddLabModal(true);
-                    setLabSearchName("");
-                    setMatchedLabs([]);
-                    setLabSearchDone(false);
+                    setEditLabName(currentUserData?.practiceName || "");
+                    setEditLabAddress(currentUserData?.practiceAddress || "");
+                    setEditLabPhone(currentUserData?.practicePhone || currentUserData?.phone || "");
+                    setEditLabEmail(currentUserData?.email || "");
+                    setShowEditLab(true);
                   }}
+                >
+                  <View style={[styles.menuIcon, { backgroundColor: "#DCFCE7" }]}>
+                    <Ionicons name="business" size={18} color="#16A34A" />
+                  </View>
+                  <View style={styles.menuInfo}>
+                    <Text style={[styles.menuTitle, { color: colors.text }]}>Create My Lab</Text>
+                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Set up your lab so other devices can find it</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                </Pressable>
+
+                <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+
+                <Pressable
+                  style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                  onPress={openAddLabModal}
                 >
                   <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
                     <Ionicons name="add-circle" size={18} color="#2563EB" />
@@ -625,53 +700,6 @@ export default function SettingsScreen() {
                   </View>
                   <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
                 </Pressable>
-                <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
-                <Pressable
-                  style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                  onPress={() => setShowCreateLabModal(true)}
-                >
-                  <View style={[styles.menuIcon, { backgroundColor: "#D1FAE5" }]}>
-                    <Ionicons name="business" size={18} color="#059669" />
-                  </View>
-                  <View style={styles.menuInfo}>
-                    <Text style={[styles.menuTitle, { color: colors.text }]}>Create a Lab</Text>
-                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Start your own lab — you become the owner</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-                </Pressable>
-              </View>
-            )}
-
-            {deletedLabs.length > 0 && (
-              <View style={{ marginTop: 20 }}>
-                <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>DELETED LABS (RECOVERABLE)</Text>
-                <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                  {deletedLabs.map((lab, idx) => {
-                    const daysLeft = Math.ceil((new Date(lab.recoverableUntil).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-                    const isRestoring = restoringLabId === lab.id;
-                    return (
-                      <React.Fragment key={lab.id}>
-                        {idx > 0 && <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />}
-                        <Pressable
-                          style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                          onPress={() => !isRestoring && handleRestoreLab(lab.id, lab.name)}
-                          disabled={isRestoring}
-                        >
-                          <View style={[styles.menuIcon, { backgroundColor: "#FEF3C7" }]}>
-                            <Ionicons name="refresh-circle" size={18} color="#D97706" />
-                          </View>
-                          <View style={styles.menuInfo}>
-                            <Text style={[styles.menuTitle, { color: colors.text }]}>{lab.name}</Text>
-                            <Text style={[styles.menuSub, { color: "#D97706" }]}>
-                              {isRestoring ? "Restoring…" : `${daysLeft} day${daysLeft !== 1 ? "s" : ""} left to restore`}
-                            </Text>
-                          </View>
-                          <Ionicons name="arrow-undo-circle-outline" size={20} color="#D97706" />
-                        </Pressable>
-                      </React.Fragment>
-                    );
-                  })}
-                </View>
               </View>
             )}
           </View>
@@ -932,103 +960,21 @@ export default function SettingsScreen() {
                 pressed && { opacity: 0.85 },
               ]}
               disabled={!adminUsername.trim()}
-              onPress={() => {
+              onPress={async () => {
                 if (!currentUser) return;
-                sendGroupJoinRequest(adminUsername.trim(), currentUser);
-                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                setShowJoinModal(false);
-                setAdminUsername("");
+                const result = await sendGroupJoinRequest(adminUsername.trim(), currentUser);
+                if (result.success) {
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert("Request Sent", `Your request to join has been sent to ${adminUsername.trim()}. You'll be notified when they respond.`);
+                  setShowJoinModal(false);
+                  setAdminUsername("");
+                } else {
+                  Alert.alert("Unable to Send", result.error || "Something went wrong.");
+                }
               }}
             >
               <Ionicons name="send" size={18} color="#FFF" />
               <Text style={joinStyles.sendBtnText}>Send Request</Text>
-            </Pressable>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      <Modal
-        visible={showCreateLabModal}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setShowCreateLabModal(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" }}
-        >
-          <View style={[joinStyles.sheet, { backgroundColor: colors.surface }]}>
-            <View style={joinStyles.handle} />
-            <View style={joinStyles.header}>
-              <Pressable onPress={() => setShowCreateLabModal(false)}>
-                <Ionicons name="close" size={24} color={colors.textSecondary} />
-              </Pressable>
-              <Text style={[joinStyles.title, { color: colors.text }]}>Create a Lab</Text>
-              <View style={{ width: 24 }} />
-            </View>
-            <Text style={[joinStyles.desc, { color: colors.textSecondary }]}>
-              Set up a new lab. You will automatically become the owner.
-            </Text>
-            <TextInput
-              style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
-              placeholder="Lab name *"
-              placeholderTextColor={colors.textTertiary}
-              value={createLabName}
-              onChangeText={setCreateLabName}
-              autoCapitalize="words"
-              autoCorrect={false}
-            />
-            <TextInput
-              style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
-              placeholder="Phone (optional)"
-              placeholderTextColor={colors.textTertiary}
-              value={createLabPhone}
-              onChangeText={setCreateLabPhone}
-              keyboardType="phone-pad"
-            />
-            <TextInput
-              style={[joinStyles.input, { backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
-              placeholder="Address (optional)"
-              placeholderTextColor={colors.textTertiary}
-              value={createLabAddress}
-              onChangeText={setCreateLabAddress}
-              autoCapitalize="words"
-            />
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <TextInput
-                style={[joinStyles.input, { flex: 1, backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
-                placeholder="City"
-                placeholderTextColor={colors.textTertiary}
-                value={createLabCity}
-                onChangeText={setCreateLabCity}
-                autoCapitalize="words"
-              />
-              <TextInput
-                style={[joinStyles.input, { width: 60, backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
-                placeholder="ST"
-                placeholderTextColor={colors.textTertiary}
-                value={createLabState}
-                onChangeText={setCreateLabState}
-                autoCapitalize="characters"
-                maxLength={2}
-              />
-              <TextInput
-                style={[joinStyles.input, { width: 90, backgroundColor: colors.surfaceSecondary, color: colors.text, borderColor: colors.border }]}
-                placeholder="ZIP"
-                placeholderTextColor={colors.textTertiary}
-                value={createLabZip}
-                onChangeText={setCreateLabZip}
-                keyboardType="numeric"
-                maxLength={5}
-              />
-            </View>
-            <Pressable
-              style={({ pressed }) => [joinStyles.sendBtn, { opacity: createLabSaving || pressed ? 0.7 : 1 }]}
-              onPress={handleCreateLab}
-              disabled={createLabSaving}
-            >
-              <Ionicons name="business" size={18} color="#FFF" />
-              <Text style={joinStyles.sendBtnText}>{createLabSaving ? "Creating…" : "Create Lab"}</Text>
             </Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -1061,12 +1007,16 @@ export default function SettingsScreen() {
               placeholder="Lab name"
               placeholderTextColor={colors.textTertiary}
               value={labSearchName}
-              onChangeText={(t) => {
+              onChangeText={async (t) => {
                 setLabSearchName(t);
-                const q = t.toLowerCase().trim();
-                if (!q) { setMatchedLabs([]); setLabSearchDone(false); return; }
-                setMatchedLabs(allGroups.filter(g => g.practiceName.toLowerCase().includes(q)));
-                setLabSearchDone(true);
+                if (!t.trim()) {
+                  setMatchedLabs([]);
+                  setLabSearchDone(false);
+                  return;
+                }
+
+                const directory = await loadLabDirectory();
+                filterLabDirectory(t, directory);
               }}
               autoCapitalize="words"
               autoCorrect={false}
@@ -1094,7 +1044,7 @@ export default function SettingsScreen() {
                     const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
                     const alreadyMember = currentUserData?.practiceName?.toLowerCase().trim() === lab.practiceName.toLowerCase().trim();
                     return (
-                      <View key={lab.organizationId} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
+                      <View key={lab.username} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
                         <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: "#EDE9FE", justifyContent: "center", alignItems: "center" }}>
                           <Ionicons name="flask" size={20} color="#7C3AED" />
                         </View>
@@ -1125,33 +1075,17 @@ export default function SettingsScreen() {
                                     text: "Yes, Join Lab",
                                     onPress: async () => {
                                       setAddLabSending(true);
-                                      try {
-                                        const apiUrl = getApiUrl();
-                                        const url = new URL(`/api/organizations/${lab.organizationId}/join-requests`, apiUrl).toString();
-                                        const res = await fetch(url, {
-                                          method: "POST",
-                                          credentials: "include",
-                                          headers: { "Content-Type": "application/json" },
-                                          body: JSON.stringify({
-                                            requestedRole: "user",
-                                            message: `${currentUser} would like to join ${lab.practiceName}.`,
-                                          }),
-                                        });
-                                        if (res.ok) {
-                                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                          setShowAddLabModal(false);
-                                          setLabSearchName("");
-                                          setMatchedLabs([]);
-                                          setLabSearchDone(false);
-                                          Alert.alert("Request Sent", "Your join request has been sent to the lab administrator for approval.");
-                                        } else {
-                                          const err = await res.json().catch(() => ({}));
-                                          Alert.alert("Error", err?.message || err?.error || "Failed to send join request.");
-                                        }
-                                      } catch {
-                                        Alert.alert("Error", "Network error. Please check your connection and try again.");
-                                      } finally {
-                                        setAddLabSending(false);
+                                      const result = await sendGroupJoinRequest(lab.username, currentUser, `${currentUser} would like to join ${lab.practiceName}.`);
+                                      setAddLabSending(false);
+                                      if (result.success) {
+                                        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                        Alert.alert("Request Sent", `A request to join this lab has been sent to the lab admin. You will be notified if accepted.`);
+                                        setShowAddLabModal(false);
+                                        setLabSearchName("");
+                                        setMatchedLabs([]);
+                                        setLabSearchDone(false);
+                                      } else {
+                                        Alert.alert("Unable to Send", result.error || "Something went wrong.");
                                       }
                                     },
                                   },
@@ -1178,7 +1112,7 @@ export default function SettingsScreen() {
           <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
             <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: insets.bottom + 24 }}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.text }}>Edit My Lab</Text>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.text }}>{currentUserData?.practiceName ? "Edit My Lab" : "Create My Lab"}</Text>
                 <Pressable onPress={() => setShowEditLab(false)}>
                   <Ionicons name="close" size={24} color={colors.textSecondary} />
                 </Pressable>
@@ -1227,26 +1161,9 @@ export default function SettingsScreen() {
               <Pressable
                 style={({ pressed }) => [styles.sendBtn, editLabSaving && { opacity: 0.6 }, pressed && { opacity: 0.8 }]}
                 disabled={editLabSaving}
-                onPress={async () => {
-                  setEditLabSaving(true);
-                  const result = await updateUserProfile({
-                    practiceName: editLabName,
-                    practiceAddress: editLabAddress,
-                    practicePhone: editLabPhone,
-                    email: editLabEmail,
-                  });
-                  setEditLabSaving(false);
-                  if (result.success) {
-                    if (Platform.OS !== "web") {
-                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    }
-                    setShowEditLab(false);
-                  } else {
-                    Alert.alert("Error", result.error || "Failed to save changes");
-                  }
-                }}
+                onPress={handleSaveLab}
               >
-                <Text style={styles.sendBtnText}>{editLabSaving ? "Saving..." : "Save Changes"}</Text>
+                <Text style={styles.sendBtnText}>{editLabSaving ? "Saving..." : currentUserData?.practiceName ? "Save Changes" : "Create Lab"}</Text>
               </Pressable>
             </View>
           </View>
@@ -1444,10 +1361,11 @@ export default function SettingsScreen() {
                         { text: "No", style: "cancel" },
                         {
                           text: "Yes, Send Invite",
-                          onPress: () => {
-                            const result = sendLabInvite(addUserSelected!.username, addUserSelected!.email, addUserRole);
+                          onPress: async () => {
+                            const result = await sendLabInvite(addUserSelected!.username, addUserSelected!.email, addUserRole);
                             if (result.success) {
                               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                              Alert.alert("Invitation Sent", `An invitation has been sent to ${addUserSelected!.username}. They will need to accept it in their notifications.`);
                               setShowAddUserModal(false);
                               setAddUserSearch("");
                               setAddUserSelected(null);

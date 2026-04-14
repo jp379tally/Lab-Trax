@@ -14,7 +14,6 @@ import {
   KeyboardAvoidingView,
   Share,
   Linking,
-  useWindowDimensions,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -32,14 +31,53 @@ import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { logAudit } from "@/lib/audit";
 
+function deriveDisplayInitials(input?: {
+  firstName?: string | null;
+  lastName?: string | null;
+  label?: string | null;
+}) {
+  const firstInitial = input?.firstName?.trim()?.[0];
+  const lastInitial = input?.lastName?.trim()?.[0];
+  if (firstInitial && lastInitial) {
+    return `${firstInitial}${lastInitial}`.toUpperCase();
+  }
+
+  const normalizedLabel = input?.label?.trim() || "";
+  if (!normalizedLabel) {
+    return "??";
+  }
+
+  const parts = normalizedLabel
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+  }
+
+  const compactLabel = normalizedLabel.replace(/[^A-Za-z0-9]/g, "");
+  if (compactLabel.length >= 2) {
+    return `${compactLabel[0]}${compactLabel[1]}`.toUpperCase();
+  }
+
+  return compactLabel[0]?.toUpperCase() || "??";
+}
+
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification } = useApp();
-  const { currentUser, userType } = useAuth();
-  const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
+  const { currentUser, userType, registeredUsers } = useAuth();
+  const currentRegisteredUser = registeredUsers.find(
+    (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
+  );
+  const userInitials = deriveDisplayInitials({
+    firstName: currentRegisteredUser?.firstName,
+    lastName: currentRegisteredUser?.lastName,
+    label: currentRegisteredUser?.username || currentUser,
+  });
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -956,7 +994,7 @@ export default function CaseDetailScreen() {
         style={[
           styles.header,
           {
-            paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12,
+            paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12,
           },
         ]}
       >
@@ -1149,6 +1187,22 @@ export default function CaseDetailScreen() {
             <View style={styles.notesCard}>
               <Text style={styles.notesLabel}>Notes</Text>
               {noteEntries.length > 0 ? noteEntries.map((entry) => (
+                (() => {
+                  const matchingRegisteredUser = entry.user
+                    ? registeredUsers.find(
+                        (user) =>
+                          user.id === entry.user ||
+                          user.username?.toLowerCase() === entry.user.toLowerCase()
+                      )
+                    : null;
+                  const entryInitials = entry.user
+                    ? deriveDisplayInitials({
+                        firstName: matchingRegisteredUser?.firstName,
+                        lastName: matchingRegisteredUser?.lastName,
+                        label: matchingRegisteredUser?.username || entry.user,
+                      })
+                    : "";
+                  return (
                 <View key={entry.id} style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 8, gap: 10 }}>
                   <View style={{ minWidth: 70 }}>
                     <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary }}>
@@ -1163,10 +1217,12 @@ export default function CaseDetailScreen() {
                   </Text>
                   {entry.user ? (
                     <View style={{ backgroundColor: "rgba(0,0,0,0.06)", borderRadius: 10, paddingHorizontal: 6, paddingVertical: 2, marginLeft: 4 }}>
-                      <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: Colors.light.textSecondary }}>{entry.user}</Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: Colors.light.textSecondary }}>{entryInitials}</Text>
                     </View>
                   ) : null}
                 </View>
+                  );
+                })()
               )) : (
                 <Text style={styles.notesText}>{caseItem.notes}</Text>
               )}
@@ -1239,11 +1295,26 @@ export default function CaseDetailScreen() {
               dotColor = "#7C3AED";
             }
 
+            const matchingRegisteredUser = entry.user
+              ? registeredUsers.find(
+                  (user) =>
+                    user.id === entry.user ||
+                    user.username?.toLowerCase() === entry.user.toLowerCase()
+                )
+              : null;
             const entryUserName = entry.user
-              ? (users.find((u) => u.id === entry.user || u.name === entry.user)?.name || entry.user)
+              ? (
+                  users.find((u) => u.id === entry.user || u.name === entry.user)?.name ||
+                  matchingRegisteredUser?.username ||
+                  entry.user
+                )
               : "";
-            const userInitials = entryUserName
-              ? entryUserName.split(" ").map((w: string) => w.charAt(0).toUpperCase()).join("").slice(0, 2)
+            const entryUserInitials = entryUserName
+              ? deriveDisplayInitials({
+                  firstName: matchingRegisteredUser?.firstName,
+                  lastName: matchingRegisteredUser?.lastName,
+                  label: entryUserName,
+                })
               : (isStation ? "" : (role === "admin" ? "A" : "U"));
 
             return (
@@ -1255,8 +1326,8 @@ export default function CaseDetailScreen() {
                       { backgroundColor: dotColor, justifyContent: "center", alignItems: "center" },
                     ]}
                   >
-                    {userInitials ? (
-                      <Text style={{ fontSize: 8, fontFamily: "Inter_700Bold", color: "#FFF" }}>{userInitials}</Text>
+                    {entryUserInitials ? (
+                      <Text style={{ fontSize: 8, fontFamily: "Inter_700Bold", color: "#FFF" }}>{entryUserInitials}</Text>
                     ) : (
                       <Ionicons name="navigate" size={10} color="#FFF" />
                     )}
@@ -1277,7 +1348,7 @@ export default function CaseDetailScreen() {
                         </Text>
                         {entry.user && (
                           <View style={styles.initialsChip}>
-                            <Text style={styles.initialsText}>{entry.user}</Text>
+                            <Text style={styles.initialsText}>{entryUserInitials}</Text>
                           </View>
                         )}
                       </View>
@@ -1330,7 +1401,7 @@ export default function CaseDetailScreen() {
                         </Text>
                         {entry.user && (
                           <View style={styles.initialsChip}>
-                            <Text style={styles.initialsText}>{entry.user}</Text>
+                            <Text style={styles.initialsText}>{entryUserInitials}</Text>
                           </View>
                         )}
                         {(isInvoice && isAdmin) && (
@@ -1385,7 +1456,7 @@ export default function CaseDetailScreen() {
                         </Text>
                         {entry.user && (
                           <View style={styles.initialsChip}>
-                            <Text style={styles.initialsText}>{entry.user}</Text>
+                            <Text style={styles.initialsText}>{entryUserInitials}</Text>
                           </View>
                         )}
                         {isPhoto && entry.imageUri && (
@@ -2221,20 +2292,6 @@ export default function CaseDetailScreen() {
                     <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
                   </Pressable>
                 ))}
-                <Pressable
-                  onPress={() => setShowAddItemModal(false)}
-                  style={({ pressed }) => ({
-                    marginTop: 12,
-                    paddingVertical: 14,
-                    borderRadius: 14,
-                    alignItems: "center" as const,
-                    backgroundColor: pressed ? "#F1F5F9" : "#F8FAFC",
-                    borderWidth: 1,
-                    borderColor: "#E2E8F0",
-                  })}
-                >
-                  <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary }}>Cancel</Text>
-                </Pressable>
               </View>
             )}
 
@@ -3414,7 +3471,7 @@ export default function CaseDetailScreen() {
 
       <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
             <Pressable onPress={() => setShowBarcodeScanner(false)} style={{ padding: 8 }}>
               <Ionicons name="close" size={24} color="#FFF" />
@@ -3489,7 +3546,7 @@ export default function CaseDetailScreen() {
         onRequestClose={() => setFullScreenPhoto(null)}
       >
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.95)" }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top + 8, paddingHorizontal: 16, paddingBottom: 12, flexDirection: "row", justifyContent: "flex-end" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 8, paddingHorizontal: 16, paddingBottom: 12, flexDirection: "row", justifyContent: "flex-end" }}>
             <Pressable onPress={() => setFullScreenPhoto(null)} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center" }}>
               <Ionicons name="close" size={24} color="#FFF" />
             </Pressable>

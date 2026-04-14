@@ -11,7 +11,6 @@ import {
   Modal,
   Alert,
   ActivityIndicator,
-  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather } from "@expo/vector-icons";
@@ -25,13 +24,40 @@ import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, MATE
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 
+function deriveDisplayInitials(input?: {
+  firstName?: string | null;
+  lastName?: string | null;
+  label?: string | null;
+}) {
+  const firstInitial = input?.firstName?.trim()?.[0];
+  const lastInitial = input?.lastName?.trim()?.[0];
+  if (firstInitial && lastInitial) {
+    return `${firstInitial}${lastInitial}`.toUpperCase();
+  }
+
+  const normalizedLabel = input?.label?.trim() || "";
+  if (!normalizedLabel) {
+    return "??";
+  }
+
+  const parts = normalizedLabel
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+  }
+
+  return normalizedLabel.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "??";
+}
+
 export default function CasesScreen() {
   const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, refreshCases } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const [companyLogo, setCompanyLogo] = useState<string | null>(null);
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -48,7 +74,14 @@ export default function CasesScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [invoiceCase, setInvoiceCase] = useState<LabCase | null>(null);
   const isAdmin = role === "admin";
-  const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
+  const currentRegisteredUser = registeredUsers.find(
+    (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
+  );
+  const userInitials = deriveDisplayInitials({
+    firstName: currentRegisteredUser?.firstName,
+    lastName: currentRegisteredUser?.lastName,
+    label: currentRegisteredUser?.username || currentUser,
+  });
 
   function getCaseInvoice(caseItem: LabCase): Invoice {
     if (caseItem.invoiceId) {
@@ -280,8 +313,7 @@ export default function CasesScreen() {
         style={[
           styles.header,
           {
-            paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12,
-            ...(isDesktop ? { paddingHorizontal: 32 } : {}),
+            paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12,
           },
         ]}
       >
@@ -318,7 +350,7 @@ export default function CasesScreen() {
               style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
               onPress={async () => {
                 setRefreshing(true);
-                await refreshCases(true);
+                await refreshCases();
                 setRefreshing(false);
               }}
             >
@@ -406,13 +438,13 @@ export default function CasesScreen() {
         renderItem={renderCaseItem}
         contentContainerStyle={[
           styles.listContent,
-          { paddingBottom: isDesktop ? 32 : Platform.OS === "web" ? 84 + 16 : 100, ...(isDesktop ? { paddingHorizontal: 32 } : {}) },
+          { paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 },
         ]}
         showsVerticalScrollIndicator={false}
         refreshing={refreshing}
         onRefresh={async () => {
           setRefreshing(true);
-          await refreshCases(true);
+          await refreshCases();
           setRefreshing(false);
         }}
         ListEmptyComponent={
@@ -435,7 +467,7 @@ export default function CasesScreen() {
         onRequestClose={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }}
       >
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan to Locate Case</Text>
             <Pressable onPress={() => { setShowBarcodeLocate(false); setBarcodeLocateScanned(false); }}>
               <Ionicons name="close" size={28} color="#FFF" />
@@ -499,8 +531,7 @@ export default function CasesScreen() {
                     key={station.id}
                     onPress={() => {
                       if (!isCurrent && locateCaseId) {
-                        const initials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
-                        updateCaseStatus(locateCaseId, station.id, initials);
+                        updateCaseStatus(locateCaseId, station.id, userInitials);
                         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                         setLocateCaseId(null);
                       }

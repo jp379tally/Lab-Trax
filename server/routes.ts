@@ -1,12 +1,14 @@
 import type { Express } from "express";
 import { createServer, type Server } from "node:http";
 import { randomBytes } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import * as path from "node:path";
 import OpenAI from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "./db";
-import { users, labCases, organizations, labMemberships } from "../shared/schema";
-import { eq, and, inArray, isNull } from "drizzle-orm";
+import { users, labCases, organizations, organizationMemberships } from "../shared/schema";
+import { eq, and, inArray } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
 import { requireAuth } from "./middleware/auth";
@@ -49,6 +51,113 @@ function generateResetToken(): string {
   return randomBytes(32).toString("hex");
 }
 
+function normalizeLegacyCaseAffiliationName(name?: string | null) {
+  return name?.trim().toLowerCase() || "";
+}
+
+function buildLegacyPrivateAffiliationKey(userId?: string | null) {
+  return userId ? `private:${userId}` : null;
+}
+
+function buildLegacyOrganizationAffiliationKey(organizationId?: string | null) {
+  return organizationId ? `org:${organizationId}` : null;
+}
+
+function buildLegacyLabAffiliationKey(name?: string | null) {
+  const normalizedName = normalizeLegacyCaseAffiliationName(name);
+  return normalizedName ? `lab:${normalizedName}` : null;
+}
+
+function resolveLegacyCaseAffiliationKeys(labCase: any) {
+  const keys = new Set<string>();
+
+  if (typeof labCase?.affiliationKey === "string" && labCase.affiliationKey.trim()) {
+    keys.add(labCase.affiliationKey.trim());
+  }
+
+  const legacyLabAffiliationKey = buildLegacyLabAffiliationKey(
+    typeof labCase?.affiliationName === "string" ? labCase.affiliationName : null
+  );
+  if (legacyLabAffiliationKey) {
+    keys.add(legacyLabAffiliationKey);
+  }
+
+  if (keys.size === 0) {
+    const privateAffiliationKey = buildLegacyPrivateAffiliationKey(
+      typeof labCase?.ownerId === "string" ? labCase.ownerId : null
+    );
+    if (privateAffiliationKey) {
+      keys.add(privateAffiliationKey);
+    }
+  }
+
+  return Array.from(keys);
+}
+
+type LegacyChatThread = {
+  id: string;
+  participants: string[];
+  createdAt: number;
+  updatedAt: number;
+};
+
+type LegacyChatMessage = {
+  id: string;
+  conversationId: string;
+  senderUsername: string;
+  content: string;
+  imageUri?: string;
+  timestamp: number;
+  readBy: string[];
+};
+
+type LegacyChatStore = {
+  threads: LegacyChatThread[];
+  messages: LegacyChatMessage[];
+};
+
+const legacyChatStorePath = path.join(
+  process.cwd(),
+  "server",
+  ".data",
+  "legacy-chat.json"
+);
+
+function normalizeUsernameKey(username?: string | null) {
+  return username?.trim().toLowerCase() || "";
+}
+
+function buildDirectConversationId(usernameA?: string | null, usernameB?: string | null) {
+  const normalizedUsers = [usernameA, usernameB]
+    .map((value) => normalizeUsernameKey(value))
+    .filter(Boolean)
+    .sort();
+
+  if (normalizedUsers.length < 2) {
+    return null;
+  }
+
+  return `dm:${normalizedUsers.join("::")}`;
+}
+
+async function readLegacyChatStore(): Promise<LegacyChatStore> {
+  try {
+    const raw = await readFile(legacyChatStorePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      threads: Array.isArray(parsed?.threads) ? parsed.threads : [],
+      messages: Array.isArray(parsed?.messages) ? parsed.messages : [],
+    };
+  } catch {
+    return { threads: [], messages: [] };
+  }
+}
+
+async function writeLegacyChatStore(store: LegacyChatStore) {
+  await mkdir(path.dirname(legacyChatStorePath), { recursive: true });
+  await writeFile(legacyChatStorePath, JSON.stringify(store, null, 2), "utf8");
+}
+
 const DEFAULT_USERS = [
   { username: "labadmin_demo", password: "LabTraxDemo#2026", userType: "lab", role: "admin", email: "labadmin_demo@labtrax.local", accountNumber: "LAB-001" },
   { username: "labtech_demo", password: "LabTraxDemo#2026", userType: "lab", role: "user", email: "labtech_demo@labtrax.local", accountNumber: "LAB-002" },
@@ -87,63 +196,179 @@ async function seedDefaultUsers() {
 export async function registerRoutes(app: Express): Promise<Server> {
   await seedDefaultUsers();
 
+  async function getRepairableLabDirectoryData() {
+    const allUsers = await db.select().from(users);
+    const labAdmins = allUsers.filter(
+      (user) =>
+        user.userType === "lab" &&
+        user.role === "admin" &&
+        !!user.practiceName?.trim()
+    );
+
+    const labOrganizations = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.type, "lab"));
+
+    const allLabMemberships = labOrganizations.length
+      ? await db
+          .select()
+          .from(organizationMemberships)
+          .where(
+            inArray(
+              organizationMemberships.labId,
+              labOrganizations.map((organization) => organization.id)
+            )
+          )
+      : [];
+
+    const activeMemberships = labOrganizations.length
+      ? await db
+          .select()
+          .from(organizationMemberships)
+          .where(
+            and(
+              inArray(
+                organizationMemberships.labId,
+                labOrganizations.map((organization) => organization.id)
+              ),
+              eq(organizationMemberships.status, "active")
+            )
+          )
+      : [];
+
+    const activeLabMemberIds = new Set(
+      activeMemberships.map((membership) => membership.userId)
+    );
+    const anyLabMemberIds = new Set(
+      allLabMemberships.map((membership) => membership.userId)
+    );
+
+    for (const adminUser of labAdmins) {
+      if (
+        !adminUser.id ||
+        activeLabMemberIds.has(adminUser.id) ||
+        anyLabMemberIds.has(adminUser.id)
+      ) {
+        continue;
+      }
+
+      const normalizedPracticeName = adminUser.practiceName!.trim().toLowerCase();
+      let organization =
+        labOrganizations.find(
+          (entry) =>
+            entry.createdByUserId === adminUser.id &&
+            (entry.displayName || entry.name).toLowerCase().trim() ===
+              normalizedPracticeName
+        ) ||
+        labOrganizations.find(
+          (entry) =>
+            (entry.displayName || entry.name).toLowerCase().trim() ===
+              normalizedPracticeName
+        );
+
+      if (!organization) {
+        const [createdOrganization] = await db
+          .insert(organizations)
+          .values({
+            type: "lab",
+            name: adminUser.practiceName!.trim(),
+            displayName: adminUser.practiceName!.trim(),
+            billingEmail: adminUser.email || null,
+            phone: adminUser.practicePhone || adminUser.phone || null,
+            addressLine1: adminUser.practiceAddress || null,
+            createdByUserId: adminUser.id,
+          })
+          .returning();
+
+        organization = createdOrganization;
+        labOrganizations.push(createdOrganization);
+      }
+
+      const hasActiveMembership = activeMemberships.some(
+        (membership) =>
+          membership.labId === organization.id &&
+          membership.userId === adminUser.id &&
+          membership.status === "active"
+      );
+
+      if (!hasActiveMembership) {
+        const [createdMembership] = await db
+          .insert(organizationMemberships)
+          .values({
+            labId: organization.id,
+            userId: adminUser.id,
+            role: "owner",
+            status: "active",
+            approvedByUserId: adminUser.id,
+            joinedAt: new Date(),
+          })
+          .returning();
+
+        activeMemberships.push(createdMembership);
+      }
+
+      activeLabMemberIds.add(adminUser.id);
+    }
+
+    return {
+      allUsers,
+      labOrganizations,
+      activeMemberships,
+    };
+  }
+
   app.get("/api/health", (_req, res) => {
     res.status(200).json({ ok: true, timestamp: new Date().toISOString() });
   });
 
   app.get("/api/labs/groups", async (_req, res) => {
     try {
-      const orgs = await db
-        .select()
-        .from(organizations)
-        .where(and(eq(organizations.type, "lab"), isNull(organizations.deletedAt)));
-
-      const memberships = orgs.length
-        ? await db
-            .select()
-            .from(labMemberships)
-            .where(
-              and(
-                inArray(
-                  labMemberships.labId,
-                  orgs.map((o) => o.id)
-                ),
-                eq(labMemberships.status, "active")
-              )
-            )
-        : [];
+      const { allUsers, labOrganizations, activeMemberships } =
+        await getRepairableLabDirectoryData();
 
       const memberUserIds = [
-        ...new Set(memberships.map((m) => m.userId)),
+        ...new Set(activeMemberships.map((membership) => membership.userId)),
       ];
-      const memberUsers = memberUserIds.length
-        ? await db
-            .select()
-            .from(users)
-            .where(inArray(users.id, memberUserIds))
-        : [];
+      const memberUsers = allUsers.filter((user) => memberUserIds.includes(user.id));
       const userMap = new Map(memberUsers.map((u) => [u.id, u]));
 
-      const groups = orgs.map((org) => {
-        const orgMemberships = memberships.filter(
-          (m) => m.labId === org.id
-        );
-        const adminMembership = orgMemberships.find(
-          (m) => m.role === "owner" || m.role === "admin"
-        );
-        const adminUser = adminMembership
-          ? userMap.get(adminMembership.userId)
-          : undefined;
-        return {
-          organizationId: org.id,
-          practiceName: org.displayName || org.name,
-          username: adminUser?.username || "",
-          practiceAddress: [org.addressLine1, org.city, org.state, org.zip]
-            .filter(Boolean)
-            .join(", "),
-          memberCount: orgMemberships.length,
-        };
-      });
+      const groups = labOrganizations
+        .map((organization) => {
+          const organizationMembershipsForGroup = activeMemberships.filter(
+            (membership) => membership.labId === organization.id
+          );
+          const adminMembership = organizationMembershipsForGroup.find(
+            (membership) =>
+              membership.role === "owner" || membership.role === "admin"
+          );
+          const createdByUser = organization.createdByUserId
+            ? userMap.get(organization.createdByUserId)
+            : undefined;
+          const adminUser = adminMembership
+            ? userMap.get(adminMembership.userId)
+            : createdByUser;
+
+          if (!adminUser?.username) {
+            return null;
+          }
+
+          return {
+            organizationId: organization.id,
+            practiceName: organization.displayName || organization.name,
+            username: adminUser.username,
+            practiceAddress: [
+              organization.addressLine1,
+              organization.city,
+              organization.state,
+              organization.zip,
+            ]
+              .filter(Boolean)
+              .join(", "),
+            memberCount: organizationMembershipsForGroup.length,
+          };
+        })
+        .filter(Boolean);
 
       res.json({ groups });
     } catch (error: any) {
@@ -171,24 +396,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ available: !existing });
   });
 
-  app.post("/api/legacy/cases", requireAuth, async (req, res) => {
+  app.post("/api/legacy/cases", async (req, res) => {
     try {
-      const { id, ownerId, caseData, organizationId } = req.body;
+      const { id, ownerId, caseData } = req.body;
       if (!id || !ownerId || !caseData) {
         return res.status(400).json({ error: "id, ownerId, and caseData are required" });
       }
+
+      const [existingCaseRow] = await db
+        .select()
+        .from(labCases)
+        .where(eq(labCases.id, id));
+
+      let normalizedCaseData: any;
+      try {
+        normalizedCaseData =
+          typeof caseData === "string" ? JSON.parse(caseData) : caseData;
+      } catch {
+        normalizedCaseData = null;
+      }
+
+      if (!normalizedCaseData || typeof normalizedCaseData !== "object") {
+        normalizedCaseData = { id, ownerId };
+      }
+
+      if (!normalizedCaseData.id) {
+        normalizedCaseData.id = id;
+      }
+      if (!normalizedCaseData.ownerId) {
+        normalizedCaseData.ownerId = ownerId;
+      }
+
+      if (existingCaseRow?.caseData) {
+        try {
+          const existingCaseData = JSON.parse(existingCaseRow.caseData);
+          if (
+            !normalizedCaseData.affiliationKey &&
+            existingCaseData?.affiliationKey
+          ) {
+            normalizedCaseData.affiliationKey = existingCaseData.affiliationKey;
+          }
+          if (
+            (normalizedCaseData.affiliationName === undefined ||
+              normalizedCaseData.affiliationName === null ||
+              normalizedCaseData.affiliationName === "") &&
+            existingCaseData?.affiliationName
+          ) {
+            normalizedCaseData.affiliationName = existingCaseData.affiliationName;
+          }
+        } catch {
+          // Ignore malformed legacy payloads and overwrite them with the incoming case.
+        }
+      }
+
+      const serializedCaseData = JSON.stringify(normalizedCaseData);
       await db.insert(labCases).values({
         id,
-        ownerId,
-        organizationId: organizationId || null,
-        caseData: typeof caseData === "string" ? caseData : JSON.stringify(caseData),
+        ownerId: normalizedCaseData.ownerId || ownerId,
+        caseData: serializedCaseData,
         updatedAt: new Date(),
       }).onConflictDoUpdate({
         target: labCases.id,
         set: {
-          ownerId,
-          organizationId: organizationId || null,
-          caseData: typeof caseData === "string" ? caseData : JSON.stringify(caseData),
+          ownerId: normalizedCaseData.ownerId || ownerId,
+          caseData: serializedCaseData,
           updatedAt: new Date(),
         },
       });
@@ -199,41 +470,208 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/legacy/cases", requireAuth, async (req, res) => {
+  app.get("/api/legacy/cases", async (req, res) => {
     try {
-      const organizationIdParam = req.query.organizationId as string;
-      const ownerIdsParam = req.query.ownerIds as string;
+      const scopeKeysParam =
+        typeof req.query.scopeKeys === "string" ? req.query.scopeKeys : "";
+      const viewerUserId =
+        typeof req.query.viewerUserId === "string" ? req.query.viewerUserId : "";
 
-      let rows: any[] = [];
+      if (scopeKeysParam) {
+        const requestedScopeKeys = new Set(
+          scopeKeysParam
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean)
+        );
+        if (!viewerUserId || requestedScopeKeys.size === 0) {
+          return res.json({ cases: [] });
+        }
 
-      if (organizationIdParam) {
-        // Fetch all cases belonging to this org (even from departed members)
-        const memberships = await db
-          .select({ userId: labMemberships.userId })
-          .from(labMemberships)
-          .where(eq(labMemberships.labId, organizationIdParam));
-        const memberIds = memberships.map(m => m.userId);
+        const rows = await db.select().from(labCases);
+        const parsedRows = rows
+          .map((row) => {
+            try {
+              const parsedCase = JSON.parse(row.caseData);
+              if (!parsedCase || typeof parsedCase !== "object") {
+                return null;
+              }
+              return {
+                row,
+                caseData: {
+                  ...parsedCase,
+                  ownerId:
+                    typeof parsedCase.ownerId === "string"
+                      ? parsedCase.ownerId
+                      : row.ownerId,
+                },
+              };
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean) as Array<{
+          row: typeof rows[number];
+          caseData: any;
+        }>;
 
-        // Cases tagged with organizationId OR cases owned by any member
-        const byOrg = await db.select().from(labCases).where(eq(labCases.organizationId, organizationIdParam));
-        const byOwner = memberIds.length > 0
-          ? await db.select().from(labCases).where(inArray(labCases.ownerId, memberIds))
+        const ownerIds = [
+          ...new Set(
+            parsedRows
+              .map((entry) => entry.caseData.ownerId)
+              .filter((value): value is string => !!value)
+          ),
+        ];
+
+        const activeMembershipRows = ownerIds.length
+          ? await db
+              .select()
+              .from(organizationMemberships)
+              .where(
+                and(
+                  inArray(organizationMemberships.userId, ownerIds),
+                  eq(organizationMemberships.status, "active")
+                )
+              )
           : [];
 
-        // Merge, deduplicate by id
-        const seen = new Set<string>();
-        for (const r of [...byOrg, ...byOwner]) {
-          if (!seen.has(r.id)) { seen.add(r.id); rows.push(r); }
+        const organizationIds = [
+          ...new Set(
+            activeMembershipRows
+              .map((membership) => membership.labId)
+              .filter(Boolean)
+          ),
+        ];
+        const organizationRows = organizationIds.length
+          ? await db
+              .select()
+              .from(organizations)
+              .where(inArray(organizations.id, organizationIds))
+          : [];
+
+        const membershipsByUserId = new Map<string, typeof activeMembershipRows>();
+        for (const membership of activeMembershipRows) {
+          const currentMemberships =
+            membershipsByUserId.get(membership.userId) ?? [];
+          currentMemberships.push(membership);
+          membershipsByUserId.set(membership.userId, currentMemberships);
         }
-      } else if (ownerIdsParam) {
-        const ownerIds = ownerIdsParam.split(",").filter(Boolean);
-        if (ownerIds.length > 0) {
-          rows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
+        const organizationsById = new Map(
+          organizationRows.map((organization) => [organization.id, organization])
+        );
+
+        const repairedRows = new Map<
+          string,
+          { ownerId: string; caseData: string }
+        >();
+        const visibleCases = parsedRows
+          .map(({ row, caseData }) => {
+            const ownerUserId =
+              typeof caseData.ownerId === "string" ? caseData.ownerId : row.ownerId;
+            if (!ownerUserId) {
+              return null;
+            }
+
+            let resolvedCase = { ...caseData, ownerId: ownerUserId };
+            const hasExplicitAffiliation =
+              !!resolvedCase.affiliationKey || !!resolvedCase.affiliationName;
+
+            if (!hasExplicitAffiliation) {
+              const caseCreatedAt =
+                typeof resolvedCase.createdAt === "number"
+                  ? resolvedCase.createdAt
+                  : Number(resolvedCase.createdAt) || 0;
+              const ownerMemberships = membershipsByUserId.get(ownerUserId) ?? [];
+
+              for (const membership of ownerMemberships) {
+                const membershipJoinedAt = membership.joinedAt
+                  ? new Date(membership.joinedAt).getTime()
+                  : 0;
+                if (
+                  caseCreatedAt > 0 &&
+                  membershipJoinedAt > 0 &&
+                  caseCreatedAt + 60000 < membershipJoinedAt
+                ) {
+                  continue;
+                }
+
+                const organization = organizationsById.get(membership.labId);
+                if (!organization || organization.type !== "lab") {
+                  continue;
+                }
+                const organizationAffiliationKey =
+                  buildLegacyOrganizationAffiliationKey(membership.labId);
+                const legacyLabAffiliationKey = buildLegacyLabAffiliationKey(
+                  organization.displayName || organization.name || null
+                );
+
+                if (
+                  !requestedScopeKeys.has(organizationAffiliationKey || "") &&
+                  !(
+                    legacyLabAffiliationKey &&
+                    requestedScopeKeys.has(legacyLabAffiliationKey)
+                  )
+                ) {
+                  continue;
+                }
+
+                resolvedCase = {
+                  ...resolvedCase,
+                  affiliationKey: organizationAffiliationKey,
+                  affiliationName:
+                    organization.displayName || organization.name || null,
+                };
+                repairedRows.set(row.id, {
+                  ownerId: ownerUserId,
+                  caseData: JSON.stringify(resolvedCase),
+                });
+                break;
+              }
+            }
+
+            const caseAffiliationKeys = resolveLegacyCaseAffiliationKeys(resolvedCase);
+            const isVisible = caseAffiliationKeys.some((key) =>
+              requestedScopeKeys.has(key)
+            );
+
+            return isVisible ? resolvedCase : null;
+          })
+          .filter(Boolean)
+          .sort(
+            (a: any, b: any) =>
+              (Number(b.updatedAt) || Number(b.createdAt) || 0) -
+              (Number(a.updatedAt) || Number(a.createdAt) || 0)
+          );
+
+        for (const [caseId, repaired] of repairedRows.entries()) {
+          await db
+            .insert(labCases)
+            .values({
+              id: caseId,
+              ownerId: repaired.ownerId,
+              caseData: repaired.caseData,
+              updatedAt: new Date(),
+            })
+            .onConflictDoUpdate({
+              target: labCases.id,
+              set: {
+                ownerId: repaired.ownerId,
+                caseData: repaired.caseData,
+                updatedAt: new Date(),
+              },
+            });
         }
-      } else {
-        return res.json({ cases: [] });
+
+        return res.json({ cases: visibleCases });
       }
 
+      const ownerIdsParam = req.query.ownerIds as string;
+      if (!ownerIdsParam) {
+        return res.json({ cases: [] });
+      }
+      const ownerIds = ownerIdsParam.split(",").filter(Boolean);
+      if (ownerIds.length === 0) return res.json({ cases: [] });
+      const rows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
       const cases = rows.map(r => {
         try { return JSON.parse(r.caseData); } catch { return null; }
       }).filter(Boolean);
@@ -244,7 +682,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/legacy/cases/:caseId", requireAuth, async (req, res) => {
+  app.delete("/api/legacy/cases/:caseId", async (req, res) => {
     try {
       const { caseId } = req.params;
       await db.delete(labCases).where(eq(labCases.id, caseId));
@@ -252,6 +690,209 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Legacy delete case error:", error?.message || error);
       res.status(500).json({ error: "Failed to delete case" });
+    }
+  });
+
+  app.get("/api/legacy/chat", requireAuth, async (req, res) => {
+    try {
+      const currentUsername = (req as any).user?.username;
+      const normalizedCurrentUsername = normalizeUsernameKey(currentUsername);
+      if (!normalizedCurrentUsername) {
+        return res.json({ conversations: [], messages: [] });
+      }
+
+      const store = await readLegacyChatStore();
+      const relevantThreads = store.threads.filter((thread) =>
+        thread.participants.some(
+          (participant) =>
+            normalizeUsernameKey(participant) === normalizedCurrentUsername
+        )
+      );
+      const relevantConversationIds = new Set(relevantThreads.map((thread) => thread.id));
+      const relevantMessages = store.messages.filter((message) =>
+        relevantConversationIds.has(message.conversationId)
+      );
+
+      const conversations = relevantThreads
+        .map((thread) => {
+          const otherParticipant =
+            thread.participants.find(
+              (participant) =>
+                normalizeUsernameKey(participant) !== normalizedCurrentUsername
+            ) || "Unknown User";
+          const threadMessages = relevantMessages
+            .filter((message) => message.conversationId === thread.id)
+            .sort((a, b) => a.timestamp - b.timestamp);
+          const lastMessage = threadMessages[threadMessages.length - 1];
+          const unreadCount = threadMessages.filter(
+            (message) =>
+              normalizeUsernameKey(message.senderUsername) !==
+                normalizedCurrentUsername &&
+              !message.readBy.includes(normalizedCurrentUsername)
+          ).length;
+
+          return {
+            id: thread.id,
+            clientId: thread.id,
+            clientName: otherParticipant,
+            lastMessage: lastMessage
+              ? lastMessage.imageUri
+                ? "Photo"
+                : lastMessage.content
+              : "",
+            lastMessageTime:
+              lastMessage?.timestamp || thread.updatedAt || thread.createdAt,
+            unreadCount,
+          };
+        })
+        .sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+
+      const messages = relevantMessages
+        .map((message) => ({
+          id: message.id,
+          conversationId: message.conversationId,
+          senderId: message.senderUsername,
+          senderType:
+            normalizeUsernameKey(message.senderUsername) ===
+            normalizedCurrentUsername
+              ? "lab"
+              : "office",
+          content: message.content,
+          imageUri: message.imageUri,
+          timestamp: message.timestamp,
+          read: message.readBy.includes(normalizedCurrentUsername),
+        }))
+        .sort((a, b) => a.timestamp - b.timestamp);
+
+      res.json({ conversations, messages });
+    } catch (error: any) {
+      console.error("Legacy get chat error:", error?.message || error);
+      res.status(500).json({ error: "Failed to fetch messages" });
+    }
+  });
+
+  app.post("/api/legacy/chat/send", requireAuth, async (req, res) => {
+    try {
+      const currentUsername = (req as any).user?.username;
+      const normalizedCurrentUsername = normalizeUsernameKey(currentUsername);
+      const targetUsername =
+        typeof req.body?.targetUsername === "string" ? req.body.targetUsername.trim() : "";
+      const content =
+        typeof req.body?.content === "string" ? req.body.content.trim() : "";
+      const imageUri =
+        typeof req.body?.imageUri === "string" ? req.body.imageUri.trim() : undefined;
+
+      if (!normalizedCurrentUsername || !targetUsername) {
+        return res.status(400).json({ error: "A target user is required." });
+      }
+
+      if (normalizeUsernameKey(targetUsername) === normalizedCurrentUsername) {
+        return res.status(400).json({ error: "You cannot message yourself." });
+      }
+
+      if (!content && !imageUri) {
+        return res.status(400).json({ error: "A message or image is required." });
+      }
+
+      const allUsers = await db.select().from(users);
+      const targetUser = allUsers.find(
+        (user) =>
+          normalizeUsernameKey(user.username) === normalizeUsernameKey(targetUsername)
+      );
+
+      if (!targetUser?.username) {
+        return res.status(404).json({ error: "Target user not found." });
+      }
+
+      const conversationId =
+        buildDirectConversationId(currentUsername, targetUser.username) ||
+        buildDirectConversationId(currentUsername, targetUsername);
+      if (!conversationId) {
+        return res.status(400).json({ error: "Could not create a conversation." });
+      }
+
+      const store = await readLegacyChatStore();
+      const now = Date.now();
+      const existingThread = store.threads.find((thread) => thread.id === conversationId);
+      const participants = [
+        currentUsername,
+        targetUser.username,
+      ].filter((value, index, values) => values.indexOf(value) === index);
+
+      if (existingThread) {
+        existingThread.participants = participants;
+        existingThread.updatedAt = now;
+      } else {
+        store.threads.push({
+          id: conversationId,
+          participants,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      const message: LegacyChatMessage = {
+        id: randomBytes(16).toString("hex"),
+        conversationId,
+        senderUsername: currentUsername,
+        content,
+        ...(imageUri ? { imageUri } : {}),
+        timestamp: now,
+        readBy: [normalizedCurrentUsername],
+      };
+      store.messages.push(message);
+
+      await writeLegacyChatStore(store);
+      res.json({ success: true, conversationId, messageId: message.id });
+    } catch (error: any) {
+      console.error("Legacy send chat error:", error?.message || error);
+      res.status(500).json({ error: "Failed to send message" });
+    }
+  });
+
+  app.post("/api/legacy/chat/read", requireAuth, async (req, res) => {
+    try {
+      const currentUsername = (req as any).user?.username;
+      const normalizedCurrentUsername = normalizeUsernameKey(currentUsername);
+      const conversationId =
+        typeof req.body?.conversationId === "string"
+          ? req.body.conversationId.trim()
+          : "";
+
+      if (!normalizedCurrentUsername || !conversationId) {
+        return res.status(400).json({ error: "A conversation id is required." });
+      }
+
+      const store = await readLegacyChatStore();
+      const thread = store.threads.find((entry) => entry.id === conversationId);
+      const isParticipant = thread?.participants.some(
+        (participant) => normalizeUsernameKey(participant) === normalizedCurrentUsername
+      );
+
+      if (!thread || !isParticipant) {
+        return res.status(404).json({ error: "Conversation not found." });
+      }
+
+      let changed = false;
+      for (const message of store.messages) {
+        if (
+          message.conversationId === conversationId &&
+          normalizeUsernameKey(message.senderUsername) !== normalizedCurrentUsername &&
+          !message.readBy.includes(normalizedCurrentUsername)
+        ) {
+          message.readBy.push(normalizedCurrentUsername);
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        await writeLegacyChatStore(store);
+      }
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Legacy read chat error:", error?.message || error);
+      res.status(500).json({ error: "Failed to update message read status" });
     }
   });
 
@@ -476,7 +1117,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/send-case-update-text", requireAuth, async (req, res) => {
+  app.post("/api/send-case-update-text", async (req, res) => {
     const { providerPhone, caseNumber, patientName, status, message } = req.body;
     if (!providerPhone || !caseNumber) return res.status(400).json({ error: "Provider phone and case number required" });
 
@@ -504,7 +1145,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/analyze-prescription", requireAuth, async (req, res) => {
+  app.post("/api/analyze-prescription", async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
@@ -601,7 +1242,7 @@ Important rules:
     }
   });
 
-  app.post("/api/crop-document", requireAuth, async (req, res) => {
+  app.post("/api/crop-document", async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
@@ -665,79 +1306,7 @@ Important rules:
     } catch { return res.status(500).json({ error: "Unable to process this image." }); }
   });
 
-  app.post("/api/detect-document", requireAuth, async (req, res) => {
-    try {
-      const openai = getOpenAIClient();
-      if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
-
-      const { imageBase64 } = req.body;
-      if (!imageBase64) return res.status(400).json({ error: "No image provided" });
-
-      let base64Data: string;
-      let rotatedDataUrl: string;
-
-      try {
-        base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-        const rawBuffer = Buffer.from(base64Data, "base64");
-        if (rawBuffer.length < 100) return res.status(400).json({ error: "Unable to process this image." });
-        const rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 85 }).toBuffer();
-        rotatedDataUrl = `data:image/jpeg;base64,${rotatedBuffer.toString("base64")}`;
-      } catch { return res.status(400).json({ error: "Unable to process this image." }); }
-
-      try {
-        const response = await openai.chat.completions.create({
-          model: "gpt-4o",
-          messages: [
-            { role: "system", content: `You are a professional document scanner. Detect the document in the photo and return TIGHT crop coordinates as percentages (0-100). Return ONLY valid JSON: { "documentDetected": true, "crop": { "left": 15, "top": 8, "right": 85, "bottom": 92 }, "documentType": "prescription" }. If no document found: { "documentDetected": false }` },
-            { role: "user", content: [
-              { type: "text", text: "Detect the document edges in this photo." },
-              { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } },
-            ]},
-          ],
-          max_tokens: 200,
-        });
-        const text = response.choices?.[0]?.message?.content || "";
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const result = JSON.parse(jsonMatch[0]);
-          return res.json(result);
-        }
-        return res.json({ documentDetected: false });
-      } catch { return res.json({ documentDetected: false }); }
-    } catch { return res.status(500).json({ error: "Unable to process this image." }); }
-  });
-
-  app.post("/api/apply-crop", requireAuth, async (req, res) => {
-    try {
-      const { imageBase64, crop } = req.body;
-      if (!imageBase64 || !crop) return res.status(400).json({ error: "Image and crop coordinates required" });
-
-      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-      const rawBuffer = Buffer.from(base64Data, "base64");
-      const rotatedBuffer = await sharp(rawBuffer).rotate().jpeg({ quality: 95 }).toBuffer();
-      const metadata = await sharp(rotatedBuffer).metadata();
-      const imgW = metadata.width || 1;
-      const imgH = metadata.height || 1;
-
-      const left = Math.max(0, Math.round((crop.left / 100) * imgW));
-      const top = Math.max(0, Math.round((crop.top / 100) * imgH));
-      const right = Math.min(imgW, Math.round((crop.right / 100) * imgW));
-      const bottom = Math.min(imgH, Math.round((crop.bottom / 100) * imgH));
-      const cropW = Math.max(1, right - left);
-      const cropH = Math.max(1, bottom - top);
-
-      const croppedBuffer = await sharp(rotatedBuffer)
-        .extract({ left, top, width: cropW, height: cropH })
-        .sharpen({ sigma: 1.2 })
-        .normalize()
-        .jpeg({ quality: 92 })
-        .toBuffer();
-
-      return res.json({ croppedImageBase64: `data:image/jpeg;base64,${croppedBuffer.toString("base64")}` });
-    } catch { return res.status(500).json({ error: "Unable to crop image." }); }
-  });
-
-  app.post("/api/document-to-pdf", requireAuth, async (req, res) => {
+  app.post("/api/document-to-pdf", async (req, res) => {
     try {
       const { images } = req.body;
       if (!images || !Array.isArray(images) || images.length === 0) return res.status(400).json({ error: "No images provided" });
@@ -806,7 +1375,7 @@ Important rules:
     } catch (err: any) { res.status(500).json({ error: "PDF generation failed" }); }
   });
 
-  app.post("/api/smile-process", requireAuth, async (req, res) => {
+  app.post("/api/smile-process", async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
@@ -839,34 +1408,9 @@ Important rules:
       const allUsers = await db.select().from(users);
       const matches = allUsers.filter(u => u.email && u.email.toLowerCase() === email.toLowerCase());
       if (matches.length === 0) return res.json({ success: true, deleted: 0, message: "No users found" });
-      const { sql } = await import("drizzle-orm");
       let deletedCount = 0;
       for (const u of matches) {
-        await db.transaction(async (tx) => {
-          const uid = u.id;
-          await tx.execute(sql`DELETE FROM user_sessions WHERE user_id = ${uid}`);
-          await tx.execute(sql`DELETE FROM lab_cases WHERE owner_id = ${uid}`);
-          await tx.execute(sql`DELETE FROM lab_memberships WHERE user_id = ${uid}`);
-          await tx.execute(sql`DELETE FROM join_requests WHERE user_id = ${uid}`);
-          await tx.execute(sql`DELETE FROM lab_invites WHERE created_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE join_requests SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${uid}`);
-          await tx.execute(sql`DELETE FROM organization_connections WHERE requested_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE organization_connections SET approved_by_user_id = NULL WHERE approved_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE organizations SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE organizations SET deleted_by_user_id = NULL WHERE deleted_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE cases SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE case_notes SET author_user_id = NULL WHERE author_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE case_attachments SET uploaded_by_user_id = NULL WHERE uploaded_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE case_locations SET moved_by_user_id = NULL WHERE moved_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE case_submission_queue SET submitted_by_user_id = NULL WHERE submitted_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE case_submission_queue SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE case_events SET actor_user_id = NULL WHERE actor_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE invoices SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE invoices SET updated_by_user_id = NULL WHERE updated_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE payments SET recorded_by_user_id = NULL WHERE recorded_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE audit_logs SET user_id = NULL WHERE user_id = ${uid}`);
-          await tx.delete(users).where(eq(users.id, uid));
-        });
+        await db.delete(users).where(eq(users.id, u.id));
         deletedCount++;
       }
       res.json({ success: true, deleted: deletedCount, found: matches.length });

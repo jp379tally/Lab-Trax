@@ -10,11 +10,38 @@ import * as path from "path";
 
 const app = express();
 const log = console.log;
+const DEMO_ACCOUNTS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
+const SENSITIVE_LOG_KEYS = new Set([
+  "accessToken",
+  "refreshToken",
+  "password",
+  "token",
+  "demoCode",
+  "demoResetLink",
+  "adminKey",
+]);
 
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
   }
+}
+
+function redactSensitivePayload(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSensitivePayload(entry));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        SENSITIVE_LOG_KEYS.has(key) ? "[REDACTED]" : redactSensitivePayload(entry),
+      ]),
+    );
+  }
+
+  return value;
 }
 
 function setupCors(app: express.Application) {
@@ -88,13 +115,15 @@ function setupRequestLogging(app: express.Application) {
 
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        logLine += ` :: ${JSON.stringify(redactSensitivePayload(capturedJsonResponse))}`;
       }
 
       if (logLine.length > 80) {
         logLine = logLine.slice(0, 79) + "…";
       }
 
+      logLine = logLine.replace("â€¦", "...");
+      logLine = logLine.replace(/[^\x20-\x7E]+$/, "...");
       log(logLine);
     });
 
@@ -319,9 +348,13 @@ function setupSecurityHeaders(app: express.Application) {
 }
 
 async function seedDemoAccount() {
+  if (!DEMO_ACCOUNTS_ENABLED) {
+    return;
+  }
+
   const accounts = [
-    { username: "phillipsjohnpaul@yahoo.com", password: "Jp#14482726", email: "phillipsjohnpaul@yahoo.com", userType: "lab", role: "admin" },
-    { username: "test@allieddl.com", password: "Test1234", email: "test@allieddl.com", userType: "lab", role: "admin" },
+    { username: "demo_lab_owner", password: "LabTraxDemo#2026", email: "demo_lab_owner@labtrax.local", userType: "lab", role: "admin" },
+    { username: "demo_provider_admin", password: "LabTraxDemo#2026", email: "demo_provider_admin@labtrax.local", userType: "provider", role: "admin" },
   ];
   for (const acct of accounts) {
     try {

@@ -1,19 +1,18 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  StyleSheet,
-  View,
-  Text,
-  Pressable,
-  Platform,
-  Modal,
-  ScrollView,
-  TextInput,
   Alert,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Colors from "@/constants/colors";
@@ -42,15 +41,17 @@ interface LabFileDropZoneProps {
   isFocused?: boolean;
 }
 
-export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAdmin, isFocused = true }: LabFileDropZoneProps) {
-  const insets = useSafeAreaInsets();
+export function LabFileDropZone({
+  cases,
+  clients,
+  currentUser,
+  onAddToCase,
+  isAdmin,
+  isFocused = true,
+}: LabFileDropZoneProps) {
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const dragCounterRef = useRef(0);
-  const barRef = useRef<View>(null);
-  const pendingFilesRef = useRef<PendingFile[]>([]);
-
   const [selectedFile, setSelectedFile] = useState<PendingFile | null>(null);
   const [providerSearch, setProviderSearch] = useState("");
   const [selectedProvider, setSelectedProvider] = useState<Client | null>(null);
@@ -58,69 +59,117 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
   const [selectedCase, setSelectedCase] = useState<LabCase | null>(null);
   const [providerDropdownOpen, setProviderDropdownOpen] = useState(false);
   const [patientDropdownOpen, setPatientDropdownOpen] = useState(false);
-  const [previewUri, setPreviewUri] = useState<string | null>(null);
+
+  const dragCounterRef = useRef(0);
+  const pendingFilesRef = useRef<PendingFile[]>([]);
 
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
   }, [pendingFiles]);
 
-  useEffect(() => {
-    const key = getStorageKey(currentUser);
-    AsyncStorage.getItem(key).then((raw) => {
-      if (raw) {
-        try { setPendingFiles(JSON.parse(raw)); } catch {}
-      } else {
-        setPendingFiles([]);
-      }
-    });
-  }, [currentUser]);
-
-  const persistFiles = useCallback((files: PendingFile[]) => {
-    setPendingFiles(files);
-    const key = getStorageKey(currentUser);
-    AsyncStorage.setItem(key, JSON.stringify(files)).catch(() => {});
-  }, [currentUser]);
-
-  const addFiles = useCallback((newFiles: PendingFile[]) => {
-    setPendingFiles((prev) => {
-      const updated = [...prev, ...newFiles];
-      const key = getStorageKey(currentUser);
-      AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
-      return updated;
-    });
-  }, [currentUser]);
-
-  async function processDroppedFiles(fileList: FileList | File[]) {
-    const files = Array.from(fileList);
-    const newPending: PendingFile[] = [];
-    for (const file of files) {
-      const validTypes = ["image/", "video/"];
-      const isValid = validTypes.some((t) => file.type.startsWith(t));
-      if (!isValid) continue;
-      const MAX_SIZE = 5 * 1024 * 1024;
-      if (file.size > MAX_SIZE) continue;
+  const persistFiles = useCallback(
+    async (files: PendingFile[]) => {
+      setPendingFiles(files);
       try {
-        const dataUri = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = () => reject(new Error("Failed to read file"));
-          reader.readAsDataURL(file);
-        });
-        newPending.push({
-          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-          uri: dataUri,
-          fileName: file.name,
-          mimeType: file.type,
-          uploadedBy: currentUser || "Unknown",
-          uploadedAt: Date.now(),
-        });
+        await AsyncStorage.setItem(getStorageKey(currentUser), JSON.stringify(files));
       } catch {}
-    }
-    if (newPending.length > 0) {
-      addFiles(newPending);
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
-  }
+    },
+    [currentUser],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    AsyncStorage.getItem(getStorageKey(currentUser))
+      .then((raw) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (!raw) {
+          setPendingFiles([]);
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(raw);
+          setPendingFiles(Array.isArray(parsed) ? parsed : []);
+        } catch {
+          setPendingFiles([]);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPendingFiles([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const addFiles = useCallback(
+    async (newFiles: PendingFile[]) => {
+      if (newFiles.length === 0) {
+        return;
+      }
+
+      const updated = [...pendingFilesRef.current, ...newFiles];
+      await persistFiles(updated);
+
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      }
+    },
+    [persistFiles],
+  );
+
+  const processDroppedFiles = useCallback(
+    async (fileList: FileList | File[]) => {
+      const files = Array.from(fileList);
+      const newPending: PendingFile[] = [];
+
+      for (const file of files) {
+        const isValidType = file.type.startsWith("image/") || file.type.startsWith("video/");
+        if (!isValidType) {
+          continue;
+        }
+
+        const maxSize = 5 * 1024 * 1024;
+        if (file.size > maxSize) {
+          continue;
+        }
+
+        try {
+          const dataUri = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error("Failed to read file"));
+            reader.readAsDataURL(file);
+          });
+
+          newPending.push({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            uri: dataUri,
+            fileName: file.name,
+            mimeType: file.type,
+            uploadedBy: currentUser || "Unknown",
+            uploadedAt: Date.now(),
+          });
+        } catch {}
+      }
+
+      await addFiles(newPending);
+    },
+    [addFiles, currentUser],
+  );
+
+  const processDroppedFilesRef = useRef(processDroppedFiles);
+
+  useEffect(() => {
+    processDroppedFilesRef.current = processDroppedFiles;
+  }, [processDroppedFiles]);
 
   async function handlePickFiles() {
     if (Platform.OS === "web") {
@@ -129,132 +178,144 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
       input.accept = "image/*,video/*";
       input.multiple = true;
       input.onchange = async () => {
-        if (input.files) await processDroppedFiles(input.files);
+        if (input.files) {
+          await processDroppedFiles(input.files);
+        }
       };
       input.click();
-    } else {
-      try {
-        const result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ["images", "videos"],
-          allowsMultipleSelection: true,
-          quality: 0.8,
-        });
-        if (!result.canceled && result.assets.length > 0) {
-          const newPending: PendingFile[] = result.assets.map((asset) => ({
-            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-            uri: asset.uri,
-            fileName: asset.fileName || "file",
-            mimeType: asset.mimeType || "image/jpeg",
-            uploadedBy: currentUser || "Unknown",
-            uploadedAt: Date.now(),
-          }));
-          addFiles(newPending);
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        }
-      } catch {}
+      return;
     }
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images", "videos"],
+        allowsMultipleSelection: true,
+        quality: 0.8,
+      });
+
+      if (result.canceled || result.assets.length === 0) {
+        return;
+      }
+
+      const newPending: PendingFile[] = result.assets.map((asset) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        uri: asset.uri,
+        fileName: asset.fileName || "file",
+        mimeType: asset.mimeType || "image/jpeg",
+        uploadedBy: currentUser || "Unknown",
+        uploadedAt: Date.now(),
+      }));
+
+      await addFiles(newPending);
+    } catch {}
   }
 
-  const processDroppedFilesRef = useRef(processDroppedFiles);
-  processDroppedFilesRef.current = processDroppedFiles;
-
   useEffect(() => {
-    if (Platform.OS !== "web") return;
+    if (Platform.OS !== "web") {
+      return;
+    }
+
     if (!isFocused) {
       setDragOver(false);
       dragCounterRef.current = 0;
       return;
     }
+
     dragCounterRef.current = 0;
-    const onDocDragEnter = (e: DragEvent) => {
-      if (!e.dataTransfer?.types?.includes("Files")) return;
-      e.preventDefault();
-      e.stopPropagation();
-      dragCounterRef.current++;
+
+    const handleDragEnter = (event: DragEvent) => {
+      if (!event.dataTransfer?.types?.includes("Files")) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      dragCounterRef.current += 1;
       setDragOver(true);
     };
-    const onDocDragOver = (e: DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
+
+    const handleDragOver = (event: DragEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
     };
-    const onDocDragLeave = (e: DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragCounterRef.current--;
-      if (dragCounterRef.current <= 0) { dragCounterRef.current = 0; setDragOver(false); }
-    };
-    const onDocDrop = (e: DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragCounterRef.current = 0;
-      setDragOver(false);
-      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-        processDroppedFilesRef.current(e.dataTransfer.files);
+
+    const handleDragLeave = (event: DragEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dragCounterRef.current -= 1;
+
+      if (dragCounterRef.current <= 0) {
+        dragCounterRef.current = 0;
+        setDragOver(false);
       }
     };
-    document.addEventListener("dragenter", onDocDragEnter);
-    document.addEventListener("dragover", onDocDragOver);
-    document.addEventListener("dragleave", onDocDragLeave);
-    document.addEventListener("drop", onDocDrop);
+
+    const handleDrop = (event: DragEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dragCounterRef.current = 0;
+      setDragOver(false);
+
+      if (event.dataTransfer?.files?.length) {
+        processDroppedFilesRef.current(event.dataTransfer.files);
+      }
+    };
+
+    document.addEventListener("dragenter", handleDragEnter);
+    document.addEventListener("dragover", handleDragOver);
+    document.addEventListener("dragleave", handleDragLeave);
+    document.addEventListener("drop", handleDrop);
+
     return () => {
-      document.removeEventListener("dragenter", onDocDragEnter);
-      document.removeEventListener("dragover", onDocDragOver);
-      document.removeEventListener("dragleave", onDocDragLeave);
-      document.removeEventListener("drop", onDocDrop);
+      document.removeEventListener("dragenter", handleDragEnter);
+      document.removeEventListener("dragover", handleDragOver);
+      document.removeEventListener("dragleave", handleDragLeave);
+      document.removeEventListener("drop", handleDrop);
     };
   }, [isFocused]);
 
-  function removeFile(fileId: string) {
-    setPendingFiles((prev) => {
-      const updated = prev.filter((f) => f.id !== fileId);
-      const key = getStorageKey(currentUser);
-      AsyncStorage.setItem(key, JSON.stringify(updated)).catch(() => {});
-      return updated;
-    });
-    if (selectedFile?.id === fileId) {
-      setSelectedFile(null);
-      setSelectedProvider(null);
-      setProviderSearch("");
-      setSelectedCase(null);
-      setPatientSearch("");
-    }
-  }
-
-  function handleAddToCase() {
-    if (!selectedFile || !selectedCase) return;
-    onAddToCase(selectedCase.id, selectedFile.uri);
-    removeFile(selectedFile.id);
+  function resetSelection() {
     setSelectedFile(null);
     setSelectedProvider(null);
     setProviderSearch("");
     setSelectedCase(null);
     setPatientSearch("");
-    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setProviderDropdownOpen(false);
+    setPatientDropdownOpen(false);
+  }
+
+  function removeFile(fileId: string) {
+    const updated = pendingFilesRef.current.filter((file) => file.id !== fileId);
+    persistFiles(updated).catch(() => {});
+
+    if (selectedFile?.id === fileId) {
+      resetSelection();
+    }
+  }
+
+  function handleAddToCase() {
+    if (!selectedFile || !selectedCase) {
+      return;
+    }
+
+    onAddToCase(selectedCase.id, selectedFile.uri);
+    removeFile(selectedFile.id);
+
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+
     Alert.alert("Added", `File attached to ${selectedCase.patientName}'s case.`);
   }
 
-  const activeClients = clients.filter((c) => c.status !== "inactive");
-  const filteredProviders = providerSearch.trim().length > 0
-    ? activeClients.filter((c) =>
-        c.practiceName.toLowerCase().includes(providerSearch.toLowerCase()) ||
-        c.leadDoctor.toLowerCase().includes(providerSearch.toLowerCase())
-      )
-    : activeClients;
+  function handleBarPress() {
+    if (pendingFiles.length > 0) {
+      setReviewOpen(true);
+      return;
+    }
 
-  const providerCases = selectedProvider
-    ? cases.filter((c) => {
-        const dn = (c.doctorName || "").toLowerCase().trim();
-        const lead = (selectedProvider.leadDoctor || "").toLowerCase().trim();
-        const additional = (selectedProvider.additionalProviders || []).map((p) => p.toLowerCase().trim()).filter(Boolean);
-        return dn === lead || additional.includes(dn);
-      })
-    : [];
-
-  const filteredPatients = patientSearch.trim().length > 0
-    ? providerCases.filter((c) =>
-        c.patientName.toLowerCase().includes(patientSearch.toLowerCase())
-      )
-    : providerCases;
+    handlePickFiles();
+  }
 
   function selectProvider(client: Client) {
     setSelectedProvider(client);
@@ -262,70 +323,109 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
     setProviderDropdownOpen(false);
     setSelectedCase(null);
     setPatientSearch("");
-  }
-
-  function selectPatient(c: LabCase) {
-    setSelectedCase(c);
-    setPatientSearch(c.patientName);
     setPatientDropdownOpen(false);
   }
 
+  function selectPatient(labCase: LabCase) {
+    setSelectedCase(labCase);
+    setPatientSearch(labCase.patientName);
+    setPatientDropdownOpen(false);
+  }
+
+  const activeClients = clients.filter((client) => client.status !== "inactive");
+  const filteredProviders =
+    providerSearch.trim().length > 0
+      ? activeClients.filter((client) => {
+          const query = providerSearch.toLowerCase();
+          return (
+            client.practiceName.toLowerCase().includes(query) ||
+            client.leadDoctor.toLowerCase().includes(query)
+          );
+        })
+      : activeClients;
+
+  const providerCases = selectedProvider
+    ? cases.filter((labCase) => {
+        const doctorName = (labCase.doctorName || "").toLowerCase().trim();
+        const leadDoctor = (selectedProvider.leadDoctor || "").toLowerCase().trim();
+        const additionalProviders = (selectedProvider.additionalProviders || [])
+          .map((provider) => provider.toLowerCase().trim())
+          .filter(Boolean);
+
+        return doctorName === leadDoctor || additionalProviders.includes(doctorName);
+      })
+    : [];
+
+  const filteredPatients =
+    patientSearch.trim().length > 0
+      ? providerCases.filter((labCase) =>
+          labCase.patientName.toLowerCase().includes(patientSearch.toLowerCase()),
+        )
+      : providerCases;
+
   const fileCount = pendingFiles.length;
+  const barTitle = dragOver
+    ? "Drop files to intake"
+    : fileCount > 0
+      ? `${fileCount} file${fileCount !== 1 ? "s" : ""} ready for review`
+      : "Case media intake";
+  const barSub = dragOver
+    ? "Release to upload these files"
+    : fileCount > 0
+      ? "Open the review queue and assign files to the correct case"
+      : Platform.OS === "web"
+        ? "Drag files here or browse to attach new case media"
+        : "Browse photos or videos to attach new case media";
+  const barActionLabel = dragOver ? "Drop Now" : fileCount > 0 ? "Review" : "Upload";
 
   return (
     <>
       <Pressable
-        ref={barRef as any}
         testID="lab-file-drop-bar"
-        onPress={() => setReviewOpen(true)}
+        onPress={handleBarPress}
         style={({ pressed }) => [
           s.bar,
           dragOver && s.barDragOver,
-          pressed && { opacity: 0.85 },
+          pressed && s.barPressed,
         ]}
       >
         <View style={s.barContent}>
-          <View style={s.barIconWrap}>
-            <Ionicons
-              name={dragOver ? "arrow-down-circle" : fileCount > 0 ? "folder-open" : "cloud-upload-outline"}
-              size={24}
-              color={dragOver ? "#2563EB" : fileCount > 0 ? "#D97706" : Colors.light.tint}
-            />
-          </View>
-          <Text style={s.barTitle}>
-            {dragOver
-              ? "Drop files here"
-              : fileCount > 0
-                ? `${fileCount} file${fileCount !== 1 ? "s" : ""} pending review`
-                : "File Drop Zone"}
-          </Text>
-          <Text style={s.barSub}>
-            {dragOver
-              ? "Release to upload"
-              : fileCount > 0
-                ? "Tap to review and assign to cases"
-                : Platform.OS === "web" ? "Drag & drop or tap to upload files for review" : "Tap to upload files for review"}
-          </Text>
-          {fileCount > 0 && (
-            <View style={s.badge}>
-              <Text style={s.badgeText}>{fileCount}</Text>
+          <View style={s.barMain}>
+            <View style={s.barIconWrap}>
+              <Ionicons
+                name={dragOver ? "arrow-down-circle" : fileCount > 0 ? "folder-open" : "cloud-upload-outline"}
+                size={22}
+                color={dragOver ? "#2563EB" : fileCount > 0 ? "#D97706" : Colors.light.tint}
+              />
             </View>
-          )}
+            <View style={s.barTextWrap}>
+              <Text style={s.barTitle}>{barTitle}</Text>
+              <Text style={s.barSub}>{barSub}</Text>
+            </View>
+          </View>
+
+          <View style={s.barAction}>
+            {fileCount > 0 ? (
+              <View style={s.badge}>
+                <Text style={s.badgeText}>{fileCount}</Text>
+              </View>
+            ) : null}
+            <Text style={s.barActionText}>{barActionLabel}</Text>
+          </View>
         </View>
       </Pressable>
 
-      {reviewOpen ? (
       <Modal
-        visible
+        visible={reviewOpen}
         animationType="slide"
         transparent={Platform.OS === "web"}
         onRequestClose={() => setReviewOpen(false)}
       >
         <View style={s.modal}>
-          <View style={[s.modalHeader, { paddingTop: Platform.OS === "web" ? 20 : insets.top + 12 }]}>
+          <View style={s.modalHeader}>
             <Text style={s.modalTitle}>File Review</Text>
-            <Pressable onPress={() => setReviewOpen(false)} hitSlop={16} style={{ padding: 4 }}>
-              <Ionicons name="close" size={26} color={Colors.light.text} />
+            <Pressable onPress={() => setReviewOpen(false)} hitSlop={12}>
+              <Ionicons name="close" size={24} color={Colors.light.text} />
             </Pressable>
           </View>
 
@@ -333,58 +433,77 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
             <View style={s.emptyState}>
               <Ionicons name="folder-open-outline" size={48} color="#CBD5E1" />
               <Text style={s.emptyTitle}>No pending files</Text>
-              <Text style={s.emptySub}>Files uploaded by lab members will appear here for review.</Text>
-              <Pressable onPress={handlePickFiles} style={({ pressed }) => [s.uploadBtn, pressed && { opacity: 0.8 }]}>
+              <Text style={s.emptySub}>
+                Files uploaded by lab members will appear here for review.
+              </Text>
+              <Pressable
+                onPress={handlePickFiles}
+                style={({ pressed }) => [s.uploadBtn, pressed && s.uploadBtnPressed]}
+              >
                 <Ionicons name="cloud-upload-outline" size={18} color="#FFF" />
                 <Text style={s.uploadBtnText}>Upload Files</Text>
               </Pressable>
             </View>
           ) : (
-            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
-              <Pressable onPress={handlePickFiles} style={({ pressed }) => [s.uploadBtn, { marginBottom: 16, alignSelf: "flex-start" }, pressed && { opacity: 0.8 }]}>
+            <ScrollView style={s.modalScroll} contentContainerStyle={s.modalScrollContent}>
+              <Pressable
+                onPress={handlePickFiles}
+                style={({ pressed }) => [
+                  s.uploadBtn,
+                  s.addMoreBtn,
+                  pressed && s.uploadBtnPressed,
+                ]}
+              >
                 <Ionicons name="add" size={18} color="#FFF" />
                 <Text style={s.uploadBtnText}>Add More Files</Text>
               </Pressable>
 
               {pendingFiles.map((file) => {
                 const isSelected = selectedFile?.id === file.id;
-                const isImage = file.mimeType?.startsWith("image/");
-                const isVideo = file.mimeType?.startsWith("video/");
+                const isImage = file.mimeType.startsWith("image/");
+
                 return (
                   <View key={file.id} style={[s.fileCard, isSelected && s.fileCardSelected]}>
                     <Pressable
                       onPress={() => {
-                        setSelectedFile(isSelected ? null : file);
-                        if (!isSelected) {
-                          setSelectedProvider(null);
-                          setProviderSearch("");
-                          setSelectedCase(null);
-                          setPatientSearch("");
+                        if (isSelected) {
+                          resetSelection();
+                          return;
                         }
+
+                        setSelectedFile(file);
+                        setSelectedProvider(null);
+                        setProviderSearch("");
+                        setSelectedCase(null);
+                        setPatientSearch("");
+                        setProviderDropdownOpen(false);
+                        setPatientDropdownOpen(false);
                       }}
                       style={s.fileRow}
                     >
-                      <Pressable onPress={() => { if (isImage) setPreviewUri(file.uri); }}>
-                        {isImage ? (
-                          <Image source={{ uri: file.uri }} style={s.fileThumb} contentFit="cover" />
-                        ) : (
-                          <View style={[s.fileThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#FEF3C7" }]}>
-                            <Ionicons name="videocam" size={20} color="#D97706" />
-                          </View>
-                        )}
-                      </Pressable>
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.fileName} numberOfLines={1}>{file.fileName}</Text>
+                      {isImage ? (
+                        <Image source={{ uri: file.uri }} style={s.fileThumb} contentFit="cover" />
+                      ) : (
+                        <View style={[s.fileThumb, s.videoThumb]}>
+                          <Ionicons name="videocam" size={20} color="#D97706" />
+                        </View>
+                      )}
+
+                      <View style={s.fileTextWrap}>
+                        <Text style={s.fileName} numberOfLines={1}>
+                          {file.fileName}
+                        </Text>
                         <Text style={s.fileMeta}>
-                          Uploaded by {file.uploadedBy} · {new Date(file.uploadedAt).toLocaleDateString()}
+                          Uploaded by {file.uploadedBy} - {new Date(file.uploadedAt).toLocaleDateString()}
                         </Text>
                       </View>
+
                       <Pressable onPress={() => removeFile(file.id)} hitSlop={8}>
                         <Ionicons name="trash-outline" size={18} color="#EF4444" />
                       </Pressable>
                     </Pressable>
 
-                    {isSelected && isAdmin && (
+                    {isSelected && isAdmin ? (
                       <View style={s.assignSection}>
                         <Text style={s.assignLabel}>Assign to Case</Text>
 
@@ -394,10 +513,11 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
                           placeholder="Start typing provider name..."
                           placeholderTextColor="#94A3B8"
                           value={providerSearch}
-                          onChangeText={(t) => {
-                            setProviderSearch(t);
-                            setProviderDropdownOpen(t.length > 0);
-                            if (selectedProvider && t !== selectedProvider.practiceName) {
+                          onChangeText={(value) => {
+                            setProviderSearch(value);
+                            setProviderDropdownOpen(value.length > 0);
+
+                            if (selectedProvider && value !== selectedProvider.practiceName) {
                               setSelectedProvider(null);
                               setSelectedCase(null);
                               setPatientSearch("");
@@ -405,61 +525,81 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
                           }}
                           onFocus={() => setProviderDropdownOpen(true)}
                         />
-                        {providerDropdownOpen && filteredProviders.length > 0 && (
+
+                        {providerDropdownOpen && filteredProviders.length > 0 ? (
                           <View style={s.dropdown}>
-                            <ScrollView style={{ maxHeight: 150 }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
-                              {filteredProviders.slice(0, 10).map((c) => (
+                            <ScrollView
+                              style={s.dropdownScroll}
+                              keyboardShouldPersistTaps="handled"
+                              nestedScrollEnabled
+                            >
+                              {filteredProviders.slice(0, 10).map((client) => (
                                 <Pressable
-                                  key={c.id}
-                                  onPress={() => selectProvider(c)}
-                                  style={({ pressed }) => [s.dropdownItem, pressed && { backgroundColor: "#F1F5F9" }]}
+                                  key={client.id}
+                                  onPress={() => selectProvider(client)}
+                                  style={({ pressed }) => [
+                                    s.dropdownItem,
+                                    pressed && s.dropdownItemPressed,
+                                  ]}
                                 >
-                                  <Text style={s.dropdownItemText}>{c.practiceName}</Text>
-                                  <Text style={s.dropdownItemSub}>{c.leadDoctor}</Text>
+                                  <Text style={s.dropdownItemText}>{client.practiceName}</Text>
+                                  <Text style={s.dropdownItemSub}>{client.leadDoctor}</Text>
                                 </Pressable>
                               ))}
                             </ScrollView>
                           </View>
-                        )}
+                        ) : null}
 
-                        {selectedProvider && (
+                        {selectedProvider ? (
                           <>
-                            <Text style={[s.fieldLabel, { marginTop: 12 }]}>Patient</Text>
+                            <Text style={[s.fieldLabel, s.patientFieldLabel]}>Patient</Text>
                             <TextInput
                               style={s.searchInput}
                               placeholder="Start typing patient name..."
                               placeholderTextColor="#94A3B8"
                               value={patientSearch}
-                              onChangeText={(t) => {
-                                setPatientSearch(t);
-                                setPatientDropdownOpen(t.length > 0);
-                                if (selectedCase && t !== selectedCase.patientName) {
+                              onChangeText={(value) => {
+                                setPatientSearch(value);
+                                setPatientDropdownOpen(value.length > 0);
+
+                                if (selectedCase && value !== selectedCase.patientName) {
                                   setSelectedCase(null);
                                 }
                               }}
                               onFocus={() => setPatientDropdownOpen(true)}
                             />
-                            {patientDropdownOpen && filteredPatients.length > 0 && (
+
+                            {patientDropdownOpen && filteredPatients.length > 0 ? (
                               <View style={s.dropdown}>
-                                <ScrollView style={{ maxHeight: 150 }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
-                                  {filteredPatients.slice(0, 10).map((c) => (
+                                <ScrollView
+                                  style={s.dropdownScroll}
+                                  keyboardShouldPersistTaps="handled"
+                                  nestedScrollEnabled
+                                >
+                                  {filteredPatients.slice(0, 10).map((labCase) => (
                                     <Pressable
-                                      key={c.id}
-                                      onPress={() => selectPatient(c)}
-                                      style={({ pressed }) => [s.dropdownItem, pressed && { backgroundColor: "#F1F5F9" }]}
+                                      key={labCase.id}
+                                      onPress={() => selectPatient(labCase)}
+                                      style={({ pressed }) => [
+                                        s.dropdownItem,
+                                        pressed && s.dropdownItemPressed,
+                                      ]}
                                     >
-                                      <Text style={s.dropdownItemText}>{c.patientName}</Text>
-                                      <Text style={s.dropdownItemSub}>Case #{c.caseNumber} · {c.doctorName}</Text>
+                                      <Text style={s.dropdownItemText}>{labCase.patientName}</Text>
+                                      <Text style={s.dropdownItemSub}>
+                                        Case #{labCase.caseNumber} - {labCase.doctorName}
+                                      </Text>
                                     </Pressable>
                                   ))}
                                 </ScrollView>
                               </View>
-                            )}
-                            {providerCases.length === 0 && (
+                            ) : null}
+
+                            {providerCases.length === 0 ? (
                               <Text style={s.noResults}>No cases found for this provider</Text>
-                            )}
+                            ) : null}
                           </>
-                        )}
+                        ) : null}
 
                         <Pressable
                           onPress={handleAddToCase}
@@ -467,14 +607,14 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
                           style={({ pressed }) => [
                             s.addToCaseBtn,
                             !selectedCase && s.addToCaseBtnDisabled,
-                            pressed && !!selectedCase && { opacity: 0.8 },
+                            pressed && selectedCase && s.uploadBtnPressed,
                           ]}
                         >
                           <Ionicons name="add-circle" size={18} color="#FFF" />
                           <Text style={s.addToCaseBtnText}>Add to Case</Text>
                         </Pressable>
                       </View>
-                    )}
+                    ) : null}
                   </View>
                 );
               })}
@@ -482,35 +622,6 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
           )}
         </View>
       </Modal>
-      ) : null}
-
-      {previewUri ? (
-        <Modal
-          visible
-          transparent
-          animationType="fade"
-          statusBarTranslucent
-          onRequestClose={() => setPreviewUri(null)}
-        >
-          <Pressable
-            style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.92)", justifyContent: "center", alignItems: "center" }}
-            onPress={() => setPreviewUri(null)}
-          >
-            <Pressable
-              onPress={() => setPreviewUri(null)}
-              hitSlop={16}
-              style={{ position: "absolute", top: Platform.OS === "web" ? 20 : insets.top + 8, right: 20, zIndex: 10, backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 20, padding: 8 }}
-            >
-              <Ionicons name="close" size={24} color="#FFF" />
-            </Pressable>
-            <Image
-              source={{ uri: previewUri }}
-              style={{ width: "90%", height: "75%" }}
-              contentFit="contain"
-            />
-          </Pressable>
-        </Modal>
-      ) : null}
     </>
   );
 }
@@ -518,56 +629,88 @@ export function LabFileDropZone({ cases, clients, currentUser, onAddToCase, isAd
 const s = StyleSheet.create({
   bar: {
     marginHorizontal: 20,
-    marginTop: 12,
-    marginBottom: 8,
-    borderRadius: 14,
-    backgroundColor: "#F8FAFC",
-    borderWidth: 1.5,
-    borderColor: "#E2E8F0",
-    borderStyle: "dashed",
+    marginTop: 16,
+    marginBottom: 10,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#DCE7F5",
     overflow: "hidden",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2,
   },
   barDragOver: {
     borderColor: "#2563EB",
-    backgroundColor: "rgba(37,99,235,0.08)",
+    backgroundColor: "#EFF6FF",
+  },
+  barPressed: {
+    opacity: 0.9,
   },
   barContent: {
-    flexDirection: "column",
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 24,
+    justifyContent: "space-between",
+    gap: 16,
+    paddingVertical: 16,
     paddingHorizontal: 16,
-    gap: 8,
+  },
+  barMain: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
   },
   barIconWrap: {
-    width: 44,
-    height: 44,
+    width: 42,
+    height: 42,
     borderRadius: 12,
     backgroundColor: "rgba(37,99,235,0.10)",
-    justifyContent: "center",
     alignItems: "center",
-    marginBottom: 2,
+    justifyContent: "center",
+  },
+  barTextWrap: {
+    flex: 1,
+    gap: 3,
   },
   barTitle: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 15,
     color: Colors.light.text,
-    textAlign: "center",
   },
   barSub: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
-    color: "#94A3B8",
-    marginTop: 0,
-    textAlign: "center",
+    color: "#64748B",
+    lineHeight: 17,
+  },
+  barAction: {
+    minWidth: 92,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "#EEF4FF",
+  },
+  barActionText: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 12,
+    color: "#1D4ED8",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
   },
   badge: {
     minWidth: 22,
     height: 22,
     borderRadius: 11,
     backgroundColor: "#EF4444",
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
     paddingHorizontal: 6,
   },
   badgeText: {
@@ -581,9 +724,10 @@ const s = StyleSheet.create({
   },
   modalHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
     paddingHorizontal: 20,
+    paddingTop: Platform.OS === "web" ? 20 : 16,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
@@ -593,10 +737,16 @@ const s = StyleSheet.create({
     fontSize: 20,
     color: Colors.light.text,
   },
+  modalScroll: {
+    flex: 1,
+  },
+  modalScrollContent: {
+    padding: 16,
+  },
   emptyState: {
     flex: 1,
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
     padding: 32,
     gap: 8,
   },
@@ -611,6 +761,7 @@ const s = StyleSheet.create({
     fontSize: 13,
     color: "#94A3B8",
     textAlign: "center",
+    lineHeight: 19,
   },
   uploadBtn: {
     flexDirection: "row",
@@ -621,6 +772,13 @@ const s = StyleSheet.create({
     paddingHorizontal: 16,
     borderRadius: 10,
     marginTop: 12,
+  },
+  addMoreBtn: {
+    alignSelf: "flex-start",
+    marginBottom: 16,
+  },
+  uploadBtnPressed: {
+    opacity: 0.82,
   },
   uploadBtnText: {
     fontFamily: "Inter_600SemiBold",
@@ -651,6 +809,14 @@ const s = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "#E2E8F0",
   },
+  videoThumb: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FEF3C7",
+  },
+  fileTextWrap: {
+    flex: 1,
+  },
   fileName: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
@@ -680,6 +846,9 @@ const s = StyleSheet.create({
     color: "#64748B",
     marginBottom: 4,
   },
+  patientFieldLabel: {
+    marginTop: 12,
+  },
   searchInput: {
     borderWidth: 1,
     borderColor: "#E2E8F0",
@@ -699,11 +868,17 @@ const s = StyleSheet.create({
     marginTop: 4,
     overflow: "hidden",
   },
+  dropdownScroll: {
+    maxHeight: 150,
+  },
   dropdownItem: {
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
+  },
+  dropdownItemPressed: {
+    backgroundColor: "#F1F5F9",
   },
   dropdownItemText: {
     fontFamily: "Inter_500Medium",

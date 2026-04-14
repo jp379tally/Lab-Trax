@@ -9,8 +9,16 @@ const PRODUCTION_URL = "https://lab-trax.replit.app/";
 
 const TOKEN_KEY = "@labtrax_tokens";
 
+function normalizeBaseUrl(url: string): string {
+  return url.endsWith("/") ? url : `${url}/`;
+}
+
 export function getApiUrl(): string {
   if (cachedBaseUrl) return cachedBaseUrl;
+
+  if (typeof window !== "undefined" && window.location && window.location.origin) {
+    return normalizeBaseUrl(window.location.origin);
+  }
 
   if (Platform.OS !== "web") {
     const host = process.env.EXPO_PUBLIC_DOMAIN;
@@ -18,19 +26,12 @@ export function getApiUrl(): string {
       try {
         let url = new URL(`https://${host}`);
         url.port = "";
-        return url.href;
+        return normalizeBaseUrl(url.href);
       } catch {
         return PRODUCTION_URL;
       }
     }
     return PRODUCTION_URL;
-  }
-
-  if (typeof window !== "undefined" && window.location && window.location.origin) {
-    const origin = window.location.origin;
-    if (origin && !origin.includes("localhost")) {
-      return origin.endsWith("/") ? origin : origin + "/";
-    }
   }
 
   return PRODUCTION_URL;
@@ -39,9 +40,13 @@ export function getApiUrl(): string {
 function getApiUrlWithoutPort(): string | null {
   let host = process.env.EXPO_PUBLIC_DOMAIN;
   if (!host || !host.includes(":")) return null;
-  let url = new URL(`https://${host}`);
-  url.port = "";
-  return url.href;
+  try {
+    let url = new URL(`https://${host}`);
+    url.port = "";
+    return normalizeBaseUrl(url.href);
+  } catch {
+    return null;
+  }
 }
 
 let _accessToken: string | null = null;
@@ -166,15 +171,6 @@ async function resilientFetch(
         const fallbackFullUrl = new URL(path, fallbackUrl).toString();
         const res = await fetch(fallbackFullUrl, authedOptions);
         cachedBaseUrl = fallbackUrl;
-        return res;
-      } catch {}
-    }
-    const prodUrl = "https://lab-trax.replit.app/";
-    if (prodUrl !== primaryUrl && prodUrl !== fallbackUrl) {
-      try {
-        const prodFullUrl = new URL(path, prodUrl).toString();
-        const res = await fetch(prodFullUrl, authedOptions);
-        cachedBaseUrl = prodUrl;
         return res;
       } catch {}
     }

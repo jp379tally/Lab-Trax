@@ -12,7 +12,6 @@ import {
   Animated as RNAnimated,
   ActivityIndicator,
   Dimensions,
-  useWindowDimensions,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -28,13 +27,12 @@ import { Share } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useApp } from "@/lib/app-context";
-import { convertPdfToImages } from "@/lib/pdf-utils";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
 import { getApiUrl, resilientFetch } from "@/lib/query-client";
 
-type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form" | "cropping";
+type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
@@ -80,95 +78,49 @@ interface LabelData {
   toothDiagram?: number[];
 }
 
-function CropOverlay({ rawCapturedUri, cropRegion, setCropRegion, isDetectingDoc }: {
-  rawCapturedUri: string;
-  cropRegion: { left: number; top: number; right: number; bottom: number };
-  setCropRegion: React.Dispatch<React.SetStateAction<{ left: number; top: number; right: number; bottom: number }>>;
-  isDetectingDoc: boolean;
+function deriveDisplayInitials(input?: {
+  firstName?: string | null;
+  lastName?: string | null;
+  label?: string | null;
 }) {
-  const containerRef = useRef<View>(null);
-  const activeHandle = useRef<string | null>(null);
+  const firstInitial = input?.firstName?.trim()?.[0];
+  const lastInitial = input?.lastName?.trim()?.[0];
+  if (firstInitial && lastInitial) {
+    return `${firstInitial}${lastInitial}`.toUpperCase();
+  }
 
-  useEffect(() => {
-    if (Platform.OS !== "web") return;
-    const handleMove = (e: any) => {
-      if (!activeHandle.current) return;
-      e.preventDefault();
-      const el = containerRef.current as any;
-      if (!el) return;
-      const domNode = el instanceof HTMLElement ? el : (el as any)?._nativeTag ? document.querySelector(`[data-crop-container]`) : null;
-      if (!domNode) return;
-      const rect = (domNode as HTMLElement).getBoundingClientRect();
-      const pctX = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
-      const pctY = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
-      const key = activeHandle.current;
-      setCropRegion(prev => {
-        const next = { ...prev };
-        if (key === "tl") { next.top = Math.min(pctY, prev.bottom - 5); next.left = Math.min(pctX, prev.right - 5); }
-        if (key === "tr") { next.top = Math.min(pctY, prev.bottom - 5); next.right = Math.max(pctX, prev.left + 5); }
-        if (key === "bl") { next.bottom = Math.max(pctY, prev.top + 5); next.left = Math.min(pctX, prev.right - 5); }
-        if (key === "br") { next.bottom = Math.max(pctY, prev.top + 5); next.right = Math.max(pctX, prev.left + 5); }
-        return next;
-      });
-    };
-    const handleUp = () => { activeHandle.current = null; };
-    window.addEventListener("pointermove", handleMove);
-    window.addEventListener("pointerup", handleUp);
-    return () => {
-      window.removeEventListener("pointermove", handleMove);
-      window.removeEventListener("pointerup", handleUp);
-    };
-  }, [setCropRegion]);
+  const normalizedLabel = input?.label?.trim() || "";
+  if (!normalizedLabel) {
+    return "??";
+  }
 
-  const handles = [
-    { key: "tl", top: cropRegion.top, left: cropRegion.left },
-    { key: "tr", top: cropRegion.top, left: cropRegion.right },
-    { key: "bl", top: cropRegion.bottom, left: cropRegion.left },
-    { key: "br", top: cropRegion.bottom, left: cropRegion.right },
-  ];
+  const parts = normalizedLabel
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
 
-  return (
-    <View style={[StyleSheet.absoluteFill, { backgroundColor: "#000" }]}>
-      <View ref={containerRef} style={{ flex: 1, position: "relative" }} {...(Platform.OS === "web" ? { "data-crop-container": "true" } as any : {})}>
-        <Image source={{ uri: rawCapturedUri }} style={StyleSheet.absoluteFill} contentFit="contain" />
-        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-          <View style={{ position: "absolute", top: `${cropRegion.top}%`, left: `${cropRegion.left}%`, width: `${cropRegion.right - cropRegion.left}%`, height: `${cropRegion.bottom - cropRegion.top}%`, borderWidth: 2, borderColor: "#22C55E", borderStyle: "dashed" }} pointerEvents="none" />
-          <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: `${cropRegion.top}%`, backgroundColor: "rgba(0,0,0,0.5)" }} pointerEvents="none" />
-          <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: `${100 - cropRegion.bottom}%`, backgroundColor: "rgba(0,0,0,0.5)" }} pointerEvents="none" />
-          <View style={{ position: "absolute", top: `${cropRegion.top}%`, left: 0, width: `${cropRegion.left}%`, height: `${cropRegion.bottom - cropRegion.top}%`, backgroundColor: "rgba(0,0,0,0.5)" }} pointerEvents="none" />
-          <View style={{ position: "absolute", top: `${cropRegion.top}%`, right: 0, width: `${100 - cropRegion.right}%`, height: `${cropRegion.bottom - cropRegion.top}%`, backgroundColor: "rgba(0,0,0,0.5)" }} pointerEvents="none" />
-          {handles.map((h) => (
-            <Pressable
-              key={h.key}
-              onPressIn={() => { activeHandle.current = h.key; }}
-              style={{ position: "absolute", top: `${h.top}%`, left: `${h.left}%`, width: 40, height: 40, marginLeft: -20, marginTop: -20, justifyContent: "center", alignItems: "center", zIndex: 10, ...(Platform.OS === "web" ? { cursor: h.key === "tl" ? "nw-resize" : h.key === "tr" ? "ne-resize" : h.key === "bl" ? "sw-resize" : "se-resize" } as any : {}) }}
-            >
-              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: "#22C55E", borderWidth: 3, borderColor: "#FFF", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 3 }} />
-            </Pressable>
-          ))}
-        </View>
-        {isDetectingDoc && (
-          <View style={{ position: "absolute", top: "45%", left: 0, right: 0, alignItems: "center" }}>
-            <View style={{ backgroundColor: "rgba(0,0,0,0.7)", paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 10 }}>
-              <ActivityIndicator size="small" color="#22C55E" />
-              <Text style={{ color: "#FFF", fontSize: 14, fontFamily: "Inter_600SemiBold" }}>Detecting document...</Text>
-            </View>
-          </View>
-        )}
-      </View>
-    </View>
-  );
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+  }
+
+  return normalizedLabel.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "??";
 }
 
 export default function ScanScreen() {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const isDesktop = Platform.OS === "web" && windowWidth >= 768;
   const router = useRouter();
   const isFocused = useIsFocused();
   const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode } = useApp();
-  const { currentUser } = useAuth();
-  const userInitials = currentUser ? currentUser.substring(0, 2).toUpperCase() : "??";
+  const { currentUser, registeredUsers } = useAuth();
+  const currentRegisteredUser = registeredUsers.find(
+    (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
+  );
+  const userInitials = deriveDisplayInitials({
+    firstName: currentRegisteredUser?.firstName,
+    lastName: currentRegisteredUser?.lastName,
+    label: currentRegisteredUser?.username || currentUser,
+  });
   const showPrice = role === "admin" && adminUnlocked;
   const [labelModalVisible, setLabelModalVisible] = useState(false);
   const [labelData, setLabelData] = useState<LabelData | null>(null);
@@ -202,9 +154,6 @@ export default function ScanScreen() {
   const [removableStageOpen, setRemovableStageOpen] = useState(false);
   const [isRush, setIsRush] = useState(false);
   const [isCropping, setIsCropping] = useState(false);
-  const [cropRegion, setCropRegion] = useState<{ left: number; top: number; right: number; bottom: number }>({ left: 5, top: 5, right: 95, bottom: 95 });
-  const [rawCapturedUri, setRawCapturedUri] = useState<string | null>(null);
-  const [isDetectingDoc, setIsDetectingDoc] = useState(false);
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [dueDateOpen, setDueDateOpen] = useState(false);
@@ -604,6 +553,9 @@ export default function ScanScreen() {
 
     if (!rawUri) return;
 
+    cropDoneRef.current = false;
+    setCapturedUri(rawUri);
+    setPhase("scanning");
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     let dataUri = rawUri;
@@ -614,127 +566,27 @@ export default function ScanScreen() {
           encoding: FileSystem.EncodingType.Base64,
         });
         dataUri = `data:image/jpeg;base64,${b64}`;
+        setCapturedUri(dataUri);
       } catch (e: any) {
         console.log("Could not read file for cropping:", e?.message);
       }
     }
 
-    setRawCapturedUri(dataUri);
-    setCapturedUri(dataUri);
-    setCropRegion({ left: 5, top: 5, right: 95, bottom: 95 });
-    setPhase("cropping");
-    setIsDetectingDoc(true);
-
     if (dataUri.startsWith("data:")) {
-      try {
-        const resp = await resilientFetch("/api/detect-document", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageBase64: dataUri }),
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.documentDetected && data.crop) {
-            setCropRegion({
-              left: data.crop.left,
-              top: data.crop.top,
-              right: data.crop.right,
-              bottom: data.crop.bottom,
-            });
-          }
-        }
-      } catch (e: any) {
-        console.log("Document detection failed:", e?.message);
-      }
+      const cropped = await cropDocumentIfNeeded(dataUri);
+      const finalUri = cropped !== dataUri ? cropped : dataUri;
+      setCapturedUri(finalUri);
+      setCasePhotos((prev) => {
+        if (prev.includes(finalUri)) return prev;
+        return [...prev, finalUri];
+      });
+    } else {
+      setCasePhotos((prev) => {
+        if (prev.includes(rawUri)) return prev;
+        return [...prev, rawUri];
+      });
     }
-    setIsDetectingDoc(false);
-  }
-
-  async function handleConfirmCrop() {
-    if (!rawCapturedUri) return;
-    setIsCropping(true);
-    try {
-      if (Platform.OS === "web") {
-        const img = new (window as any).Image();
-        await new Promise<void>((resolve, reject) => {
-          img.onload = () => resolve();
-          img.onerror = () => reject(new Error("Failed to load image"));
-          img.src = rawCapturedUri;
-        });
-        const imgW = img.naturalWidth;
-        const imgH = img.naturalHeight;
-        const left = Math.round((cropRegion.left / 100) * imgW);
-        const top = Math.round((cropRegion.top / 100) * imgH);
-        const right = Math.round((cropRegion.right / 100) * imgW);
-        const bottom = Math.round((cropRegion.bottom / 100) * imgH);
-        const cropW = Math.max(1, right - left);
-        const cropH = Math.max(1, bottom - top);
-        const canvas = document.createElement("canvas");
-        canvas.width = cropW;
-        canvas.height = cropH;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(img, left, top, cropW, cropH, 0, 0, cropW, cropH);
-          const croppedUri = canvas.toDataURL("image/jpeg", 0.92);
-          setCapturedUri(croppedUri);
-          setCasePhotos((prev) => [...prev, croppedUri]);
-          cropDoneRef.current = true;
-          setPhase("review");
-          setIsCropping(false);
-          return;
-        }
-      }
-      // Native: crop on-device with expo-image-manipulator — no network round-trip
-      try {
-        const ImageManipulator = require("expo-image-manipulator");
-        const { Image: RNImage } = require("react-native");
-        const [imgW, imgH] = await new Promise<[number, number]>((resolve) => {
-          RNImage.getSize(
-            rawCapturedUri,
-            (w: number, h: number) => resolve([w, h]),
-            () => resolve([1000, 1000])
-          );
-        });
-        const left = Math.max(0, Math.round((cropRegion.left / 100) * imgW));
-        const top = Math.max(0, Math.round((cropRegion.top / 100) * imgH));
-        const right = Math.min(imgW, Math.round((cropRegion.right / 100) * imgW));
-        const bottom = Math.min(imgH, Math.round((cropRegion.bottom / 100) * imgH));
-        const cropW = Math.max(1, right - left);
-        const cropH = Math.max(1, bottom - top);
-        const result = await ImageManipulator.manipulateAsync(
-          rawCapturedUri,
-          [{ crop: { originX: left, originY: top, width: cropW, height: cropH } }],
-          { compress: 0.9, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
-        );
-        setCapturedUri(result.uri);
-        setCasePhotos((prev) => [...prev, result.uri]);
-        cropDoneRef.current = true;
-        setPhase("review");
-        setIsCropping(false);
-        return;
-      } catch (manipErr: any) {
-        console.log("On-device crop failed, using original:", manipErr?.message);
-        setCasePhotos((prev) => [...prev, rawCapturedUri]);
-        setCapturedUri(rawCapturedUri);
-        cropDoneRef.current = true;
-        setPhase("review");
-      }
-    } catch (e: any) {
-      console.log("Crop confirmation failed:", e?.message);
-      setCasePhotos((prev) => [...prev, rawCapturedUri!]);
-      setCapturedUri(rawCapturedUri);
-      cropDoneRef.current = true;
-      setPhase("review");
-    }
-    setIsCropping(false);
-  }
-
-  function handleSkipCrop() {
-    if (!rawCapturedUri) return;
-    setCasePhotos((prev) => [...prev, rawCapturedUri]);
-    setCapturedUri(rawCapturedUri);
     cropDoneRef.current = true;
-    setPhase("review");
   }
 
   async function handleManualCrop() {
@@ -974,6 +826,33 @@ export default function ScanScreen() {
 
   const [webDragOver, setWebDragOver] = useState(false);
 
+  async function convertPdfToImages(arrayBuffer: ArrayBuffer): Promise<string[]> {
+    try {
+      const pdfjsLib = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+      const pageImages: string[] = [];
+      const maxPages = Math.min(pdf.numPages, 10);
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const scale = 2.0;
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const imgDataUri = canvas.toDataURL("image/png");
+        pageImages.push(imgDataUri);
+      }
+      console.log(`PDF converted: ${pageImages.length} page(s) from ${pdf.numPages} total`);
+      return pageImages;
+    } catch (err: any) {
+      console.log("PDF conversion failed:", err?.message);
+      return [];
+    }
+  }
 
   async function processWebFiles(files: FileList | File[]) {
     if (!files || (files as any).length === 0) return;
@@ -1253,8 +1132,8 @@ export default function ScanScreen() {
     }
   }
 
-  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
-    const { getApiUrl, getAccessToken, resilientFetch } = await import("@/lib/query-client");
+  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any }> {
+    const { getApiUrl } = await import("@/lib/query-client");
     const payload: any = { imageBase64: base64Data };
     if (additionalImages && additionalImages.length > 0) {
       payload.additionalImages = additionalImages;
@@ -1262,79 +1141,70 @@ export default function ScanScreen() {
     const jsonBody = JSON.stringify(payload);
     console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
 
+    const urls: string[] = [];
     try {
-      const timeoutController = new AbortController();
-      const timer = setTimeout(() => timeoutController.abort(), 90000);
-
-      const res = await resilientFetch("/api/analyze-prescription", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-        body: jsonBody,
-        signal: timeoutController.signal,
-      });
-
-      clearTimeout(timer);
-      console.log("AI: Response status:", res.status);
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        console.log("AI response error:", res.status, errText.substring(0, 200));
-        try {
-          const errJson = JSON.parse(errText);
-          if (errJson.error && errJson.error.includes("HEIC")) {
-            return { success: false, error: errJson.error };
-          }
-        } catch {}
-        return { success: false, error: `Server error (${res.status})` };
-      }
-      const result = await res.json();
-      console.log("AI: Parsed result success:", result?.success);
-      return result;
-    } catch (err: any) {
-      console.log("AI: Request failed:", err?.message || String(err));
-
-      try {
-        const token = getAccessToken();
-        const urls: string[] = [];
-        try {
-          urls.push(new URL("/api/analyze-prescription", getApiUrl()).toString());
-        } catch {}
-        const host = process.env.EXPO_PUBLIC_DOMAIN;
-        if (host) {
-          try {
-            urls.push(new URL("/api/analyze-prescription", `https://${host}`).toString());
-          } catch {}
-        }
-
-        for (const url of urls) {
-          try {
-            console.log("AI: Fallback trying URL:", url);
-            const headers: Record<string, string> = {
-              "Content-Type": "application/json",
-              "Accept": "application/json",
-            };
-            if (token) headers["Authorization"] = `Bearer ${token}`;
-
-            const res = await Promise.race([
-              globalThis.fetch(url, { method: "POST", headers, body: jsonBody }),
-              new Promise<Response>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 90000)),
-            ]);
-            if (res.ok) {
-              const result = await res.json();
-              console.log("AI: Fallback succeeded");
-              return result;
-            }
-          } catch (e: any) {
-            console.log("AI: Fallback URL failed:", url, e?.message);
-          }
-        }
-      } catch {}
-
-      return { success: false, error: err?.message || "Network error" };
+      const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
+      urls.push(primaryUrl);
+    } catch (e: any) {
+      console.log("AI: Primary URL construction failed:", e?.message);
     }
+    const host = process.env.EXPO_PUBLIC_DOMAIN;
+    if (host) {
+      try {
+        const cleanHost = host.includes(":") ? host : host;
+        const fallbackUrl = new URL("/api/analyze-prescription", `https://${cleanHost}`).toString();
+        if (!urls.includes(fallbackUrl)) urls.push(fallbackUrl);
+      } catch (e: any) {
+        console.log("AI: Fallback URL construction failed:", e?.message);
+      }
+    }
+
+    if (urls.length === 0) {
+      console.log("AI: No valid URLs constructed. EXPO_PUBLIC_DOMAIN:", host);
+      return { success: false };
+    }
+
+    let lastErr: any = null;
+    for (const url of urls) {
+      try {
+        console.log("AI: Trying URL:", url);
+        const fetchPromise = globalThis.fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
+          body: jsonBody,
+        });
+
+        const timeoutPromise = new Promise<Response>((_, reject) => {
+          setTimeout(() => reject(new Error("Request timeout after 90s")), 90000);
+        });
+
+        const res = await Promise.race([fetchPromise, timeoutPromise]);
+        console.log("AI: Response status:", res.status);
+        if (!res.ok) {
+          const errText = await res.text().catch(() => "");
+          console.log("AI response error:", res.status, errText.substring(0, 200));
+          try {
+            const errJson = JSON.parse(errText);
+            if (errJson.error && errJson.error.includes("HEIC")) {
+              return { success: false, error: errJson.error };
+            }
+          } catch {}
+          lastErr = new Error(`HTTP ${res.status}: ${errText.substring(0, 100)}`);
+          continue;
+        }
+        const result = await res.json();
+        console.log("AI: Parsed result success:", result?.success);
+        return result;
+      } catch (err: any) {
+        console.log("AI: URL failed:", url, err?.message || String(err));
+        lastErr = err;
+      }
+    }
+    console.log("AI: All URLs failed. Last error:", lastErr?.message || String(lastErr));
+    return { success: false };
   }
 
   async function handleSavePDF() {
@@ -2657,7 +2527,7 @@ export default function ScanScreen() {
         onRequestClose={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
       >
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Attach Barcode</Text>
             <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}>
               <Ionicons name="close" size={28} color="#FFF" />
@@ -2761,7 +2631,7 @@ export default function ScanScreen() {
         <View
           style={[
             styles.formHeader,
-            { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
+            { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
           ]}
         >
           <Pressable onPress={resetForm} style={styles.backBtn}>
@@ -3957,17 +3827,15 @@ export default function ScanScreen() {
 
   if (Platform.OS === "web" && phase === "camera") {
     return (
-      <View style={[styles.container, { paddingTop: isDesktop ? 24 : 67 + 16, backgroundColor: Colors.light.backgroundSolid }]}>
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: isDesktop ? 48 : 32 }}>
-          <View style={{ width: "100%", maxWidth: isDesktop ? 600 : 420, alignItems: "center" }}>
+      <View style={[styles.container, { paddingTop: 67 + 16, backgroundColor: Colors.light.backgroundSolid }]}>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 32 }}>
+          <View style={{ width: "100%", maxWidth: 420, alignItems: "center" }}>
             <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: "rgba(37,99,235,0.1)", justifyContent: "center", alignItems: "center", marginBottom: 24 }}>
-              <Ionicons name="cloud-upload-outline" size={40} color={Colors.light.tint} />
+              <Ionicons name="document-text-outline" size={40} color={Colors.light.tint} />
             </View>
-            <Text style={{ fontSize: isDesktop ? 26 : 22, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 8, textAlign: "center" }}>
-              {isDesktop ? "Upload Prescription" : "AI Intake"}
-            </Text>
-            <Text style={{ fontSize: isDesktop ? 15 : 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center", marginBottom: 32, lineHeight: 22 }}>
-              {isDesktop ? "Drag and drop prescription files from your computer, or click to browse. AI will automatically extract case details." : "Upload a prescription image or document and AI will automatically read and fill in the case details."}
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 8, textAlign: "center" }}>AI Intake</Text>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center", marginBottom: 32, lineHeight: 20 }}>
+              Upload a prescription image or document and AI will automatically read and fill in the case details.
             </Text>
 
             <Pressable
@@ -4052,7 +3920,7 @@ export default function ScanScreen() {
 
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>
-            <View style={{ paddingTop: isDesktop ? 16 : 67, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{ paddingTop: 67, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Enter Barcode</Text>
               <Pressable onPress={() => setShowBarcodeScanner(false)}>
                 <Ionicons name="close" size={28} color="#FFF" />
@@ -4140,7 +4008,7 @@ export default function ScanScreen() {
 
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>
-            <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
               <Pressable onPress={() => setShowBarcodeScanner(false)}>
                 <Ionicons name="close" size={28} color="#FFF" />
@@ -4244,15 +4112,6 @@ export default function ScanScreen() {
           </View>
         )}
 
-        {phase === "cropping" && rawCapturedUri && (
-          <CropOverlay
-            rawCapturedUri={rawCapturedUri}
-            cropRegion={cropRegion}
-            setCropRegion={setCropRegion}
-            isDetectingDoc={isDetectingDoc}
-          />
-        )}
-
         {phase === "review" && (
           <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)" }]}>
             <View style={styles.reviewContent}>
@@ -4269,21 +4128,19 @@ export default function ScanScreen() {
           </View>
         )}
 
-        <View style={[styles.cameraHeaderOverlay, { paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
           <Text style={styles.scanTitle}>AI Intake</Text>
           <Text style={styles.scanSubtitle}>
-            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "cropping" ? "Adjust the crop frame" : phase === "review" ? "Add more pages or continue" : "RX recognized"}
+            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "review" ? "Add more pages or continue" : "RX recognized"}
           </Text>
         </View>
 
-        {phase !== "cropping" && (
         <View style={styles.viewfinderFrame}>
           <View style={styles.cornerTL} />
           <View style={styles.cornerTR} />
           <View style={styles.cornerBL} />
           <View style={styles.cornerBR} />
         </View>
-        )}
       </View>
 
       <View
@@ -4362,54 +4219,6 @@ export default function ScanScreen() {
         {phase === "scanning" && (
           <View style={styles.scanningIndicator}>
             <Text style={styles.scanningText}>Analyzing RX...</Text>
-          </View>
-        )}
-        {phase === "cropping" && (
-          <View style={styles.detectedActions}>
-            <Pressable
-              onPress={() => {
-                setRawCapturedUri(null);
-                setCapturedUri(null);
-                setPhase("camera");
-                scanAnim.setValue(0);
-              }}
-              style={({ pressed }) => [
-                styles.reviewActionBtn,
-                { backgroundColor: "rgba(239,68,68,0.2)", borderWidth: 1, borderColor: "rgba(239,68,68,0.5)" },
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Ionicons name="refresh" size={22} color="#EF4444" />
-              <Text style={[styles.actionBtnText, { color: "#EF4444" }]}>Retake</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleSkipCrop}
-              style={({ pressed }) => [
-                styles.reviewActionBtn,
-                { backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Ionicons name="scan-outline" size={22} color="#FFF" />
-              <Text style={styles.actionBtnText}>Use Full Photo</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleConfirmCrop}
-              disabled={isCropping}
-              style={({ pressed }) => [
-                styles.reviewActionBtn,
-                styles.actionBtnPrimary,
-                pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] },
-                isCropping && { opacity: 0.6 },
-              ]}
-            >
-              {isCropping ? (
-                <ActivityIndicator size="small" color="#FFF" />
-              ) : (
-                <Ionicons name="crop" size={22} color="#FFF" />
-              )}
-              <Text style={styles.actionBtnText}>{isCropping ? "Cropping..." : "Apply Crop"}</Text>
-            </Pressable>
           </View>
         )}
         {phase === "review" && (
@@ -4515,7 +4324,7 @@ export default function ScanScreen() {
 
       <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: isDesktop ? 16 : Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: isDesktop ? 32 : 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
             <Pressable onPress={() => setShowBarcodeScanner(false)}>
               <Ionicons name="close" size={28} color="#FFF" />

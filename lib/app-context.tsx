@@ -7,8 +7,8 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
-import { Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as FileSystem from "expo-file-system";
 import { getApiUrl, resilientFetch } from "./query-client";
 import {
   UserRole,
@@ -100,12 +100,12 @@ interface AppContextValue {
   findAllCasesByBarcode: (barcode: string) => LabCase[];
   batchLocateCases: (caseIds: string[], newStatus: CaseStatus) => void;
   groupJoinRequests: GroupJoinRequest[];
-  sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => { success: boolean; error?: string };
-  respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => Promise<void>;
+  fetchLabDirectory: () => Promise<LabDirectoryGroup[]>;
+  sendGroupJoinRequest: (targetAdminUsername: string, requestingUsername: string, message?: string) => Promise<{ success: boolean; error?: string }>;
+  respondToGroupJoinRequest: (requestId: string, accept: boolean, role?: "admin" | "user") => Promise<{ success: boolean; error?: string }>;
   labInvitations: LabInvitation[];
-  sendLabInvite: (targetUsername: string, targetEmail: string, role: "admin" | "user") => { success: boolean; error?: string };
-  respondToLabInvite: (inviteId: string, accept: boolean) => Promise<void>;
-  refreshJoinData: () => Promise<void>;
+  sendLabInvite: (targetUsername: string, targetEmail: string, role: "admin" | "user") => Promise<{ success: boolean; error?: string }>;
+  respondToLabInvite: (inviteId: string, accept: boolean) => Promise<{ success: boolean; error?: string }>;
   addConversation: (conv: Conversation) => void;
   removeConversation: (conversationId: string) => void;
   addNotification: (notif: Omit<Notification, "id" | "read" | "timestamp">) => void;
@@ -113,17 +113,14 @@ interface AppContextValue {
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
   userIsAffiliated: boolean;
   leaveLab: () => Promise<{ success: boolean; error?: string }>;
-  deleteLab: () => Promise<{ success: boolean; error?: string; recoverableUntil?: string }>;
-  restoreLab: (labId: string) => Promise<{ success: boolean; error?: string }>;
-  getDeletedLabs: () => Promise<{ id: string; name: string; deletedAt: string; recoverableUntil: string; role: string }[]>;
-  createLabFromSettings: (name: string, displayName?: string, phone?: string, addressLine1?: string, city?: string, state?: string, zip?: string) => Promise<{ success: boolean; error?: string }>;
+  deleteLab: () => Promise<{ success: boolean; error?: string }>;
   isLabCreator: boolean;
   removeClient: (clientId: string) => void;
   deactivateClient: (clientId: string) => void;
   reactivateClient: (clientId: string) => void;
   deletedClientInvoices: DeletedClientInvoice[];
   inactiveClients: Client[];
-  refreshCases: (force?: boolean) => Promise<void>;
+  refreshCases: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -138,11 +135,92 @@ const SHIPPING_KEY = "@drivesync_shipping";
 const CONVERSATIONS_KEY = "@drivesync_conversations";
 const CHAT_MESSAGES_KEY = "@drivesync_chat_messages";
 const PRICING_TIERS_KEY = "@drivesync_pricing_tiers";
-const GROUP_JOIN_REQUESTS_KEY = "@drivesync_group_join_requests";
-const LAB_INVITATIONS_KEY = "@drivesync_lab_invitations";
 const BARCODE_ASSIGNMENTS_KEY = "@drivesync_barcode_assignments";
 const STATION_LABELS_KEY = "@drivesync_station_labels";
 const DELETED_CLIENT_INVOICES_KEY = "@drivesync_deleted_client_invoices";
+
+type LabDirectoryGroup = {
+  organizationId: string;
+  practiceName: string;
+  username: string;
+  practiceAddress?: string;
+  memberCount?: number;
+};
+
+type ServerMembership = {
+  id: string;
+  role: string;
+  status: string;
+  organizationId: string;
+  organization?: {
+    id: string;
+    type?: string;
+    name?: string;
+    displayName?: string | null;
+  } | null;
+};
+
+function normalizeAffiliationName(name?: string | null) {
+  return name?.trim().toLowerCase() || "";
+}
+
+function buildPrivateAffiliationKey(userId?: string | null) {
+  return userId ? `private:${userId}` : null;
+}
+
+function buildOrganizationAffiliationKey(organizationId?: string | null) {
+  return organizationId ? `org:${organizationId}` : null;
+}
+
+function buildLegacyLabAffiliationKey(practiceName?: string | null) {
+  const normalizedName = normalizeAffiliationName(practiceName);
+  return normalizedName ? `lab:${normalizedName}` : null;
+}
+
+function resolveCaseAffiliationKeys(labCase: LabCase) {
+  const keys = new Set<string>();
+
+  if (labCase.affiliationKey) {
+    keys.add(labCase.affiliationKey);
+  }
+
+  const legacyLabKey = buildLegacyLabAffiliationKey(labCase.affiliationName);
+  if (legacyLabKey) {
+    keys.add(legacyLabKey);
+  }
+
+  if (keys.size === 0) {
+    const privateKey = buildPrivateAffiliationKey(labCase.ownerId);
+    if (privateKey) {
+      keys.add(privateKey);
+    }
+  }
+
+  return Array.from(keys);
+}
+
+function buildDirectConversationId(usernameA?: string | null, usernameB?: string | null) {
+  const normalizedUsers = [usernameA, usernameB]
+    .map((value) => value?.trim().toLowerCase())
+    .filter((value): value is string => !!value)
+    .sort();
+
+  if (normalizedUsers.length < 2) {
+    return null;
+  }
+
+  return `dm:${normalizedUsers.join("::")}`;
+}
+
+function inferImageMimeType(imageUri: string) {
+  const normalizedUri = imageUri.toLowerCase();
+  if (normalizedUri.endsWith(".png")) return "image/png";
+  if (normalizedUri.endsWith(".webp")) return "image/webp";
+  if (normalizedUri.endsWith(".gif")) return "image/gif";
+  if (normalizedUri.endsWith(".heic")) return "image/heic";
+  if (normalizedUri.endsWith(".heif")) return "image/heif";
+  return "image/jpeg";
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const { currentUserId, currentUser, userType, registeredUsers, refreshUsers } = useAuth();
@@ -163,49 +241,65 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [deletedClientInvoices, setDeletedClientInvoices] = useState<DeletedClientInvoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [serverOrgId, setServerOrgId] = useState<string | null>(null);
-  const [serverMemberIds, setServerMemberIds] = useState<Set<string>>(new Set());
 
   const currentUserProfile = useMemo(() => {
     if (!currentUser) return null;
     return registeredUsers.find(u => u.username?.toLowerCase() === currentUser.toLowerCase()) || null;
   }, [currentUser, registeredUsers]);
+  const [activeLabAffiliationKey, setActiveLabAffiliationKey] = useState<string | null>(null);
+  const [activeLabAffiliationName, setActiveLabAffiliationName] = useState<string | null>(null);
+  const [hasActiveLabMembership, setHasActiveLabMembership] = useState(false);
+  const conversationsStorageKey = useMemo(
+    () => (currentUserId ? `${CONVERSATIONS_KEY}:${currentUserId}` : CONVERSATIONS_KEY),
+    [currentUserId]
+  );
+  const chatMessagesStorageKey = useMemo(
+    () => (currentUserId ? `${CHAT_MESSAGES_KEY}:${currentUserId}` : CHAT_MESSAGES_KEY),
+    [currentUserId]
+  );
 
   const userIsAffiliated = useMemo(() => {
-    if (!currentUserProfile) return false;
-    return !!currentUserProfile.practiceName;
-  }, [currentUserProfile]);
+    return hasActiveLabMembership;
+  }, [hasActiveLabMembership]);
 
-  const labMemberIds = useMemo(() => {
-    if (!currentUser || !currentUserId) return new Set<string>();
-    // Prefer server-confirmed membership over fragile practiceName matching
-    if (serverMemberIds.size > 0) {
-      const ids = new Set(serverMemberIds);
-      ids.add(currentUserId);
-      return ids;
+  const visibleCaseAffiliationKeys = useMemo(() => {
+    const keys = new Set<string>();
+    const privateAffiliationKey = buildPrivateAffiliationKey(currentUserId);
+    if (privateAffiliationKey) {
+      keys.add(privateAffiliationKey);
     }
-    // Fallback: practiceName string match (used before first server sync)
-    const ids = new Set<string>();
-    ids.add(currentUserId);
-    const myLabName = currentUserProfile?.practiceName?.toLowerCase()?.trim();
-    if (myLabName) {
-      for (const u of registeredUsers) {
-        if (u.id && u.practiceName?.toLowerCase()?.trim() === myLabName) {
-          ids.add(u.id);
-        }
-      }
+
+    if (activeLabAffiliationKey) {
+      keys.add(activeLabAffiliationKey);
     }
-    return ids;
-  }, [currentUser, currentUserId, currentUserProfile, registeredUsers, serverMemberIds]);
+
+    const legacyLabAffiliationKey = hasActiveLabMembership
+      ? buildLegacyLabAffiliationKey(activeLabAffiliationName)
+      : null;
+    if (legacyLabAffiliationKey) {
+      keys.add(legacyLabAffiliationKey);
+    }
+
+    return keys;
+  }, [activeLabAffiliationKey, activeLabAffiliationName, currentUserId, hasActiveLabMembership]);
+  const visibleCaseAffiliationScope = useMemo(
+    () => Array.from(visibleCaseAffiliationKeys).sort(),
+    [visibleCaseAffiliationKeys]
+  );
 
   const cases = useMemo(() => {
     if (!currentUserId) return [];
-    // When org is confirmed by server, show all cases — org-based server fetch guarantees
-    // they belong to this lab, and departed members' cases stay visible to the lab
-    if (serverOrgId) return allCases;
-    // Fallback: filter by server-confirmed (or practiceName-matched) member IDs
-    return allCases.filter((c) => c.ownerId && labMemberIds.has(c.ownerId));
-  }, [allCases, currentUserId, labMemberIds, serverOrgId]);
+    return [...allCases]
+      .filter((labCase) =>
+        resolveCaseAffiliationKeys(labCase).some((key) =>
+          visibleCaseAffiliationKeys.has(key)
+        )
+      )
+      .sort(
+        (a, b) =>
+          (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)
+      );
+  }, [allCases, currentUserId, visibleCaseAffiliationKeys]);
 
   function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
     setAllCases(updater);
@@ -213,14 +307,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function syncCaseToServer(labCase: LabCase) {
     try {
+      const normalizedCase: LabCase = {
+        ...labCase,
+        ownerId: labCase.ownerId || currentUserId || undefined,
+        affiliationName: labCase.affiliationName ?? null,
+      };
       await resilientFetch("/api/legacy/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: labCase.id,
-          ownerId: labCase.ownerId || currentUserId,
-          organizationId: labCase.labKey || undefined,
-          caseData: JSON.stringify(labCase),
+          id: normalizedCase.id,
+          ownerId: normalizedCase.ownerId || currentUserId,
+          caseData: JSON.stringify(normalizedCase),
         }),
       });
     } catch (e) {
@@ -236,18 +334,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function fetchCasesFromServer(ownerIds: string[], orgId?: string | null): Promise<LabCase[]> {
+  async function fetchCasesFromServer(
+    scopeKeys: string[],
+    viewerUserId?: string | null
+  ): Promise<LabCase[]> {
     try {
-      const effectiveOrgId = orgId ?? serverOrgId;
-      let url: string;
-      if (effectiveOrgId) {
-        url = `/api/legacy/cases?organizationId=${encodeURIComponent(effectiveOrgId)}`;
-      } else if (ownerIds.length > 0) {
-        url = `/api/legacy/cases?ownerIds=${ownerIds.join(",")}`;
-      } else {
-        return [];
-      }
-      const res = await resilientFetch(url);
+      const normalizedScopeKeys = Array.from(
+        new Set(scopeKeys.filter((value): value is string => !!value))
+      );
+      if (!viewerUserId || normalizedScopeKeys.length === 0) return [];
+
+      const params = new URLSearchParams({
+        viewerUserId,
+        scopeKeys: normalizedScopeKeys.join(","),
+      });
+      const res = await resilientFetch(`/api/legacy/cases?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
         return data.cases || [];
@@ -256,6 +357,335 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log("Could not fetch cases from server:", e);
     }
     return [];
+  }
+
+  async function readApiError(response: Response): Promise<string> {
+    try {
+      const payload = await response.json();
+      return payload?.message || payload?.error || "Request failed.";
+    } catch {
+      return "Request failed.";
+    }
+  }
+
+  async function fetchMyMemberships(): Promise<ServerMembership[]> {
+    if (!currentUserId) {
+      return [];
+    }
+
+    try {
+      const response = await resilientFetch("/api/auth/me");
+      if (!response.ok) {
+        return [];
+      }
+
+      const payload = await response.json();
+      return Array.isArray(payload.memberships) ? payload.memberships : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function fetchLabDirectory(): Promise<LabDirectoryGroup[]> {
+    try {
+      const response = await resilientFetch("/api/labs/groups");
+      if (!response.ok) {
+        return [];
+      }
+
+      const payload = await response.json();
+      return Array.isArray(payload.groups) ? payload.groups : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function normalizeSharedImageUri(imageUri?: string | null) {
+    if (!imageUri?.trim()) {
+      return undefined;
+    }
+
+    const normalizedUri = imageUri.trim();
+    if (
+      normalizedUri.startsWith("data:") ||
+      normalizedUri.startsWith("http://") ||
+      normalizedUri.startsWith("https://")
+    ) {
+      return normalizedUri;
+    }
+
+    if (normalizedUri.startsWith("blob:") && typeof fetch === "function") {
+      try {
+        const response = await fetch(normalizedUri);
+        const blob = await response.blob();
+        return await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error("Could not read blob image."));
+          reader.onloadend = () => {
+            if (typeof reader.result === "string") {
+              resolve(reader.result);
+            } else {
+              reject(new Error("Could not convert blob image."));
+            }
+          };
+          reader.readAsDataURL(blob);
+        });
+      } catch {
+        return normalizedUri;
+      }
+    }
+
+    try {
+      const base64 = await FileSystem.readAsStringAsync(normalizedUri, {
+        encoding: "base64" as any,
+      });
+      return `data:${inferImageMimeType(normalizedUri)};base64,${base64}`;
+    } catch {
+      return normalizedUri;
+    }
+  }
+
+  async function fetchChatStateFromServer() {
+    if (!currentUserId || !currentUser) {
+      return;
+    }
+
+    try {
+      const response = await resilientFetch("/api/legacy/chat");
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await response.json();
+      const nextConversations = Array.isArray(payload?.conversations)
+        ? payload.conversations
+        : [];
+      const nextMessages = Array.isArray(payload?.messages) ? payload.messages : [];
+
+      setConversations(nextConversations);
+      setChatMessages(nextMessages);
+      await AsyncStorage.setItem(
+        conversationsStorageKey,
+        JSON.stringify(nextConversations)
+      );
+      await AsyncStorage.setItem(chatMessagesStorageKey, JSON.stringify(nextMessages));
+    } catch {
+      // Keep the last known local chat state on transient failures.
+    }
+  }
+
+  async function fetchPendingLabJoinRequests() {
+    try {
+      const response = await resilientFetch("/api/organizations/join-requests/mine/pending");
+      if (!response.ok) {
+        return [];
+      }
+
+      const payload = await response.json();
+      return Array.isArray(payload?.data) ? payload.data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function findCurrentLabMembership(): Promise<ServerMembership | null> {
+    const memberships = await fetchMyMemberships();
+    return (
+      memberships.find(
+        (membership) =>
+          membership.status === "active" &&
+          membership.organization?.type === "lab"
+      ) || null
+    );
+  }
+
+  async function findCurrentLabAdminMembership(): Promise<ServerMembership | null> {
+    const memberships = await fetchMyMemberships();
+    return (
+      memberships.find(
+        (membership) =>
+          membership.status === "active" &&
+          membership.organization?.type === "lab" &&
+          (membership.role === "owner" || membership.role === "admin")
+      ) || null
+    );
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncActiveLabAffiliationState() {
+      if (!currentUserId) {
+        if (!cancelled) {
+          setHasActiveLabMembership(false);
+          setActiveLabAffiliationKey(null);
+          setActiveLabAffiliationName(null);
+        }
+        return;
+      }
+
+      const activeMembership = await findCurrentLabMembership();
+      if (cancelled) {
+        return;
+      }
+
+      if (activeMembership?.organizationId) {
+        setHasActiveLabMembership(true);
+        setActiveLabAffiliationKey(
+          buildOrganizationAffiliationKey(activeMembership.organizationId)
+        );
+        setActiveLabAffiliationName(
+          activeMembership.organization?.displayName ||
+            activeMembership.organization?.name ||
+            null
+        );
+        return;
+      }
+
+      setHasActiveLabMembership(false);
+      setActiveLabAffiliationKey(null);
+      setActiveLabAffiliationName(null);
+    }
+
+    syncActiveLabAffiliationState().catch(() => {
+      if (cancelled) {
+        return;
+      }
+      setHasActiveLabMembership(false);
+      setActiveLabAffiliationKey(null);
+      setActiveLabAffiliationName(null);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentUserId,
+    currentUserProfile?.email,
+    currentUserProfile?.role,
+  ]);
+
+  function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
+    if (status === "approved" || status === "accepted") {
+      return "accepted";
+    }
+    if (status === "rejected" || status === "declined") {
+      return "declined";
+    }
+    return "pending";
+  }
+
+  function mapInviteStatus(status?: string): LabInvitation["status"] {
+    if (status === "accepted") {
+      return "accepted";
+    }
+    if (status === "rejected" || status === "declined") {
+      return "declined";
+    }
+    return "pending";
+  }
+
+  async function refreshCollaborationState() {
+    if (!currentUserId) {
+      setGroupJoinRequests([]);
+      setLabInvitations([]);
+      return;
+    }
+
+    const [adminMembership, pendingInvitesResponse] = await Promise.all([
+      findCurrentLabAdminMembership(),
+      resilientFetch("/api/organizations/invites/pending-for-me").catch(() => null),
+    ]);
+
+    const shouldExpectAdminRequests =
+      hasActiveLabMembership && currentUserProfile?.role === "admin";
+
+    if (!adminMembership?.organizationId) {
+      if (!shouldExpectAdminRequests) {
+        setGroupJoinRequests([]);
+      }
+    } else {
+      try {
+        const response = await resilientFetch(
+          `/api/organizations/${adminMembership.organizationId}/join-requests`
+        );
+
+        if (response.ok) {
+          const payload = await response.json();
+          const rawRequests = Array.isArray(payload?.data) ? payload.data : [];
+
+          const mappedRequests: GroupJoinRequest[] = rawRequests
+            .map((request: any) => {
+              const requestingUser = registeredUsers.find(
+                (user) => user.id === request.requestedByUserId
+              );
+              const organizationName =
+                adminMembership.organization?.displayName ||
+                adminMembership.organization?.name ||
+                activeLabAffiliationName ||
+                "your lab";
+
+              return {
+                id: request.id,
+                organizationId: request.organizationId,
+                requestingUserId: request.requestedByUserId,
+                requestingUsername:
+                  requestingUser?.username || request.requestedByUserId || "Unknown User",
+                targetAdminUsername: currentUser || "",
+                message:
+                  request.message ||
+                  `${requestingUser?.username || "A user"} would like to join ${organizationName}.`,
+                status: mapJoinRequestStatus(request.status),
+                createdAt: request.createdAt
+                  ? new Date(request.createdAt).getTime()
+                  : Date.now(),
+              };
+            })
+            .filter((request) => request.status === "pending");
+
+          setGroupJoinRequests(mappedRequests);
+        }
+      } catch {
+        // Preserve the current alert list if the refresh fails.
+      }
+    }
+
+    if (pendingInvitesResponse?.ok) {
+      try {
+        const payload = await pendingInvitesResponse.json();
+        const rawInvites = Array.isArray(payload?.data) ? payload.data : [];
+        const mappedInvites: LabInvitation[] = rawInvites
+          .map((invite: any) => ({
+            id: invite.id,
+            organizationId: invite.organizationId,
+            token: invite.token,
+            adminUsername:
+              invite.invitedByUser?.username ||
+              invite.organization?.createdByUserId ||
+              "Lab Admin",
+            adminLabName:
+              invite.organization?.displayName ||
+              invite.organization?.name ||
+              "Lab",
+            targetUsername: currentUser || "",
+            targetEmail: invite.email || currentUserProfile?.email || "",
+            role:
+              invite.roleToAssign === "owner" || invite.roleToAssign === "admin"
+                ? "admin"
+                : "user",
+            status: mapInviteStatus(invite.status),
+            createdAt: invite.createdAt ? new Date(invite.createdAt).getTime() : Date.now(),
+          }))
+          .filter((invite) => invite.status === "pending");
+
+        setLabInvitations(mappedInvites);
+      } catch {
+        // Preserve the current invite list if the refresh fails.
+      }
+      return;
+    }
+
+    // Preserve the current invite list if the refresh fails.
   }
 
   useEffect(() => {
@@ -270,21 +700,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(interval);
   }, [currentUserId]);
 
+  useEffect(() => {
+    if (!currentUserId) {
+      setGroupJoinRequests([]);
+      setLabInvitations([]);
+      return;
+    }
+
+    refreshCollaborationState();
+
+    const interval = setInterval(() => {
+      refreshCollaborationState();
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [
+    currentUserId,
+    currentUser,
+    currentUserProfile?.practiceName,
+    currentUserProfile?.email,
+    currentUserProfile?.role,
+    hasActiveLabMembership,
+    activeLabAffiliationName,
+    registeredUsers,
+  ]);
+
+  useEffect(() => {
+    if (!currentUserId || !currentUser) {
+      setConversations([]);
+      setChatMessages([]);
+      return;
+    }
+
+    void fetchChatStateFromServer();
+
+    const interval = setInterval(() => {
+      void fetchChatStateFromServer();
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [currentUserId, currentUser, conversationsStorageKey, chatMessagesStorageKey]);
+
   const prevCasesRef = useRef<LabCase[]>([]);
   const syncReadyRef = useRef(false);
   const fetchingRef = useRef(false);
 
-  async function refreshCases(force = false) {
-    if (!force && fetchingRef.current) return;
+  async function refreshCases() {
+    if (fetchingRef.current || !currentUserId || visibleCaseAffiliationScope.length === 0) {
+      return;
+    }
     fetchingRef.current = true;
     try {
-      // Refresh org membership first, using the fresh orgId for case fetch
-      await refreshUsers();
-      const membershipResult = await fetchServerOrgMembership();
-      // null means network error → keep current serverOrgId; {orgId: null} means not in a lab
-      const freshOrgId = membershipResult === null ? serverOrgId : membershipResult.orgId;
-      const ownerIds = Array.from(labMemberIds);
-      const serverCases = await fetchCasesFromServer(ownerIds, freshOrgId);
+      const serverCases = await fetchCasesFromServer(
+        visibleCaseAffiliationScope,
+        currentUserId
+      );
       mergeServerCases(serverCases);
     } catch (e) {
       console.log("Could not refresh cases:", e);
@@ -317,266 +787,62 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    if (!currentUserId || labMemberIds.size === 0) return;
+    if (!currentUserId || visibleCaseAffiliationScope.length === 0) {
+      syncReadyRef.current = false;
+      return;
+    }
+
+    let cancelled = false;
+    const localCasesSnapshot = allCases;
     syncReadyRef.current = false;
     fetchingRef.current = true;
-    const ownerIds = Array.from(labMemberIds);
-    fetchCasesFromServer(ownerIds).then(serverCases => {
-      if (serverCases.length > 0) {
-        mergeServerCases(serverCases);
-      } else {
-        prevCasesRef.current = allCases;
-      }
+
+    fetchCasesFromServer(visibleCaseAffiliationScope, currentUserId)
+      .then((serverCases) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (serverCases.length > 0) {
+          mergeServerCases(serverCases);
+        } else {
+          prevCasesRef.current = localCasesSnapshot;
+        }
+      })
+      .finally(() => {
+        if (cancelled) {
+          return;
+        }
+        fetchingRef.current = false;
+        syncReadyRef.current = true;
+      });
+
+    return () => {
+      cancelled = true;
       fetchingRef.current = false;
-      syncReadyRef.current = true;
-    });
-  }, [currentUserId, labMemberIds]);
+    };
+  }, [currentUserId, visibleCaseAffiliationScope]);
 
   useEffect(() => {
-    if (!currentUserId) return;
-    const ownerIds = Array.from(labMemberIds);
+    if (!currentUserId || visibleCaseAffiliationScope.length === 0) {
+      return;
+    }
+
     const interval = setInterval(() => {
       if (fetchingRef.current) return;
       fetchingRef.current = true;
-      // Use serverOrgId (captured from this effect's closure) for org-based fetch
-      fetchCasesFromServer(ownerIds, serverOrgId).then(serverCases => {
-        mergeServerCases(serverCases);
-        fetchingRef.current = false;
-      }).catch(() => { fetchingRef.current = false; });
-    }, 10000);
+      fetchCasesFromServer(visibleCaseAffiliationScope, currentUserId)
+        .then((serverCases) => {
+          mergeServerCases(serverCases);
+        })
+        .catch(() => null)
+        .finally(() => {
+          fetchingRef.current = false;
+        });
+    }, 15000);
+
     return () => clearInterval(interval);
-  }, [currentUserId, labMemberIds, serverOrgId]);
-
-  async function fetchServerOrgMembership() {
-    try {
-      const meResp = await resilientFetch("/api/auth/me");
-      if (!meResp.ok) return null;
-      const meData = await meResp.json();
-      type ServerMembership = { organizationId: string; role: string; status: string; organization?: { type?: string; displayName?: string | null; name?: string } | null };
-      const memberships: ServerMembership[] = Array.isArray(meData.memberships) ? meData.memberships : [];
-
-      const activeLabMembership = memberships.find(
-        m => m.status === "active" && m.organization?.type === "lab"
-      );
-      if (activeLabMembership) {
-        const orgId = activeLabMembership.organizationId;
-        setServerOrgId(orgId);
-        // Fetch current member IDs for this org
-        const membersResp = await resilientFetch(`/api/organizations/${orgId}/members`).catch(() => null);
-        if (membersResp?.ok) {
-          const membersData = await membersResp.json();
-          const members: any[] = membersData.data || membersData.members || [];
-          const memberIds = new Set<string>(members.map((m: any) => m.userId || m.id).filter(Boolean));
-          if (memberIds.size > 0) setServerMemberIds(memberIds);
-        }
-        return { orgId, memberships };
-      } else {
-        setServerOrgId(null);
-        setServerMemberIds(new Set());
-        return { orgId: null, memberships };
-      }
-    } catch (e) {
-      console.log("Could not fetch org membership:", e);
-      return null;
-    }
-  }
-
-  async function fetchServerJoinRequestsAndInvites() {
-    try {
-      // Fetch memberships directly from server — no fragile local-state matching
-      const meResp = await resilientFetch("/api/auth/me");
-      if (!meResp.ok) return;
-      const meData = await meResp.json();
-      type ServerMembership = { organizationId: string; role: string; status: string; organization?: { type?: string; displayName?: string | null; name?: string } | null };
-      const memberships: ServerMembership[] = Array.isArray(meData.memberships) ? meData.memberships : [];
-
-      // Update serverOrgId and serverMemberIds from the active membership
-      const activeLabMembership = memberships.find(m => m.status === "active" && m.organization?.type === "lab");
-      if (activeLabMembership) {
-        const orgId = activeLabMembership.organizationId;
-        setServerOrgId(orgId);
-        resilientFetch(`/api/organizations/${orgId}/members`).then(async r => {
-          if (r.ok) {
-            const d = await r.json();
-            const members: any[] = d.data || d.members || [];
-            const ids = new Set<string>(members.map((m: any) => m.userId || m.id).filter(Boolean));
-            if (ids.size > 0) setServerMemberIds(ids);
-          }
-        }).catch(() => {});
-      } else {
-        setServerOrgId(null);
-        setServerMemberIds(new Set());
-      }
-
-      // Admin lab orgs: where current user is owner or admin of a lab
-      const adminLabOrgIds = memberships
-        .filter(m => m.status === "active" && (m.role === "owner" || m.role === "admin") && m.organization?.type === "lab")
-        .map(m => m.organizationId);
-
-      for (const orgId of adminLabOrgIds) {
-        const adminMembership = memberships.find(m => m.organizationId === orgId);
-        const adminLabName = adminMembership?.organization?.displayName || adminMembership?.organization?.name || "";
-
-        // Fetch join requests and invites, tracking whether each call succeeded
-        const [jrResp, invResp] = await Promise.all([
-          resilientFetch(`/api/organizations/${orgId}/join-requests`).catch(() => null),
-          resilientFetch(`/api/organizations/${orgId}/invites`).catch(() => null),
-        ]);
-        const jrOk = jrResp?.ok ?? false;
-        const invOk = invResp?.ok ?? false;
-        const jrData = jrOk ? await jrResp!.json().catch(() => ({ data: [] })) : { data: [] };
-        const invData = invOk ? await invResp!.json().catch(() => ({ data: [] })) : { data: [] };
-
-        // Resolve the admin username from auth state — currentUser may be stale
-        // in the setInterval closure, so always derive it from registeredUsers
-        const adminUsername = currentUser
-          || registeredUsers.find(u => u.id === currentUserId)?.username
-          || "";
-
-        const serverJoinReqs: any[] = jrData.data || [];
-        const serverJoinReqIds = new Set(serverJoinReqs.map((s: any) => s.id));
-        setGroupJoinRequests(prev => {
-          let changed = false;
-          const updated = prev.filter(r => {
-            // Only purge if the server fetch actually SUCCEEDED and confirms the
-            // request is gone — never purge based on a failed/empty-error response
-            if (jrOk && r.serverJoinRequestId && r.status === "pending" && !serverJoinReqIds.has(r.serverJoinRequestId)) {
-              changed = true;
-              return false;
-            }
-            return true;
-          });
-          const mutable = [...updated];
-          for (const sjr of serverJoinReqs) {
-            const existing = mutable.find(r => r.serverJoinRequestId === sjr.id);
-            if (!existing) {
-              const requester = registeredUsers.find(u => u.id === sjr.userId);
-              mutable.push({
-                id: generateId(),
-                serverJoinRequestId: sjr.id,
-                requestingUsername: requester?.username || sjr.userId,
-                targetAdminUsername: adminUsername,
-                message: sjr.message || `${requester?.username || "Someone"} would like to join your lab.`,
-                status: sjr.status === "approved" ? "accepted" as const : sjr.status === "rejected" ? "declined" as const : "pending" as const,
-                createdAt: sjr.createdAt ? new Date(sjr.createdAt).getTime() : Date.now(),
-              });
-              changed = true;
-            } else {
-              // Heal stale-closure entries that were added with a blank admin name
-              if (adminUsername && !existing.targetAdminUsername) {
-                existing.targetAdminUsername = adminUsername;
-                changed = true;
-              }
-              if (sjr.status === "approved" && existing.status === "pending") {
-                existing.status = "accepted";
-                changed = true;
-              } else if (sjr.status === "rejected" && existing.status === "pending") {
-                existing.status = "declined";
-                changed = true;
-              }
-            }
-          }
-          if (!changed) return prev;
-          AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(mutable));
-          return mutable;
-        });
-
-        const serverInvites: any[] = invData.data || [];
-        if (serverInvites.length > 0) {
-          setLabInvitations(prev => {
-            let changed = false;
-            const updated = [...prev];
-            for (const si of serverInvites) {
-              const existing = updated.find(inv => inv.serverInviteToken === si.id);
-              if (!existing) {
-                const invitee = registeredUsers.find(u => u.id === si.invitedUserId);
-                updated.push({
-                  id: generateId(),
-                  serverInviteToken: si.id,
-                  invitedUsername: invitee?.username || si.invitedUserId || "",
-                  invitedEmail: invitee?.email || "",
-                  adminLabName,
-                  adminUsername: currentUser || "",
-                  role: si.role === "admin" ? "admin" as const : "user" as const,
-                  status: si.status === "accepted" ? "accepted" as const : si.status === "rejected" || si.status === "expired" || si.status === "revoked" ? "declined" as const : "pending" as const,
-                  createdAt: si.createdAt ? new Date(si.createdAt).getTime() : Date.now(),
-                });
-                changed = true;
-              } else if (si.status === "accepted" && existing.status === "pending") {
-                existing.status = "accepted";
-                changed = true;
-              }
-            }
-            if (!changed) return prev;
-            AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
-            return updated;
-          });
-        }
-      }
-
-      // Pending invites sent TO the current user (as invitee)
-      const myInvitesResp = await resilientFetch("/api/organizations/my-invites").then(r => r.json()).catch(() => ({ data: [] }));
-      const myInvites: any[] = myInvitesResp.data || [];
-      if (myInvites.length > 0) {
-        setLabInvitations(prev => {
-          let changed = false;
-          const updated = [...prev];
-          for (const si of myInvites) {
-            const existing = updated.find(inv => inv.serverInviteToken === si.id);
-            if (!existing) {
-              updated.push({
-                id: generateId(),
-                serverInviteToken: si.id,
-                invitedUsername: currentUser || "",
-                invitedEmail: currentUserProfile?.email || "",
-                adminLabName: si.organizationName || "A Lab",
-                adminUsername: si.inviterUsername || "Admin",
-                role: si.role === "admin" ? "admin" as const : "user" as const,
-                status: "pending" as const,
-                createdAt: si.createdAt ? new Date(si.createdAt).getTime() : Date.now(),
-              });
-              changed = true;
-            }
-          }
-          if (!changed) return prev;
-          AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
-          return updated;
-        });
-      }
-
-      // Status updates for join requests sent BY the current user (as requester)
-      const myJrResp = await resilientFetch("/api/organizations/my-join-requests").then(r => r.json()).catch(() => ({ data: [] }));
-      const myJoinReqs: any[] = myJrResp.data || [];
-      if (myJoinReqs.length > 0) {
-        setGroupJoinRequests(prev => {
-          let changed = false;
-          const updated = [...prev];
-          for (const sjr of myJoinReqs) {
-            const existing = updated.find(r => r.serverJoinRequestId === sjr.id);
-            if (existing && sjr.status === "approved" && existing.status === "pending") {
-              existing.status = "accepted";
-              changed = true;
-            } else if (existing && sjr.status === "rejected" && existing.status === "pending") {
-              existing.status = "declined";
-              changed = true;
-            }
-          }
-          if (!changed) return prev;
-          AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
-          return updated;
-        });
-      }
-    } catch (e) {
-      console.log("Could not fetch join requests/invites:", e);
-    }
-  }
-
-  useEffect(() => {
-    if (!currentUserId) return;
-    fetchServerJoinRequestsAndInvites();
-    const interval = setInterval(fetchServerJoinRequestsAndInvites, 10000);
-    return () => clearInterval(interval);
-  }, [currentUserId]);
+  }, [currentUserId, visibleCaseAffiliationScope]);
 
   useEffect(() => {
     if (!syncReadyRef.current || fetchingRef.current || !currentUserId) return;
@@ -606,32 +872,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         AsyncStorage.getItem(USERS_KEY),
         AsyncStorage.getItem(INVOICES_KEY),
         AsyncStorage.getItem(SHIPPING_KEY),
-        AsyncStorage.getItem(CONVERSATIONS_KEY),
-        AsyncStorage.getItem(CHAT_MESSAGES_KEY),
+        AsyncStorage.getItem(conversationsStorageKey),
+        AsyncStorage.getItem(chatMessagesStorageKey),
         AsyncStorage.getItem(PRICING_TIERS_KEY),
       ]);
 
       if (savedCases) {
         const parsedCases: LabCase[] = JSON.parse(savedCases);
-        const cleaned = parsedCases.map((c) => {
-          if (!c.activityLog || c.activityLog.length === 0) return c;
-          const seen = new Set<string>();
-          const deduped = c.activityLog.filter((e) => {
-            if (e.type !== "barcode_assigned" && e.type !== "barcode_unassigned") return true;
-            const key = `${e.type}|${e.description}|${Math.floor((e.timestamp || 0) / 60000)}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          });
-          if (deduped.length !== c.activityLog.length) {
-            return { ...c, activityLog: deduped };
-          }
-          return c;
-        });
-        setAllCases(cleaned);
-        if (cleaned !== parsedCases) {
-          AsyncStorage.setItem(CASES_KEY, JSON.stringify(cleaned));
-        }
+        setAllCases(parsedCases);
       } else {
         setAllCases([]);
       }
@@ -692,15 +940,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setCustomStationLabels(JSON.parse(savedStationLabels));
       }
 
-      const savedGroupJoinRequests = await AsyncStorage.getItem(GROUP_JOIN_REQUESTS_KEY);
-      if (savedGroupJoinRequests) {
-        setGroupJoinRequests(JSON.parse(savedGroupJoinRequests));
-      }
-
-      const savedLabInvitations = await AsyncStorage.getItem(LAB_INVITATIONS_KEY);
-      if (savedLabInvitations) {
-        setLabInvitations(JSON.parse(savedLabInvitations));
-      }
+      setGroupJoinRequests([]);
+      setLabInvitations([]);
 
       const savedDeletedClientInvoices = await AsyncStorage.getItem(DELETED_CLIENT_INVOICES_KEY);
       if (savedDeletedClientInvoices) {
@@ -761,6 +1002,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">,
   ): LabCase {
     const now = Date.now();
+    const privateAffiliationKey = buildPrivateAffiliationKey(currentUserId);
+    const fallbackLabAffiliationName = hasActiveLabMembership
+      ? activeLabAffiliationName
+      : null;
+    const fallbackLegacyLabAffiliationKey = hasActiveLabMembership
+      ? buildLegacyLabAffiliationKey(fallbackLabAffiliationName)
+      : null;
+    const caseAffiliationKey =
+      activeLabAffiliationKey || fallbackLegacyLabAffiliationKey || privateAffiliationKey;
+    const caseAffiliationName =
+      caseAffiliationKey && caseAffiliationKey !== privateAffiliationKey
+        ? fallbackLabAffiliationName
+        : null;
     const createdEntry: import("@/lib/data").ActivityEntry = {
       id: generateId(),
       type: "created",
@@ -773,7 +1027,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ...c,
       id: caseId,
       ownerId: currentUserId || undefined,
-      labKey: serverOrgId || undefined,
+      affiliationKey: caseAffiliationKey,
+      affiliationName: caseAffiliationName,
       createdAt: now,
       updatedAt: now,
       routeHistory: [{ station: c.status, timestamp: now }],
@@ -945,30 +1200,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function addCasePhoto(caseId: string, photoUri: string, user?: string) {
-    const now = Date.now();
-    const photoEntry: ActivityEntry = {
-      id: generateId(),
-      type: "photo",
-      timestamp: now,
-      description: "Photo added to case",
-      imageUri: photoUri,
-      user: user || undefined,
-    };
-    setCases((prevCases) => {
-      const updated = prevCases.map((c) => {
-        if (c.id === caseId) {
-          return {
-            ...c,
-            updatedAt: now,
-            photos: [...(c.photos || []), photoUri],
-            activityLog: [...(c.activityLog || []), photoEntry],
-          };
-        }
-        return c;
+    void (async () => {
+      const sharedPhotoUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
+      const now = Date.now();
+      const photoEntry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: now,
+        description: "Photo added to case",
+        imageUri: sharedPhotoUri,
+        user: user || undefined,
+      };
+      setCases((prevCases) => {
+        const updated = prevCases.map((c) => {
+          if (c.id === caseId) {
+            const updatedCase = {
+              ...c,
+              updatedAt: now,
+              photos: [...(c.photos || []), sharedPhotoUri],
+              activityLog: [...(c.activityLog || []), photoEntry],
+            };
+            void syncCaseToServer(updatedCase);
+            return updatedCase;
+          }
+          return c;
+        });
+        AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+        return updated;
       });
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
-      return updated;
-    });
+    })();
   }
 
   function addCaseNote(caseId: string, note: string, user?: string) {
@@ -983,12 +1243,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
-          return {
+          const updatedCase = {
             ...c,
             updatedAt: now,
             notes: c.notes ? `${c.notes}\n${note}` : note,
             activityLog: [...(c.activityLog || []), noteEntry],
           };
+          void syncCaseToServer(updatedCase);
+          return updatedCase;
         }
         return c;
       });
@@ -1545,150 +1807,184 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function sendChatMessage(conversationId: string, content: string, imageUri?: string) {
-    const msg: ChatMessage = {
+    if (!currentUser) {
+      return;
+    }
+
+    const trimmedContent = content.trim();
+    const targetConversation =
+      conversations.find((conversation) => conversation.id === conversationId) || null;
+    const targetUsername = targetConversation?.clientName?.trim();
+    const resolvedConversationId =
+      buildDirectConversationId(currentUser, targetUsername) || conversationId;
+
+    if (!targetUsername || (!trimmedContent && !imageUri)) {
+      return;
+    }
+
+    const timestamp = Date.now();
+    const optimisticMessage: ChatMessage = {
       id: generateId(),
-      conversationId,
-      senderId: "lab",
+      conversationId: resolvedConversationId,
+      senderId: currentUser,
       senderType: "lab",
-      content,
+      content: trimmedContent,
       imageUri,
-      timestamp: Date.now(),
+      timestamp,
       read: true,
     };
-    setChatMessages(prev => {
-      const updated = [...prev, msg];
-      AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated));
+
+    setChatMessages((prev) => {
+      const updated = [...prev, optimisticMessage];
+      AsyncStorage.setItem(chatMessagesStorageKey, JSON.stringify(updated));
       return updated;
     });
-    setConversations(prev => {
-      const updated = prev.map(c => {
-        if (c.id === conversationId) {
-          return { ...c, lastMessage: imageUri ? "Photo" : content, lastMessageTime: Date.now() };
-        }
-        return c;
-      });
-      AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updated));
-      return updated;
-    });
-  }
-
-  async function sendGroupJoinRequestAsync(targetAdminUsername: string, requestingUsername: string, message?: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === targetAdminUsername.toLowerCase());
-      if (!adminProfile?.practiceName) {
-        return { success: false, error: "Could not find that lab admin." };
-      }
-
-      const groupsResp = await resilientFetch("/api/labs/groups");
-      const groupsData = await groupsResp.json();
-      const groups: Array<{ practiceName: string; organizationId: string }> = groupsData.groups || [];
-      const match = groups.find(g => g.practiceName.toLowerCase().trim() === adminProfile.practiceName!.toLowerCase().trim());
-      if (!match?.organizationId) {
-        return { success: false, error: "Could not find this lab on the server. Please try again later." };
-      }
-
-      const resp = await resilientFetch(`/api/organizations/${match.organizationId}/join-requests`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestedRole: "user",
-          message: message || `${requestingUsername} would like to join your lab.`,
-        }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        const errMsg = data?.message || data?.error || "Failed to send join request.";
-        return { success: false, error: errMsg };
-      }
-
-      if (data?.data?.id) {
-        const request: GroupJoinRequest = {
-          id: generateId(),
-          requestingUsername,
-          targetAdminUsername,
-          message: message || `${requestingUsername} would like to join your lab.`,
-          status: "pending",
-          createdAt: Date.now(),
-          serverJoinRequestId: data.data.id,
+    setConversations((prev) => {
+      const nextConversation: Conversation =
+        targetConversation || {
+          id: resolvedConversationId,
+          clientId: resolvedConversationId,
+          clientName: targetUsername,
+          lastMessage: imageUri ? "Photo" : trimmedContent,
+          lastMessageTime: timestamp,
+          unreadCount: 0,
         };
-        setGroupJoinRequests(prev => {
-          const updated = [...prev, request];
-          AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
-          return updated;
-        });
-      }
+      const updatedConversation = {
+        ...nextConversation,
+        lastMessage: imageUri ? "Photo" : trimmedContent,
+        lastMessageTime: timestamp,
+        unreadCount: 0,
+      };
+      const updated = [
+        updatedConversation,
+        ...prev.filter((conversation) => conversation.id !== updatedConversation.id),
+      ];
+      AsyncStorage.setItem(conversationsStorageKey, JSON.stringify(updated));
+      return updated;
+    });
 
-      return { success: true };
-    } catch (e: any) {
-      console.log("sendGroupJoinRequest error:", e);
-      return { success: false, error: "Network error. Please check your connection and try again." };
-    }
-  }
-
-  function sendGroupJoinRequest(targetAdminUsername: string, requestingUsername: string, message?: string): { success: boolean; error?: string } {
-    sendGroupJoinRequestAsync(targetAdminUsername, requestingUsername, message)
-      .then(result => {
-        if (!result.success && result.error) {
-          Alert.alert("Unable to Send", result.error);
-        } else if (result.success) {
-          Alert.alert("Request Sent", "Your join request has been sent to the lab administrator.");
-          fetchServerJoinRequestsAndInvites();
-        }
-      });
-    return { success: true };
-  }
-
-  async function respondToGroupJoinRequest(requestId: string, accept: boolean, role?: "admin" | "user") {
-    const request = groupJoinRequests.find(r => r.id === requestId);
-    if (!request) return;
-
-    const adminProfile = registeredUsers.find(u => u.username.toLowerCase() === request.targetAdminUsername.toLowerCase());
-    const requestingUser = registeredUsers.find(u => u.username.toLowerCase() === request.requestingUsername.toLowerCase());
-
-    const serverReqId = request.serverJoinRequestId;
-    if (serverReqId) {
+    void (async () => {
       try {
-        const endpoint = accept
-          ? `/api/organizations/join-requests/${serverReqId}/approve`
-          : `/api/organizations/join-requests/${serverReqId}/reject`;
-        const resp = await resilientFetch(endpoint, {
+        const sharedImageUri = imageUri
+          ? await normalizeSharedImageUri(imageUri)
+          : undefined;
+        const response = await resilientFetch("/api/legacy/chat/send", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: role || "user" }),
+          body: JSON.stringify({
+            conversationId: resolvedConversationId,
+            targetUsername,
+            content: trimmedContent,
+            imageUri: sharedImageUri,
+          }),
         });
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}));
-          Alert.alert("Error", data?.message || "Failed to update join request on server.");
-          return;
+
+        if (response.ok) {
+          await fetchChatStateFromServer();
         }
-      } catch (e) {
-        console.log("Failed to update join request on server:", e);
-        Alert.alert("Error", "Network error. Please check your connection and try again.");
-        return;
+      } catch {
+        // Preserve the optimistic local message until the next successful sync.
       }
+    })();
+  }
+
+  async function sendGroupJoinRequest(
+    targetAdminUsername: string,
+    requestingUsername: string,
+    message?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!currentUserId) {
+      return { success: false, error: "You must be signed in to send a request." };
     }
 
-    setGroupJoinRequests(prev => {
-      const updated = prev.map(r =>
-        r.id === requestId ? { ...r, status: accept ? "accepted" as const : "declined" as const } : r
-      );
-      AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(updated));
-      return updated;
-    });
+    const labGroups = await fetchLabDirectory();
+    const normalizedTarget = targetAdminUsername.trim().toLowerCase();
+    const targetGroup = labGroups.find(
+      (group) => group.username.toLowerCase() === normalizedTarget
+    );
 
-    if (accept) {
-      if (requestingUser && requestingUser.userType === "provider") {
+    if (!targetGroup) {
+      return { success: false, error: "That lab administrator could not be found." };
+    }
+
+    try {
+      const response = await resilientFetch(
+        `/api/organizations/${targetGroup.organizationId}/join-requests`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requestedRole: currentUserProfile?.role === "admin" ? "admin" : "user",
+            message:
+              message || `${requestingUsername} would like to join ${targetGroup.practiceName}.`,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        return { success: false, error: await readApiError(response) };
+      }
+
+      await refreshCollaborationState();
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error?.message || "Could not send the join request." };
+    }
+  }
+
+  async function respondToGroupJoinRequest(
+    requestId: string,
+    accept: boolean,
+    role?: "admin" | "user"
+  ): Promise<{ success: boolean; error?: string }> {
+    const request = groupJoinRequests.find((entry) => entry.id === requestId);
+    if (!request) {
+      return { success: false, error: "Join request not found." };
+    }
+
+    try {
+      const endpoint = accept
+        ? `/api/organizations/join-requests/${requestId}/approve`
+        : `/api/organizations/join-requests/${requestId}/reject`;
+      const response = await resilientFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(accept ? { role: role || "user" } : {}),
+      });
+
+      if (!response.ok) {
+        return { success: false, error: await readApiError(response) };
+      }
+
+      const requestingUser = registeredUsers.find(
+        (user) =>
+          user.id === request.requestingUserId ||
+          user.username.toLowerCase() === request.requestingUsername.toLowerCase()
+      );
+
+      if (accept && requestingUser?.userType === "provider") {
         const doctorLabel = requestingUser.doctorName
-          ? (requestingUser.accountNumber ? `Dr. ${requestingUser.doctorName} ${formatAcctNum(requestingUser.accountNumber)}` : `Dr. ${requestingUser.doctorName}`)
+          ? requestingUser.accountNumber
+            ? `Dr. ${requestingUser.doctorName} ${formatAcctNum(requestingUser.accountNumber)}`
+            : `Dr. ${requestingUser.doctorName}`
           : `Dr. ${requestingUser.username}`;
-        const alreadyClient = clients.some(c =>
-          c.leadDoctor.toLowerCase() === doctorLabel.toLowerCase() ||
-          (requestingUser.doctorName && c.leadDoctor.toLowerCase().includes(requestingUser.doctorName.toLowerCase())) ||
-          (requestingUser.practiceName && c.practiceName.toLowerCase() === requestingUser.practiceName.toLowerCase())
+        const alreadyClient = clients.some(
+          (client) =>
+            client.leadDoctor.toLowerCase() === doctorLabel.toLowerCase() ||
+            (requestingUser.doctorName &&
+              client.leadDoctor
+                .toLowerCase()
+                .includes(requestingUser.doctorName.toLowerCase())) ||
+            (requestingUser.practiceName &&
+              client.practiceName.toLowerCase() ===
+                requestingUser.practiceName.toLowerCase())
         );
+
         if (!alreadyClient) {
           addClient({
-            practiceName: requestingUser.practiceName || `${requestingUser.doctorName || requestingUser.username}'s Practice`,
+            practiceName:
+              requestingUser.practiceName ||
+              `${requestingUser.doctorName || requestingUser.username}'s Practice`,
             leadDoctor: doctorLabel,
             phone: requestingUser.practicePhone || requestingUser.phone || "",
             email: requestingUser.email || "",
@@ -1698,147 +1994,116 @@ export function AppProvider({ children }: { children: ReactNode }) {
           });
         }
       }
-      addNotification({
-        title: "Lab Join Request Accepted",
-        message: `${request.requestingUsername} has been added to ${adminProfile?.practiceName || "your lab"} as ${role === "admin" ? "an admin" : "a user"}.`,
-        type: "update",
-      });
-    } else {
-      addNotification({
-        title: "Lab Join Request Declined",
-        message: `The admin from ${adminProfile?.practiceName || "the lab you selected"} elected to decline ${request.requestingUsername}'s request to join their lab.`,
-        type: "alert",
-      });
-    }
 
-    refreshUsers();
-    fetchServerJoinRequestsAndInvites();
+      await refreshUsers();
+      await refreshCollaborationState();
+
+      addNotification({
+        title: accept ? "Lab Join Request Accepted" : "Lab Join Request Declined",
+        message: accept
+          ? `${request.requestingUsername} has been added to ${currentUserProfile?.practiceName || "your lab"} as ${role === "admin" ? "an admin" : "a user"}.`
+          : `${request.requestingUsername}'s request to join ${currentUserProfile?.practiceName || "your lab"} was declined.`,
+        type: accept ? "update" : "alert",
+      });
+
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error?.message || "Could not update the join request." };
+    }
   }
 
-  function sendLabInvite(targetUsername: string, targetEmail: string, role: "admin" | "user"): { success: boolean; error?: string } {
-    if (!currentUser || !currentUserProfile?.practiceName) {
-      return { success: false, error: "You must be affiliated with a lab to send invitations." };
+  async function sendLabInvite(
+    targetUsername: string,
+    targetEmail: string,
+    role: "admin" | "user"
+  ): Promise<{ success: boolean; error?: string }> {
+    const activeLabAdminMembership = await findCurrentLabAdminMembership();
+    if (!currentUser || !activeLabAdminMembership?.organizationId) {
+      return { success: false, error: "You must be a lab admin to send invitations." };
     }
+
     const targetUser = registeredUsers.find(
-      u => u.username.toLowerCase() === targetUsername.toLowerCase() && u.email?.toLowerCase() === targetEmail.toLowerCase()
+      (user) =>
+        user.username.toLowerCase() === targetUsername.toLowerCase() &&
+        user.email?.toLowerCase() === targetEmail.toLowerCase()
     );
+
     if (!targetUser) {
-      return { success: false, error: "No user found with that username and email combination." };
+      return {
+        success: false,
+        error: "No user found with that username and email combination.",
+      };
     }
 
-    (async () => {
-      try {
-        const groupsResp = await resilientFetch("/api/labs/groups");
-        const groupsData = await groupsResp.json();
-        const groups: Array<{ practiceName: string; organizationId: string }> = groupsData.groups || [];
-        const myLabName = currentUserProfile!.practiceName!.toLowerCase().trim();
-        const match = groups.find(g => g.practiceName.toLowerCase().trim() === myLabName);
-        if (!match?.organizationId) {
-          Alert.alert("Error", "Could not find your lab on the server.");
-          return;
-        }
-
-        const resp = await resilientFetch(`/api/organizations/${match.organizationId}/invites`, {
+    try {
+      const response = await resilientFetch(
+        `/api/organizations/${activeLabAdminMembership.organizationId}/invites`,
+        {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            invitedUserId: targetUser.id,
-            invitedPhone: targetUser.phone || undefined,
-            role: role === "admin" ? "admin" : "user",
+            email: targetUser.email || targetEmail,
+            roleToAssign: role === "admin" ? "admin" : "user",
+            expiresInDays: 7,
           }),
-        });
-        const data = await resp.json();
-        if (!resp.ok) {
-          Alert.alert("Error", data?.message || "Failed to send invitation.");
-          return;
         }
-
-        if (data?.data?.id) {
-          const invite: LabInvitation = {
-            id: generateId(),
-            adminUsername: currentUser!,
-            adminLabName: currentUserProfile!.practiceName!,
-            invitedUsername: targetUser.username,
-            invitedEmail: targetUser.email || targetEmail,
-            role,
-            status: "pending",
-            createdAt: Date.now(),
-            serverInviteToken: data.data.id,
-          };
-          setLabInvitations(prev => {
-            const updated = [...prev, invite];
-            AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
-            return updated;
-          });
-        }
-
-        addNotification({
-          title: "Lab Invitation Sent",
-          message: `Invitation sent to ${targetUser.username} to join ${currentUserProfile!.practiceName} as ${role === "admin" ? "an admin" : "a user"}.`,
-          type: "update",
-        });
-        Alert.alert("Invitation Sent", `Invitation sent to ${targetUser.username}.`);
-        fetchServerJoinRequestsAndInvites();
-      } catch (e) {
-        console.log("Failed to create server invite:", e);
-        Alert.alert("Error", "Network error. Please check your connection and try again.");
-      }
-    })();
-
-    return { success: true };
-  }
-
-  async function respondToLabInvite(inviteId: string, accept: boolean) {
-    const invite = labInvitations.find(i => i.id === inviteId);
-    if (!invite) return;
-
-    const invitedName = invite.invitedUsername || invite.targetUsername || "";
-
-    if (invite.serverInviteToken) {
-      try {
-        const endpoint = accept
-          ? `/api/organizations/invites/${invite.serverInviteToken}/accept`
-          : `/api/organizations/invites/${invite.serverInviteToken}/reject`;
-        const resp = await resilientFetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        });
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}));
-          Alert.alert("Error", data?.message || "Failed to update invitation on server.");
-          return;
-        }
-      } catch (e) {
-        console.log("Failed to respond to invite on server:", e);
-        Alert.alert("Error", "Network error. Please check your connection and try again.");
-        return;
-      }
-    }
-
-    setLabInvitations(prev => {
-      const updated = prev.map(i =>
-        i.id === inviteId ? { ...i, status: accept ? "accepted" as const : "declined" as const } : i
       );
-      AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
-      return updated;
-    });
 
-    if (accept) {
+      if (!response.ok) {
+        return { success: false, error: await readApiError(response) };
+      }
+
       addNotification({
-        title: "Lab Invitation Accepted",
-        message: `${invitedName} has joined ${invite.adminLabName} as ${invite.role === "admin" ? "an admin" : "a user"}.`,
+        title: "Lab Invitation Sent",
+        message: `Invitation sent to ${targetUser.username} to join ${currentUserProfile?.practiceName || "your lab"} as ${role === "admin" ? "an admin" : "a user"}.`,
         type: "update",
       });
-    } else {
-      addNotification({
-        title: "Lab Invitation Declined",
-        message: `${invitedName} declined the invitation to join ${invite.adminLabName}.`,
-        type: "alert",
-      });
+
+      await refreshCollaborationState();
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error?.message || "Could not send the invitation." };
+    }
+  }
+
+  async function respondToLabInvite(
+    inviteId: string,
+    accept: boolean
+  ): Promise<{ success: boolean; error?: string }> {
+    const invite = labInvitations.find((entry) => entry.id === inviteId);
+    if (!invite) {
+      return { success: false, error: "Invitation not found." };
     }
 
-    refreshUsers();
-    fetchServerJoinRequestsAndInvites();
+    if (accept && !invite.token) {
+      return { success: false, error: "This invitation is missing its acceptance token." };
+    }
+
+    try {
+      const endpoint = accept
+        ? `/api/organizations/invites/${invite.token}/accept`
+        : `/api/organizations/invites/${invite.id}/decline`;
+      const response = await resilientFetch(endpoint, { method: "POST" });
+
+      if (!response.ok) {
+        return { success: false, error: await readApiError(response) };
+      }
+
+      await refreshUsers();
+      await refreshCollaborationState();
+
+      addNotification({
+        title: accept ? "Lab Invitation Accepted" : "Lab Invitation Declined",
+        message: accept
+          ? `You joined ${invite.adminLabName} as ${invite.role === "admin" ? "an admin" : "a user"}.`
+          : `You declined the invitation to join ${invite.adminLabName}.`,
+        type: accept ? "update" : "alert",
+      });
+
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error?.message || "Could not update the invitation." };
+    }
   }
 
   const [isLabCreator, setIsLabCreator] = useState(false);
@@ -1859,57 +2124,56 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function leaveLab(): Promise<{ success: boolean; error?: string }> {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
-      // Resolve the best org ID we can: prefer the server-confirmed one, then
-      // fall back to any org listed in /api/auth/me (active or pending)
-      let orgId = serverOrgId;
-      if (!orgId) {
-        const meResp = await resilientFetch("/api/auth/me");
-        if (meResp.ok) {
-          const meData = await meResp.json();
-          const memberships: any[] = Array.isArray(meData.memberships) ? meData.memberships : [];
-          // Accept any lab membership regardless of status — server /leave handles cleanup
-          const labMembership = memberships.find(m => m.organization?.type === "lab");
-          orgId = labMembership?.organizationId ?? null;
-        }
-      }
+      const activeLabMembership = await findCurrentLabMembership();
 
-      if (orgId) {
-        const leaveResp = await resilientFetch(`/api/organizations/${orgId}/leave`, { method: "POST" });
-        if (!leaveResp.ok) {
-          const d = await leaveResp.json().catch(() => ({}));
-          return { success: false, error: (d as any).error || "Failed to leave lab" };
+      if (activeLabMembership?.id) {
+        const response = await resilientFetch(
+          `/api/organizations/memberships/${activeLabMembership.id}`,
+          { method: "DELETE" }
+        );
+        if (!response.ok) {
+          return { success: false, error: await readApiError(response) };
         }
       } else {
-        // No org ID found at all — user has orphaned practiceName; clear it directly
-        const clearResp = await resilientFetch(`/api/auth/users/${currentUserId}/profile`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ practiceName: null, practiceAddress: null, practicePhone: null }),
-        });
-        if (!clearResp.ok) {
-          const d = await clearResp.json().catch(() => ({}));
-          return { success: false, error: (d as any).error || "Failed to clear lab affiliation" };
+        const pendingJoinRequests = await fetchPendingLabJoinRequests();
+
+        for (const request of pendingJoinRequests) {
+          if (!request?.id) {
+            continue;
+          }
+
+          const cancelResponse = await resilientFetch(
+            `/api/organizations/join-requests/${request.id}`,
+            { method: "DELETE" }
+          );
+          if (!cancelResponse.ok) {
+            return { success: false, error: await readApiError(cancelResponse) };
+          }
+        }
+
+        const profileResponse = await resilientFetch(
+          `/api/auth/users/${currentUserId}/profile`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ practiceName: "", role: "user" }),
+          }
+        );
+
+        if (!profileResponse.ok) {
+          return { success: false, error: await readApiError(profileResponse) };
         }
       }
 
-      // Clear local state for the leaving user
-      setServerOrgId(null);
-      setServerMemberIds(new Set());
-      setAllCases([]);
-      setClients([]);
-      setInvoices([]);
-      setInventory([]);
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify([]));
-      AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify([]));
-      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify([]));
       await refreshUsers();
+      await refreshCollaborationState();
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message || "Failed to leave lab" };
     }
   }
 
-  async function deleteLab(): Promise<{ success: boolean; error?: string; recoverableUntil?: string }> {
+  async function deleteLab(): Promise<{ success: boolean; error?: string }> {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
       const apiUrl = getApiUrl();
@@ -1920,76 +2184,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return { success: false, error: data.message || data.error || "Failed to delete lab" };
       }
       setIsLabCreator(false);
-      setAllCases([]);
-      setClients([]);
-      setInvoices([]);
-      setInventory([]);
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify([]));
-      AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify([]));
-      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify([]));
       await refreshUsers();
-      return { success: true, recoverableUntil: data.recoverableUntil };
+      return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message || "Failed to delete lab" };
-    }
-  }
-
-  async function getDeletedLabs(): Promise<{ id: string; name: string; deletedAt: string; recoverableUntil: string; role: string }[]> {
-    try {
-      const apiUrl = getApiUrl();
-      const url = new URL("/api/auth/deleted-labs", apiUrl);
-      const res = await resilientFetch(url.toString());
-      const data = await res.json();
-      if (!res.ok) return [];
-      return data.deletedLabs || [];
-    } catch {
-      return [];
-    }
-  }
-
-  async function restoreLab(labId: string): Promise<{ success: boolean; error?: string }> {
-    if (!currentUserId) return { success: false, error: "Not logged in" };
-    try {
-      const apiUrl = getApiUrl();
-      const url = new URL(`/api/auth/restore-lab/${labId}`, apiUrl);
-      const res = await resilientFetch(url.toString(), { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) {
-        return { success: false, error: data.message || data.error || "Failed to restore lab" };
-      }
-      await refreshUsers();
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e?.message || "Failed to restore lab" };
-    }
-  }
-
-  async function createLabFromSettings(
-    name: string,
-    displayName?: string,
-    phone?: string,
-    addressLine1?: string,
-    city?: string,
-    state?: string,
-    zip?: string
-  ): Promise<{ success: boolean; error?: string }> {
-    if (!currentUserId) return { success: false, error: "Not logged in" };
-    try {
-      const apiUrl = getApiUrl();
-      const url = new URL("/api/organizations", apiUrl);
-      const res = await resilientFetch(url.toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "lab", name, displayName, phone, addressLine1, city, state, zip }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        return { success: false, error: data.message || data.error || "Failed to create lab" };
-      }
-      await refreshUsers();
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e?.message || "Failed to create lab" };
     }
   }
 
@@ -2019,7 +2217,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCases((prev) => {
       const updated = prev.map((c) => {
         if (c.id === caseId) {
-          if (c.assignedBarcode === barcode) return c;
           const entry: ActivityEntry = {
             id: generateId(),
             type: "barcode_assigned",
@@ -2097,8 +2294,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   function addConversation(conv: Conversation) {
     setConversations(prev => {
-      const updated = [conv, ...prev];
-      AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updated));
+      const updated = [conv, ...prev.filter((existing) => existing.id !== conv.id)];
+      AsyncStorage.setItem(conversationsStorageKey, JSON.stringify(updated));
       return updated;
     });
   }
@@ -2106,12 +2303,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   function removeConversation(conversationId: string) {
     setConversations(prev => {
       const updated = prev.filter(c => c.id !== conversationId);
-      AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updated));
+      AsyncStorage.setItem(conversationsStorageKey, JSON.stringify(updated));
       return updated;
     });
     setChatMessages(prev => {
       const updated = prev.filter(m => m.conversationId !== conversationId);
-      AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated));
+      AsyncStorage.setItem(chatMessagesStorageKey, JSON.stringify(updated));
       return updated;
     });
   }
@@ -2138,7 +2335,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         return m;
       });
-      AsyncStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(updated));
+      AsyncStorage.setItem(chatMessagesStorageKey, JSON.stringify(updated));
       return updated;
     });
     setConversations(prev => {
@@ -2148,9 +2345,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         return c;
       });
-      AsyncStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(updated));
+      AsyncStorage.setItem(conversationsStorageKey, JSON.stringify(updated));
       return updated;
     });
+    void resilientFetch("/api/legacy/chat/read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId }),
+    }).then(() => fetchChatStateFromServer()).catch(() => null);
   }
 
   const unreadCount = useMemo(
@@ -2234,12 +2436,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       findAllCasesByBarcode,
       batchLocateCases,
       groupJoinRequests,
+      fetchLabDirectory,
       sendGroupJoinRequest,
       respondToGroupJoinRequest,
       labInvitations,
       sendLabInvite,
       respondToLabInvite,
-      refreshJoinData: fetchServerJoinRequestsAndInvites,
       addConversation,
       removeConversation,
       addNotification,
@@ -2248,9 +2450,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       userIsAffiliated,
       leaveLab,
       deleteLab,
-      restoreLab,
-      getDeletedLabs,
-      createLabFromSettings,
       isLabCreator,
       removeClient,
       deactivateClient,
@@ -2259,7 +2458,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       inactiveClients: clients.filter(c => c.status === "inactive"),
       refreshCases,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
