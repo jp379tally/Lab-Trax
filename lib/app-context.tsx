@@ -317,93 +317,100 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   async function fetchServerJoinRequestsAndInvites() {
     try {
-      const myLabName = currentUserProfile?.practiceName?.toLowerCase()?.trim();
+      // Fetch memberships directly from server — no fragile local-state matching
+      const meResp = await resilientFetch("/api/auth/me");
+      if (!meResp.ok) return;
+      const meData = await meResp.json();
+      type ServerMembership = { organizationId: string; role: string; status: string; organization?: { type?: string; displayName?: string | null; name?: string } | null };
+      const memberships: ServerMembership[] = Array.isArray(meData.memberships) ? meData.memberships : [];
 
-      if (myLabName) {
-        const resp = await resilientFetch("/api/labs/groups");
-        const data = await resp.json();
-        const groups: Array<{ practiceName: string; organizationId: string }> = data.groups || [];
-        const match = groups.find(g => g.practiceName.toLowerCase().trim() === myLabName);
-        if (match?.organizationId) {
-          const orgId = match.organizationId;
-          const [jrResp, invResp] = await Promise.all([
-            resilientFetch(`/api/organizations/${orgId}/join-requests`).then(r => r.json()).catch(() => ({ data: [] })),
-            resilientFetch(`/api/organizations/${orgId}/invites`).then(r => r.json()).catch(() => ({ data: [] })),
-          ]);
+      // Admin lab orgs: where current user is owner or admin of a lab
+      const adminLabOrgIds = memberships
+        .filter(m => m.status === "active" && (m.role === "owner" || m.role === "admin") && m.organization?.type === "lab")
+        .map(m => m.organizationId);
 
-          const serverJoinReqs: any[] = jrResp.data || [];
-          const serverJoinReqIds = new Set(serverJoinReqs.map((s: any) => s.id));
-          setGroupJoinRequests(prev => {
+      for (const orgId of adminLabOrgIds) {
+        const adminMembership = memberships.find(m => m.organizationId === orgId);
+        const adminLabName = adminMembership?.organization?.displayName || adminMembership?.organization?.name || "";
+
+        const [jrData, invData] = await Promise.all([
+          resilientFetch(`/api/organizations/${orgId}/join-requests`).then(r => r.json()).catch(() => ({ data: [] })),
+          resilientFetch(`/api/organizations/${orgId}/invites`).then(r => r.json()).catch(() => ({ data: [] })),
+        ]);
+
+        const serverJoinReqs: any[] = jrData.data || [];
+        const serverJoinReqIds = new Set(serverJoinReqs.map((s: any) => s.id));
+        setGroupJoinRequests(prev => {
+          let changed = false;
+          const updated = prev.filter(r => {
+            if (r.serverJoinRequestId && r.status === "pending" && !serverJoinReqIds.has(r.serverJoinRequestId)) {
+              changed = true;
+              return false;
+            }
+            return true;
+          });
+          const mutable = [...updated];
+          for (const sjr of serverJoinReqs) {
+            const existing = mutable.find(r => r.serverJoinRequestId === sjr.id);
+            if (!existing) {
+              const requester = registeredUsers.find(u => u.id === sjr.userId);
+              mutable.push({
+                id: generateId(),
+                serverJoinRequestId: sjr.id,
+                requestingUsername: requester?.username || sjr.userId,
+                targetAdminUsername: currentUser || "",
+                message: sjr.message || `${requester?.username || "Someone"} would like to join your lab.`,
+                status: sjr.status === "approved" ? "accepted" as const : sjr.status === "rejected" ? "declined" as const : "pending" as const,
+                createdAt: sjr.createdAt ? new Date(sjr.createdAt).getTime() : Date.now(),
+              });
+              changed = true;
+            } else if (sjr.status === "approved" && existing.status === "pending") {
+              existing.status = "accepted";
+              changed = true;
+            } else if (sjr.status === "rejected" && existing.status === "pending") {
+              existing.status = "declined";
+              changed = true;
+            }
+          }
+          if (!changed) return prev;
+          AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(mutable));
+          return mutable;
+        });
+
+        const serverInvites: any[] = invData.data || [];
+        if (serverInvites.length > 0) {
+          setLabInvitations(prev => {
             let changed = false;
-            const updated = prev.filter(r => {
-              if (r.serverJoinRequestId && r.status === "pending" && !serverJoinReqIds.has(r.serverJoinRequestId)) {
-                changed = true;
-                return false;
-              }
-              return true;
-            }).map(r => r);
-            const mutable = [...updated];
-            for (const sjr of serverJoinReqs) {
-              const existing = mutable.find(r => r.serverJoinRequestId === sjr.id);
+            const updated = [...prev];
+            for (const si of serverInvites) {
+              const existing = updated.find(inv => inv.serverInviteToken === si.id);
               if (!existing) {
-                const requester = registeredUsers.find(u => u.id === sjr.userId);
-                mutable.push({
+                const invitee = registeredUsers.find(u => u.id === si.invitedUserId);
+                updated.push({
                   id: generateId(),
-                  serverJoinRequestId: sjr.id,
-                  requestingUsername: requester?.username || sjr.userId,
-                  targetAdminUsername: currentUser || "",
-                  message: sjr.message || `${requester?.username || "Someone"} would like to join your lab.`,
-                  status: sjr.status === "approved" ? "accepted" : sjr.status === "rejected" ? "declined" : "pending",
-                  createdAt: sjr.createdAt ? new Date(sjr.createdAt).getTime() : Date.now(),
+                  serverInviteToken: si.id,
+                  invitedUsername: invitee?.username || si.invitedUserId || "",
+                  invitedEmail: invitee?.email || "",
+                  adminLabName,
+                  adminUsername: currentUser || "",
+                  role: si.role === "admin" ? "admin" as const : "user" as const,
+                  status: si.status === "accepted" ? "accepted" as const : si.status === "rejected" || si.status === "expired" || si.status === "revoked" ? "declined" as const : "pending" as const,
+                  createdAt: si.createdAt ? new Date(si.createdAt).getTime() : Date.now(),
                 });
                 changed = true;
-              } else if (sjr.status === "approved" && existing.status === "pending") {
+              } else if (si.status === "accepted" && existing.status === "pending") {
                 existing.status = "accepted";
-                changed = true;
-              } else if (sjr.status === "rejected" && existing.status === "pending") {
-                existing.status = "declined";
                 changed = true;
               }
             }
             if (!changed) return prev;
-            AsyncStorage.setItem(GROUP_JOIN_REQUESTS_KEY, JSON.stringify(mutable));
-            return mutable;
+            AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
+            return updated;
           });
-
-          const serverInvites: any[] = invResp.data || [];
-          if (serverInvites.length > 0) {
-            setLabInvitations(prev => {
-              let changed = false;
-              const updated = [...prev];
-              for (const si of serverInvites) {
-                const existing = updated.find(inv => inv.serverInviteToken === si.id);
-                if (!existing) {
-                  const invitee = registeredUsers.find(u => u.id === si.invitedUserId);
-                  updated.push({
-                    id: generateId(),
-                    serverInviteToken: si.id,
-                    invitedUsername: invitee?.username || si.invitedUserId || "",
-                    invitedEmail: invitee?.email || "",
-                    adminLabName: currentUserProfile?.practiceName || "",
-                    adminUsername: currentUser || "",
-                    role: si.role === "admin" ? "admin" : "user",
-                    status: si.status === "accepted" ? "accepted" : si.status === "rejected" || si.status === "expired" || si.status === "revoked" ? "declined" : "pending",
-                    createdAt: si.createdAt ? new Date(si.createdAt).getTime() : Date.now(),
-                  });
-                  changed = true;
-                } else if (si.status === "accepted" && existing.status === "pending") {
-                  existing.status = "accepted";
-                  changed = true;
-                }
-              }
-              if (!changed) return prev;
-              AsyncStorage.setItem(LAB_INVITATIONS_KEY, JSON.stringify(updated));
-              return updated;
-            });
-          }
         }
       }
 
+      // Pending invites sent TO the current user (as invitee)
       const myInvitesResp = await resilientFetch("/api/organizations/my-invites").then(r => r.json()).catch(() => ({ data: [] }));
       const myInvites: any[] = myInvitesResp.data || [];
       if (myInvites.length > 0) {
@@ -420,8 +427,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 invitedEmail: currentUserProfile?.email || "",
                 adminLabName: si.organizationName || "A Lab",
                 adminUsername: si.inviterUsername || "Admin",
-                role: si.role === "admin" ? "admin" : "user",
-                status: "pending",
+                role: si.role === "admin" ? "admin" as const : "user" as const,
+                status: "pending" as const,
                 createdAt: si.createdAt ? new Date(si.createdAt).getTime() : Date.now(),
               });
               changed = true;
@@ -433,6 +440,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
       }
 
+      // Status updates for join requests sent BY the current user (as requester)
       const myJrResp = await resilientFetch("/api/organizations/my-join-requests").then(r => r.json()).catch(() => ({ data: [] }));
       const myJoinReqs: any[] = myJrResp.data || [];
       if (myJoinReqs.length > 0) {
@@ -464,7 +472,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchServerJoinRequestsAndInvites();
     const interval = setInterval(fetchServerJoinRequestsAndInvites, 10000);
     return () => clearInterval(interval);
-  }, [currentUserId, currentUserProfile?.practiceName, registeredUsers]);
+  }, [currentUserId]);
 
   useEffect(() => {
     if (!syncReadyRef.current || fetchingRef.current || !currentUserId) return;

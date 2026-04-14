@@ -119,6 +119,7 @@ export const joinRequests = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     requestedRole: text("requested_role").default("user").notNull(),
+    message: text("message"),
     status: text("status").default("pending").notNull(),
     createdAt: createdAt(),
     reviewedByUserId: varchar("reviewed_by_user_id").references(

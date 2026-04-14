@@ -19,6 +19,55 @@ import { requireAuth } from "../middleware/auth";
 const router = Router();
 router.use(requireAuth);
 
+function orgDisplayName(org: { displayName?: string | null; name: string }): string {
+  return org.displayName || org.name;
+}
+
+function orgAddress(org: { addressLine1?: string | null; city?: string | null; state?: string | null; zip?: string | null }): string | null {
+  const parts = [org.addressLine1, org.city, org.state, org.zip].filter(Boolean) as string[];
+  return parts.length ? parts.join(", ") : null;
+}
+
+async function syncUserToOrg(
+  userId: string,
+  org: { displayName?: string | null; name: string; phone?: string | null; addressLine1?: string | null; city?: string | null; state?: string | null; zip?: string | null },
+  role?: string
+) {
+  const updateSet: Record<string, any> = {
+    practiceName: orgDisplayName(org),
+    practiceAddress: orgAddress(org),
+    practicePhone: org.phone ?? null,
+  };
+  if (role !== undefined) {
+    updateSet.role = role === "owner" || role === "admin" ? "admin" : "user";
+  }
+  await db.update(users).set(updateSet).where(eq(users.id, userId));
+}
+
+async function syncAllMembersToOrg(org: any) {
+  const memberships = await db.query.labMemberships.findMany({
+    where: and(eq(labMemberships.labId, org.id), eq(labMemberships.status, "active")),
+  });
+  for (const m of memberships) {
+    await syncUserToOrg(m.userId, org, m.role);
+  }
+}
+
+async function clearUserOrgSync(userId: string) {
+  const remaining = await db.query.labMemberships.findMany({
+    where: and(eq(labMemberships.userId, userId), eq(labMemberships.status, "active")),
+  });
+  if (remaining.length === 0) {
+    await db.update(users)
+      .set({ practiceName: null, practiceAddress: null, practicePhone: null, role: "user" })
+      .where(eq(users.id, userId));
+  } else {
+    const primary = remaining[0];
+    const org = await db.query.organizations.findFirst({ where: eq(organizations.id, primary.labId) });
+    if (org) await syncUserToOrg(userId, org, primary.role);
+  }
+}
+
 const createOrgSchema = z.object({
   type: z.enum(["lab", "provider"]),
   name: z.string().min(1),
@@ -51,6 +100,8 @@ router.post(
       role: "owner",
       status: "active",
     });
+
+    await syncUserToOrg((req as any).auth.userId, organization, "owner");
 
     await writeAuditLog({
       req,
@@ -166,6 +217,8 @@ router.patch(
       .set(input)
       .where(eq(organizations.id, organizationId))
       .returning();
+
+    await syncAllMembersToOrg(updated);
 
     await writeAuditLog({
       req,
@@ -341,13 +394,7 @@ router.post(
       where: eq(organizations.id, invite.labId),
     });
     if (org) {
-      await db
-        .update(users)
-        .set({
-          practiceName: org.name,
-          role: invite.role === "admin" || invite.role === "owner" ? "admin" : "user",
-        })
-        .where(eq(users.id, userId));
+      await syncUserToOrg(userId, org, invite.role);
     }
 
     await writeAuditLog({
@@ -447,6 +494,7 @@ router.post(
         labId: organizationId,
         userId: (req as any).auth.userId,
         requestedRole: input.requestedRole,
+        message: input.message ?? null,
       })
       .returning();
 
@@ -536,13 +584,7 @@ router.post(
       where: eq(organizations.id, request.labId),
     });
     if (org) {
-      await db
-        .update(users)
-        .set({
-          practiceName: org.name,
-          role: roleToAssign === "admin" || roleToAssign === "owner" ? "admin" : "user",
-        })
-        .where(eq(users.id, request.userId));
+      await syncUserToOrg(request.userId, org, roleToAssign);
     }
 
     await writeAuditLog({
@@ -757,6 +799,8 @@ router.delete(
     await db
       .delete(labMemberships)
       .where(eq(labMemberships.id, membership.id));
+
+    await clearUserOrgSync(membership.userId);
 
     await writeAuditLog({
       req,
