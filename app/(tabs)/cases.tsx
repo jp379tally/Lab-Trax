@@ -318,7 +318,7 @@ export default function CasesScreen() {
               style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
               onPress={async () => {
                 setRefreshing(true);
-                await refreshCases();
+                await refreshCases(true);
                 setRefreshing(false);
               }}
             >
@@ -412,7 +412,7 @@ export default function CasesScreen() {
         refreshing={refreshing}
         onRefresh={async () => {
           setRefreshing(true);
-          await refreshCases();
+          await refreshCases(true);
           setRefreshing(false);
         }}
         ListEmptyComponent={

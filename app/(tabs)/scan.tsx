@@ -684,26 +684,41 @@ export default function ScanScreen() {
           return;
         }
       }
-      const resp = await resilientFetch("/api/apply-crop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: rawCapturedUri, crop: cropRegion }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.croppedImageBase64) {
-          setCapturedUri(data.croppedImageBase64);
-          setCasePhotos((prev) => [...prev, data.croppedImageBase64]);
-          cropDoneRef.current = true;
-          setPhase("review");
-          setIsCropping(false);
-          return;
-        }
+      // Native: crop on-device with expo-image-manipulator — no network round-trip
+      try {
+        const ImageManipulator = require("expo-image-manipulator");
+        const { Image: RNImage } = require("react-native");
+        const [imgW, imgH] = await new Promise<[number, number]>((resolve) => {
+          RNImage.getSize(
+            rawCapturedUri,
+            (w: number, h: number) => resolve([w, h]),
+            () => resolve([1000, 1000])
+          );
+        });
+        const left = Math.max(0, Math.round((cropRegion.left / 100) * imgW));
+        const top = Math.max(0, Math.round((cropRegion.top / 100) * imgH));
+        const right = Math.min(imgW, Math.round((cropRegion.right / 100) * imgW));
+        const bottom = Math.min(imgH, Math.round((cropRegion.bottom / 100) * imgH));
+        const cropW = Math.max(1, right - left);
+        const cropH = Math.max(1, bottom - top);
+        const result = await ImageManipulator.manipulateAsync(
+          rawCapturedUri,
+          [{ crop: { originX: left, originY: top, width: cropW, height: cropH } }],
+          { compress: 0.9, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
+        );
+        setCapturedUri(result.uri);
+        setCasePhotos((prev) => [...prev, result.uri]);
+        cropDoneRef.current = true;
+        setPhase("review");
+        setIsCropping(false);
+        return;
+      } catch (manipErr: any) {
+        console.log("On-device crop failed, using original:", manipErr?.message);
+        setCasePhotos((prev) => [...prev, rawCapturedUri]);
+        setCapturedUri(rawCapturedUri);
+        cropDoneRef.current = true;
+        setPhase("review");
       }
-      setCasePhotos((prev) => [...prev, rawCapturedUri]);
-      setCapturedUri(rawCapturedUri);
-      cropDoneRef.current = true;
-      setPhase("review");
     } catch (e: any) {
       console.log("Crop confirmation failed:", e?.message);
       setCasePhotos((prev) => [...prev, rawCapturedUri!]);

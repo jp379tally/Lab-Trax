@@ -556,7 +556,7 @@ function TechDashboard() {
             <Pressable
               onPress={async () => {
                 setRefreshing(true);
-                await refreshCases();
+                await refreshCases(true);
                 setRefreshing(false);
               }}
               style={({ pressed }) => [{ padding: 6, borderRadius: 8, backgroundColor: pressed ? "rgba(0,0,0,0.05)" : "transparent" }]}
@@ -585,7 +585,7 @@ function TechDashboard() {
             refreshing={refreshing}
             onRefresh={async () => {
               setRefreshing(true);
-              await refreshCases();
+              await refreshCases(true);
               setRefreshing(false);
             }}
           />

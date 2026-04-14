@@ -123,7 +123,7 @@ interface AppContextValue {
   reactivateClient: (clientId: string) => void;
   deletedClientInvoices: DeletedClientInvoice[];
   inactiveClients: Client[];
-  refreshCases: () => Promise<void>;
+  refreshCases: (force?: boolean) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -274,8 +274,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const syncReadyRef = useRef(false);
   const fetchingRef = useRef(false);
 
-  async function refreshCases() {
-    if (fetchingRef.current) return;
+  async function refreshCases(force = false) {
+    if (!force && fetchingRef.current) return;
     fetchingRef.current = true;
     try {
       // Refresh org membership first, using the fresh orgId for case fetch
