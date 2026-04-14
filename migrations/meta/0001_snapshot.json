@@ -1,5 +1,5 @@
 {
-  "id": "ed21ad9b-4821-489c-b44f-6309698bdf1f",
+  "id": "ed21ad9b-4821-489c-b44f-6309698bdf1f_0001",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1533,7 +1533,7 @@
           "name": "invited_by_user_id",
           "type": "varchar",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "expires_at": {
           "name": "expires_at",

@@ -150,7 +150,6 @@ export const organizationInvites = pgTable(
     token: text("token").notNull(),
     status: text("status").default("pending").notNull(),
     invitedByUserId: varchar("invited_by_user_id")
-      .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedByUserId: varchar("accepted_by_user_id").references(
