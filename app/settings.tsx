@@ -24,6 +24,7 @@ import { useAuth } from "@/lib/auth-context";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getApiUrl } from "@/lib/query-client";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -44,7 +45,8 @@ export default function SettingsScreen() {
   const [adminUsername, setAdminUsername] = useState("");
   const [showAddLabModal, setShowAddLabModal] = useState(false);
   const [labSearchName, setLabSearchName] = useState("");
-  const [matchedLabs, setMatchedLabs] = useState<{ practiceName: string; username: string; practiceAddress?: string }[]>([]);
+  const [matchedLabs, setMatchedLabs] = useState<{ practiceName: string; organizationId: string; username?: string; practiceAddress?: string }[]>([]);
+  const [allGroups, setAllGroups] = useState<{ practiceName: string; organizationId: string; username?: string; practiceAddress?: string }[]>([]);
   const [labSearchDone, setLabSearchDone] = useState(false);
   const [addLabSending, setAddLabSending] = useState(false);
   const [companyLogoUri, setCompanyLogoUri] = useState<string | null>(null);
@@ -84,6 +86,29 @@ export default function SettingsScreen() {
   useEffect(() => {
     getDeletedLabs().then(setDeletedLabs);
   }, []);
+
+  useEffect(() => {
+    if (!showAddLabModal) return;
+    const apiUrl = getApiUrl();
+    const url = new URL("/api/labs/groups", apiUrl).toString();
+    fetch(url, { credentials: "include" })
+      .then(r => r.json())
+      .then(data => {
+        const groups = (data.groups || []).map((g: any) => ({
+          practiceName: g.practiceName || "",
+          organizationId: g.organizationId || "",
+          username: g.username || "",
+          practiceAddress: g.practiceAddress || "",
+        }));
+        setAllGroups(groups);
+        if (labSearchName.trim()) {
+          const q = labSearchName.toLowerCase().trim();
+          setMatchedLabs(groups.filter((g: any) => g.practiceName.toLowerCase().includes(q)));
+          setLabSearchDone(true);
+        }
+      })
+      .catch(() => {});
+  }, [showAddLabModal]);
 
   async function handleCreateLab() {
     if (!createLabName.trim()) {
@@ -1040,13 +1065,7 @@ export default function SettingsScreen() {
                 setLabSearchName(t);
                 const q = t.toLowerCase().trim();
                 if (!q) { setMatchedLabs([]); setLabSearchDone(false); return; }
-                const labAdmins = registeredUsers.filter(u => u.userType === "lab" && u.role === "admin" && u.practiceName);
-                const uniqueLabs = new Map<string, { practiceName: string; username: string; practiceAddress?: string }>();
-                for (const u of labAdmins) {
-                  const key = u.practiceName!.toLowerCase().trim();
-                  if (!uniqueLabs.has(key) && key.includes(q)) uniqueLabs.set(key, { practiceName: u.practiceName!, username: u.username, practiceAddress: u.practiceAddress });
-                }
-                setMatchedLabs(Array.from(uniqueLabs.values()));
+                setMatchedLabs(allGroups.filter(g => g.practiceName.toLowerCase().includes(q)));
                 setLabSearchDone(true);
               }}
               autoCapitalize="words"
@@ -1075,7 +1094,7 @@ export default function SettingsScreen() {
                     const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
                     const alreadyMember = currentUserData?.practiceName?.toLowerCase().trim() === lab.practiceName.toLowerCase().trim();
                     return (
-                      <View key={lab.username} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
+                      <View key={lab.organizationId} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
                         <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: "#EDE9FE", justifyContent: "center", alignItems: "center" }}>
                           <Ionicons name="flask" size={20} color="#7C3AED" />
                         </View>
@@ -1104,21 +1123,42 @@ export default function SettingsScreen() {
                                   { text: "No", style: "cancel" },
                                   {
                                     text: "Yes, Join Lab",
-                                    onPress: () => {
+                                    onPress: async () => {
                                       setAddLabSending(true);
-                                      sendGroupJoinRequest(lab.username, currentUser, `${currentUser} would like to join ${lab.practiceName}.`);
-                                      setAddLabSending(false);
-                                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                      setShowAddLabModal(false);
-                                      setLabSearchName("");
-                                      setMatchedLabs([]);
-                                      setLabSearchDone(false);
+                                      try {
+                                        const apiUrl = getApiUrl();
+                                        const url = new URL(`/api/organizations/${lab.organizationId}/join-requests`, apiUrl).toString();
+                                        const res = await fetch(url, {
+                                          method: "POST",
+                                          credentials: "include",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({
+                                            requestedRole: "user",
+                                            message: `${currentUser} would like to join ${lab.practiceName}.`,
+                                          }),
+                                        });
+                                        if (res.ok) {
+                                          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                          setShowAddLabModal(false);
+                                          setLabSearchName("");
+                                          setMatchedLabs([]);
+                                          setLabSearchDone(false);
+                                          Alert.alert("Request Sent", "Your join request has been sent to the lab administrator for approval.");
+                                        } else {
+                                          const err = await res.json().catch(() => ({}));
+                                          Alert.alert("Error", err?.message || err?.error || "Failed to send join request.");
+                                        }
+                                      } catch {
+                                        Alert.alert("Error", "Network error. Please check your connection and try again.");
+                                      } finally {
+                                        setAddLabSending(false);
+                                      }
                                     },
                                   },
                                 ]
                               );
                             }}
-                            testID={`join-lab-${lab.username}`}
+                            testID={`join-lab-${lab.organizationId}`}
                           >
                             <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Join</Text>
                           </Pressable>

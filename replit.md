@@ -41,7 +41,7 @@ Preferred communication style: Simple, everyday language.
 - **Invoices**: `invoices`, `invoice_line_items`, `payments`
 - **Audit**: `audit_logs`
 - **Legacy**: `lab_cases` (JSON blob storage, still used by frontend app-context), `chat_conversations`, `chat_messages`
-- **Deprecated (still in DB)**: `organization_memberships`, `organization_join_requests`, `organization_invites`, `server_notifications` — replaced by new tables above
+- **Membership & Requests**: `lab_memberships`, `join_requests`, `lab_invites`, `notifications`
 
 ### Key Features and Design Patterns
 - **3-Portal Architecture**: Differentiated access for Master Admin, Lab Portal, and Provider Portal based on `userType`.
@@ -49,7 +49,7 @@ Preferred communication style: Simple, everyday language.
 - **Case Workflow**: Tracks cases through predefined stations (INTAKE, DESIGN, etc.) with `routeHistory`.
 - **Barcode System**: Supports scanning for case intake, location, and batch processing.
 - **Remake Detection**: Specific flow for identifying and managing remakes.
-- **Lab-Based Membership & Sharing**: Users belong to a lab based on `practiceName`, enabling shared case visibility and join requests. Cases are synced between local storage and server for all lab members. Join requests are persisted server-side via the `organization_join_requests` DB table. New lab users auto-create an `organizations` record on registration. Users joining an existing lab send a server-side join request during signup.
+- **Lab-Based Membership & Sharing**: Users belong to a lab based on `practiceName`, enabling shared case visibility and join requests. Cases are synced between local storage and server for all lab members. Join requests are persisted server-side via the `join_requests` DB table. New lab users auto-create an `organizations` record on registration. Users joining an existing lab send a server-side join request during signup.
 - **Data Isolation (HIPAA)**: Cases filtered by lab membership.
 - **Client Management**: Admins can delete or deactivate clients, with safeguards for open invoices.
 - **Duplicate Registration Prevention**: Checks for existing accounts by email, phone, and address during sign-up.

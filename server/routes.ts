@@ -126,7 +126,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const groups = orgs.map((org) => {
         const orgMemberships = memberships.filter(
-          (m) => m.organizationId === org.id
+          (m) => m.labId === org.id
         );
         const adminMembership = orgMemberships.find(
           (m) => m.role === "owner" || m.role === "admin"
@@ -814,16 +814,14 @@ Important rules:
           const uid = u.id;
           await tx.execute(sql`DELETE FROM user_sessions WHERE user_id = ${uid}`);
           await tx.execute(sql`DELETE FROM lab_cases WHERE owner_id = ${uid}`);
-          await tx.execute(sql`DELETE FROM organization_memberships WHERE user_id = ${uid}`);
-          await tx.execute(sql`DELETE FROM organization_join_requests WHERE requested_by_user_id = ${uid}`);
-          await tx.execute(sql`DELETE FROM organization_invites WHERE invited_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE organization_invites SET accepted_by_user_id = NULL WHERE accepted_by_user_id = ${uid}`);
+          await tx.execute(sql`DELETE FROM lab_memberships WHERE user_id = ${uid}`);
+          await tx.execute(sql`DELETE FROM join_requests WHERE user_id = ${uid}`);
+          await tx.execute(sql`DELETE FROM lab_invites WHERE created_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE join_requests SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${uid}`);
           await tx.execute(sql`DELETE FROM organization_connections WHERE requested_by_user_id = ${uid}`);
           await tx.execute(sql`UPDATE organization_connections SET approved_by_user_id = NULL WHERE approved_by_user_id = ${uid}`);
           await tx.execute(sql`UPDATE organizations SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE organization_memberships SET invited_by_user_id = NULL WHERE invited_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE organization_memberships SET approved_by_user_id = NULL WHERE approved_by_user_id = ${uid}`);
-          await tx.execute(sql`UPDATE organization_join_requests SET reviewed_by_user_id = NULL WHERE reviewed_by_user_id = ${uid}`);
+          await tx.execute(sql`UPDATE organizations SET deleted_by_user_id = NULL WHERE deleted_by_user_id = ${uid}`);
           await tx.execute(sql`UPDATE cases SET created_by_user_id = NULL WHERE created_by_user_id = ${uid}`);
           await tx.execute(sql`UPDATE case_notes SET author_user_id = NULL WHERE author_user_id = ${uid}`);
           await tx.execute(sql`UPDATE case_attachments SET uploaded_by_user_id = NULL WHERE uploaded_by_user_id = ${uid}`);

@@ -1553,14 +1553,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         Alert.alert("Error", "Network error. Please check your connection and try again.");
         return;
       }
-    } else if (accept && adminProfile?.practiceName && requestingUser?.id) {
-      try {
-        await resilientFetch(`/api/auth/users/${requestingUser.id}/profile`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ practiceName: adminProfile.practiceName, ...(role ? { role } : {}) }),
-        });
-      } catch {}
     }
 
     setGroupJoinRequests(prev => {
