@@ -31,7 +31,7 @@ import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
 import { getApiUrl, resilientFetch } from "@/lib/query-client";
-import { convertPdfToImages } from "@/lib/pdf-utils";
+import { convertPdfToImages } from "@/lib/pdfToImages";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -840,6 +840,13 @@ export default function ScanScreen() {
       if (!isValid) continue;
       const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
       if (isPdf) {
+        if (Platform.OS !== "web") {
+          Alert.alert(
+            "PDF upload not supported on mobile",
+            "Please upload an image on mobile, or use the web app for PDF files."
+          );
+          continue;
+        }
         try {
           const arrayBuffer = await file.arrayBuffer();
           const pdfImages = await convertPdfToImages(arrayBuffer);
