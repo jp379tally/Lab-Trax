@@ -838,7 +838,7 @@ export default function ScanScreen() {
       const validExts = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tiff", ".webp", ".pdf"];
       const isValid = validTypes.some((t) => file.type.startsWith(t)) || validExts.some((ext) => file.name.toLowerCase().endsWith(ext));
       if (!isValid) continue;
-      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      const isPdf = file.type === "application/pdf" || file.name?.toLowerCase().endsWith(".pdf");
       if (isPdf) {
         if (Platform.OS !== "web") {
           Alert.alert(
@@ -851,8 +851,8 @@ export default function ScanScreen() {
           const arrayBuffer = await file.arrayBuffer();
           const pdfImages = await convertPdfToImages(arrayBuffer);
           uploadedUris.push(...pdfImages);
-        } catch (err: any) {
-          console.log("Web upload: PDF conversion failed:", file.name, err?.message);
+        } catch (error) {
+          console.log("PDF conversion failed:", error);
         }
         continue;
       }
