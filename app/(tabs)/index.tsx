@@ -534,7 +534,7 @@ function TechDashboard() {
 
   return (
     <>
-    <View style={[styles.container, { backgroundColor: Colors.light.backgroundSolid }]}>
+    <View style={[styles.container, { backgroundColor: themeColors.backgroundSolid }]}>
       <View style={[styles.topBar, { position: "absolute", top: isDesktop ? 0 : Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: isDesktop ? (isDarkMode ? "rgba(15,23,42,0.95)" : "rgba(224,237,251,0.97)") : "transparent", borderBottomWidth: isDesktop ? 1 : 0, borderBottomColor: isDarkMode ? "#1E293B" : "#D6E4F0", paddingVertical: isDesktop ? 12 : 0, paddingHorizontal: isDesktop ? 32 : 0 }]}>
         {!isDesktop && (
         <Pressable
