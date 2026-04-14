@@ -780,27 +780,41 @@ router.post(
     const userId = (req as any).auth.userId;
     const { organizationId } = req.params;
 
+    // Find any membership for this lab/user, not just "active" — handles edge cases
+    // where the membership was already changed but practiceName is still set
     const membership = await db.query.labMemberships.findFirst({
       where: and(
         eq(labMemberships.labId, organizationId),
         eq(labMemberships.userId, userId),
-        eq(labMemberships.status, "active")
       ),
     });
-    if (!membership) throw new HttpError(404, "No active membership in this lab.");
 
-    await db.delete(labMemberships).where(eq(labMemberships.id, membership.id));
+    if (membership) {
+      await db.delete(labMemberships).where(eq(labMemberships.id, membership.id));
+      await writeAuditLog({
+        req,
+        organizationId,
+        action: "membership_removed",
+        entityType: "lab_membership",
+        entityId: membership.id,
+        beforeJson: membership,
+      });
+    }
+
+    // Cancel any pending join requests so the user can re-join later without a 409
+    await db.update(joinRequests)
+      .set({ status: "rejected", reviewedAt: new Date() })
+      .where(and(
+        eq(joinRequests.labId, organizationId),
+        eq(joinRequests.userId, userId),
+        eq(joinRequests.status, "pending"),
+      ));
+
+    // Always run clearUserOrgSync — this clears practiceName even if the
+    // membership row was already gone (orphaned data cleanup)
     await clearUserOrgSync(userId);
 
-    await writeAuditLog({
-      req,
-      organizationId,
-      action: "membership_removed",
-      entityType: "lab_membership",
-      entityId: membership.id,
-      beforeJson: membership,
-    });
-    return ok(res, { removed: true });
+    return ok(res, { removed: !!membership });
   })
 );
 

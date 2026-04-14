@@ -1859,8 +1859,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function leaveLab(): Promise<{ success: boolean; error?: string }> {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
-      // Use the dedicated /leave endpoint if we know the orgId, otherwise find it first
-      const orgId = serverOrgId;
+      // Resolve the best org ID we can: prefer the server-confirmed one, then
+      // fall back to any org listed in /api/auth/me (active or pending)
+      let orgId = serverOrgId;
+      if (!orgId) {
+        const meResp = await resilientFetch("/api/auth/me");
+        if (meResp.ok) {
+          const meData = await meResp.json();
+          const memberships: any[] = Array.isArray(meData.memberships) ? meData.memberships : [];
+          // Accept any lab membership regardless of status — server /leave handles cleanup
+          const labMembership = memberships.find(m => m.organization?.type === "lab");
+          orgId = labMembership?.organizationId ?? null;
+        }
+      }
+
       if (orgId) {
         const leaveResp = await resilientFetch(`/api/organizations/${orgId}/leave`, { method: "POST" });
         if (!leaveResp.ok) {
@@ -1868,17 +1880,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return { success: false, error: (d as any).error || "Failed to leave lab" };
         }
       } else {
-        // Fall back: find the membership ID from /api/auth/me
-        const meResp = await resilientFetch("/api/auth/me");
-        if (meResp.ok) {
-          const meData = await meResp.json();
-          const memberships: any[] = Array.isArray(meData.memberships) ? meData.memberships : [];
-          const labMembership = memberships.find(m => m.status === "active" && m.organization?.type === "lab");
-          if (labMembership?.id) {
-            await resilientFetch(`/api/organizations/memberships/${labMembership.id}`, { method: "DELETE" });
-          }
+        // No org ID found at all — user has orphaned practiceName; clear it directly
+        const clearResp = await resilientFetch(`/api/auth/users/${currentUserId}/profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ practiceName: null, practiceAddress: null, practicePhone: null }),
+        });
+        if (!clearResp.ok) {
+          const d = await clearResp.json().catch(() => ({}));
+          return { success: false, error: (d as any).error || "Failed to clear lab affiliation" };
         }
       }
+
       // Clear local state for the leaving user
       setServerOrgId(null);
       setServerMemberIds(new Set());
