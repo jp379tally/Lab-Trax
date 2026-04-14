@@ -417,17 +417,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const adminMembership = memberships.find(m => m.organizationId === orgId);
         const adminLabName = adminMembership?.organization?.displayName || adminMembership?.organization?.name || "";
 
-        const [jrData, invData] = await Promise.all([
-          resilientFetch(`/api/organizations/${orgId}/join-requests`).then(r => r.json()).catch(() => ({ data: [] })),
-          resilientFetch(`/api/organizations/${orgId}/invites`).then(r => r.json()).catch(() => ({ data: [] })),
+        // Fetch join requests and invites, tracking whether each call succeeded
+        const [jrResp, invResp] = await Promise.all([
+          resilientFetch(`/api/organizations/${orgId}/join-requests`).catch(() => null),
+          resilientFetch(`/api/organizations/${orgId}/invites`).catch(() => null),
         ]);
+        const jrOk = jrResp?.ok ?? false;
+        const invOk = invResp?.ok ?? false;
+        const jrData = jrOk ? await jrResp!.json().catch(() => ({ data: [] })) : { data: [] };
+        const invData = invOk ? await invResp!.json().catch(() => ({ data: [] })) : { data: [] };
+
+        // Resolve the admin username from auth state — currentUser may be stale
+        // in the setInterval closure, so always derive it from registeredUsers
+        const adminUsername = currentUser
+          || registeredUsers.find(u => u.id === currentUserId)?.username
+          || "";
 
         const serverJoinReqs: any[] = jrData.data || [];
         const serverJoinReqIds = new Set(serverJoinReqs.map((s: any) => s.id));
         setGroupJoinRequests(prev => {
           let changed = false;
           const updated = prev.filter(r => {
-            if (r.serverJoinRequestId && r.status === "pending" && !serverJoinReqIds.has(r.serverJoinRequestId)) {
+            // Only purge if the server fetch actually SUCCEEDED and confirms the
+            // request is gone — never purge based on a failed/empty-error response
+            if (jrOk && r.serverJoinRequestId && r.status === "pending" && !serverJoinReqIds.has(r.serverJoinRequestId)) {
               changed = true;
               return false;
             }
@@ -442,18 +455,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 id: generateId(),
                 serverJoinRequestId: sjr.id,
                 requestingUsername: requester?.username || sjr.userId,
-                targetAdminUsername: currentUser || "",
+                targetAdminUsername: adminUsername,
                 message: sjr.message || `${requester?.username || "Someone"} would like to join your lab.`,
                 status: sjr.status === "approved" ? "accepted" as const : sjr.status === "rejected" ? "declined" as const : "pending" as const,
                 createdAt: sjr.createdAt ? new Date(sjr.createdAt).getTime() : Date.now(),
               });
               changed = true;
-            } else if (sjr.status === "approved" && existing.status === "pending") {
-              existing.status = "accepted";
-              changed = true;
-            } else if (sjr.status === "rejected" && existing.status === "pending") {
-              existing.status = "declined";
-              changed = true;
+            } else {
+              // Heal stale-closure entries that were added with a blank admin name
+              if (adminUsername && !existing.targetAdminUsername) {
+                existing.targetAdminUsername = adminUsername;
+                changed = true;
+              }
+              if (sjr.status === "approved" && existing.status === "pending") {
+                existing.status = "accepted";
+                changed = true;
+              } else if (sjr.status === "rejected" && existing.status === "pending") {
+                existing.status = "declined";
+                changed = true;
+              }
             }
           }
           if (!changed) return prev;
