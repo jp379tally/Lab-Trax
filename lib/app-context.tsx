@@ -219,7 +219,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({
           id: labCase.id,
           ownerId: labCase.ownerId || currentUserId,
-          organizationId: serverOrgId || undefined,
+          organizationId: labCase.labKey || undefined,
           caseData: JSON.stringify(labCase),
         }),
       });
@@ -753,6 +753,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ...c,
       id: caseId,
       ownerId: currentUserId || undefined,
+      labKey: serverOrgId || undefined,
       createdAt: now,
       updatedAt: now,
       routeHistory: [{ station: c.status, timestamp: now }],
@@ -1838,24 +1839,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function leaveLab(): Promise<{ success: boolean; error?: string }> {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
-      // Find membership ID from server
-      const meResp = await resilientFetch("/api/auth/me");
-      if (meResp.ok) {
-        const meData = await meResp.json();
-        const memberships: any[] = Array.isArray(meData.memberships) ? meData.memberships : [];
-        const labMembership = memberships.find(m => m.status === "active" && m.organization?.type === "lab");
-        if (labMembership?.id) {
-          const membershipId = labMembership.id;
-          await resilientFetch(`/api/organizations/memberships/${membershipId}`, { method: "DELETE" });
-        } else {
-          // Fallback: clear practiceName via profile endpoint
-          const apiUrl = getApiUrl();
-          const url = new URL(`/api/auth/users/${currentUserId}/profile`, apiUrl);
-          await resilientFetch(url.toString(), {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ practiceName: "" }),
-          });
+      // Use the dedicated /leave endpoint if we know the orgId, otherwise find it first
+      const orgId = serverOrgId;
+      if (orgId) {
+        const leaveResp = await resilientFetch(`/api/organizations/${orgId}/leave`, { method: "POST" });
+        if (!leaveResp.ok) {
+          const d = await leaveResp.json().catch(() => ({}));
+          return { success: false, error: (d as any).error || "Failed to leave lab" };
+        }
+      } else {
+        // Fall back: find the membership ID from /api/auth/me
+        const meResp = await resilientFetch("/api/auth/me");
+        if (meResp.ok) {
+          const meData = await meResp.json();
+          const memberships: any[] = Array.isArray(meData.memberships) ? meData.memberships : [];
+          const labMembership = memberships.find(m => m.status === "active" && m.organization?.type === "lab");
+          if (labMembership?.id) {
+            await resilientFetch(`/api/organizations/memberships/${labMembership.id}`, { method: "DELETE" });
+          }
         }
       }
       // Clear local state for the leaving user

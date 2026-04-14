@@ -774,6 +774,36 @@ router.patch(
   })
 );
 
+router.post(
+  "/:organizationId/leave",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const { organizationId } = req.params;
+
+    const membership = await db.query.labMemberships.findFirst({
+      where: and(
+        eq(labMemberships.labId, organizationId),
+        eq(labMemberships.userId, userId),
+        eq(labMemberships.status, "active")
+      ),
+    });
+    if (!membership) throw new HttpError(404, "No active membership in this lab.");
+
+    await db.delete(labMemberships).where(eq(labMemberships.id, membership.id));
+    await clearUserOrgSync(userId);
+
+    await writeAuditLog({
+      req,
+      organizationId,
+      action: "membership_removed",
+      entityType: "lab_membership",
+      entityId: membership.id,
+      beforeJson: membership,
+    });
+    return ok(res, { removed: true });
+  })
+);
+
 router.delete(
   "/memberships/:membershipId",
   asyncHandler(async (req, res) => {

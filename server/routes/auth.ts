@@ -172,10 +172,6 @@ router.post(
           requestedRole: input.role === "admin" ? "admin" : "user",
           status: "pending",
         });
-        await db
-          .update(users)
-          .set({ practiceName: org.displayName || org.name })
-          .where(eq(users.id, user.id));
         organizationInfo = { id: org.id, name: org.displayName || org.name };
         pendingJoinRequest = true;
         responseMessage = `Your request to join ${org.displayName || org.name} has been sent to the lab admin.`;
