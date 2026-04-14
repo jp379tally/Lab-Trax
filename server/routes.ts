@@ -173,18 +173,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/legacy/cases", requireAuth, async (req, res) => {
     try {
-      const { id, ownerId, caseData } = req.body;
+      const { id, ownerId, caseData, organizationId } = req.body;
       if (!id || !ownerId || !caseData) {
         return res.status(400).json({ error: "id, ownerId, and caseData are required" });
       }
       await db.insert(labCases).values({
         id,
         ownerId,
+        organizationId: organizationId || null,
         caseData: typeof caseData === "string" ? caseData : JSON.stringify(caseData),
         updatedAt: new Date(),
       }).onConflictDoUpdate({
         target: labCases.id,
-        set: { ownerId, caseData: typeof caseData === "string" ? caseData : JSON.stringify(caseData), updatedAt: new Date() },
+        set: {
+          ownerId,
+          organizationId: organizationId || null,
+          caseData: typeof caseData === "string" ? caseData : JSON.stringify(caseData),
+          updatedAt: new Date(),
+        },
       });
       res.json({ success: true });
     } catch (error: any) {
@@ -195,13 +201,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/legacy/cases", requireAuth, async (req, res) => {
     try {
+      const organizationIdParam = req.query.organizationId as string;
       const ownerIdsParam = req.query.ownerIds as string;
-      if (!ownerIdsParam) {
+
+      let rows: any[] = [];
+
+      if (organizationIdParam) {
+        // Fetch all cases belonging to this org (even from departed members)
+        const memberships = await db
+          .select({ userId: labMemberships.userId })
+          .from(labMemberships)
+          .where(eq(labMemberships.labId, organizationIdParam));
+        const memberIds = memberships.map(m => m.userId);
+
+        // Cases tagged with organizationId OR cases owned by any member
+        const byOrg = await db.select().from(labCases).where(eq(labCases.organizationId, organizationIdParam));
+        const byOwner = memberIds.length > 0
+          ? await db.select().from(labCases).where(inArray(labCases.ownerId, memberIds))
+          : [];
+
+        // Merge, deduplicate by id
+        const seen = new Set<string>();
+        for (const r of [...byOrg, ...byOwner]) {
+          if (!seen.has(r.id)) { seen.add(r.id); rows.push(r); }
+        }
+      } else if (ownerIdsParam) {
+        const ownerIds = ownerIdsParam.split(",").filter(Boolean);
+        if (ownerIds.length > 0) {
+          rows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
+        }
+      } else {
         return res.json({ cases: [] });
       }
-      const ownerIds = ownerIdsParam.split(",").filter(Boolean);
-      if (ownerIds.length === 0) return res.json({ cases: [] });
-      const rows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
+
       const cases = rows.map(r => {
         try { return JSON.parse(r.caseData); } catch { return null; }
       }).filter(Boolean);

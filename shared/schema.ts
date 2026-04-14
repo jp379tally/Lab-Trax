@@ -49,6 +49,7 @@ export const users = pgTable("users", {
 export const labCases = pgTable("lab_cases", {
   id: varchar("id").primaryKey(),
   ownerId: varchar("owner_id").notNull(),
+  organizationId: varchar("organization_id"),
   caseData: text("case_data").notNull(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

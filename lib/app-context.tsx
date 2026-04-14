@@ -163,6 +163,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [customStationLabels, setCustomStationLabels] = useState<Record<string, string>>({});
   const [deletedClientInvoices, setDeletedClientInvoices] = useState<DeletedClientInvoice[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [serverOrgId, setServerOrgId] = useState<string | null>(null);
+  const [serverMemberIds, setServerMemberIds] = useState<Set<string>>(new Set());
 
   const currentUserProfile = useMemo(() => {
     if (!currentUser) return null;
@@ -176,6 +178,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const labMemberIds = useMemo(() => {
     if (!currentUser || !currentUserId) return new Set<string>();
+    // Prefer server-confirmed membership over fragile practiceName matching
+    if (serverMemberIds.size > 0) {
+      const ids = new Set(serverMemberIds);
+      ids.add(currentUserId);
+      return ids;
+    }
+    // Fallback: practiceName string match (used before first server sync)
     const ids = new Set<string>();
     ids.add(currentUserId);
     const myLabName = currentUserProfile?.practiceName?.toLowerCase()?.trim();
@@ -187,12 +196,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     }
     return ids;
-  }, [currentUser, currentUserId, currentUserProfile, registeredUsers]);
+  }, [currentUser, currentUserId, currentUserProfile, registeredUsers, serverMemberIds]);
 
   const cases = useMemo(() => {
     if (!currentUserId) return [];
+    // When org is confirmed by server, show all cases — org-based server fetch guarantees
+    // they belong to this lab, and departed members' cases stay visible to the lab
+    if (serverOrgId) return allCases;
+    // Fallback: filter by server-confirmed (or practiceName-matched) member IDs
     return allCases.filter((c) => c.ownerId && labMemberIds.has(c.ownerId));
-  }, [allCases, currentUserId, labMemberIds]);
+  }, [allCases, currentUserId, labMemberIds, serverOrgId]);
 
   function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
     setAllCases(updater);
@@ -203,7 +216,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await resilientFetch("/api/legacy/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: labCase.id, ownerId: labCase.ownerId || currentUserId, caseData: JSON.stringify(labCase) }),
+        body: JSON.stringify({
+          id: labCase.id,
+          ownerId: labCase.ownerId || currentUserId,
+          organizationId: serverOrgId || undefined,
+          caseData: JSON.stringify(labCase),
+        }),
       });
     } catch (e) {
       console.log("Could not sync case to server:", e);
@@ -218,10 +236,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function fetchCasesFromServer(ownerIds: string[]): Promise<LabCase[]> {
+  async function fetchCasesFromServer(ownerIds: string[], orgId?: string | null): Promise<LabCase[]> {
     try {
-      if (ownerIds.length === 0) return [];
-      const res = await resilientFetch(`/api/legacy/cases?ownerIds=${ownerIds.join(",")}`);
+      const effectiveOrgId = orgId ?? serverOrgId;
+      let url: string;
+      if (effectiveOrgId) {
+        url = `/api/legacy/cases?organizationId=${encodeURIComponent(effectiveOrgId)}`;
+      } else if (ownerIds.length > 0) {
+        url = `/api/legacy/cases?ownerIds=${ownerIds.join(",")}`;
+      } else {
+        return [];
+      }
+      const res = await resilientFetch(url);
       if (res.ok) {
         const data = await res.json();
         return data.cases || [];
@@ -249,11 +275,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const fetchingRef = useRef(false);
 
   async function refreshCases() {
-    if (fetchingRef.current || labMemberIds.size === 0) return;
+    if (fetchingRef.current) return;
     fetchingRef.current = true;
     try {
+      // Refresh org membership first, using the fresh orgId for case fetch
+      await refreshUsers();
+      const membershipResult = await fetchServerOrgMembership();
+      // null means network error → keep current serverOrgId; {orgId: null} means not in a lab
+      const freshOrgId = membershipResult === null ? serverOrgId : membershipResult.orgId;
       const ownerIds = Array.from(labMemberIds);
-      const serverCases = await fetchCasesFromServer(ownerIds);
+      const serverCases = await fetchCasesFromServer(ownerIds, freshOrgId);
       mergeServerCases(serverCases);
     } catch (e) {
       console.log("Could not refresh cases:", e);
@@ -302,18 +333,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [currentUserId, labMemberIds]);
 
   useEffect(() => {
-    if (!currentUserId || labMemberIds.size === 0) return;
+    if (!currentUserId) return;
     const ownerIds = Array.from(labMemberIds);
     const interval = setInterval(() => {
       if (fetchingRef.current) return;
       fetchingRef.current = true;
-      fetchCasesFromServer(ownerIds).then(serverCases => {
+      // Use serverOrgId (captured from this effect's closure) for org-based fetch
+      fetchCasesFromServer(ownerIds, serverOrgId).then(serverCases => {
         mergeServerCases(serverCases);
         fetchingRef.current = false;
       }).catch(() => { fetchingRef.current = false; });
     }, 10000);
     return () => clearInterval(interval);
-  }, [currentUserId, labMemberIds]);
+  }, [currentUserId, labMemberIds, serverOrgId]);
+
+  async function fetchServerOrgMembership() {
+    try {
+      const meResp = await resilientFetch("/api/auth/me");
+      if (!meResp.ok) return null;
+      const meData = await meResp.json();
+      type ServerMembership = { organizationId: string; role: string; status: string; organization?: { type?: string; displayName?: string | null; name?: string } | null };
+      const memberships: ServerMembership[] = Array.isArray(meData.memberships) ? meData.memberships : [];
+
+      const activeLabMembership = memberships.find(
+        m => m.status === "active" && m.organization?.type === "lab"
+      );
+      if (activeLabMembership) {
+        const orgId = activeLabMembership.organizationId;
+        setServerOrgId(orgId);
+        // Fetch current member IDs for this org
+        const membersResp = await resilientFetch(`/api/organizations/${orgId}/members`).catch(() => null);
+        if (membersResp?.ok) {
+          const membersData = await membersResp.json();
+          const members: any[] = membersData.data || membersData.members || [];
+          const memberIds = new Set<string>(members.map((m: any) => m.userId || m.id).filter(Boolean));
+          if (memberIds.size > 0) setServerMemberIds(memberIds);
+        }
+        return { orgId, memberships };
+      } else {
+        setServerOrgId(null);
+        setServerMemberIds(new Set());
+        return { orgId: null, memberships };
+      }
+    } catch (e) {
+      console.log("Could not fetch org membership:", e);
+      return null;
+    }
+  }
 
   async function fetchServerJoinRequestsAndInvites() {
     try {
@@ -323,6 +389,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const meData = await meResp.json();
       type ServerMembership = { organizationId: string; role: string; status: string; organization?: { type?: string; displayName?: string | null; name?: string } | null };
       const memberships: ServerMembership[] = Array.isArray(meData.memberships) ? meData.memberships : [];
+
+      // Update serverOrgId and serverMemberIds from the active membership
+      const activeLabMembership = memberships.find(m => m.status === "active" && m.organization?.type === "lab");
+      if (activeLabMembership) {
+        const orgId = activeLabMembership.organizationId;
+        setServerOrgId(orgId);
+        resilientFetch(`/api/organizations/${orgId}/members`).then(async r => {
+          if (r.ok) {
+            const d = await r.json();
+            const members: any[] = d.data || d.members || [];
+            const ids = new Set<string>(members.map((m: any) => m.userId || m.id).filter(Boolean));
+            if (ids.size > 0) setServerMemberIds(ids);
+          }
+        }).catch(() => {});
+      } else {
+        setServerOrgId(null);
+        setServerMemberIds(new Set());
+      }
 
       // Admin lab orgs: where current user is owner or admin of a lab
       const adminLabOrgIds = memberships
@@ -1754,13 +1838,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function leaveLab(): Promise<{ success: boolean; error?: string }> {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
-      const apiUrl = getApiUrl();
-      const url = new URL(`/api/auth/users/${currentUserId}/profile`, apiUrl);
-      await resilientFetch(url.toString(), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ practiceName: "" }),
-      });
+      // Find membership ID from server
+      const meResp = await resilientFetch("/api/auth/me");
+      if (meResp.ok) {
+        const meData = await meResp.json();
+        const memberships: any[] = Array.isArray(meData.memberships) ? meData.memberships : [];
+        const labMembership = memberships.find(m => m.status === "active" && m.organization?.type === "lab");
+        if (labMembership?.id) {
+          const membershipId = labMembership.id;
+          await resilientFetch(`/api/organizations/memberships/${membershipId}`, { method: "DELETE" });
+        } else {
+          // Fallback: clear practiceName via profile endpoint
+          const apiUrl = getApiUrl();
+          const url = new URL(`/api/auth/users/${currentUserId}/profile`, apiUrl);
+          await resilientFetch(url.toString(), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ practiceName: "" }),
+          });
+        }
+      }
+      // Clear local state for the leaving user
+      setServerOrgId(null);
+      setServerMemberIds(new Set());
       setAllCases([]);
       setClients([]);
       setInvoices([]);

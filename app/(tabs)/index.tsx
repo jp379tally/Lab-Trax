@@ -313,6 +313,7 @@ function TechDashboard() {
   );
   const recentCases = cases
     .filter((c) => c.status !== "COMPLETE")
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
     .slice(0, 5);
 
   const intakeCases = cases.filter((c) => c.status === "INTAKE");
