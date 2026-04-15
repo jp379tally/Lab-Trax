@@ -43,6 +43,7 @@ export const users = pgTable("users", {
   accountNumber: text("account_number"),
   wantsUpdates: boolean("wants_updates").default(false),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+  workStatus: text("work_status").default("available"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

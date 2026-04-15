@@ -55,7 +55,10 @@ Preferred communication style: Simple, everyday language.
 - **Client Management**: Admins can delete or deactivate clients, with safeguards for open invoices.
 - **Duplicate Registration Prevention**: Checks for existing accounts by email, phone, and address during sign-up.
 - **Security**: Inactivity timeouts, biometric/password lock screens, robust password recovery via email (with optional SMTP configuration).
-- **Global Chat System**: Real-time messaging with unread indicators.
+- **Work Status**: Persistent per-user work status ("available", "break", "out_of_office") stored in the `work_status` column on the `users` table. Saved via `PATCH /api/auth/me/status`. Displayed as colored dots in the chat conversation list and thread header. Profile tab allows the user to change their own status (saved immediately to server). Status is initialized from `registeredUsers` hydration data on app load.
+- **Lab Channel Chat**: Group chat channel scoped to each lab. The `GET /api/legacy/chat` endpoint includes a `lab:<orgId>` thread for each of the user's active org memberships, pinned at the top of the conversation list. Sending to a lab channel uses `POST /api/legacy/chat/send` with `labChannelId` parameter; the server resolves all active org members as participants and stores messages under the channel thread. Lab channels are visually distinct (blue chatbubbles icon, "CHANNEL" badge) and non-deletable via swipe. Sender names are shown for messages from others in the group thread.
+- **Case Pull-to-Refresh (Full Sync)**: `fullRefreshCases()` in `app-context.tsx` fully replaces `allCases` from the server response (rather than merging). The pull-to-refresh on the Cases tab and the web refresh button both call `fullRefreshCases()` to ensure stale cases are cleared.
+- **Global Chat System**: Real-time messaging with unread indicators (DM and lab channel).
 - **Courtesy Text Feature**: Automates delay notifications and delivery date negotiations.
 - **Inventory Tracking**: Manage items, categories, quantities, and low-stock alerts.
 - **Provider Account Numbers**: Automated assignment of unique IDs.

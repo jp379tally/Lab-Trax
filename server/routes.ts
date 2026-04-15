@@ -695,6 +695,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/legacy/chat", requireAuth, async (req, res) => {
     try {
+      const currentUserId = (req as any).auth?.userId;
       const currentUsername = (req as any).user?.username;
       const normalizedCurrentUsername = normalizeUsernameKey(currentUsername);
       if (!normalizedCurrentUsername) {
@@ -702,12 +703,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const store = await readLegacyChatStore();
-      const relevantThreads = store.threads.filter((thread) =>
+
+      const dmThreads = store.threads.filter((thread) =>
         thread.participants.some(
           (participant) =>
             normalizeUsernameKey(participant) === normalizedCurrentUsername
         )
       );
+
+      const activeLabMemberships = currentUserId
+        ? await db.query.organizationMemberships.findMany({
+            where: and(
+              eq(organizationMemberships.userId, currentUserId),
+              eq(organizationMemberships.status, "active")
+            ),
+            with: { organization: true } as any,
+          })
+        : [];
+
+      const labChannelThreads: typeof store.threads = [];
+      const labChannelMeta: Map<string, string> = new Map();
+      for (const membership of activeLabMemberships) {
+        const channelId = `lab:${membership.labId}`;
+        const orgRecord = await db.query.organizations.findFirst({
+          where: eq(organizations.id, membership.labId),
+        });
+        const orgName =
+          (orgRecord as any)?.displayName || (orgRecord as any)?.name || "Lab";
+        labChannelMeta.set(channelId, `${orgName} Channel`);
+        const existing = store.threads.find((t) => t.id === channelId);
+        if (existing) {
+          if (!dmThreads.find((t) => t.id === channelId)) {
+            labChannelThreads.push(existing);
+          }
+        } else {
+          labChannelThreads.push({
+            id: channelId,
+            participants: [currentUsername],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }
+      }
+
+      const relevantThreads = [...dmThreads, ...labChannelThreads];
       const relevantConversationIds = new Set(relevantThreads.map((thread) => thread.id));
       const relevantMessages = store.messages.filter((message) =>
         relevantConversationIds.has(message.conversationId)
@@ -715,11 +754,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const conversations = relevantThreads
         .map((thread) => {
-          const otherParticipant =
-            thread.participants.find(
-              (participant) =>
-                normalizeUsernameKey(participant) !== normalizedCurrentUsername
-            ) || "Unknown User";
+          const isLabChannel = thread.id.startsWith("lab:");
+          const channelName = isLabChannel
+            ? labChannelMeta.get(thread.id) || "Lab Channel"
+            : thread.participants.find(
+                (participant) =>
+                  normalizeUsernameKey(participant) !== normalizedCurrentUsername
+              ) || "Unknown User";
+
           const threadMessages = relevantMessages
             .filter((message) => message.conversationId === thread.id)
             .sort((a, b) => a.timestamp - b.timestamp);
@@ -734,7 +776,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return {
             id: thread.id,
             clientId: thread.id,
-            clientName: otherParticipant,
+            clientName: channelName,
+            isLabChannel,
             lastMessage: lastMessage
               ? lastMessage.imageUri
                 ? "Photo"
@@ -745,7 +788,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             unreadCount,
           };
         })
-        .sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+        .sort((a, b) => {
+          if (a.isLabChannel && !b.isLabChannel) return -1;
+          if (!a.isLabChannel && b.isLabChannel) return 1;
+          return b.lastMessageTime - a.lastMessageTime;
+        });
 
       const messages = relevantMessages
         .map((message) => ({
@@ -773,8 +820,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/legacy/chat/send", requireAuth, async (req, res) => {
     try {
+      const currentUserId = (req as any).auth?.userId;
       const currentUsername = (req as any).user?.username;
       const normalizedCurrentUsername = normalizeUsernameKey(currentUsername);
+      const labChannelId =
+        typeof req.body?.labChannelId === "string" ? req.body.labChannelId.trim() : "";
       const targetUsername =
         typeof req.body?.targetUsername === "string" ? req.body.targetUsername.trim() : "";
       const content =
@@ -782,16 +832,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const imageUri =
         typeof req.body?.imageUri === "string" ? req.body.imageUri.trim() : undefined;
 
-      if (!normalizedCurrentUsername || !targetUsername) {
-        return res.status(400).json({ error: "A target user is required." });
+      if (!normalizedCurrentUsername) {
+        return res.status(401).json({ error: "Not authenticated." });
       }
-
-      if (normalizeUsernameKey(targetUsername) === normalizedCurrentUsername) {
-        return res.status(400).json({ error: "You cannot message yourself." });
-      }
-
       if (!content && !imageUri) {
         return res.status(400).json({ error: "A message or image is required." });
+      }
+
+      const store = await readLegacyChatStore();
+      const now = Date.now();
+
+      if (labChannelId && labChannelId.startsWith("lab:")) {
+        const orgId = labChannelId.replace(/^lab:/, "");
+        const membership = currentUserId
+          ? await db.query.organizationMemberships.findFirst({
+              where: and(
+                eq(organizationMemberships.userId, currentUserId),
+                eq(organizationMemberships.labId, orgId),
+                eq(organizationMemberships.status, "active")
+              ),
+            })
+          : null;
+        if (!membership) {
+          return res.status(403).json({ error: "You are not a member of this lab." });
+        }
+        const allOrgMembers = await db.query.organizationMemberships.findMany({
+          where: and(
+            eq(organizationMemberships.labId, orgId),
+            eq(organizationMemberships.status, "active")
+          ),
+        });
+        const memberIds = allOrgMembers.map((m) => m.userId);
+        const memberUsers =
+          memberIds.length > 0
+            ? await db.select().from(users).where(inArray(users.id, memberIds))
+            : [];
+        const participants = memberUsers.map((u) => u.username);
+
+        const existingThread = store.threads.find((t) => t.id === labChannelId);
+        if (existingThread) {
+          existingThread.participants = participants;
+          existingThread.updatedAt = now;
+        } else {
+          store.threads.push({ id: labChannelId, participants, createdAt: now, updatedAt: now });
+        }
+
+        const message: LegacyChatMessage = {
+          id: randomBytes(16).toString("hex"),
+          conversationId: labChannelId,
+          senderUsername: currentUsername,
+          content,
+          ...(imageUri ? { imageUri } : {}),
+          timestamp: now,
+          readBy: [normalizedCurrentUsername],
+        };
+        store.messages.push(message);
+        await writeLegacyChatStore(store);
+        return res.json({ success: true, conversationId: labChannelId, messageId: message.id });
+      }
+
+      if (!targetUsername) {
+        return res.status(400).json({ error: "A target user or lab channel is required." });
+      }
+      if (normalizeUsernameKey(targetUsername) === normalizedCurrentUsername) {
+        return res.status(400).json({ error: "You cannot message yourself." });
       }
 
       const allUsers = await db.select().from(users);
@@ -799,7 +903,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         (user) =>
           normalizeUsernameKey(user.username) === normalizeUsernameKey(targetUsername)
       );
-
       if (!targetUser?.username) {
         return res.status(404).json({ error: "Target user not found." });
       }
@@ -811,24 +914,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Could not create a conversation." });
       }
 
-      const store = await readLegacyChatStore();
-      const now = Date.now();
       const existingThread = store.threads.find((thread) => thread.id === conversationId);
-      const participants = [
-        currentUsername,
-        targetUser.username,
-      ].filter((value, index, values) => values.indexOf(value) === index);
+      const participants = [currentUsername, targetUser.username].filter(
+        (value, index, values) => values.indexOf(value) === index
+      );
 
       if (existingThread) {
         existingThread.participants = participants;
         existingThread.updatedAt = now;
       } else {
-        store.threads.push({
-          id: conversationId,
-          participants,
-          createdAt: now,
-          updatedAt: now,
-        });
+        store.threads.push({ id: conversationId, participants, createdAt: now, updatedAt: now });
       }
 
       const message: LegacyChatMessage = {
@@ -841,7 +936,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         readBy: [normalizedCurrentUsername],
       };
       store.messages.push(message);
-
       await writeLegacyChatStore(store);
       res.json({ success: true, conversationId, messageId: message.id });
     } catch (error: any) {

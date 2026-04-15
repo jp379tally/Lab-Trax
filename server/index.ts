@@ -390,6 +390,9 @@ async function runStartupMigrations() {
         WHERE status = 'pending'
       `
     );
+    await db.execute(
+      /* sql */ `ALTER TABLE users ADD COLUMN IF NOT EXISTS work_status TEXT DEFAULT 'available'`
+    );
     log("Startup migrations applied successfully");
   } catch (err: any) {
     console.error("Startup migration error:", err?.message || err);

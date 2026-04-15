@@ -112,6 +112,8 @@ interface AppContextValue {
   customStationLabels: Record<string, string>;
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
   userIsAffiliated: boolean;
+  activeLabAffiliationKey: string | null;
+  activeLabAffiliationName: string | null;
   leaveLab: () => Promise<{ success: boolean; error?: string }>;
   deleteLab: () => Promise<{ success: boolean; error?: string }>;
   isLabCreator: boolean;
@@ -121,6 +123,8 @@ interface AppContextValue {
   deletedClientInvoices: DeletedClientInvoice[];
   inactiveClients: Client[];
   refreshCases: () => Promise<void>;
+  fullRefreshCases: () => Promise<void>;
+  updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -779,6 +783,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log("Could not refresh cases:", e);
     } finally {
       fetchingRef.current = false;
+    }
+  }
+
+  async function fullRefreshCases() {
+    if (!currentUserId || visibleCaseAffiliationScope.length === 0) {
+      return;
+    }
+    try {
+      const serverCases = await fetchCasesFromServer(visibleCaseAffiliationScope, currentUserId);
+      setAllCases(serverCases);
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(serverCases));
+      prevCasesRef.current = serverCases;
+    } catch (e) {
+      console.log("Could not full-refresh cases:", e);
+    }
+  }
+
+  async function updateWorkStatus(
+    status: "available" | "break" | "out_of_office"
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const response = await resilientFetch("/api/auth/me/status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workStatus: status }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        return { success: false, error: payload?.message || "Failed to update status." };
+      }
+      return { success: true };
+    } catch {
+      return { success: false, error: "Network error updating status." };
     }
   }
 
@@ -1831,13 +1868,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     const trimmedContent = content.trim();
+    if (!trimmedContent && !imageUri) {
+      return;
+    }
+
+    const isLabChannel = conversationId.startsWith("lab:");
     const targetConversation =
       conversations.find((conversation) => conversation.id === conversationId) || null;
-    const targetUsername = targetConversation?.clientName?.trim();
-    const resolvedConversationId =
-      buildDirectConversationId(currentUser, targetUsername) || conversationId;
+    const targetUsername = isLabChannel ? null : targetConversation?.clientName?.trim();
+    const resolvedConversationId = isLabChannel
+      ? conversationId
+      : buildDirectConversationId(currentUser, targetUsername) || conversationId;
 
-    if (!targetUsername || (!trimmedContent && !imageUri)) {
+    if (!isLabChannel && !targetUsername) {
       return;
     }
 
@@ -1887,12 +1930,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const sharedImageUri = imageUri
           ? await normalizeSharedImageUri(imageUri)
           : undefined;
+        const isLabChannel = resolvedConversationId.startsWith("lab:");
         const response = await resilientFetch("/api/legacy/chat/send", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             conversationId: resolvedConversationId,
-            targetUsername,
+            ...(isLabChannel
+              ? { labChannelId: resolvedConversationId }
+              : { targetUsername }),
             content: trimmedContent,
             imageUri: sharedImageUri,
           }),
@@ -2487,6 +2533,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       customStationLabels,
       updateStationLabel,
       userIsAffiliated,
+      activeLabAffiliationKey,
+      activeLabAffiliationName,
       leaveLab,
       deleteLab,
       isLabCreator,
@@ -2496,6 +2544,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       deletedClientInvoices,
       inactiveClients: clients.filter(c => c.status === "inactive"),
       refreshCases,
+      fullRefreshCases,
+      updateWorkStatus,
     }),
     [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers],
   );

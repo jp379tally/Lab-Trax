@@ -43,6 +43,7 @@ function safeUser(user: any) {
     phoneContactName: user.phoneContactName,
     accountNumber: user.accountNumber,
     wantsUpdates: user.wantsUpdates,
+    workStatus: user.workStatus ?? "available",
   };
 }
 
@@ -699,6 +700,25 @@ router.delete(
       details: { labName, membersRemoved: memberIds.length },
     });
     res.json({ success: true, membersRemoved: memberIds.length });
+  })
+);
+
+router.patch(
+  "/me/status",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const validStatuses = ["available", "break", "out_of_office"];
+    const { workStatus } = req.body;
+    if (!validStatuses.includes(workStatus)) {
+      throw new HttpError(400, "Invalid status. Must be one of: available, break, out_of_office.");
+    }
+    const userId = (req as any).auth.userId;
+    const [updated] = await db
+      .update(users)
+      .set({ workStatus })
+      .where(eq(users.id, userId))
+      .returning();
+    return ok(res, safeUser(updated));
   })
 );
 

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   StyleSheet,
   View,
@@ -21,7 +21,7 @@ import { ChatButton } from "@/components/ChatButton";
 type WorkStatus = "available" | "break" | "out_of_office";
 
 export default function ProfileScreen() {
-  const { role, setRole, adminUnlocked, setAdminUnlocked } = useApp();
+  const { role, setRole, adminUnlocked, setAdminUnlocked, updateWorkStatus } = useApp();
   const { logout, currentUser, profilePicUri, changePassword, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [workStatus, setWorkStatus] = useState<WorkStatus>("available");
@@ -32,11 +32,19 @@ export default function ProfileScreen() {
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
 
-  function handleStatusChange(status: WorkStatus) {
+  useEffect(() => {
+    const me = registeredUsers.find((u) => u.username === currentUser);
+    if (me && (me as any).workStatus) {
+      setWorkStatus((me as any).workStatus as WorkStatus);
+    }
+  }, [registeredUsers, currentUser]);
+
+  async function handleStatusChange(status: WorkStatus) {
     setWorkStatus(status);
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
+    await updateWorkStatus(status);
   }
 
   async function handleChangePassword() {

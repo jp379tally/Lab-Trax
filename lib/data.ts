@@ -157,6 +157,7 @@ export interface Conversation {
   lastMessage: string;
   lastMessageTime: number;
   unreadCount: number;
+  isLabChannel?: boolean;
 }
 
 export interface Group {
