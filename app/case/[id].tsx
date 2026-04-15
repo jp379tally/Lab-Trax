@@ -742,9 +742,7 @@ export default function CaseDetailScreen() {
               allowsMultipleSelection: true,
             });
             if (!result.canceled && result.assets.length > 0) {
-              result.assets.forEach((asset) => {
-                addCasePhoto(caseItem!.id, asset.uri, userInitials);
-              });
+              await Promise.all(result.assets.map((asset) => addCasePhoto(caseItem!.id, asset.uri, userInitials)));
               if (Platform.OS !== "web") {
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               }
@@ -764,9 +762,7 @@ export default function CaseDetailScreen() {
                 multiple: true,
               });
               if (!result.canceled && result.assets && result.assets.length > 0) {
-                result.assets.forEach((asset) => {
-                  addCasePhoto(caseItem!.id, asset.uri, userInitials);
-                });
+                await Promise.all(result.assets.map((asset) => addCasePhoto(caseItem!.id, asset.uri, userInitials)));
                 if (Platform.OS !== "web") {
                   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 }
@@ -781,10 +777,8 @@ export default function CaseDetailScreen() {
     );
   }
 
-  function handleFinishPhotos() {
-    capturedPhotos.forEach((uri) => {
-      addCasePhoto(caseItem!.id, uri, userInitials);
-    });
+  async function handleFinishPhotos() {
+    await Promise.all(capturedPhotos.map((uri) => addCasePhoto(caseItem!.id, uri, userInitials)));
     if (photoNotes.trim()) {
       addCaseNote(caseItem!.id, photoNotes.trim(), userInitials);
     }
@@ -856,8 +850,8 @@ export default function CaseDetailScreen() {
     });
   }
 
-  function handleEntrySavePhotos() {
-    entryPhotos.forEach((uri) => addCasePhoto(caseItem!.id, uri, userInitials));
+  async function handleEntrySavePhotos() {
+    await Promise.all(entryPhotos.map((uri) => addCasePhoto(caseItem!.id, uri, userInitials)));
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setEntryPhotos([]);
     setEntryPhotoMode(false);
@@ -904,7 +898,7 @@ export default function CaseDetailScreen() {
               try {
                 const uri = await webFilePickerForCamera();
                 if (uri) {
-                  addCasePhoto(caseItem!.id, uri, userInitials);
+                  await addCasePhoto(caseItem!.id, uri, userInitials);
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Photo Added", "Photo has been attached to this case.");
                 }
@@ -920,7 +914,7 @@ export default function CaseDetailScreen() {
                   quality: 1.0,
                 });
                 if (!result.canceled && result.assets[0]) {
-                  addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
+                  await addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Photo Added", "Photo has been attached to this case.");
                 }
@@ -937,7 +931,7 @@ export default function CaseDetailScreen() {
               try {
                 const uri = await webFilePickerForCamera();
                 if (uri) {
-                  addCasePhoto(caseItem!.id, uri, userInitials);
+                  await addCasePhoto(caseItem!.id, uri, userInitials);
                   Alert.alert("Media Added", "Media has been attached to this case.");
                 }
               } catch {
@@ -953,7 +947,7 @@ export default function CaseDetailScreen() {
                   videoMaxDuration: 60,
                 });
                 if (!result.canceled && result.assets[0]) {
-                  addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
+                  await addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Video Added", "Video has been attached to this case.");
                 }
@@ -977,9 +971,7 @@ export default function CaseDetailScreen() {
               allowsMultipleSelection: true,
             });
             if (!result.canceled && result.assets.length > 0) {
-              result.assets.forEach((asset) => {
-                addCasePhoto(caseItem!.id, asset.uri, userInitials);
-              });
+              await Promise.all(result.assets.map((asset) => addCasePhoto(caseItem!.id, asset.uri, userInitials)));
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               Alert.alert("Media Added", `${result.assets.length} file(s) attached to this case.`);
             }

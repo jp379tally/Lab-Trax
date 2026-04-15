@@ -9,7 +9,8 @@ import React, {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
-import { getApiUrl, resilientFetch } from "./query-client";
+import { getApiUrl, resilientFetch, getAccessToken } from "./query-client";
+import { Platform } from "react-native";
 import {
   UserRole,
   LabCase,
@@ -49,7 +50,7 @@ interface AppContextValue {
   cases: LabCase[];
   addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => LabCase;
   updateCaseStatus: (caseId: string, newStatus: CaseStatus, user?: string) => void;
-  addCasePhoto: (caseId: string, photoUri: string, user?: string) => void;
+  addCasePhoto: (caseId: string, photoUri: string, user?: string) => Promise<void>;
   addCaseNote: (caseId: string, note: string, user?: string) => void;
   addTrackingNumber: (caseId: string, tracking: string) => void;
   addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) => void;
@@ -406,49 +407,114 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function uploadMediaToServer(
+    fileBlob: Blob | null,
+    nativeUri: string | null,
+    filename: string,
+    mimeType: string
+  ): Promise<string | null> {
+    try {
+      const uploadUrl = new URL("/api/media/upload", getApiUrl()).toString();
+      const token = getAccessToken();
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const formData = new FormData();
+      if (fileBlob) {
+        formData.append("file", fileBlob, filename);
+      } else if (nativeUri) {
+        formData.append("file", {
+          uri: nativeUri,
+          type: mimeType,
+          name: filename,
+        } as any);
+      } else {
+        return null;
+      }
+
+      const globalFetch = globalThis.fetch;
+      const response = await globalFetch(uploadUrl, {
+        method: "POST",
+        headers,
+        body: formData,
+      });
+
+      if (!response.ok) return null;
+      const data = await response.json();
+      return data?.url || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function normalizeSharedImageUri(imageUri?: string | null) {
     if (!imageUri?.trim()) {
       return undefined;
     }
 
     const normalizedUri = imageUri.trim();
+
     if (
-      normalizedUri.startsWith("data:") ||
       normalizedUri.startsWith("http://") ||
       normalizedUri.startsWith("https://")
     ) {
       return normalizedUri;
     }
 
-    if (normalizedUri.startsWith("blob:") && typeof fetch === "function") {
+    if (normalizedUri.startsWith("blob:") && Platform.OS === "web") {
       try {
-        const response = await fetch(normalizedUri);
-        const blob = await response.blob();
-        return await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onerror = () => reject(new Error("Could not read blob image."));
-          reader.onloadend = () => {
-            if (typeof reader.result === "string") {
-              resolve(reader.result);
-            } else {
-              reject(new Error("Could not convert blob image."));
-            }
-          };
-          reader.readAsDataURL(blob);
-        });
-      } catch {
-        return normalizedUri;
-      }
-    }
-
-    try {
-      const base64 = await FileSystem.readAsStringAsync(normalizedUri, {
-        encoding: "base64" as any,
-      });
-      return `data:${inferImageMimeType(normalizedUri)};base64,${base64}`;
-    } catch {
+        const blobResponse = await globalThis.fetch(normalizedUri);
+        const blob = await blobResponse.blob();
+        const ext = blob.type.split("/")[1] || "jpg";
+        const filename = `media-${Date.now()}.${ext}`;
+        const uploaded = await uploadMediaToServer(blob, null, filename, blob.type || "image/jpeg");
+        if (uploaded) return uploaded;
+      } catch {}
       return normalizedUri;
     }
+
+    if (normalizedUri.startsWith("data:") && Platform.OS === "web") {
+      try {
+        const dataFetch = await globalThis.fetch(normalizedUri);
+        const blob = await dataFetch.blob();
+        const ext = blob.type.split("/")[1] || "jpg";
+        const filename = `media-${Date.now()}.${ext}`;
+        const uploaded = await uploadMediaToServer(blob, null, filename, blob.type || "image/jpeg");
+        if (uploaded) return uploaded;
+      } catch {}
+      return normalizedUri;
+    }
+
+    if (Platform.OS !== "web") {
+      const localUri = normalizedUri.startsWith("file://")
+        ? normalizedUri
+        : `file://${normalizedUri}`;
+      const uriLower = normalizedUri.toLowerCase();
+      const isVideo =
+        uriLower.endsWith(".mp4") ||
+        uriLower.endsWith(".mov") ||
+        uriLower.endsWith(".m4v") ||
+        uriLower.endsWith(".avi");
+      const mimeType = isVideo
+        ? uriLower.endsWith(".mov") ? "video/quicktime" : "video/mp4"
+        : inferImageMimeType(normalizedUri);
+      const extMatch = normalizedUri.match(/\.([a-zA-Z0-9]+)(\?|$)/);
+      const ext = extMatch ? extMatch[1] : isVideo ? "mp4" : "jpg";
+      const filename = `media-${Date.now()}.${ext}`;
+      const uploaded = await uploadMediaToServer(null, localUri, filename, mimeType);
+      if (uploaded) return uploaded;
+      if (!isVideo) {
+        try {
+          const base64 = await FileSystem.readAsStringAsync(normalizedUri, {
+            encoding: "base64" as any,
+          });
+          return `data:${inferImageMimeType(normalizedUri)};base64,${base64}`;
+        } catch {}
+      }
+      return normalizedUri;
+    }
+
+    return normalizedUri;
   }
 
   async function fetchChatStateFromServer() {
@@ -1290,36 +1356,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch {}
   }
 
-  function addCasePhoto(caseId: string, photoUri: string, user?: string) {
-    void (async () => {
-      const sharedPhotoUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
-      const now = Date.now();
-      const photoEntry: ActivityEntry = {
-        id: generateId(),
-        type: "photo",
-        timestamp: now,
-        description: "Photo added to case",
-        imageUri: sharedPhotoUri,
-        user: user || undefined,
-      };
-      setCases((prevCases) => {
-        const updated = prevCases.map((c) => {
-          if (c.id === caseId) {
-            const updatedCase = {
-              ...c,
-              updatedAt: now,
-              photos: [...(c.photos || []), sharedPhotoUri],
-              activityLog: [...(c.activityLog || []), photoEntry],
-            };
-            void syncCaseToServer(updatedCase);
-            return updatedCase;
-          }
-          return c;
-        });
-        AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
-        return updated;
+  async function addCasePhoto(caseId: string, photoUri: string, user?: string) {
+    const sharedPhotoUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
+    const now = Date.now();
+    const photoEntry: ActivityEntry = {
+      id: generateId(),
+      type: "photo",
+      timestamp: now,
+      description: "Photo added to case",
+      imageUri: sharedPhotoUri,
+      user: user || undefined,
+    };
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          const updatedCase = {
+            ...c,
+            updatedAt: now,
+            photos: [...(c.photos || []), sharedPhotoUri],
+            activityLog: [...(c.activityLog || []), photoEntry],
+          };
+          void syncCaseToServer(updatedCase);
+          return updatedCase;
+        }
+        return c;
       });
-    })();
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
   }
 
   function addCaseNote(caseId: string, note: string, user?: string) {

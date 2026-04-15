@@ -1,8 +1,11 @@
 import type { Express } from "express";
+import express from "express";
 import { createServer, type Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import * as fs from "node:fs";
 import * as path from "node:path";
+import multer from "multer";
 import OpenAI from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
@@ -193,8 +196,50 @@ async function seedDefaultUsers() {
   }
 }
 
+const casMediaDir = path.resolve(process.cwd(), "uploads", "case-media");
+
+const caseMediaStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    fs.mkdirSync(casMediaDir, { recursive: true });
+    cb(null, casMediaDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "") || ".bin";
+    const safeBase = path
+      .basename(file.originalname || "media", ext)
+      .replace(/[^a-zA-Z0-9\-_]+/g, "-")
+      .slice(0, 60) || "media";
+    cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}-${safeBase}${ext}`);
+  },
+});
+
+const caseMediaUpload = multer({
+  storage: caseMediaStorage,
+  limits: { fileSize: 200 * 1024 * 1024 },
+});
+
 export async function registerRoutes(app: Express): Promise<Server> {
   await seedDefaultUsers();
+
+  fs.mkdirSync(casMediaDir, { recursive: true });
+  app.use("/uploads/case-media", express.static(casMediaDir));
+
+  app.post("/api/media/upload", caseMediaUpload.single("file"), (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+      const forwardedHost = req.header("x-forwarded-host");
+      const host = forwardedHost || req.get("host") || "localhost";
+      const forwardedProto = req.header("x-forwarded-proto");
+      const protocol = forwardedProto ? forwardedProto.split(",")[0].trim() : (req.protocol || "https");
+      const url = `${protocol}://${host}/uploads/case-media/${req.file.filename}`;
+      return res.json({ url, filename: req.file.filename, size: req.file.size });
+    } catch (error: any) {
+      console.error("Media upload error:", error?.message || error);
+      return res.status(500).json({ error: "Upload failed" });
+    }
+  });
 
   async function getRepairableLabDirectoryData() {
     const allUsers = await db.select().from(users);
