@@ -100,5 +100,8 @@
     "ws": "^8.18.0"
   },
   "private": true,
-  "type": "module"
+  "type": "module",
+  "overrides": {
+    "tar": "^7.5.13"
+  }
 }
