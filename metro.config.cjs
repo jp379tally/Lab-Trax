@@ -28,8 +28,25 @@ config.resolver = {
   blockList: combined,
   resolveRequest: (context, moduleName, platform) => {
     const isNative = platform === "ios" || platform === "android";
-    if (isNative && moduleName === "pdfjs-dist") {
-      return { type: "empty" };
+    if (isNative) {
+      if (moduleName === "pdfjs-dist") {
+        return { type: "empty" };
+      }
+      const serverOnlyBuiltins = new Set([
+        "fs", "http", "https", "url", "stream",
+        "net", "tls", "dns", "os", "child_process",
+        "cluster", "readline", "repl", "vm",
+        "worker_threads", "perf_hooks", "inspector",
+      ]);
+      if (serverOnlyBuiltins.has(moduleName)) {
+        return { type: "empty" };
+      }
+      if (moduleName.startsWith("node:")) {
+        const bare = moduleName.slice(5);
+        if (serverOnlyBuiltins.has(bare)) {
+          return { type: "empty" };
+        }
+      }
     }
     return context.resolveRequest(context, moduleName, platform);
   },

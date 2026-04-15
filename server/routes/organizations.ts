@@ -443,7 +443,7 @@ router.post(
     }
 
     const currentEmail = (req as any).user.email?.toLowerCase?.().trim?.();
-    if (!currentEmail || invite.email.toLowerCase() !== currentEmail) {
+    if (!currentEmail || !invite.email || invite.email.toLowerCase() !== currentEmail) {
       throw new HttpError(403, "This invite does not belong to your account.");
     }
 
@@ -478,7 +478,9 @@ router.post(
       ),
     });
     if (!invite) throw new HttpError(404, "Invite not found or already used.");
-    if (new Date() > invite.expiresAt)
+    if (!invite.roleToAssign || !invite.email)
+      throw new HttpError(410, "Invite is invalid or incomplete.");
+    if (invite.expiresAt && new Date() > invite.expiresAt)
       throw new HttpError(410, "Invite has expired.");
 
     const userId = (req as any).auth.userId;
@@ -488,12 +490,14 @@ router.post(
       throw new HttpError(403, "This invite does not belong to your account.");
     }
 
+    const assignedRole = invite.roleToAssign;
+
     await db
       .insert(organizationMemberships)
       .values({
         labId: invite.labId,
         userId,
-        role: invite.roleToAssign,
+        role: assignedRole,
         status: "active",
         invitedByUserId: invite.invitedByUserId,
         approvedByUserId: invite.invitedByUserId,
@@ -505,7 +509,7 @@ router.post(
           organizationMemberships.userId,
         ],
         set: {
-          role: invite.roleToAssign,
+          role: assignedRole,
           status: "active",
           invitedByUserId: invite.invitedByUserId,
           joinedAt: new Date(),
@@ -521,7 +525,7 @@ router.post(
       })
       .where(eq(organizationInvites.id, invite.id));
 
-    await syncUserToOrganization(userId, invite.labId, invite.roleToAssign);
+    await syncUserToOrganization(userId, invite.labId, assignedRole);
 
     await writeAuditLog({
       req,

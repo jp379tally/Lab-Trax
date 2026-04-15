@@ -144,14 +144,14 @@ export const organizationInvites = pgTable(
     labId: varchar("lab_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    email: text("email").notNull(),
+    email: text("email"),
     phone: text("phone"),
-    roleToAssign: text("role_to_assign").notNull(),
-    token: text("token").notNull(),
+    roleToAssign: text("role_to_assign"),
+    token: text("token"),
     status: text("status").default("pending").notNull(),
     invitedByUserId: varchar("invited_by_user_id")
       .references(() => users.id, { onDelete: "restrict" }),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     acceptedByUserId: varchar("accepted_by_user_id").references(
       () => users.id,
       { onDelete: "set null" }
