@@ -851,7 +851,7 @@ function TechDashboard() {
         isFocused={dashboardFocused}
       />
 
-      {pendingJoinRequests.length > 0 && (
+      {isLabAdmin && pendingJoinRequests.length > 0 && (
         <View style={styles.joinRequestSection}>
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Connection Requests</Text>
