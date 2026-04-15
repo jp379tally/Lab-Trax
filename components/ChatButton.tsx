@@ -174,16 +174,15 @@ export function ChatButton() {
   const allContacts = React.useMemo(() => {
     const contactMap = new Map<string, { username: string; groupName: string; role: string; type: string }>();
     const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
-    const myLabName = currentUserData?.practiceName || "";
+    const myLabName = currentUserData?.practiceName?.toLowerCase().trim() || "";
     if (myLabName) {
-      const labMembers = registeredUsers.filter(u => u.practiceName?.toLowerCase().trim() === myLabName.toLowerCase().trim() && u.username.toLowerCase() !== (currentUser || "").toLowerCase());
+      const labMembers = registeredUsers.filter(
+        u =>
+          u.practiceName?.toLowerCase().trim() === myLabName &&
+          u.username.toLowerCase() !== (currentUser || "").toLowerCase()
+      );
       for (const m of labMembers) {
-        contactMap.set(m.username.toLowerCase(), { username: m.username, groupName: myLabName, role: m.role || "user", type: m.userType || "lab" });
-      }
-    }
-    for (const u of registeredUsers) {
-      if (u.username.toLowerCase() !== (currentUser || "").toLowerCase() && !contactMap.has(u.username.toLowerCase())) {
-        contactMap.set(u.username.toLowerCase(), { username: u.username, groupName: u.practiceName || "", role: u.role || "user", type: u.userType || "other" });
+        contactMap.set(m.username.toLowerCase(), { username: m.username, groupName: m.practiceName || myLabName, role: m.role || "user", type: m.userType || "lab" });
       }
     }
     return Array.from(contactMap.values());
