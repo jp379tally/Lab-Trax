@@ -4,7 +4,7 @@ import { registerRoutes } from "./routes";
 import { hashPassword } from "./lib/crypto";
 import { db } from "./db";
 import { users } from "../shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -381,10 +381,10 @@ async function seedDemoAccount() {
 async function runStartupMigrations() {
   try {
     await db.execute(
-      /* sql */ `DROP INDEX IF EXISTS "join_requests_lab_user_status_unique"`
+      sql`DROP INDEX IF EXISTS "join_requests_lab_user_status_unique"`
     );
     await db.execute(
-      /* sql */ `
+      sql`
         DELETE FROM "join_requests"
         WHERE status = 'pending'
           AND id NOT IN (
@@ -396,14 +396,14 @@ async function runStartupMigrations() {
       `
     );
     await db.execute(
-      /* sql */ `
+      sql`
         CREATE UNIQUE INDEX IF NOT EXISTS "join_requests_pending_unique"
         ON "join_requests" ("lab_id", "user_id")
         WHERE status = 'pending'
       `
     );
     await db.execute(
-      /* sql */ `ALTER TABLE users ADD COLUMN IF NOT EXISTS work_status TEXT DEFAULT 'available'`
+      sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS work_status TEXT DEFAULT 'available'`
     );
     log("Startup migrations applied successfully");
   } catch (err: any) {
