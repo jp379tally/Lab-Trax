@@ -26,6 +26,13 @@ if (!existingBlockList) {
 config.resolver = {
   ...config.resolver,
   blockList: combined,
+  resolveRequest: (context, moduleName, platform) => {
+    const isNative = platform === "ios" || platform === "android";
+    if (isNative && moduleName === "pdfjs-dist") {
+      return { type: "empty" };
+    }
+    return context.resolveRequest(context, moduleName, platform);
+  },
 };
 
 const apiProxy = createProxyMiddleware({
