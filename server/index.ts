@@ -385,6 +385,18 @@ async function runStartupMigrations() {
     );
     await db.execute(
       /* sql */ `
+        DELETE FROM "join_requests"
+        WHERE status = 'pending'
+          AND id NOT IN (
+            SELECT DISTINCT ON (lab_id, user_id) id
+            FROM "join_requests"
+            WHERE status = 'pending'
+            ORDER BY lab_id, user_id, created_at DESC
+          )
+      `
+    );
+    await db.execute(
+      /* sql */ `
         CREATE UNIQUE INDEX IF NOT EXISTS "join_requests_pending_unique"
         ON "join_requests" ("lab_id", "user_id")
         WHERE status = 'pending'

@@ -23,21 +23,37 @@ if (!existingBlockList) {
   combined = [existingBlockList, ...newBlocks];
 }
 
+const serverOnlyBuiltins = new Set([
+  "fs", "http", "https", "url", "stream",
+  "net", "tls", "dns", "os", "child_process",
+  "cluster", "readline", "repl", "vm",
+  "worker_threads", "perf_hooks", "inspector",
+  "crypto",
+]);
+
+const pdfjsDistDir = path
+  .join(__dirname, "node_modules", "pdfjs-dist")
+  .replace(/[/\\]/g, "[/\\\\]");
+
 config.resolver = {
   ...config.resolver,
   blockList: combined,
   resolveRequest: (context, moduleName, platform) => {
     const isNative = platform === "ios" || platform === "android";
     if (isNative) {
-      if (moduleName === "pdfjs-dist") {
+      if (
+        moduleName === "pdfjs-dist" ||
+        moduleName.startsWith("pdfjs-dist/")
+      ) {
         return { type: "empty" };
       }
-      const serverOnlyBuiltins = new Set([
-        "fs", "http", "https", "url", "stream",
-        "net", "tls", "dns", "os", "child_process",
-        "cluster", "readline", "repl", "vm",
-        "worker_threads", "perf_hooks", "inspector",
-      ]);
+
+      const originPath = context.originModulePath || "";
+      const isFromPdfjs = new RegExp(pdfjsDistDir).test(originPath);
+      if (isFromPdfjs) {
+        return { type: "empty" };
+      }
+
       if (serverOnlyBuiltins.has(moduleName)) {
         return { type: "empty" };
       }

@@ -675,15 +675,29 @@ router.post(
         ),
       });
     if (!request) throw new HttpError(404, "Join request not found.");
-    if (request.status !== "pending") {
-      throw new HttpError(409, `This request has already been ${request.status}. Please refresh to see the latest state.`);
-    }
 
     await requireAnyRole(
       (req as any).auth.userId,
       request.labId,
       ADMIN_ROLES
     );
+
+    if (request.status === "approved") {
+      const existingMembership =
+        await db.query.organizationMemberships.findFirst({
+          where: and(
+            eq(organizationMemberships.labId, request.labId),
+            eq(organizationMemberships.userId, request.userId)
+          ),
+        });
+      return ok(res, { membership: existingMembership ?? null, request });
+    }
+    if (request.status !== "pending") {
+      throw new HttpError(
+        409,
+        `Cannot approve a request that is already ${request.status}.`
+      );
+    }
 
     const roleToAssign = req.body.role || request.requestedRole;
 
@@ -804,11 +818,22 @@ router.post(
         ),
       });
     if (!request) throw new HttpError(404, "Join request not found.");
+
     await requireAnyRole(
       (req as any).auth.userId,
       request.labId,
       ADMIN_ROLES
     );
+
+    if (request.status === "rejected") {
+      return ok(res, request);
+    }
+    if (request.status !== "pending") {
+      throw new HttpError(
+        409,
+        `Cannot reject a request that is already ${request.status}.`
+      );
+    }
 
     const [updated] = await db
       .update(organizationJoinRequests)
