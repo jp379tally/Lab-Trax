@@ -12,6 +12,7 @@ import {
   Modal,
   KeyboardAvoidingView,
   Image,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -68,6 +69,11 @@ export default function SettingsScreen() {
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
+  const [labMembers, setLabMembers] = useState<any[]>([]);
+  const [labOrgId, setLabOrgId] = useState<string | null>(null);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [selectedMember, setSelectedMember] = useState<any | null>(null);
+  const [memberActionLoading, setMemberActionLoading] = useState(false);
 
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -298,6 +304,104 @@ export default function SettingsScreen() {
       Alert.alert("Unable to Save", error?.message || "Could not save your lab.");
     } finally {
       setEditLabSaving(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!isLabAdmin || !currentUserData?.practiceName) {
+      setLabMembers([]);
+      setLabOrgId(null);
+      return;
+    }
+    fetchCurrentLabMembership()
+      .then((m) => {
+        if (m?.organizationId) {
+          setLabOrgId(m.organizationId);
+          doFetchLabMembers(m.organizationId);
+        }
+      })
+      .catch(() => {});
+  }, [isLabAdmin, currentUser, currentUserData?.practiceName]);
+
+  async function doFetchLabMembers(orgId: string) {
+    setMembersLoading(true);
+    try {
+      const res = await resilientFetch(`/api/organizations/${orgId}/members`);
+      if (res.ok) {
+        const data = await res.json();
+        const members = Array.isArray(data?.data) ? data.data : [];
+        setLabMembers(members.filter((m: any) => m.status === "active"));
+      }
+    } catch {}
+    finally {
+      setMembersLoading(false);
+    }
+  }
+
+  async function handleRemoveMember(member: any) {
+    Alert.alert(
+      "Remove User",
+      `Are you sure you want to remove ${member.user?.username || "this user"} from the lab?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: async () => {
+            setMemberActionLoading(true);
+            try {
+              const res = await resilientFetch(
+                `/api/organizations/memberships/${member.id}`,
+                { method: "DELETE" }
+              );
+              if (res.ok) {
+                setLabMembers((prev) => prev.filter((m) => m.id !== member.id));
+                setSelectedMember(null);
+                if (Platform.OS !== "web") {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                }
+              } else {
+                Alert.alert("Error", "Could not remove this user from the lab.");
+              }
+            } catch {
+              Alert.alert("Error", "Could not remove this user from the lab.");
+            } finally {
+              setMemberActionLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  async function handleChangeMemberRole(member: any, newRole: "admin" | "user") {
+    setMemberActionLoading(true);
+    try {
+      const res = await resilientFetch(
+        `/api/organizations/memberships/${member.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: newRole }),
+        }
+      );
+      if (res.ok) {
+        setLabMembers((prev) =>
+          prev.map((m) => (m.id === member.id ? { ...m, role: newRole } : m))
+        );
+        setSelectedMember((prev: any) =>
+          prev ? { ...prev, role: newRole } : null
+        );
+        if (Platform.OS !== "web") {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      } else {
+        Alert.alert("Error", "Could not update this user's role.");
+      }
+    } catch {
+      Alert.alert("Error", "Could not update this user's role.");
+    } finally {
+      setMemberActionLoading(false);
     }
   }
 
@@ -740,6 +844,85 @@ export default function SettingsScreen() {
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
               </Pressable>
+            </View>
+          </View>
+        )}
+
+        {isLabAdmin && currentUserData?.practiceName && (
+          <View style={styles.section}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <Text style={[styles.sectionTitle, { color: colors.textTertiary, marginBottom: 0 }]}>LAB MEMBERS</Text>
+              {labOrgId && !membersLoading && (
+                <Pressable
+                  onPress={() => doFetchLabMembers(labOrgId)}
+                  hitSlop={8}
+                >
+                  <Ionicons name="refresh" size={16} color={colors.textTertiary} />
+                </Pressable>
+              )}
+            </View>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {membersLoading ? (
+                <View style={{ padding: 28, alignItems: "center" }}>
+                  <ActivityIndicator size="small" color={colors.tint} />
+                </View>
+              ) : labMembers.length === 0 ? (
+                <View style={{ padding: 24, alignItems: "center", gap: 8 }}>
+                  <Ionicons name="people-outline" size={28} color={colors.textTertiary} />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>No active members found</Text>
+                </View>
+              ) : (
+                labMembers.map((member, idx) => {
+                  const isSelf = member.user?.username?.toLowerCase() === (currentUser || "").toLowerCase();
+                  const isOwner = member.role === "owner";
+                  const canManage = !isSelf && !isOwner;
+                  const displayName = member.user?.username || member.userId || "Unknown";
+                  const initials = displayName.substring(0, 2).toUpperCase();
+                  const roleLabel = member.role === "owner" ? "Owner" : member.role === "admin" ? "Admin" : "User";
+                  const roleColor = member.role === "owner" ? "#7C3AED" : member.role === "admin" ? "#D97706" : "#2563EB";
+                  const roleBg = member.role === "owner" ? "#EDE9FE" : member.role === "admin" ? "#FEF3C7" : "#DBEAFE";
+                  return (
+                    <React.Fragment key={member.id}>
+                      {idx > 0 && (
+                        <View style={[styles.menuDivider, { backgroundColor: colors.borderLight, marginLeft: 0 }]} />
+                      )}
+                      <Pressable
+                        style={({ pressed }) => [
+                          styles.menuItem,
+                          canManage && pressed && { opacity: 0.7 },
+                        ]}
+                        onPress={canManage ? () => setSelectedMember(member) : undefined}
+                        disabled={!canManage}
+                      >
+                        <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: roleBg, justifyContent: "center", alignItems: "center" }}>
+                          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: roleColor }}>{initials}</Text>
+                        </View>
+                        <View style={styles.menuInfo}>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                            <Text style={[styles.menuTitle, { color: colors.text }]}>{displayName}</Text>
+                            {isSelf && (
+                              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: colors.textTertiary }}>(You)</Text>
+                            )}
+                          </View>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 3 }}>
+                            <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, backgroundColor: roleBg }}>
+                              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: roleColor }}>{roleLabel}</Text>
+                            </View>
+                            {member.user?.email ? (
+                              <Text style={[styles.menuSub, { color: colors.textSecondary, marginTop: 0, flex: 1 }]} numberOfLines={1}>
+                                {member.user.email}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                        {canManage && (
+                          <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                        )}
+                      </Pressable>
+                    </React.Fragment>
+                  );
+                })
+              )}
             </View>
           </View>
         )}
@@ -1405,6 +1588,101 @@ export default function SettingsScreen() {
             )}
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={!!selectedMember}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSelectedMember(null)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+          <View style={{ backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 24, paddingBottom: insets.bottom + 28, paddingTop: 16 }}>
+            <View style={{ width: 36, height: 5, borderRadius: 3, backgroundColor: "#CBD5E1", alignSelf: "center", marginBottom: 20 }} />
+
+            {selectedMember && (() => {
+              const displayName = selectedMember.user?.username || selectedMember.userId || "Unknown";
+              const roleLabel = selectedMember.role === "admin" ? "Admin" : "User";
+              const roleColor = selectedMember.role === "admin" ? "#D97706" : "#2563EB";
+              const roleBg = selectedMember.role === "admin" ? "#FEF3C7" : "#DBEAFE";
+              const initials = displayName.substring(0, 2).toUpperCase();
+              return (
+                <>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+                      <View style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: roleBg, justifyContent: "center", alignItems: "center" }}>
+                        <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: roleColor }}>{initials}</Text>
+                      </View>
+                      <View>
+                        <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: colors.text }}>{displayName}</Text>
+                        {selectedMember.user?.email ? (
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: colors.textSecondary, marginTop: 2 }}>{selectedMember.user.email}</Text>
+                        ) : null}
+                        <View style={{ marginTop: 6, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 10, backgroundColor: roleBg, alignSelf: "flex-start" }}>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: roleColor }}>{roleLabel}</Text>
+                        </View>
+                      </View>
+                    </View>
+                    <Pressable onPress={() => setSelectedMember(null)} hitSlop={10}>
+                      <Ionicons name="close-circle" size={28} color={colors.textTertiary} />
+                    </Pressable>
+                  </View>
+
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", letterSpacing: 1.5, color: colors.textTertiary, marginBottom: 10 }}>CHANGE ROLE</Text>
+                  <View style={{ flexDirection: "row", gap: 10, marginBottom: 20 }}>
+                    <Pressable
+                      style={({ pressed }) => [{
+                        flex: 1, paddingVertical: 14, borderRadius: 14, borderWidth: 2, alignItems: "center", gap: 4,
+                        borderColor: selectedMember.role === "user" ? "#2563EB" : colors.border,
+                        backgroundColor: selectedMember.role === "user" ? "#EFF6FF" : colors.surfaceSecondary,
+                        opacity: memberActionLoading || selectedMember.role === "user" ? 0.6 : 1,
+                      }, pressed && { opacity: 0.7 }]}
+                      disabled={memberActionLoading || selectedMember.role === "user"}
+                      onPress={() => handleChangeMemberRole(selectedMember, "user")}
+                    >
+                      <Ionicons name="person-outline" size={22} color={selectedMember.role === "user" ? "#2563EB" : colors.textSecondary} />
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: selectedMember.role === "user" ? "#2563EB" : colors.text }}>User</Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>Standard access</Text>
+                    </Pressable>
+                    <Pressable
+                      style={({ pressed }) => [{
+                        flex: 1, paddingVertical: 14, borderRadius: 14, borderWidth: 2, alignItems: "center", gap: 4,
+                        borderColor: selectedMember.role === "admin" ? "#D97706" : colors.border,
+                        backgroundColor: selectedMember.role === "admin" ? "#FFFBEB" : colors.surfaceSecondary,
+                        opacity: memberActionLoading || selectedMember.role === "admin" ? 0.6 : 1,
+                      }, pressed && { opacity: 0.7 }]}
+                      disabled={memberActionLoading || selectedMember.role === "admin"}
+                      onPress={() => handleChangeMemberRole(selectedMember, "admin")}
+                    >
+                      <Ionicons name="shield-outline" size={22} color={selectedMember.role === "admin" ? "#D97706" : colors.textSecondary} />
+                      <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: selectedMember.role === "admin" ? "#D97706" : colors.text }}>Admin</Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>Full access</Text>
+                    </Pressable>
+                  </View>
+
+                  <Pressable
+                    style={({ pressed }) => [{
+                      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                      backgroundColor: "#FEE2E2", borderRadius: 14, height: 50,
+                      opacity: memberActionLoading ? 0.5 : 1,
+                    }, pressed && { opacity: 0.7 }]}
+                    disabled={memberActionLoading}
+                    onPress={() => handleRemoveMember(selectedMember)}
+                  >
+                    {memberActionLoading ? (
+                      <ActivityIndicator size="small" color="#DC2626" />
+                    ) : (
+                      <>
+                        <Ionicons name="person-remove" size={18} color="#DC2626" />
+                        <Text style={{ color: "#DC2626", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Remove from Lab</Text>
+                      </>
+                    )}
+                  </Pressable>
+                </>
+              );
+            })()}
+          </View>
+        </View>
       </Modal>
     </View>
   );
