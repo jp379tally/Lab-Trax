@@ -378,11 +378,31 @@ async function seedDemoAccount() {
   }
 }
 
+async function runStartupMigrations() {
+  try {
+    await db.execute(
+      /* sql */ `DROP INDEX IF EXISTS "join_requests_lab_user_status_unique"`
+    );
+    await db.execute(
+      /* sql */ `
+        CREATE UNIQUE INDEX IF NOT EXISTS "join_requests_pending_unique"
+        ON "join_requests" ("lab_id", "user_id")
+        WHERE status = 'pending'
+      `
+    );
+    log("Startup migrations applied successfully");
+  } catch (err: any) {
+    console.error("Startup migration error:", err?.message || err);
+  }
+}
+
 (async () => {
   setupCors(app);
   setupSecurityHeaders(app);
   setupBodyParsing(app);
   setupRequestLogging(app);
+
+  await runStartupMigrations();
 
   configureExpoAndLanding(app);
 
