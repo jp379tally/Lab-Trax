@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
@@ -651,9 +651,9 @@ router.get(
     );
     const requests =
       await db.query.organizationJoinRequests.findMany({
-        where: eq(
-          organizationJoinRequests.labId,
-          organizationId
+        where: and(
+          eq(organizationJoinRequests.labId, organizationId),
+          eq(organizationJoinRequests.status, "pending")
         ),
       });
     return ok(res, requests.map((r) => ({
@@ -675,6 +675,9 @@ router.post(
         ),
       });
     if (!request) throw new HttpError(404, "Join request not found.");
+    if (request.status !== "pending") {
+      throw new HttpError(409, `This request has already been ${request.status}. Please refresh to see the latest state.`);
+    }
 
     await requireAnyRole(
       (req as any).auth.userId,
@@ -707,6 +710,17 @@ router.post(
         },
       })
       .returning();
+
+    await db
+      .delete(organizationJoinRequests)
+      .where(
+        and(
+          eq(organizationJoinRequests.labId, request.labId),
+          eq(organizationJoinRequests.userId, request.userId),
+          eq(organizationJoinRequests.status, "approved"),
+          ne(organizationJoinRequests.id, request.id)
+        )
+      );
 
     const [updatedRequest] = await db
       .update(organizationJoinRequests)

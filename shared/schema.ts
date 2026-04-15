@@ -132,7 +132,12 @@ export const organizationJoinRequests = pgTable(
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
-  }
+  },
+  (table) => ({
+    pendingUnique: uniqueIndex("join_requests_pending_unique")
+      .on(table.labId, table.userId)
+      .where(sql`status = 'pending'`),
+  })
 );
 
 export const organizationInvites = pgTable(
