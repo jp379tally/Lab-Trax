@@ -61,6 +61,7 @@ export default function SettingsScreen() {
 
   type UserStatus = "active" | "inactive" | "on_lunch" | "out_of_office" | "on_break";
   const [userStatus, setUserStatus] = useState<UserStatus>("active");
+  const [labExpanded, setLabExpanded] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -512,12 +513,12 @@ export default function SettingsScreen() {
             <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MY LAB</Text>
             {currentUserData?.practiceName ? (
               <>
-                <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: labExpanded ? colors.tint : colors.border, borderWidth: labExpanded ? 1.5 : 1 }]}>
                   <Pressable
-                    style={({ pressed }) => [styles.menuItem, isLabAdmin && pressed && { opacity: 0.7 }]}
+                    style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
                     onPress={() => {
-                      if (!isLabAdmin) return;
-                      openLabEditor();
+                      setLabExpanded((v) => !v);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                   >
                     {companyLogoUri ? (
@@ -542,126 +543,145 @@ export default function SettingsScreen() {
                         <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{currentUserData?.practicePhone || currentUserData?.phone || "Phone not set"}</Text>
                       </View>
                     </View>
-                    {isLabAdmin && <Ionicons name="create-outline" size={20} color={colors.textTertiary} />}
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      {isLabAdmin && (
+                        <Pressable
+                          hitSlop={10}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            openLabEditor();
+                          }}
+                        >
+                          <Ionicons name="create-outline" size={20} color={colors.textTertiary} />
+                        </Pressable>
+                      )}
+                      <Ionicons
+                        name={labExpanded ? "chevron-up" : "chevron-down"}
+                        size={18}
+                        color={labExpanded ? colors.tint : colors.textTertiary}
+                      />
+                    </View>
                   </Pressable>
                 </View>
 
-                <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border, marginTop: 10 }]}>
-                  <Pressable
-                    style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                    onPress={() => {
-                      Alert.alert(
-                        "Leave Lab",
-                        `Are you sure you want to leave ${currentUserData.practiceName}? You will no longer have access to cases affiliated with this lab.`,
-                        [
-                          { text: "No", style: "cancel" },
-                          {
-                            text: "Yes, Leave Lab",
-                            style: "destructive",
-                            onPress: async () => {
-                              const result = await leaveLab();
-                              if (result.success) {
-                                if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                Alert.alert("Left Lab", `You have successfully left ${currentUserData.practiceName}.`);
-                              } else {
-                                Alert.alert("Error", result.error || "Failed to leave lab.");
-                              }
-                            },
-                          },
-                        ]
-                      );
-                    }}
-                  >
-                    <View style={[styles.menuIcon, { backgroundColor: "#FEE2E2" }]}>
-                      <Ionicons name="log-out-outline" size={18} color="#DC2626" />
-                    </View>
-                    <View style={styles.menuInfo}>
-                      <Text style={[styles.menuTitle, { color: "#DC2626" }]}>Leave Lab</Text>
-                      <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Remove yourself from this lab</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-                  </Pressable>
-
-                  {isLabAdmin && (
-                    <>
-                      <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
-                      <Pressable
-                        style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                        onPress={() => {
-                          setShowAddUserModal(true);
-                          setAddUserSearch("");
-                          setAddUserSelected(null);
-                          setAddUserRole("user");
-                        }}
-                      >
-                        <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                          <Ionicons name="person-add" size={18} color="#2563EB" />
-                        </View>
-                        <View style={styles.menuInfo}>
-                          <Text style={[styles.menuTitle, { color: colors.text }]}>Add User to Lab</Text>
-                          <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Invite a user to join your lab</Text>
-                        </View>
-                        <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-                      </Pressable>
-                    </>
-                  )}
-
-                  <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
-
-                  <Pressable
-                    style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                    onPress={openAddLabModal}
-                  >
-                    <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
-                      <Ionicons name="add-circle" size={18} color="#2563EB" />
-                    </View>
-                    <View style={styles.menuInfo}>
-                      <Text style={[styles.menuTitle, { color: colors.text }]}>Join a Lab</Text>
-                      <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Search and request to join another lab</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-                  </Pressable>
-
-                  {isLabCreator && (
-                    <>
-                      <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
-                      <Pressable
-                        style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
-                        onPress={() => {
-                          Alert.alert(
-                            "Delete Lab",
-                            "Are you sure you want to delete the lab? All users will be removed from the lab and the lab will be deleted.",
-                            [
-                              { text: "No", style: "cancel" },
-                              {
-                                text: "Yes, Delete Lab",
-                                style: "destructive",
-                                onPress: async () => {
-                                  const result = await deleteLab();
-                                  if (result.success) {
-                                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                    Alert.alert("Lab Deleted", "The lab has been deleted and all users have been removed from it.");
-                                  } else {
-                                    Alert.alert("Error", result.error || "Failed to delete lab.");
-                                  }
-                                },
+                {labExpanded && (
+                  <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border, marginTop: 10 }]}>
+                    <Pressable
+                      style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                      onPress={() => {
+                        Alert.alert(
+                          "Leave Lab",
+                          `Are you sure you want to leave ${currentUserData.practiceName}? You will no longer have access to cases affiliated with this lab.`,
+                          [
+                            { text: "No", style: "cancel" },
+                            {
+                              text: "Yes, Leave Lab",
+                              style: "destructive",
+                              onPress: async () => {
+                                const result = await leaveLab();
+                                if (result.success) {
+                                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                  Alert.alert("Left Lab", `You have successfully left ${currentUserData.practiceName}.`);
+                                } else {
+                                  Alert.alert("Error", result.error || "Failed to leave lab.");
+                                }
                               },
-                            ]
-                          );
-                        }}
-                      >
-                        <View style={[styles.menuIcon, { backgroundColor: "#FEE2E2" }]}>
-                          <Ionicons name="trash" size={18} color="#DC2626" />
-                        </View>
-                        <View style={styles.menuInfo}>
-                          <Text style={[styles.menuTitle, { color: "#DC2626" }]}>Delete Lab</Text>
-                          <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Remove all users and delete this lab</Text>
-                        </View>
-                        <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
-                      </Pressable>
-                    </>
-                  )}
-                </View>
+                            },
+                          ]
+                        );
+                      }}
+                    >
+                      <View style={[styles.menuIcon, { backgroundColor: "#FEE2E2" }]}>
+                        <Ionicons name="log-out-outline" size={18} color="#DC2626" />
+                      </View>
+                      <View style={styles.menuInfo}>
+                        <Text style={[styles.menuTitle, { color: "#DC2626" }]}>Leave Lab</Text>
+                        <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Remove yourself from this lab</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                    </Pressable>
+
+                    {isLabAdmin && (
+                      <>
+                        <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+                        <Pressable
+                          style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                          onPress={() => {
+                            setShowAddUserModal(true);
+                            setAddUserSearch("");
+                            setAddUserSelected(null);
+                            setAddUserRole("user");
+                          }}
+                        >
+                          <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
+                            <Ionicons name="person-add" size={18} color="#2563EB" />
+                          </View>
+                          <View style={styles.menuInfo}>
+                            <Text style={[styles.menuTitle, { color: colors.text }]}>Add User to Lab</Text>
+                            <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Invite a user to join your lab</Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                        </Pressable>
+                      </>
+                    )}
+
+                    <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+
+                    <Pressable
+                      style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                      onPress={openAddLabModal}
+                    >
+                      <View style={[styles.menuIcon, { backgroundColor: "#DBEAFE" }]}>
+                        <Ionicons name="add-circle" size={18} color="#2563EB" />
+                      </View>
+                      <View style={styles.menuInfo}>
+                        <Text style={[styles.menuTitle, { color: colors.text }]}>Join a Lab</Text>
+                        <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Search and request to join another lab</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                    </Pressable>
+
+                    {isLabCreator && (
+                      <>
+                        <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+                        <Pressable
+                          style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                          onPress={() => {
+                            Alert.alert(
+                              "Delete Lab",
+                              "Are you sure you want to delete the lab? All users will be removed from the lab and the lab will be deleted.",
+                              [
+                                { text: "No", style: "cancel" },
+                                {
+                                  text: "Yes, Delete Lab",
+                                  style: "destructive",
+                                  onPress: async () => {
+                                    const result = await deleteLab();
+                                    if (result.success) {
+                                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                      Alert.alert("Lab Deleted", "The lab has been deleted and all users have been removed from it.");
+                                    } else {
+                                      Alert.alert("Error", result.error || "Failed to delete lab.");
+                                    }
+                                  },
+                                },
+                              ]
+                            );
+                          }}
+                        >
+                          <View style={[styles.menuIcon, { backgroundColor: "#FEE2E2" }]}>
+                            <Ionicons name="trash" size={18} color="#DC2626" />
+                          </View>
+                          <View style={styles.menuInfo}>
+                            <Text style={[styles.menuTitle, { color: "#DC2626" }]}>Delete Lab</Text>
+                            <Text style={[styles.menuSub, { color: colors.textSecondary }]}>Remove all users and delete this lab</Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                        </Pressable>
+                      </>
+                    )}
+                  </View>
+                )}
               </>
             ) : (
               <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
