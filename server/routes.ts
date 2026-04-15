@@ -573,28 +573,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             let resolvedCase = { ...caseData, ownerId: ownerUserId };
-            const hasExplicitAffiliation =
-              !!resolvedCase.affiliationKey || !!resolvedCase.affiliationName;
 
-            if (!hasExplicitAffiliation) {
-              const caseCreatedAt =
-                typeof resolvedCase.createdAt === "number"
-                  ? resolvedCase.createdAt
-                  : Number(resolvedCase.createdAt) || 0;
+            const affiliationKeyIsPrivate =
+              typeof resolvedCase.affiliationKey === "string" &&
+              resolvedCase.affiliationKey.startsWith("private:");
+            const hasExplicitLabAffiliation =
+              !!resolvedCase.affiliationName ||
+              (!!resolvedCase.affiliationKey && !affiliationKeyIsPrivate);
+
+            if (!hasExplicitLabAffiliation) {
               const ownerMemberships = membershipsByUserId.get(ownerUserId) ?? [];
 
               for (const membership of ownerMemberships) {
-                const membershipJoinedAt = membership.joinedAt
-                  ? new Date(membership.joinedAt).getTime()
-                  : 0;
-                if (
-                  caseCreatedAt > 0 &&
-                  membershipJoinedAt > 0 &&
-                  caseCreatedAt + 60000 < membershipJoinedAt
-                ) {
-                  continue;
-                }
-
                 const organization = organizationsById.get(membership.labId);
                 if (!organization || organization.type !== "lab") {
                   continue;

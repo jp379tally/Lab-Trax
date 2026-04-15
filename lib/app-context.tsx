@@ -749,6 +749,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
+    if (!activeLabAffiliationKey || !currentUserId) return;
+    setAllCases((prev) => {
+      let changed = false;
+      const updated = prev.map((c) => {
+        if (
+          c.ownerId === currentUserId &&
+          typeof c.affiliationKey === "string" &&
+          c.affiliationKey.startsWith("private:")
+        ) {
+          changed = true;
+          return {
+            ...c,
+            affiliationKey: activeLabAffiliationKey,
+            affiliationName: activeLabAffiliationName ?? c.affiliationName,
+            updatedAt: Date.now(),
+          };
+        }
+        return c;
+      });
+      if (!changed) return prev;
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, [activeLabAffiliationKey, currentUserId]);
+
+  useEffect(() => {
     if (!currentUserId || !currentUser) {
       setConversations([]);
       setChatMessages([]);

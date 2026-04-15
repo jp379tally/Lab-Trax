@@ -3,6 +3,7 @@ import { and, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
+  labCases,
   organizationConnections,
   organizationInvites,
   organizationJoinRequests,
@@ -53,6 +54,72 @@ function getOrganizationAddress(organization: any): string | null {
     .join(", ");
 
   return address || null;
+}
+
+async function repairLabCaseAffiliations(labId: string): Promise<void> {
+  const [org, activeMembers] = await Promise.all([
+    db.query.organizations.findFirst({ where: eq(organizations.id, labId) }),
+    db.select({ userId: organizationMemberships.userId })
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.labId, labId),
+          eq(organizationMemberships.status, "active")
+        )
+      ),
+  ]);
+  if (!org || activeMembers.length === 0) return;
+
+  const memberUserIds = activeMembers.map((m) => m.userId);
+  const caseRows = await db.select().from(labCases)
+    .where(inArray(labCases.ownerId, memberUserIds));
+  if (caseRows.length === 0) return;
+
+  const orgAffiliationKey = `org:${labId}`;
+  const orgAffiliationName = org.displayName || org.name || null;
+
+  const repairPromises: Promise<any>[] = [];
+  for (const row of caseRows) {
+    if (!row.caseData) continue;
+    let caseData: any;
+    try {
+      caseData = JSON.parse(row.caseData);
+    } catch {
+      continue;
+    }
+    const existingKey: string | undefined = caseData.affiliationKey;
+    const needsRepair =
+      !existingKey ||
+      existingKey.startsWith("private:") ||
+      (!existingKey.startsWith("org:") && !existingKey.startsWith("lab:"));
+    if (!needsRepair) continue;
+
+    const repairedData = {
+      ...caseData,
+      affiliationKey: orgAffiliationKey,
+      affiliationName: orgAffiliationName,
+    };
+    repairPromises.push(
+      db
+        .insert(labCases)
+        .values({
+          id: row.id,
+          ownerId: row.ownerId,
+          caseData: JSON.stringify(repairedData),
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: labCases.id,
+          set: {
+            caseData: JSON.stringify(repairedData),
+            updatedAt: new Date(),
+          },
+        })
+    );
+  }
+  if (repairPromises.length > 0) {
+    await Promise.all(repairPromises);
+  }
 }
 
 async function syncUserToOrganization(
@@ -751,6 +818,8 @@ router.post(
       request.labId,
       roleToAssign
     );
+
+    repairLabCaseAffiliations(request.labId).catch(() => {});
 
     await writeAuditLog({
       req,
