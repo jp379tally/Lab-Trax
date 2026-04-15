@@ -124,6 +124,7 @@ interface AppContextValue {
   inactiveClients: Client[];
   refreshCases: () => Promise<void>;
   fullRefreshCases: () => Promise<void>;
+  hardRefresh: () => Promise<void>;
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
 }
 
@@ -824,6 +825,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       console.log("Could not full-refresh cases:", e);
     }
+  }
+
+  async function hardRefresh() {
+    await Promise.all([
+      fullRefreshCases(),
+      refreshCollaborationState(),
+      refreshUsers(),
+    ]);
   }
 
   async function updateWorkStatus(
@@ -2571,6 +2580,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       inactiveClients: clients.filter(c => c.status === "inactive"),
       refreshCases,
       fullRefreshCases,
+      hardRefresh,
       updateWorkStatus,
     }),
     [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers],

@@ -309,7 +309,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, clients, addCasePhoto } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, hardRefresh, clients, addCasePhoto } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
@@ -582,7 +582,7 @@ function TechDashboard() {
             <Pressable
               onPress={async () => {
                 setRefreshing(true);
-                await refreshCases();
+                await hardRefresh();
                 setRefreshing(false);
               }}
               style={({ pressed }) => [{ padding: 6, borderRadius: 8, backgroundColor: pressed ? "rgba(0,0,0,0.05)" : "transparent" }]}
@@ -610,7 +610,7 @@ function TechDashboard() {
             refreshing={refreshing}
             onRefresh={async () => {
               setRefreshing(true);
-              await refreshCases();
+              await hardRefresh();
               setRefreshing(false);
             }}
           />
@@ -7057,7 +7057,7 @@ function AdminDashboard() {
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated, fetchLabDirectory, refreshCases } = useApp();
+  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated, fetchLabDirectory, refreshCases, hardRefresh } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
   type ProviderLabDirectoryEntry = {
@@ -7222,7 +7222,7 @@ function ProviderDashboard() {
               refreshing={refreshing}
               onRefresh={async () => {
                 setRefreshing(true);
-                await refreshCases();
+                await hardRefresh();
                 setRefreshing(false);
               }}
             />
@@ -7250,7 +7250,7 @@ function ProviderDashboard() {
               <Pressable
                 onPress={async () => {
                   setRefreshing(true);
-                  await refreshCases();
+                  await hardRefresh();
                   setRefreshing(false);
                 }}
               >
@@ -8532,7 +8532,7 @@ const provStyles = StyleSheet.create({
 type MasterView = "hub" | "all-users" | "lab-portal" | "provider-portal";
 
 function MasterAdminDashboard() {
-  const { cases, clients, users, invoices, refreshCases } = useApp();
+  const { cases, clients, users, invoices, hardRefresh } = useApp();
   const { currentUser, registeredUsers, logout } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -8545,7 +8545,7 @@ function MasterAdminDashboard() {
 
   async function handleRefresh() {
     setRefreshing(true);
-    await refreshCases();
+    await hardRefresh();
     setRefreshing(false);
   }
 

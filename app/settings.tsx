@@ -13,6 +13,7 @@ import {
   KeyboardAvoidingView,
   Image,
   ActivityIndicator,
+  RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -36,8 +37,9 @@ type LabDirectoryEntry = {
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite, fetchLabDirectory } = useApp();
+  const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite, fetchLabDirectory, hardRefresh } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword, refreshUsers } = useAuth();
+  const [refreshing, setRefreshing] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showEditLab, setShowEditLab] = useState(false);
   const [editLabName, setEditLabName] = useState("");
@@ -418,6 +420,18 @@ export default function SettingsScreen() {
       <ScrollView
         contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 84 + 40 : 120 }}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={async () => {
+                setRefreshing(true);
+                await hardRefresh();
+                setRefreshing(false);
+              }}
+            />
+          ) : undefined
+        }
       >
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>APPEARANCE</Text>

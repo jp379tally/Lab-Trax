@@ -9,6 +9,7 @@ import {
   Image,
   Modal,
   TextInput,
+  RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -21,9 +22,10 @@ import { ChatButton } from "@/components/ChatButton";
 type WorkStatus = "available" | "break" | "out_of_office";
 
 export default function ProfileScreen() {
-  const { role, setRole, adminUnlocked, setAdminUnlocked, updateWorkStatus } = useApp();
+  const { role, setRole, adminUnlocked, setAdminUnlocked, updateWorkStatus, hardRefresh } = useApp();
   const { logout, currentUser, profilePicUri, changePassword, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
+  const [refreshing, setRefreshing] = useState(false);
   const [workStatus, setWorkStatus] = useState<WorkStatus>("available");
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
@@ -96,6 +98,18 @@ export default function ProfileScreen() {
         paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
       }}
       showsVerticalScrollIndicator={false}
+      refreshControl={
+        Platform.OS !== "web" ? (
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await hardRefresh();
+              setRefreshing(false);
+            }}
+          />
+        ) : undefined
+      }
     >
       <View style={{ flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 20, marginBottom: 4 }}>
         <ChatButton />
