@@ -249,6 +249,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeLabAffiliationKey, setActiveLabAffiliationKey] = useState<string | null>(null);
   const [activeLabAffiliationName, setActiveLabAffiliationName] = useState<string | null>(null);
   const [hasActiveLabMembership, setHasActiveLabMembership] = useState(false);
+  const [membershipVersion, setMembershipVersion] = useState(0);
   const conversationsStorageKey = useMemo(
     () => (currentUserId ? `${CONVERSATIONS_KEY}:${currentUserId}` : CONVERSATIONS_KEY),
     [currentUserId]
@@ -563,6 +564,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     currentUserId,
     currentUserProfile?.email,
     currentUserProfile?.role,
+    membershipVersion,
   ]);
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
@@ -2092,6 +2094,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await refreshUsers();
       await refreshCollaborationState();
 
+      if (accept) {
+        setMembershipVersion((v) => v + 1);
+      }
+
       addNotification({
         title: accept ? "Lab Invitation Accepted" : "Lab Invitation Declined",
         message: accept
@@ -2125,6 +2131,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
       const activeLabMembership = await findCurrentLabMembership();
+      const departingLabKey = activeLabAffiliationKey;
 
       if (activeLabMembership?.id) {
         const response = await resilientFetch(
@@ -2163,6 +2170,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!profileResponse.ok) {
           return { success: false, error: await readApiError(profileResponse) };
         }
+      }
+
+      setHasActiveLabMembership(false);
+      setActiveLabAffiliationKey(null);
+      setActiveLabAffiliationName(null);
+      setMembershipVersion((v) => v + 1);
+
+      if (departingLabKey) {
+        setAllCases((prev) => {
+          const filtered = prev.filter(
+            (c) => !resolveCaseAffiliationKeys(c).includes(departingLabKey)
+          );
+          AsyncStorage.setItem(CASES_KEY, JSON.stringify(filtered));
+          return filtered;
+        });
       }
 
       await refreshUsers();
