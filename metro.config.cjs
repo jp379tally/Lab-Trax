@@ -4,22 +4,29 @@ const path = require("path");
 
 const config = getDefaultConfig(__dirname);
 
-const localDir = path.resolve(__dirname, ".local").replace(/[/\\]/g, "[/\\\\]");
-const existingBlockList = config.resolver?.blockList;
-const newBlock = new RegExp(localDir + ".*");
+const toPattern = (dir) =>
+  new RegExp(
+    path.resolve(__dirname, dir).replace(/[/\\]/g, "[/\\\\]") + ".*"
+  );
 
-if (existingBlockList) {
-  if (Array.isArray(existingBlockList)) {
-    config.resolver.blockList = [...existingBlockList, newBlock];
-  } else {
-    config.resolver.blockList = [existingBlockList, newBlock];
-  }
+const blockedDirs = [".local", "server", "shared"];
+const newBlocks = blockedDirs.map(toPattern);
+
+const existingBlockList = config.resolver?.blockList;
+
+let combined;
+if (!existingBlockList) {
+  combined = newBlocks;
+} else if (Array.isArray(existingBlockList)) {
+  combined = [...existingBlockList, ...newBlocks];
 } else {
-  config.resolver = {
-    ...config.resolver,
-    blockList: [newBlock],
-  };
+  combined = [existingBlockList, ...newBlocks];
 }
+
+config.resolver = {
+  ...config.resolver,
+  blockList: combined,
+};
 
 const apiProxy = createProxyMiddleware({
   target: "http://localhost:5000",
