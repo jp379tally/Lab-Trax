@@ -16,7 +16,7 @@ function normalizeBaseUrl(url: string): string {
 export function getApiUrl(): string {
   if (cachedBaseUrl) return cachedBaseUrl;
 
-  if (typeof window !== "undefined" && window.location && window.location.origin) {
+  if (Platform.OS === "web" && typeof window !== "undefined" && window.location && window.location.origin) {
     return normalizeBaseUrl(window.location.origin);
   }
 
