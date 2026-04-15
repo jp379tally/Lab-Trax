@@ -564,8 +564,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     currentUserId,
     currentUserProfile?.email,
     currentUserProfile?.role,
+    currentUserProfile?.practiceName,
     membershipVersion,
   ]);
+
+  const prevActiveLabKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prevKey = prevActiveLabKeyRef.current;
+    prevActiveLabKeyRef.current = activeLabAffiliationKey;
+
+    if (prevKey && !activeLabAffiliationKey) {
+      setAllCases((prev) => {
+        const filtered = prev.filter(
+          (c) => !resolveCaseAffiliationKeys(c).includes(prevKey)
+        );
+        AsyncStorage.setItem(CASES_KEY, JSON.stringify(filtered));
+        return filtered;
+      });
+    }
+  }, [activeLabAffiliationKey]);
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
     if (status === "approved" || status === "accepted") {
