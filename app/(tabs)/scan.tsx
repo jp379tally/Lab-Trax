@@ -1945,24 +1945,16 @@ export default function ScanScreen() {
         if (wasInCameraPhase && isImage) {
           cropDoneRef.current = false;
           let dataUri = asset.uri;
+
           if (!asset.uri.startsWith("data:") && Platform.OS !== "web") {
             try {
               const FSystem = await import("expo-file-system");
-              const b64 = await FSystem.readAsStringAsync(asset.uri, { encoding: FSystem.EncodingType.Base64 });
+              const b64 = await FSystem.readAsStringAsync(asset.uri, {
+                encoding: FSystem.EncodingType.Base64,
+              });
               const mime = asset.mimeType || "image/jpeg";
               dataUri = `data:${mime};base64,${b64}`;
-            } catch (e: any) {
-              console.log("Attach file read error:", e?.message);
-              try {
-                const FSystem = await import("expo-file-system");
-                const destUri = FSystem.cacheDirectory + "attach_" + Date.now() + ".jpg";
-                await FSystem.copyAsync({ from: asset.uri, to: destUri });
-                const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
-                dataUri = `data:image/jpeg;base64,${b64}`;
-              } catch (copyErr: any) {
-                console.log("Attach file copy fallback failed:", copyErr?.message);
-              }
-            }
+            } catch {}
           }
 
           setCapturedUri(dataUri);
@@ -1972,16 +1964,11 @@ export default function ScanScreen() {
             const cropped = await cropDocumentIfNeeded(dataUri);
             const finalUri = cropped !== dataUri ? cropped : dataUri;
             setCapturedUri(finalUri);
-            setCasePhotos((prev) => {
-              if (prev.includes(finalUri)) return prev;
-              return [...prev, finalUri];
-            });
+            setCasePhotos((prev) => (prev.includes(finalUri) ? prev : [...prev, finalUri]));
           } else {
-            setCasePhotos((prev) => {
-              if (prev.includes(dataUri)) return prev;
-              return [...prev, dataUri];
-            });
+            setCasePhotos((prev) => (prev.includes(dataUri) ? prev : [...prev, dataUri]));
           }
+
           cropDoneRef.current = true;
           isPickingFilesRef.current = false;
           return;
@@ -1998,39 +1985,14 @@ export default function ScanScreen() {
 
         if (isImage) {
           setCasePhotos((prev) => [...prev, asset.uri]);
-          const entry: ActivityEntry = {
-            id: generateId(),
-            type: "photo" as const,
-            timestamp: Date.now(),
-            description: `File attached: ${asset.name}`,
-            imageUri: asset.uri,
-            user: userInitials,
-          };
-          setActivityEntries((prev) => [entry, ...prev]);
         } else if (asset.mimeType === "application/pdf") {
-          const entry: ActivityEntry = {
-            id: generateId(),
-            type: "note" as const,
-            timestamp: Date.now(),
-            description: `PDF attached: ${asset.name}`,
-            user: userInitials,
-          };
-          setActivityEntries((prev) => [entry, ...prev]);
           setCasePhotos((prev) => [...prev, asset.uri]);
         }
       }
 
-      if (!wasInCameraPhase) {
-        const totalCount = result.assets.length;
-        Alert.alert(
-          "Files Attached",
-          `${totalCount} file${totalCount !== 1 ? "s" : ""} attached successfully.`
-        );
-      }
       isPickingFilesRef.current = false;
     } catch (e: any) {
       isPickingFilesRef.current = false;
-      console.error("Attach files error:", e);
       if (
         e?.message?.includes("cancel") ||
         e?.message?.includes("Cancel") ||
