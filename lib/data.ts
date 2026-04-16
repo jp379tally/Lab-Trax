@@ -112,6 +112,7 @@ export interface LabCase {
   dueDate: string;
   routeHistory: { station: CaseStatus; timestamp: number }[];
   photos: string[];
+  videos?: string[];
   activityLog: ActivityEntry[];
   trackingNumbers?: string[];
   toothMap?: ToothEntry[];

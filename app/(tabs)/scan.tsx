@@ -35,6 +35,13 @@ import { convertPdfToImages } from "@/lib/pdfToImages";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
+type CaseAttachment = {
+  id: string;
+  uri: string;
+  kind: "image" | "video" | "pdf";
+  name?: string;
+};
+
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
   const month = d.toLocaleString("en-US", { month: "short" });
@@ -166,6 +173,8 @@ export default function ScanScreen() {
   const [timeDueMinute, setTimeDueMinute] = useState(0);
   const [timeDuePeriod, setTimeDuePeriod] = useState<"AM" | "PM">("AM");
   const [casePhotos, setCasePhotos] = useState<string[]>([]);
+  const [caseAttachments, setCaseAttachments] = useState<CaseAttachment[]>([]);
+  const [isSubmittingCase, setIsSubmittingCase] = useState(false);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
@@ -730,21 +739,33 @@ export default function ScanScreen() {
     if (!result.canceled && result.assets[0]) {
       const asset = result.assets[0];
       const isVideo = asset.type === "video";
+
+      const attachment: CaseAttachment = {
+        id: generateId(),
+        uri: asset.uri,
+        kind: isVideo ? "video" : "image",
+        name: asset.fileName || undefined,
+      };
+
       if (isVideo) {
-        setCustomShadeVideos(prev => [...prev, asset.uri]);
+        setCustomShadeVideos((prev) => [...prev, asset.uri]);
       } else {
-        setCustomShadePhotos(prev => [...prev, asset.uri]);
+        setCustomShadePhotos((prev) => [...prev, asset.uri]);
+        setCasePhotos((prev) => [...prev, asset.uri]);
       }
-      setCasePhotos(prev => [...prev, asset.uri]);
+
+      setCaseAttachments((prev) => [...prev, attachment]);
+
       const entry: ActivityEntry = {
         id: generateId(),
         type: "photo",
         timestamp: Date.now(),
         description: `Custom shading ${isVideo ? "video" : "photo"} captured`,
-        imageUri: asset.uri,
+        imageUri: isVideo ? undefined : asset.uri,
         user: userInitials,
       };
-      setActivityEntries(prev => [...prev, entry]);
+      appendActivityEntry(entry);
+
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       Alert.alert(
@@ -1549,6 +1570,8 @@ export default function ScanScreen() {
   function handleManualEntry() {
     setCapturedUri(null);
     setCasePhotos([]);
+    setCaseAttachments([]);
+    setIsSubmittingCase(false);
     setActivityEntries([{
       id: generateId(),
       type: "scan",
@@ -1859,10 +1882,18 @@ export default function ScanScreen() {
     if (!result.canceled && result.assets.length > 0) {
       const newUris = result.assets.map((a) => a.uri);
       setCasePhotos((prev) => [...prev, ...newUris]);
+      const newAttachments: CaseAttachment[] = result.assets.map((a) => ({
+        id: generateId(),
+        uri: a.uri,
+        kind: "image" as const,
+        name: a.fileName || undefined,
+      }));
+      setCaseAttachments((prev) => [...prev, ...newAttachments]);
+      const ts = Date.now();
       const newEntries: ActivityEntry[] = newUris.map((uri) => ({
         id: generateId(),
         type: "photo" as const,
-        timestamp: Date.now(),
+        timestamp: ts,
         description: "Photo added from library",
         imageUri: uri,
         user: userInitials,
@@ -1880,6 +1911,7 @@ export default function ScanScreen() {
         const photo = await cameraRef.current.takePictureAsync();
         if (photo?.uri) {
           setCasePhotos((prev) => [...prev, photo.uri]);
+          setCaseAttachments((prev) => [...prev, { id: generateId(), uri: photo.uri, kind: "image" as const }]);
           const entry: ActivityEntry = {
             id: generateId(),
             type: "photo",
@@ -1888,7 +1920,7 @@ export default function ScanScreen() {
             imageUri: photo.uri,
             user: userInitials,
           };
-          setActivityEntries((prev) => [entry, ...prev]);
+          appendActivityEntry(entry);
           if (Platform.OS !== "web") {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }
@@ -1903,6 +1935,7 @@ export default function ScanScreen() {
     if (!result.canceled && result.assets[0]) {
       const uri = result.assets[0].uri;
       setCasePhotos((prev) => [...prev, uri]);
+      setCaseAttachments((prev) => [...prev, { id: generateId(), uri, kind: "image" as const }]);
       const entry: ActivityEntry = {
         id: generateId(),
         type: "photo",
@@ -1911,7 +1944,7 @@ export default function ScanScreen() {
         imageUri: uri,
         user: userInitials,
       };
-      setActivityEntries((prev) => [entry, ...prev]);
+      appendActivityEntry(entry);
       if (Platform.OS !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
@@ -1983,9 +2016,14 @@ export default function ScanScreen() {
           return;
         }
 
-        if (isImage) {
-          setCasePhotos((prev) => [...prev, asset.uri]);
-        } else if (asset.mimeType === "application/pdf") {
+        if (isImage || asset.mimeType === "application/pdf") {
+          const attachment: CaseAttachment = {
+            id: generateId(),
+            uri: asset.uri,
+            kind: asset.mimeType === "application/pdf" ? "pdf" : "image",
+            name: asset.name,
+          };
+          setCaseAttachments((prev) => [...prev, attachment]);
           setCasePhotos((prev) => [...prev, asset.uri]);
         }
       }
@@ -2050,6 +2088,7 @@ export default function ScanScreen() {
       price: calculatedPrice,
       dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
       photos: casePhotos,
+      videos: caseAttachments.filter((x) => x.kind === "video").map((x) => x.uri),
       activityLog: activityEntries,
       toothMap: toothMapEntries,
     });
@@ -2178,7 +2217,22 @@ export default function ScanScreen() {
     router.push(`/chart-history?patient=${encodeURIComponent(pName)}`);
   }
 
+  function appendActivityEntry(entry: ActivityEntry) {
+    setActivityEntries((prev) => {
+      const duplicate = prev.some(
+        (e) =>
+          e.description === entry.description &&
+          e.user === entry.user &&
+          Math.abs(e.timestamp - entry.timestamp) < 2000
+      );
+      if (duplicate) return prev;
+      return [...prev, entry];
+    });
+  }
+
   function handleSubmit() {
+    if (isSubmittingCase) return;
+
     if (!doctorName.trim()) {
       Alert.alert("Required", "Doctor name is required");
       return;
@@ -2188,23 +2242,56 @@ export default function ScanScreen() {
       return;
     }
 
-    const matchingCases = cases.filter(
-      (c) => (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase()
-    );
+    setIsSubmittingCase(true);
+    const finish = () => setIsSubmittingCase(false);
 
-    if (matchingCases.length > 0) {
-      const caseNums = matchingCases.map((c) => c.caseNumber).join(", ");
-      Alert.alert(
-        "Patient Already on File",
-        `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "View Chart", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`) },
-          { text: "Add Case", onPress: () => createCase(true) },
-        ]
+    try {
+      const matchingCases = cases.filter(
+        (c) => (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase()
       );
-    } else {
-      createCase(false);
+
+      if (matchingCases.length > 0) {
+        const caseNums = matchingCases.map((c) => c.caseNumber).join(", ");
+        Alert.alert(
+          "Patient Already on File",
+          `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
+          [
+            {
+              text: "Cancel",
+              style: "cancel",
+              onPress: finish,
+            },
+            {
+              text: "View Chart",
+              onPress: () => {
+                finish();
+                router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`);
+              },
+            },
+            {
+              text: "Add Case",
+              onPress: () => {
+                try {
+                  createCase(true);
+                } finally {
+                  finish();
+                }
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      try {
+        createCase(false);
+      } finally {
+        finish();
+      }
+    } catch (err) {
+      finish();
+      console.error("[handleSubmit] ERROR:", err);
+      Alert.alert("Error", "Could not submit case.");
     }
   }
 
@@ -2253,6 +2340,8 @@ export default function ScanScreen() {
     setTimeDueMinute(0);
     setTimeDuePeriod("AM");
     setCasePhotos([]);
+    setCaseAttachments([]);
+    setIsSubmittingCase(false);
     setActivityEntries([]);
     scanAnim.setValue(0);
   }
@@ -2572,15 +2661,21 @@ export default function ScanScreen() {
           <Text style={styles.formTitle}>New Case</Text>
           <Pressable
             onPress={handleSubmit}
+            disabled={isSubmittingCase}
             style={({ pressed }) => [
               styles.submitBtn,
-              pressed && { opacity: 0.8 },
+              isSubmittingCase && { opacity: 0.55 },
+              pressed && !isSubmittingCase && { opacity: 0.8 },
             ]}
             testID="submit-case-btn"
             accessibilityLabel="Submit Case"
           >
             <View pointerEvents="none">
-              <Ionicons name="checkmark" size={22} color="#FFF" />
+              {isSubmittingCase ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <Ionicons name="checkmark" size={22} color="#FFF" />
+              )}
             </View>
           </Pressable>
         </View>
@@ -2602,26 +2697,56 @@ export default function ScanScreen() {
               </Pressable>
             </View>
           )}
-          {casePhotos.length > 0 ? (
+          {(caseAttachments.length > 0 || casePhotos.length > 0) ? (
             <View style={styles.photoStripSection}>
               <View style={styles.photoStripHeader}>
-                <Text style={styles.formLabel}>Photos ({casePhotos.length})</Text>
+                <Text style={styles.formLabel}>
+                  Attachments ({caseAttachments.length > 0 ? caseAttachments.length : casePhotos.length})
+                </Text>
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoStrip}>
-                {casePhotos.map((uri, idx) => (
-                  <View key={idx} style={styles.photoThumbWrap}>
-                    <Image source={{ uri }} style={styles.photoThumb} contentFit="cover" />
-                    <Pressable
-                      onPress={() => {
-                        setCasePhotos((prev) => prev.filter((_, i) => i !== idx));
-                        setActivityEntries((prev) => prev.filter((e) => e.imageUri !== uri));
-                      }}
-                      style={styles.photoRemoveBtn}
-                    >
-                      <Ionicons name="close-circle" size={20} color="#EF4444" />
-                    </Pressable>
-                  </View>
-                ))}
+                {caseAttachments.length > 0
+                  ? caseAttachments.map((item) => (
+                      <View key={item.id} style={styles.photoThumbWrap}>
+                        {item.kind === "image" ? (
+                          <Image source={{ uri: item.uri }} style={styles.photoThumb} contentFit="cover" />
+                        ) : item.kind === "video" ? (
+                          <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#CBD5E1" }]}>
+                            <Ionicons name="play-circle" size={34} color="#1E293B" />
+                            <Text style={{ fontSize: 11, marginTop: 4, color: "#1E293B", fontFamily: "Inter_600SemiBold" }}>Video</Text>
+                          </View>
+                        ) : (
+                          <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#E2E8F0" }]}>
+                            <Ionicons name="document-text-outline" size={28} color="#334155" />
+                            <Text style={{ fontSize: 11, marginTop: 4, color: "#334155", fontFamily: "Inter_600SemiBold" }}>PDF</Text>
+                          </View>
+                        )}
+                        <Pressable
+                          onPress={() => {
+                            setCaseAttachments((prev) => prev.filter((x) => x.id !== item.id));
+                            setCasePhotos((prev) => prev.filter((u) => u !== item.uri));
+                            setActivityEntries((prev) => prev.filter((e) => e.imageUri !== item.uri));
+                          }}
+                          style={styles.photoRemoveBtn}
+                        >
+                          <Ionicons name="close-circle" size={20} color="#EF4444" />
+                        </Pressable>
+                      </View>
+                    ))
+                  : casePhotos.map((uri, idx) => (
+                      <View key={idx} style={styles.photoThumbWrap}>
+                        <Image source={{ uri }} style={styles.photoThumb} contentFit="cover" />
+                        <Pressable
+                          onPress={() => {
+                            setCasePhotos((prev) => prev.filter((_, i) => i !== idx));
+                            setActivityEntries((prev) => prev.filter((e) => e.imageUri !== uri));
+                          }}
+                          style={styles.photoRemoveBtn}
+                        >
+                          <Ionicons name="close-circle" size={20} color="#EF4444" />
+                        </Pressable>
+                      </View>
+                    ))}
                 <Pressable onPress={handleTakePhotoPrompt} style={styles.addPhotoThumb}>
                   <Ionicons name="add" size={28} color={Colors.light.tint} />
                 </Pressable>
