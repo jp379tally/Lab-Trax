@@ -31,7 +31,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
-import { getApiUrl, resilientFetch } from "@/lib/query-client";
+import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
@@ -1201,15 +1201,28 @@ export default function ScanScreen() {
     const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
     console.log("AI: Trying URL:", primaryUrl);
 
+    const token = getAccessToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
     try {
-      const res = await resilientFetch(primaryUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-        body: jsonBody,
-      });
+      const fetchFn: typeof fetch = (globalThis as any).fetch ?? fetch;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      let res: Response;
+      try {
+        res = await fetchFn(primaryUrl, {
+          method: "POST",
+          headers,
+          body: jsonBody,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       console.log("AI: Response status:", res.status);
       if (!res.ok) {

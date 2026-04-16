@@ -14,7 +14,7 @@ import { users, labCases, organizations, organizationMemberships } from "../shar
 import { eq, and, inArray } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
-import { requireAuth } from "./middleware/auth";
+import { requireAuth, optionalAuth } from "./middleware/auth";
 
 import authRoutes from "./routes/auth";
 import organizationRoutes from "./routes/organizations";
@@ -1274,7 +1274,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/analyze-prescription", requireAuth, async (req, res) => {
+  app.post("/api/analyze-prescription", optionalAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
@@ -1371,7 +1371,7 @@ Important rules:
     }
   });
 
-  app.post("/api/crop-document", requireAuth, async (req, res) => {
+  app.post("/api/crop-document", optionalAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
@@ -1435,7 +1435,7 @@ Important rules:
     } catch { return res.status(500).json({ error: "Unable to process this image." }); }
   });
 
-  app.post("/api/document-to-pdf", requireAuth, async (req, res) => {
+  app.post("/api/document-to-pdf", optionalAuth, async (req, res) => {
     try {
       const { images } = req.body;
       if (!images || !Array.isArray(images) || images.length === 0) return res.status(400).json({ error: "No images provided" });
