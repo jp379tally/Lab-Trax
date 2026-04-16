@@ -319,7 +319,7 @@ export function LabFileDropZone({
 
   function selectProvider(client: Client) {
     setSelectedProvider(client);
-    setProviderSearch(client.practiceName);
+    setProviderSearch(client.practiceName || client.leadDoctor || "");
     setProviderDropdownOpen(false);
     setSelectedCase(null);
     setPatientSearch("");
@@ -338,8 +338,8 @@ export function LabFileDropZone({
       ? activeClients.filter((client) => {
           const query = providerSearch.toLowerCase();
           return (
-            client.practiceName.toLowerCase().includes(query) ||
-            client.leadDoctor.toLowerCase().includes(query)
+            (client.practiceName || "").toLowerCase().includes(query) ||
+            (client.leadDoctor || "").toLowerCase().includes(query)
           );
         })
       : activeClients;
@@ -517,7 +517,10 @@ export function LabFileDropZone({
                             setProviderSearch(value);
                             setProviderDropdownOpen(value.length > 0);
 
-                            if (selectedProvider && value !== selectedProvider.practiceName) {
+                            const displayName = selectedProvider
+                              ? (selectedProvider.practiceName || selectedProvider.leadDoctor || "")
+                              : "";
+                            if (selectedProvider && value !== displayName) {
                               setSelectedProvider(null);
                               setSelectedCase(null);
                               setPatientSearch("");
@@ -542,8 +545,8 @@ export function LabFileDropZone({
                                     pressed && s.dropdownItemPressed,
                                   ]}
                                 >
-                                  <Text style={s.dropdownItemText}>{client.practiceName}</Text>
-                                  <Text style={s.dropdownItemSub}>{client.leadDoctor}</Text>
+                                  <Text style={s.dropdownItemText}>{client.practiceName || client.leadDoctor || "Unknown Practice"}</Text>
+                                  <Text style={s.dropdownItemSub}>{client.leadDoctor || ""}</Text>
                                 </Pressable>
                               ))}
                             </ScrollView>

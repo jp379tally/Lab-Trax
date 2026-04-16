@@ -439,6 +439,8 @@ export default function ScanScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      setCameraPaused(false);
+      isPickingFilesRef.current = false;
       if (phase !== "form") {
         setPhase("camera");
         setCapturedUri(null);
@@ -1922,12 +1924,6 @@ export default function ScanScreen() {
     const wasInCameraPhase = phase === "camera";
 
     try {
-      if (wasInCameraPhase) {
-        setCameraReady(false);
-        setCameraPaused(true);
-        await new Promise((r) => setTimeout(r, Platform.OS === "ios" ? 400 : 200));
-      }
-
       const result = await DocumentPicker.getDocumentAsync({
         type: ["image/*", "application/pdf"],
         multiple: Platform.OS !== "ios",
@@ -1935,7 +1931,6 @@ export default function ScanScreen() {
       });
 
       if (result.canceled || !result.assets || result.assets.length === 0) {
-        if (wasInCameraPhase) setCameraPaused(false);
         isPickingFilesRef.current = false;
         return;
       }
@@ -1971,7 +1966,6 @@ export default function ScanScreen() {
           }
 
           setCapturedUri(dataUri);
-          setCameraPaused(false);
           setPhase("scanning");
 
           if (dataUri.startsWith("data:")) {
@@ -1996,7 +1990,6 @@ export default function ScanScreen() {
         if (wasInCameraPhase && asset.mimeType === "application/pdf") {
           setCasePhotos((prev) => [...prev, asset.uri]);
           setCapturedUri(asset.uri);
-          setCameraPaused(false);
           setPhase("scanning");
           cropDoneRef.current = true;
           isPickingFilesRef.current = false;
@@ -2027,8 +2020,6 @@ export default function ScanScreen() {
         }
       }
 
-      if (wasInCameraPhase) setCameraPaused(false);
-
       if (!wasInCameraPhase) {
         const totalCount = result.assets.length;
         Alert.alert(
@@ -2038,7 +2029,6 @@ export default function ScanScreen() {
       }
       isPickingFilesRef.current = false;
     } catch (e: any) {
-      if (wasInCameraPhase) setCameraPaused(false);
       isPickingFilesRef.current = false;
       console.error("Attach files error:", e);
       if (
