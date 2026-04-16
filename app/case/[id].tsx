@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
+import * as Print from "expo-print";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -359,9 +360,47 @@ export default function CaseDetailScreen() {
       }
     }
 
+    const savedCase = { ...caseItem, ...updates };
     setShowEditCase(false);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Saved", "Case updated successfully.");
+
+    Alert.alert(
+      "Changes Saved",
+      "Do you want to reprint the case label?",
+      [
+        { text: "No", style: "cancel" },
+        { text: "Yes", onPress: () => handlePrintCaseLabel(savedCase) },
+      ]
+    );
+  }
+
+  async function handlePrintCaseLabel(caseRecord: typeof caseItem) {
+    try {
+      const html = buildCaseLabelHtml(caseRecord);
+      await Print.printAsync({ html });
+    } catch {
+      Alert.alert("Print Error", "Unable to print the updated case label.");
+    }
+  }
+
+  function buildCaseLabelHtml(caseRecord: typeof caseItem) {
+    return `<html><head><style>
+      body { font-family: Arial, sans-serif; padding: 20px; }
+      .label { border: 2px solid #111; border-radius: 12px; padding: 20px; max-width: 400px; }
+      .title { font-size: 26px; font-weight: bold; margin-bottom: 12px; }
+      .row { font-size: 17px; margin: 6px 0; }
+    </style></head><body>
+      <div class="label">
+        <div class="title">Case #${caseRecord?.caseNumber || ""}</div>
+        <div class="row"><strong>Patient:</strong> ${caseRecord?.patientName || caseRecord?.patientInitials || ""}</div>
+        <div class="row"><strong>Doctor:</strong> ${cleanDoctorDisplay(caseRecord?.doctorName || "")}</div>
+        <div class="row"><strong>Teeth:</strong> ${caseRecord?.toothIndices || ""}</div>
+        <div class="row"><strong>Shade:</strong> ${caseRecord?.shade || ""}</div>
+        <div class="row"><strong>Material:</strong> ${caseRecord?.material || ""}</div>
+        <div class="row"><strong>Due:</strong> ${caseRecord?.dueDate || ""}</div>
+        ${caseRecord?.notes ? `<div class="row"><strong>Notes:</strong> ${caseRecord.notes}</div>` : ""}
+      </div>
+    </body></html>`;
   }
 
   function webFilePickerForCamera(): Promise<string | null> {
@@ -1056,6 +1095,7 @@ export default function CaseDetailScreen() {
         <Pressable
           style={styles.infoGrid}
           onPress={() => {
+            if (!isAdmin) return;
             setQeDoctor(caseItem.doctorName || "");
             setQePatient((caseItem as any).patientName || caseItem.patientInitials || "");
             setQeTeeth(caseItem.toothIndices || "");
@@ -1105,9 +1145,11 @@ export default function CaseDetailScreen() {
               </Text>
             </View>
           )}
-          <View style={{ position: "absolute", top: 8, right: 8 }}>
-            <Ionicons name="pencil" size={14} color={Colors.light.textTertiary} />
-          </View>
+          {isAdmin && (
+            <View style={{ position: "absolute", top: 8, right: 8 }}>
+              <Ionicons name="pencil" size={14} color={Colors.light.textTertiary} />
+            </View>
+          )}
         </Pressable>
 
 
@@ -3288,8 +3330,16 @@ export default function CaseDetailScreen() {
                   }
 
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  Alert.alert("Saved", "Case information updated.");
+                  const savedQe = { ...caseItem, ...caseUpdates };
                   setShowQuickEdit(false);
+                  Alert.alert(
+                    "Changes Saved",
+                    "Do you want to reprint the case label?",
+                    [
+                      { text: "No", style: "cancel" },
+                      { text: "Yes", onPress: () => handlePrintCaseLabel(savedQe) },
+                    ]
+                  );
                 }}
                 style={({ pressed }) => [{ flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: "#2563EB", alignItems: "center" as const }, pressed && { opacity: 0.85 }]}
               >
