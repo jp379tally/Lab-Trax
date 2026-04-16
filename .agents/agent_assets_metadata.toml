@@ -36,3 +36,9 @@ id = "sf1xb00gAUTzNL_OMWkSl"
 uri = "file://labtrax-complete.tar.gz"
 type = "unspecified"
 title = "LabTrax Complete Project (210MB - includes all assets, builds, and source)"
+
+[[outputs]]
+id = "z-vADeqdVOVWQNf08Rsae"
+uri = "file://project.tar.gz"
+type = "unspecified"
+title = "Project Code (project.tar.gz)"
