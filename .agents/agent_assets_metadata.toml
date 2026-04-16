@@ -42,3 +42,9 @@ id = "z-vADeqdVOVWQNf08Rsae"
 uri = "file://project.tar.gz"
 type = "unspecified"
 title = "Project Code (project.tar.gz)"
+
+[[outputs]]
+id = "lJn-2dZhHBVm61hObyiBi"
+uri = "file://scan_and_dropzone.tar.gz"
+type = "unspecified"
+title = "scan.tsx + LabFileDropZone.tsx"
