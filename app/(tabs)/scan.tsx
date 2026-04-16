@@ -1191,7 +1191,6 @@ export default function ScanScreen() {
   }
 
   async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
-    const { getApiUrl } = await import("@/lib/query-client");
     const payload: any = { imageBase64: base64Data };
     if (additionalImages && additionalImages.length > 0) {
       payload.additionalImages = additionalImages;
@@ -1199,70 +1198,38 @@ export default function ScanScreen() {
     const jsonBody = JSON.stringify(payload);
     console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
 
-    const urls: string[] = [];
-    try {
-      const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
-      urls.push(primaryUrl);
-    } catch (e: any) {
-      console.log("AI: Primary URL construction failed:", e?.message);
-    }
-    const host = process.env.EXPO_PUBLIC_DOMAIN;
-    if (host) {
-      try {
-        const cleanHost = host.includes(":") ? host : host;
-        const fallbackUrl = new URL("/api/analyze-prescription", `https://${cleanHost}`).toString();
-        if (!urls.includes(fallbackUrl)) urls.push(fallbackUrl);
-      } catch (e: any) {
-        console.log("AI: Fallback URL construction failed:", e?.message);
-      }
-    }
+    const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
+    console.log("AI: Trying URL:", primaryUrl);
 
-    if (urls.length === 0) {
-      console.log("AI: No valid URLs constructed. EXPO_PUBLIC_DOMAIN:", host);
+    try {
+      const res = await resilientFetch(primaryUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+        body: jsonBody,
+      });
+
+      console.log("AI: Response status:", res.status);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.log("AI response error:", res.status, errText.substring(0, 200));
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error && errJson.error.includes("HEIC")) {
+            return { success: false, error: errJson.error };
+          }
+        } catch {}
+        return { success: false };
+      }
+      const result = await res.json();
+      console.log("AI: Parsed result success:", result?.success);
+      return result;
+    } catch (err: any) {
+      console.log("AI: Request failed:", err?.message || String(err));
       return { success: false };
     }
-
-    let lastErr: any = null;
-    for (const url of urls) {
-      try {
-        console.log("AI: Trying URL:", url);
-        const fetchPromise = globalThis.fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-          },
-          body: jsonBody,
-        });
-
-        const timeoutPromise = new Promise<Response>((_, reject) => {
-          setTimeout(() => reject(new Error("Request timeout after 90s")), 90000);
-        });
-
-        const res = await Promise.race([fetchPromise, timeoutPromise]);
-        console.log("AI: Response status:", res.status);
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          console.log("AI response error:", res.status, errText.substring(0, 200));
-          try {
-            const errJson = JSON.parse(errText);
-            if (errJson.error && errJson.error.includes("HEIC")) {
-              return { success: false, error: errJson.error };
-            }
-          } catch {}
-          lastErr = new Error(`HTTP ${res.status}: ${errText.substring(0, 100)}`);
-          continue;
-        }
-        const result = await res.json();
-        console.log("AI: Parsed result success:", result?.success);
-        return result;
-      } catch (err: any) {
-        console.log("AI: URL failed:", url, err?.message || String(err));
-        lastErr = err;
-      }
-    }
-    console.log("AI: All URLs failed. Last error:", lastErr?.message || String(lastErr));
-    return { success: false };
   }
 
   async function handleSavePDF() {
@@ -4257,19 +4224,21 @@ export default function ScanScreen() {
           </View>
         )}
 
-        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]} pointerEvents="none">
           <Text style={styles.scanTitle}>AI Intake</Text>
           <Text style={styles.scanSubtitle}>
             {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "review" ? "Add more pages or continue" : "RX recognized"}
           </Text>
         </View>
 
-        <View style={styles.viewfinderFrame}>
-          <View style={styles.cornerTL} />
-          <View style={styles.cornerTR} />
-          <View style={styles.cornerBL} />
-          <View style={styles.cornerBR} />
-        </View>
+        {phase !== "review" && (
+          <View style={styles.viewfinderFrame} pointerEvents="none">
+            <View style={styles.cornerTL} />
+            <View style={styles.cornerTR} />
+            <View style={styles.cornerBL} />
+            <View style={styles.cornerBR} />
+          </View>
+        )}
       </View>
 
       <View
