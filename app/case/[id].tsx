@@ -88,6 +88,7 @@ export default function CaseDetailScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
+  const [showAddSomethingModal, setShowAddSomethingModal] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
   const [showPhotoPreview, setShowPhotoPreview] = useState(false);
@@ -1584,89 +1585,74 @@ export default function CaseDetailScreen() {
             </View>
           )}
 
-          <View style={styles.actionRow}>
+          {userType !== "provider" && caseItem.status !== "COMPLETE" && (
             <Pressable
-              onPress={handleTakePhoto}
+              onPress={async () => {
+                if (caseItem.assignedBarcode) {
+                  Alert.alert(
+                    "Barcode Assigned",
+                    `This case already has barcode: ${caseItem.assignedBarcode}`,
+                    [
+                      { text: "Keep", style: "cancel" },
+                      {
+                        text: "Reassign",
+                        onPress: async () => {
+                          if (!cameraPermission?.granted) {
+                            const perm = await requestCameraPermission();
+                            if (!perm.granted) { Alert.alert("Camera access is required to scan barcodes."); return; }
+                          }
+                          setBarcodeScanned(false);
+                          setShowBarcodeScanner(true);
+                        },
+                      },
+                    ]
+                  );
+                } else {
+                  if (!cameraPermission?.granted) {
+                    const perm = await requestCameraPermission();
+                    if (!perm.granted) { Alert.alert("Camera access is required to scan barcodes."); return; }
+                  }
+                  setBarcodeScanned(false);
+                  setShowBarcodeScanner(true);
+                }
+              }}
               style={({ pressed }) => [
                 styles.actionBtn,
-                styles.actionBtnHalf,
-                { backgroundColor: "#0EA5E9" },
+                { backgroundColor: caseItem.assignedBarcode ? "#22C55E" : "#8B5CF6" },
                 pressed && { opacity: 0.85 },
               ]}
             >
-              <Ionicons name="camera" size={20} color="#FFF" />
-              <Text style={styles.actionBtnText}>Add Picture/Video</Text>
+              <Ionicons name="barcode" size={20} color="#FFF" />
+              <Text style={styles.actionBtnText}>
+                {caseItem.assignedBarcode ? `Barcode: ${caseItem.assignedBarcode}` : "Assign Barcode"}
+              </Text>
             </Pressable>
-
-            <Pressable
-              onPress={() => setShowNoteModal(true)}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                styles.actionBtnHalf,
-                { backgroundColor: "#8B5CF6" },
-                pressed && { opacity: 0.85 },
-              ]}
-            >
-              <MaterialCommunityIcons name="note-plus" size={20} color="#FFF" />
-              <Text style={styles.actionBtnText}>Add Note</Text>
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={handleAttachFile}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: Colors.light.surface, borderWidth: 1.5, borderColor: Colors.light.tint },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="attach" size={20} color={Colors.light.tint} />
-            <Text style={[styles.actionBtnText, { color: Colors.light.tint }]}>Attach File</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={openAddItemModal}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: "#10B981" },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="add-circle" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>Add Item</Text>
-          </Pressable>
-
-          {userType !== "provider" && (
-          <Pressable
-            onPress={() => {
-              const stationInfo = getStationInfo(caseItem.status, customStationLabels);
-              const msg = `Hello Dr. ${caseItem.doctorName}, this is a courtesy text to inform you that patient ${caseItem.patientName} has a case that was delayed in production. The case is currently in ${stationInfo.label}. If the patient is scheduled and you would like a more specific updated estimated delivery date and time please let us know.`;
-              setCourtesyMessage(msg);
-              setShowCourtesyModal(true);
-            }}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: "#F59E0B" },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="time" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>Courtesy Text</Text>
-          </Pressable>
           )}
 
-          {userType !== "provider" && (
           <Pressable
-            onPress={() => setShowLabSlipModal(true)}
+            onPress={() => setShowAddSomethingModal(true)}
             style={({ pressed }) => [
               styles.actionBtn,
-              { backgroundColor: "#6366F1" },
+              { backgroundColor: "#4F46E5" },
               pressed && { opacity: 0.85 },
             ]}
           >
-            <Ionicons name="document-text" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>Reprint Lab Slip</Text>
+            <Ionicons name="add-circle-outline" size={20} color="#FFF" />
+            <Text style={styles.actionBtnText}>Add Something to This Case</Text>
           </Pressable>
+
+          {userType !== "provider" && (
+            <Pressable
+              onPress={() => setShowLabSlipModal(true)}
+              style={({ pressed }) => [
+                styles.actionBtn,
+                { backgroundColor: "#6366F1" },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Ionicons name="document-text" size={20} color="#FFF" />
+              <Text style={styles.actionBtnText}>Reprint Lab Slip</Text>
+            </Pressable>
           )}
 
           {caseItem.exocadWebviewUrl ? (
@@ -1752,56 +1738,6 @@ export default function CaseDetailScreen() {
               <Text style={styles.actionBtnText}>Link ExoCAD Design</Text>
             </Pressable>
           ) : null}
-
-          {userType !== "provider" && caseItem.status !== "COMPLETE" && (
-          <Pressable
-            onPress={async () => {
-              if (caseItem.assignedBarcode) {
-                Alert.alert(
-                  "Barcode Assigned",
-                  `This case already has barcode: ${caseItem.assignedBarcode}`,
-                  [
-                    { text: "Keep", style: "cancel" },
-                    {
-                      text: "Reassign",
-                      onPress: async () => {
-                        if (!cameraPermission?.granted) {
-                          const perm = await requestCameraPermission();
-                          if (!perm.granted) {
-                            Alert.alert("Camera access is required to scan barcodes.");
-                            return;
-                          }
-                        }
-                        setBarcodeScanned(false);
-                        setShowBarcodeScanner(true);
-                      },
-                    },
-                  ]
-                );
-              } else {
-                if (!cameraPermission?.granted) {
-                  const perm = await requestCameraPermission();
-                  if (!perm.granted) {
-                    Alert.alert("Camera access is required to scan barcodes.");
-                    return;
-                  }
-                }
-                setBarcodeScanned(false);
-                setShowBarcodeScanner(true);
-              }
-            }}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: caseItem.assignedBarcode ? "#22C55E" : "#8B5CF6" },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="barcode" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>
-              {caseItem.assignedBarcode ? `Barcode: ${caseItem.assignedBarcode}` : "Assign Barcode"}
-            </Text>
-          </Pressable>
-          )}
 
           {(caseItem.courtesyTexts || []).length > 0 && (
             <View style={ctStyles.courtesySection}>
@@ -2134,6 +2070,76 @@ export default function CaseDetailScreen() {
             </Pressable>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={showAddSomethingModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAddSomethingModal(false)}
+      >
+        <View style={addStyles.backdrop}>
+          <View style={addStyles.card}>
+            <Text style={addStyles.title}>What would you like to add?</Text>
+
+            <Pressable
+              style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+              onPress={() => { setShowAddSomethingModal(false); setTimeout(handleTakePhoto, 200); }}
+            >
+              <Ionicons name="camera-outline" size={22} color="#0F172A" />
+              <Text style={addStyles.optionText}>Picture or Video</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+              onPress={() => { setShowAddSomethingModal(false); setTimeout(() => setShowNoteModal(true), 200); }}
+            >
+              <Ionicons name="document-text-outline" size={22} color="#0F172A" />
+              <Text style={addStyles.optionText}>Note</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+              onPress={() => { setShowAddSomethingModal(false); setTimeout(handleAttachFile, 200); }}
+            >
+              <Ionicons name="attach-outline" size={22} color="#0F172A" />
+              <Text style={addStyles.optionText}>File</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+              onPress={() => { setShowAddSomethingModal(false); setTimeout(openAddItemModal, 200); }}
+            >
+              <Ionicons name="layers-outline" size={22} color="#0F172A" />
+              <Text style={addStyles.optionText}>Item</Text>
+            </Pressable>
+
+            {userType !== "provider" && (
+              <Pressable
+                style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+                onPress={() => {
+                  setShowAddSomethingModal(false);
+                  setTimeout(() => {
+                    const stationInfo = getStationInfo(caseItem.status, customStationLabels);
+                    const msg = `Hello Dr. ${caseItem.doctorName}, this is a courtesy text to inform you that patient ${caseItem.patientName} has a case that was delayed in production. The case is currently in ${stationInfo.label}. If the patient is scheduled and you would like a more specific updated estimated delivery date and time please let us know.`;
+                    setCourtesyMessage(msg);
+                    setShowCourtesyModal(true);
+                  }, 200);
+                }}
+              >
+                <Ionicons name="chatbubble-outline" size={22} color="#0F172A" />
+                <Text style={addStyles.optionText}>Courtesy Text</Text>
+              </Pressable>
+            )}
+
+            <Pressable
+              style={({ pressed }) => [addStyles.cancelBtn, pressed && { opacity: 0.75 }]}
+              onPress={() => setShowAddSomethingModal(false)}
+            >
+              <Text style={addStyles.cancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
       </Modal>
 
       {isAdmin && (
@@ -4912,5 +4918,51 @@ const editFieldStyles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
     color: "#1E293B",
     backgroundColor: "#F8FAFC",
+  },
+});
+
+const addStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
+  },
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 34,
+    gap: 4,
+  },
+  title: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#64748B",
+    marginBottom: 8,
+  },
+  option: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingVertical: 15,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E2E8F0",
+  },
+  optionText: {
+    fontSize: 16,
+    fontFamily: "Inter_500Medium",
+    color: "#0F172A",
+  },
+  cancelBtn: {
+    alignItems: "center",
+    paddingVertical: 16,
+    marginTop: 6,
+  },
+  cancelText: {
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    color: "#EF4444",
   },
 });

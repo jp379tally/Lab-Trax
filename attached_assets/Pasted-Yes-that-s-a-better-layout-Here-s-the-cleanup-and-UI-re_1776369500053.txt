@@ -1,0 +1,346 @@
+Yes — that’s a better layout.
+
+Here’s the cleanup and UI restructure to make:
+
+## Main page
+
+Remove the blue summary card under the Production Dashboard header:
+
+* **“Lab Status / 21 active cases / etc.”**
+* delete that entire component render block
+
+If it looks something like this:
+
+```tsx
+<View style={styles.labStatusCard}>
+  <Text style={styles.labStatusTitle}>Lab Status</Text>
+  <Text style={styles.labStatusMetric}>21 Active Cases</Text>
+  ...
+</View>
+```
+
+remove that whole block from the main page screen.
+
+If it is conditionally rendered, remove the condition too.
+
+---
+
+## Inside a case
+
+At the bottom, replace these separate buttons:
+
+* Add Picture / Video
+* Add Note
+* Attach File
+* Add Item
+* Courtesy Text
+
+with **one button**:
+
+**Add Something to This Case**
+
+Then when tapped, open an action sheet / modal that says:
+
+**What would you like to add?**
+
+Options:
+
+* Picture or Video
+* Note
+* File
+* Item
+* Courtesy Text
+
+Also move:
+
+* **Assign Barcode**
+  directly under
+* **Locate Case**
+
+---
+
+# Recommended button order
+
+Use this order in the case screen:
+
+1. Locate Case
+2. Assign Barcode
+3. Add Something to This Case
+4. Reprint Lab Slip
+5. Link ExoCAD Design
+
+---
+
+# Code structure to use
+
+## 1. Add one modal state
+
+```tsx
+const [showAddSomethingModal, setShowAddSomethingModal] = useState(false);
+```
+
+---
+
+## 2. Replace the old row of action buttons
+
+Remove the separate buttons for:
+
+* add picture/video
+* add note
+* attach file
+* add item
+* courtesy text
+
+And replace with:
+
+```tsx
+<Pressable
+  style={styles.caseActionButton}
+  onPress={() => setShowAddSomethingModal(true)}
+>
+  <Ionicons name="add-circle-outline" size={22} color="#fff" />
+  <Text style={styles.caseActionButtonText}>Add Something to This Case</Text>
+</Pressable>
+```
+
+---
+
+## 3. Put Assign Barcode under Locate Case
+
+Use:
+
+```tsx
+<View style={styles.caseActionGroup}>
+  <Pressable style={styles.caseActionButton} onPress={handleLocateCase}>
+    <Ionicons name="navigate-outline" size={22} color="#fff" />
+    <Text style={styles.caseActionButtonText}>Locate Case</Text>
+  </Pressable>
+
+  <Pressable style={styles.caseActionButton} onPress={handleAssignBarcode}>
+    <Ionicons name="barcode-outline" size={22} color="#fff" />
+    <Text style={styles.caseActionButtonText}>Assign Barcode</Text>
+  </Pressable>
+
+  <Pressable
+    style={styles.caseActionButton}
+    onPress={() => setShowAddSomethingModal(true)}
+  >
+    <Ionicons name="add-circle-outline" size={22} color="#fff" />
+    <Text style={styles.caseActionButtonText}>Add Something to This Case</Text>
+  </Pressable>
+
+  <Pressable style={styles.caseActionButton} onPress={handleReprintLabSlip}>
+    <Ionicons name="print-outline" size={22} color="#fff" />
+    <Text style={styles.caseActionButtonText}>Reprint Lab Slip</Text>
+  </Pressable>
+
+  <Pressable style={styles.caseActionButton} onPress={handleLinkExocad}>
+    <Ionicons name="cube-outline" size={22} color="#fff" />
+    <Text style={styles.caseActionButtonText}>Link ExoCAD Design</Text>
+  </Pressable>
+</View>
+```
+
+---
+
+## 4. Add the modal
+
+```tsx
+<Modal
+  visible={showAddSomethingModal}
+  transparent
+  animationType="slide"
+  onRequestClose={() => setShowAddSomethingModal(false)}
+>
+  <View style={styles.modalBackdrop}>
+    <View style={styles.addSomethingModalCard}>
+      <Text style={styles.addSomethingTitle}>What would you like to add?</Text>
+
+      <Pressable
+        style={styles.addSomethingOption}
+        onPress={() => {
+          setShowAddSomethingModal(false);
+          handleAddPictureOrVideo();
+        }}
+      >
+        <Ionicons name="camera-outline" size={22} color="#0f172a" />
+        <Text style={styles.addSomethingOptionText}>Picture or Video</Text>
+      </Pressable>
+
+      <Pressable
+        style={styles.addSomethingOption}
+        onPress={() => {
+          setShowAddSomethingModal(false);
+          handleAddNote();
+        }}
+      >
+        <Ionicons name="document-text-outline" size={22} color="#0f172a" />
+        <Text style={styles.addSomethingOptionText}>Note</Text>
+      </Pressable>
+
+      <Pressable
+        style={styles.addSomethingOption}
+        onPress={() => {
+          setShowAddSomethingModal(false);
+          handleAttachFile();
+        }}
+      >
+        <Ionicons name="attach-outline" size={22} color="#0f172a" />
+        <Text style={styles.addSomethingOptionText}>File</Text>
+      </Pressable>
+
+      <Pressable
+        style={styles.addSomethingOption}
+        onPress={() => {
+          setShowAddSomethingModal(false);
+          handleAddItem();
+        }}
+      >
+        <Ionicons name="layers-outline" size={22} color="#0f172a" />
+        <Text style={styles.addSomethingOptionText}>Item</Text>
+      </Pressable>
+
+      <Pressable
+        style={styles.addSomethingOption}
+        onPress={() => {
+          setShowAddSomethingModal(false);
+          handleCourtesyText();
+        }}
+      >
+        <Ionicons name="chatbubble-outline" size={22} color="#0f172a" />
+        <Text style={styles.addSomethingOptionText}>Courtesy Text</Text>
+      </Pressable>
+
+      <Pressable
+        style={styles.addSomethingCancel}
+        onPress={() => setShowAddSomethingModal(false)}
+      >
+        <Text style={styles.addSomethingCancelText}>Cancel</Text>
+      </Pressable>
+    </View>
+  </View>
+</Modal>
+```
+
+---
+
+## 5. Styles
+
+```tsx
+caseActionGroup: {
+  gap: 14,
+  marginTop: 16,
+},
+
+caseActionButton: {
+  backgroundColor: "#4f46e5",
+  borderRadius: 18,
+  minHeight: 64,
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 10,
+  paddingHorizontal: 18,
+},
+
+caseActionButtonText: {
+  color: "#fff",
+  fontSize: 18,
+  fontFamily: "Inter_700Bold",
+},
+
+modalBackdrop: {
+  flex: 1,
+  backgroundColor: "rgba(15,23,42,0.35)",
+  justifyContent: "flex-end",
+  padding: 16,
+},
+
+addSomethingModalCard: {
+  backgroundColor: "#fff",
+  borderRadius: 24,
+  padding: 18,
+  gap: 12,
+},
+
+addSomethingTitle: {
+  fontSize: 22,
+  fontFamily: "Inter_700Bold",
+  color: "#0f172a",
+  marginBottom: 4,
+},
+
+addSomethingOption: {
+  minHeight: 56,
+  borderRadius: 16,
+  backgroundColor: "#f8fafc",
+  borderWidth: 1,
+  borderColor: "#e2e8f0",
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 12,
+  paddingHorizontal: 16,
+},
+
+addSomethingOptionText: {
+  fontSize: 17,
+  color: "#0f172a",
+  fontFamily: "Inter_600SemiBold",
+},
+
+addSomethingCancel: {
+  marginTop: 6,
+  minHeight: 54,
+  borderRadius: 16,
+  backgroundColor: "#eef2ff",
+  alignItems: "center",
+  justifyContent: "center",
+},
+
+addSomethingCancelText: {
+  fontSize: 17,
+  color: "#3730a3",
+  fontFamily: "Inter_700Bold",
+},
+```
+
+---
+
+# Why this is better
+
+This cleans up the case screen a lot:
+
+* fewer buttons
+* less clutter
+* users don’t have to scan a wall of actions
+* “add” actions are grouped logically
+* barcode sits next to locating/tracking, where it belongs
+
+---
+
+# Final layout
+
+Use this:
+
+```txt
+Locate Case
+Assign Barcode
+Add Something to This Case
+Reprint Lab Slip
+Link ExoCAD Design
+```
+
+And inside the popup:
+
+```txt
+What would you like to add?
+
+Picture or Video
+Note
+File
+Item
+Courtesy Text
+Cancel
+```
+
+If you upload the case detail screen file, I’ll rewrite that screen exactly with this new layout.
