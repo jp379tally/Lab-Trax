@@ -224,7 +224,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   fs.mkdirSync(casMediaDir, { recursive: true });
   app.use("/uploads/case-media", express.static(casMediaDir));
 
-  app.post("/api/media/upload", caseMediaUpload.single("file"), (req, res) => {
+  app.post("/api/media/upload", requireAuth, caseMediaUpload.single("file"), (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
@@ -441,7 +441,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ available: !existing });
   });
 
-  app.post("/api/legacy/cases", async (req, res) => {
+  app.post("/api/legacy/cases", requireAuth, async (req, res) => {
     try {
       const { id, ownerId, caseData } = req.body;
       if (!id || !ownerId || !caseData) {
@@ -515,7 +515,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/legacy/cases", async (req, res) => {
+  app.get("/api/legacy/cases", requireAuth, async (req, res) => {
     try {
       const scopeKeysParam =
         typeof req.query.scopeKeys === "string" ? req.query.scopeKeys : "";
@@ -717,7 +717,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/legacy/cases/:caseId", async (req, res) => {
+  app.delete("/api/legacy/cases/:caseId", requireAuth, async (req, res) => {
     try {
       const { caseId } = req.params;
       await db.delete(labCases).where(eq(labCases.id, caseId));
@@ -1061,7 +1061,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ error: "Failed to send verification code. Please try again." });
       }
     } else {
-      console.log(`[SMS VERIFICATION] Twilio not configured. Code for ${phone}: ${code}`);
+      console.log(`[SMS VERIFICATION] Twilio not configured. Dev mode only — code masked for security.`);
     }
 
     const isDev = process.env.NODE_ENV === "development";
@@ -1124,7 +1124,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ error: "Failed to send verification code." });
       }
     } else {
-      console.log(`[EMAIL VERIFICATION] SMTP not configured. Code for ${email}: ${code}`);
+      console.log(`[EMAIL VERIFICATION] SMTP not configured. Dev mode only — code masked for security.`);
     }
 
     const isDev = process.env.NODE_ENV === "development";
@@ -1181,7 +1181,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             </div></div>`,
         });
       } else {
-        console.log(`[EMAIL] SMTP not configured. Reset link for ${user.email}: ${resetLink}`);
+        console.log(`[EMAIL] SMTP not configured. Reset link generated for ${user.email} — token masked for security.`);
       }
 
       const isDev = process.env.NODE_ENV === "development";
@@ -1221,7 +1221,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             </div></div>`,
         });
       } else {
-        console.log(`[EMAIL] SMTP not configured. Username for ${user.email}: ${user.username}`);
+        console.log(`[EMAIL] SMTP not configured. Username reminder generated for ${user.email} — masked for security.`);
       }
       res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
     } catch (error: any) {
@@ -1246,7 +1246,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/send-case-update-text", async (req, res) => {
+  app.post("/api/send-case-update-text", requireAuth, async (req, res) => {
     const { providerPhone, caseNumber, patientName, status, message } = req.body;
     if (!providerPhone || !caseNumber) return res.status(400).json({ error: "Provider phone and case number required" });
 
@@ -1274,7 +1274,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/analyze-prescription", async (req, res) => {
+  app.post("/api/analyze-prescription", requireAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ success: false, error: "AI integrations are not configured." });
@@ -1371,7 +1371,7 @@ Important rules:
     }
   });
 
-  app.post("/api/crop-document", async (req, res) => {
+  app.post("/api/crop-document", requireAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });
@@ -1435,7 +1435,7 @@ Important rules:
     } catch { return res.status(500).json({ error: "Unable to process this image." }); }
   });
 
-  app.post("/api/document-to-pdf", async (req, res) => {
+  app.post("/api/document-to-pdf", requireAuth, async (req, res) => {
     try {
       const { images } = req.body;
       if (!images || !Array.isArray(images) || images.length === 0) return res.status(400).json({ error: "No images provided" });
@@ -1504,7 +1504,7 @@ Important rules:
     } catch (err: any) { res.status(500).json({ error: "PDF generation failed" }); }
   });
 
-  app.post("/api/smile-process", async (req, res) => {
+  app.post("/api/smile-process", requireAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
       if (!openai) return res.status(503).json({ error: "AI integrations are not configured." });

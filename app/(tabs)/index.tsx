@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -654,7 +654,7 @@ function TechDashboard() {
         )}
         <Text style={[styles.avatarName, { color: themeColors.textSecondary }]}>{(currentUserData?.role === "admin" || role === "admin") ? "Administrator" : "User"}</Text>
         {currentUserData?.practiceName ? (
-          <Text style={{ fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.light.primary, marginTop: 2 }}>{currentUserData.practiceName}</Text>
+          <Text style={{ fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.light.tint, marginTop: 2 }}>{currentUserData.practiceName}</Text>
         ) : null}
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
@@ -1787,6 +1787,7 @@ function AdminDashboard() {
   const [editInvQty, setEditInvQty] = useState("");
 
   const [labUserSearchQuery, setLabUserSearchQuery] = useState("");
+  const [selectedLabGroup, setSelectedLabGroup] = useState<string | null>(null);
 
   const [iteroEmail, setIteroEmail] = useState("");
   const [iteroPassword, setIteroPassword] = useState("");
@@ -6358,7 +6359,7 @@ function AdminDashboard() {
     function handleAddUserToGroup(username: string, groupId: string) {
       const user = registeredUsers.find(u => u.username === username);
       const role = user?.role || "user";
-      addUserToGroup(groupId, username, role as "admin" | "user");
+      console.warn("[TODO] addUserToGroup not implemented:", groupId, username, role);
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert("Added", `${username} has been added to the lab.`);
       setSelectedLabGroup(null);
@@ -7051,7 +7052,7 @@ function ProviderDashboard() {
   const [payProcessing, setPayProcessing] = useState(false);
   const [paidInvoiceIds, setPaidInvoiceIds] = useState<string[]>([]);
   const [paymentReceiptEmail, setPaymentReceiptEmail] = useState("");
-  const [viewingInvoice, setViewingInvoice] = useState<typeof invoices[0] | null>(null);
+  const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
   const [prefOcclusion, setPrefOcclusion] = useState("");
   const [prefPontic, setPrefPontic] = useState("");
   const [prefContact, setPrefContact] = useState("");
@@ -8226,9 +8227,9 @@ function ProviderDashboard() {
                     const totalPaid = paidInvs.reduce((s, i) => s + i.amount, 0);
                     addNotification({
                       type: "alert",
+                      title: "Payment Received",
                       message: `Payment received: $${totalPaid.toFixed(2)} for ${paidInvs.length} invoice${paidInvs.length !== 1 ? "s" : ""} from ${currentUser || "Provider"}`,
                       caseId: "",
-                      timestamp: now,
                     });
                     setPaidInvoiceIds([...selectedInvoiceIds]);
                     setPayProcessing(false);
@@ -8356,16 +8357,16 @@ function ProviderDashboard() {
                 <View style={{
                   marginTop: 8, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 8,
                   backgroundColor: viewingInvoice.status === "paid" ? Colors.light.successLight
-                    : (viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid")) ? Colors.light.errorLight
+                    : (viewingInvoice.status === "overdue" || viewingInvoice.dueAt < Date.now()) ? Colors.light.errorLight
                     : Colors.light.warningLight,
                 }}>
                   <Text style={{
                     fontSize: 13, fontFamily: "Inter_700Bold", textTransform: "uppercase",
                     color: viewingInvoice.status === "paid" ? Colors.light.success
-                      : (viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid")) ? Colors.light.error
+                      : (viewingInvoice.status === "overdue" || viewingInvoice.dueAt < Date.now()) ? Colors.light.error
                       : Colors.light.warning,
                   }}>
-                    {viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid") ? "Overdue" : viewingInvoice.status}
+                    {viewingInvoice.status === "overdue" || viewingInvoice.dueAt < Date.now() ? "Overdue" : viewingInvoice.status}
                   </Text>
                 </View>
               </View>

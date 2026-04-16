@@ -2005,7 +2005,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         targetConversation || {
           id: resolvedConversationId,
           clientId: resolvedConversationId,
-          clientName: targetUsername,
+          clientName: targetUsername ?? "",
           lastMessage: imageUri ? "Photo" : trimmedContent,
           lastMessageTime: timestamp,
           unreadCount: 0,

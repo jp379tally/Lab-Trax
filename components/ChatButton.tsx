@@ -591,7 +591,7 @@ export function ChatButton() {
       : STATUS_DOT_COLORS[(threadParticipant as any)?.workStatus ?? "available"] ?? "#22C55E";
     const threadStatusLabel = isLabChannelThread
       ? "Group channel"
-      : { available: "Active now", break: "On break", out_of_office: "Out of office" }[
+      : ({ available: "Active now", break: "On break", out_of_office: "Out of office" } as Record<string, string>)[
           (threadParticipant as any)?.workStatus ?? "available"
         ] ?? "Active now";
 

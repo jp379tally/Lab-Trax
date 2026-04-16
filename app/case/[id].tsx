@@ -1241,7 +1241,7 @@ export default function CaseDetailScreen() {
                     ? registeredUsers.find(
                         (user) =>
                           user.id === entry.user ||
-                          user.username?.toLowerCase() === entry.user.toLowerCase()
+                          user.username?.toLowerCase() === (entry.user ?? "").toLowerCase()
                       )
                     : null;
                   const entryInitials = entry.user
@@ -1309,6 +1309,7 @@ export default function CaseDetailScreen() {
                 timestamp: rh.timestamp,
                 description: `Case moved to ${getStationInfo(rh.station, customStationLabels).label}`,
                 station: rh.station,
+                user: undefined as string | undefined,
               }))
           ).map((entry, idx, arr) => {
             const isLast = idx === arr.length - 1;
@@ -1348,7 +1349,7 @@ export default function CaseDetailScreen() {
               ? registeredUsers.find(
                   (user) =>
                     user.id === entry.user ||
-                    user.username?.toLowerCase() === entry.user.toLowerCase()
+                    user.username?.toLowerCase() === (entry.user ?? "").toLowerCase()
                 )
               : null;
             const entryUserName = entry.user
@@ -3324,7 +3325,7 @@ export default function CaseDetailScreen() {
                     addNotification({
                       title: "Case Updated",
                       message: `${currentUser || "A user"} edited case ${caseItem.caseNumber}: ${changeDesc}`,
-                      type: "case_update",
+                      type: "update",
                       caseId: caseItem.id,
                     });
                   }
@@ -3483,7 +3484,7 @@ export default function CaseDetailScreen() {
                     <Text style={labSlipStyles.slipLabel}>Tooth Details</Text>
                     {caseItem.toothMap!.map((t, i) => (
                       <Text key={i} style={labSlipStyles.slipValue}>
-                        #{t.tooth} - {t.type}{t.material ? ` (${t.material})` : ""}
+                        #{t.num} - {t.type}
                       </Text>
                     ))}
                   </View>
