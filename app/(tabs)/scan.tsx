@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
@@ -34,6 +35,20 @@ import { getApiUrl, resilientFetch } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
+
+async function normalizePrescriptionImage(uri: string): Promise<{ uri: string; mimeType: string }> {
+  if (Platform.OS === "web") return { uri, mimeType: "image/jpeg" };
+  try {
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      [],
+      { format: ImageManipulator.SaveFormat.JPEG, compress: 0.95 }
+    );
+    return { uri: result.uri, mimeType: "image/jpeg" };
+  } catch {
+    return { uri, mimeType: "image/jpeg" };
+  }
+}
 
 type CaseAttachment = {
   id: string;
@@ -554,12 +569,14 @@ export default function ScanScreen() {
     if (!rawUri) {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ["images"],
-        quality: 0.8,
-        base64: true,
+        allowsEditing: false,
+        quality: 1,
+        base64: false,
       });
       if (!result.canceled && result.assets[0]) {
         const asset = result.assets[0];
-        rawUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+        const normalized = await normalizePrescriptionImage(asset.uri);
+        rawUri = normalized.uri;
       }
     }
 
@@ -791,14 +808,14 @@ export default function ScanScreen() {
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
-      quality: 0.9,
-      base64: true,
+      allowsEditing: false,
+      quality: 1,
     });
 
     if (!result.canceled && result.assets[0]) {
       const asset = result.assets[0];
-      const mimeType = asset.mimeType || (asset.uri?.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
-      let rawUri = asset.base64 ? `data:${mimeType};base64,${asset.base64}` : asset.uri;
+      const normalized = await normalizePrescriptionImage(asset.uri);
+      let rawUri = normalized.uri;
 
       cropDoneRef.current = false;
       setCapturedUri(rawUri);
@@ -1135,7 +1152,7 @@ export default function ScanScreen() {
     }
   }
 
-  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any }> {
+  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
     const { getApiUrl } = await import("@/lib/query-client");
     const payload: any = { imageBase64: base64Data };
     if (additionalImages && additionalImages.length > 0) {
@@ -1469,9 +1486,7 @@ export default function ScanScreen() {
           throw sendErr;
         }
 
-        if (result.error && result.error.includes("HEIC")) {
-          failReason = result.error;
-        } else if (result.success && result.data) {
+        if (result.success && result.data) {
           const d = result.data;
           if (d.doctorName) setDoctorName(d.doctorName);
           if (d.patientName) setPatientName(d.patientName);
