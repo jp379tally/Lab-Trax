@@ -336,10 +336,15 @@ export function LabFileDropZone({
   const filteredProviders =
     providerSearch.trim().length > 0
       ? activeClients.filter((client) => {
-          const query = providerSearch.toLowerCase();
+          const query = providerSearch.toLowerCase().trim();
+          const additionalProviders = (client.additionalProviders || []).map((p) =>
+            p.toLowerCase().trim()
+          );
+
           return (
             (client.practiceName || "").toLowerCase().includes(query) ||
-            (client.leadDoctor || "").toLowerCase().includes(query)
+            (client.leadDoctor || "").toLowerCase().includes(query) ||
+            additionalProviders.some((p) => p.includes(query))
           );
         })
       : activeClients;
@@ -347,12 +352,19 @@ export function LabFileDropZone({
   const providerCases = selectedProvider
     ? cases.filter((labCase) => {
         const doctorName = (labCase.doctorName || "").toLowerCase().trim();
+        const practiceName = (selectedProvider.practiceName || "").toLowerCase().trim();
         const leadDoctor = (selectedProvider.leadDoctor || "").toLowerCase().trim();
         const additionalProviders = (selectedProvider.additionalProviders || [])
           .map((provider) => provider.toLowerCase().trim())
           .filter(Boolean);
 
-        return doctorName === leadDoctor || additionalProviders.includes(doctorName);
+        return (
+          doctorName === leadDoctor ||
+          doctorName === practiceName ||
+          additionalProviders.includes(doctorName) ||
+          doctorName.includes(leadDoctor) ||
+          leadDoctor.includes(doctorName)
+        );
       })
     : [];
 
@@ -517,10 +529,11 @@ export function LabFileDropZone({
                             setProviderSearch(value);
                             setProviderDropdownOpen(value.length > 0);
 
-                            const displayName = selectedProvider
-                              ? (selectedProvider.practiceName || selectedProvider.leadDoctor || "")
-                              : "";
-                            if (selectedProvider && value !== displayName) {
+                            if (
+                              selectedProvider &&
+                              value.trim() !== (selectedProvider.practiceName || "").trim() &&
+                              value.trim() !== (selectedProvider.leadDoctor || "").trim()
+                            ) {
                               setSelectedProvider(null);
                               setSelectedCase(null);
                               setPatientSearch("");
