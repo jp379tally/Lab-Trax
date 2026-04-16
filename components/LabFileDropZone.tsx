@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Colors from "@/constants/colors";
 import { Client, LabCase } from "@/lib/data";
 
@@ -30,6 +31,7 @@ export interface PendingFile {
   mimeType: string;
   uploadedBy: string;
   uploadedAt: number;
+  notes?: string;
 }
 
 interface LabFileDropZoneProps {
@@ -49,10 +51,12 @@ export function LabFileDropZone({
   isAdmin,
   isFocused = true,
 }: LabFileDropZoneProps) {
+  const insets = useSafeAreaInsets();
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [selectedFile, setSelectedFile] = useState<PendingFile | null>(null);
+  const [fileNotes, setFileNotes] = useState("");
   const [providerSearch, setProviderSearch] = useState("");
   const [selectedProvider, setSelectedProvider] = useState<Client | null>(null);
   const [patientSearch, setPatientSearch] = useState("");
@@ -276,12 +280,20 @@ export function LabFileDropZone({
 
   function resetSelection() {
     setSelectedFile(null);
+    setFileNotes("");
     setSelectedProvider(null);
     setProviderSearch("");
     setSelectedCase(null);
     setPatientSearch("");
     setProviderDropdownOpen(false);
     setPatientDropdownOpen(false);
+  }
+
+  function saveNotesForFile(fileId: string, notes: string) {
+    const updated = pendingFilesRef.current.map((f) =>
+      f.id === fileId ? { ...f, notes } : f
+    );
+    persistFiles(updated).catch(() => {});
   }
 
   function removeFile(fileId: string) {
@@ -434,7 +446,7 @@ export function LabFileDropZone({
         onRequestClose={() => setReviewOpen(false)}
       >
         <View style={s.modal}>
-          <View style={s.modalHeader}>
+          <View style={[s.modalHeader, { paddingTop: Math.max(insets.top, Platform.OS === "web" ? 20 : 16) + 12 }]}>
             <Text style={s.modalTitle}>File Review</Text>
             <Pressable onPress={() => setReviewOpen(false)} hitSlop={12}>
               <Ionicons name="close" size={24} color={Colors.light.text} />
@@ -484,6 +496,7 @@ export function LabFileDropZone({
                         }
 
                         setSelectedFile(file);
+                        setFileNotes(file.notes || "");
                         setSelectedProvider(null);
                         setProviderSearch("");
                         setSelectedCase(null);
@@ -514,6 +527,24 @@ export function LabFileDropZone({
                         <Ionicons name="trash-outline" size={18} color="#EF4444" />
                       </Pressable>
                     </Pressable>
+
+                    {isSelected ? (
+                      <View style={s.notesSection}>
+                        <Text style={s.fieldLabel}>Notes</Text>
+                        <TextInput
+                          style={s.notesInput}
+                          placeholder="Add a note about this file..."
+                          placeholderTextColor="#94A3B8"
+                          value={fileNotes}
+                          onChangeText={(value) => {
+                            setFileNotes(value);
+                            saveNotesForFile(file.id, value);
+                          }}
+                          multiline
+                          numberOfLines={3}
+                        />
+                      </View>
+                    ) : null}
 
                     {isSelected && isAdmin ? (
                       <View style={s.assignSection}>
@@ -743,7 +774,6 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === "web" ? 20 : 16,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
@@ -843,6 +873,24 @@ const s = StyleSheet.create({
     fontSize: 11,
     color: "#94A3B8",
     marginTop: 2,
+  },
+  notesSection: {
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+  },
+  notesInput: {
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    backgroundColor: "#FFF",
+    minHeight: 72,
+    textAlignVertical: "top",
   },
   assignSection: {
     padding: 12,
