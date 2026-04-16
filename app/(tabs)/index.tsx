@@ -805,44 +805,6 @@ function TechDashboard() {
         </View>
       </View>
 
-      <LinearGradient
-        colors={["#2563EB", "#1D4ED8"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.heroCard}
-      >
-        <Text style={styles.heroLabel}>LAB STATUS</Text>
-        <Text style={styles.heroCount}>{activeCaseCount} Active Cases</Text>
-        <Text style={styles.heroSub}>
-          {rushCaseCount} Rush{rushCaseCount !== 1 ? "es" : ""} Pending
-        </Text>
-        <View style={styles.heroStats}>
-          <Pressable
-            style={[styles.heroStat, activeFilter === "intake" && styles.heroStatActive]}
-            onPress={() => setActiveFilter(activeFilter === "intake" ? null : "intake")}
-          >
-            <Text style={styles.heroStatNum}>{intakeCases.length}</Text>
-            <Text style={styles.heroStatLabel}>Intake</Text>
-          </Pressable>
-          <View style={[styles.heroStatDivider]} />
-          <Pressable
-            style={[styles.heroStat, activeFilter === "progress" && styles.heroStatActive]}
-            onPress={() => setActiveFilter(activeFilter === "progress" ? null : "progress")}
-          >
-            <Text style={styles.heroStatNum}>{inProgressCases.length}</Text>
-            <Text style={styles.heroStatLabel}>In Progress</Text>
-          </Pressable>
-          <View style={[styles.heroStatDivider]} />
-          <Pressable
-            style={[styles.heroStat, activeFilter === "shipped" && styles.heroStatActive]}
-            onPress={() => setActiveFilter(activeFilter === "shipped" ? null : "shipped")}
-          >
-            <Text style={styles.heroStatNum}>{shippedCases.length}</Text>
-            <Text style={styles.heroStatLabel}>Completed</Text>
-          </Pressable>
-        </View>
-      </LinearGradient>
-
       <LabFileDropZone
         cases={cases}
         clients={clients}
