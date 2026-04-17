@@ -33,6 +33,7 @@ import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
 import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -2712,12 +2713,13 @@ export default function ScanScreen() {
             </View>
           </Pressable>
         </View>
-        <ScrollView
+        <KeyboardAwareScrollViewCompat
           style={styles.formScroll}
           contentContainerStyle={{
             paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
           }}
           showsVerticalScrollIndicator={false}
+          bottomOffset={32}
         >
           {pendingBarcode && (
             <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "rgba(139,92,246,0.1)", borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "rgba(139,92,246,0.3)" }}>
@@ -3909,7 +3911,7 @@ export default function ScanScreen() {
               })}
             </View>
           )}
-        </ScrollView>
+        </KeyboardAwareScrollViewCompat>
         {labelAndBarcodeModals}
       </View>
     );

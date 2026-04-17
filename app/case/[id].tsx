@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import {
   StyleSheet,
   View,
@@ -1042,10 +1043,11 @@ export default function CaseDetailScreen() {
         <ChatButton />
       </View>
 
-      <ScrollView
+      <KeyboardAwareScrollViewCompat
         style={styles.scroll}
         contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 34 + 40 : insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
+        bottomOffset={24}
         refreshControl={
           Platform.OS !== "web" ? (
             <RefreshControl
@@ -1913,7 +1915,7 @@ export default function CaseDetailScreen() {
             </View>
           )}
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
 
       <Modal
         visible={showPhotoPreview}
