@@ -1304,7 +1304,14 @@ export default function CaseDetailScreen() {
         </View>
         <View style={styles.timeline}>
           {(caseItem.activityLog && caseItem.activityLog.length > 0
-            ? [...caseItem.activityLog].sort((a, b) => b.timestamp - a.timestamp)
+            ? (() => {
+                const sorted = [...caseItem.activityLog].sort((a, b) => b.timestamp - a.timestamp);
+                const photoTimestamps = sorted.filter(e => e.type === "photo").map(e => e.timestamp);
+                return sorted.filter(entry => {
+                  if (entry.type !== "note") return true;
+                  return !photoTimestamps.some(pt => Math.abs(pt - entry.timestamp) < 5000);
+                });
+              })()
             : [...caseItem.routeHistory].sort((a, b) => b.timestamp - a.timestamp).map((rh) => ({
                 id: String(rh.timestamp),
                 type: "station_change" as const,
@@ -1525,24 +1532,6 @@ export default function CaseDetailScreen() {
                       }}>
                         {entry.description}
                       </Text>
-                      {isPhoto && (() => {
-                        const nearbyNote = (caseItem.activityLog || []).find(
-                          (e) => e.type === "note" && Math.abs(e.timestamp - entry.timestamp) < 5000
-                        );
-                        if (!nearbyNote) return null;
-                        return (
-                          <Text style={{
-                            fontSize: 12,
-                            fontFamily: "Inter_400Regular",
-                            fontStyle: "italic",
-                            color: Colors.light.textSecondary,
-                            marginTop: 4,
-                            lineHeight: 17,
-                          }}>
-                            {nearbyNote.description}
-                          </Text>
-                        );
-                      })()}
                       {isPhoto && entry.imageUri && (
                         <Image
                           source={{ uri: entry.imageUri }}
@@ -1555,6 +1544,33 @@ export default function CaseDetailScreen() {
                           resizeMode="cover"
                         />
                       )}
+                      {isPhoto && (() => {
+                        const nearbyNote = (caseItem.activityLog || []).find(
+                          (e) => e.type === "note" && Math.abs(e.timestamp - entry.timestamp) < 5000
+                        );
+                        if (!nearbyNote) return null;
+                        return (
+                          <View style={{
+                            marginTop: 8,
+                            paddingTop: 8,
+                            borderTopWidth: 1,
+                            borderTopColor: "#E9D5FF",
+                          }}>
+                            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 4 }}>
+                              <Ionicons name="document-text" size={12} color="#7C3AED" />
+                              <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#7C3AED", textTransform: "uppercase", letterSpacing: 0.5 }}>Note</Text>
+                            </View>
+                            <Text style={{
+                              fontSize: 13,
+                              fontFamily: "Inter_400Regular",
+                              color: Colors.light.text,
+                              lineHeight: 18,
+                            }}>
+                              {nearbyNote.description}
+                            </Text>
+                          </View>
+                        );
+                      })()}
                     </Pressable>
                   )}
                   <Text style={styles.timelineTime}>
