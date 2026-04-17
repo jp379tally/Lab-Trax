@@ -68,10 +68,11 @@ Preferred communication style: Simple, everyday language.
 - **Invoices Hub**: Centralized management for viewing, generating, and sending invoices. Admins can directly edit invoices.
 - **Statements Hub**: Centralized management for generating, viewing, and sending client statements.
 - **AI Integration**:
-    - **Prescription Scanning**: Uses GPT-4o vision to extract data from dental prescriptions, with client-side image compression. On web/desktop, camera is replaced with "Upload RX" file picker (supports JPG, PNG, PDF, HEIC, TIFF, BMP, WebP); camera remains on mobile. PDFs are converted client-side to PNG images via `pdfjs-dist` (CDN worker) before sending to OpenAI vision API.
-    - **Document Scanning**: Uses GPT-4o vision and `sharp` to detect and crop document boundaries, correct rotation, and enhance quality.
+    - **Prescription Scanning**: Uses GPT-5.1 vision to extract data from dental prescriptions, with client-side image compression. On web/desktop, camera is replaced with "Upload RX" file picker (supports JPG, PNG, PDF, HEIC, TIFF, BMP, WebP); camera remains on mobile. PDFs are converted client-side to PNG images via `pdfjs-dist` (CDN worker) before sending to OpenAI vision API.
+    - **Document Scanning**: Uses GPT-5.1 vision and `sharp` to detect and crop document boundaries, correct rotation, and enhance quality.
     - **PDF Generation**: Converts scanned images into multi-page PDFs.
     - **Smile Preview**: AI-powered feature for teeth whitening and symmetry restoration using OpenAI's gpt-image-1 model.
+    - **AI Proxy**: Replit AI integration proxy at `localhost:1106/modelfarm/openai`. The OpenAI SDK uses `/chat/completions` (NOT `/v1/chat/completions`) from that base URL. Use `max_completion_tokens` (not `max_tokens`) with gpt-5.x models.
 - **App Store Readiness**: Includes required permission descriptions, privacy policy/terms of service, and secure account deletion.
 - **Registration**: Collects detailed address and license number.
 - **Case Management Enhancements**: Features like "Locate Case," "Reprint Lab Slip," and barcode assignment flows.
@@ -124,7 +125,7 @@ Preferred communication style: Simple, everyday language.
 - **Metro proxy**: Configures Expo dev server to proxy `/api` requests to Express backend.
 
 ### AI Services
-- **OpenAI API**: Used for GPT-4o vision (prescription and document scanning) and gpt-image-1 (smile preview).
+- **OpenAI API**: Used for GPT-5.1 vision (prescription and document scanning), chat (gpt-5.1), and gpt-image-1 (smile preview). All accessed via Replit AI integration proxy at `localhost:1106/modelfarm/openai`. Note: use `max_completion_tokens` (not `max_tokens`) with gpt-5.x models.
 
 ## Version Info
 - **Version**: 1.0.7, build **52**

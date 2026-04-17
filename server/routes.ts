@@ -1281,6 +1281,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { imageBase64, additionalImages } = req.body;
       if (!imageBase64) return res.status(400).json({ success: false, error: "No image provided" });
+      console.log("AI analyze-prescription: received, primary image length:", imageBase64.length, "additional pages:", Array.isArray(additionalImages) ? additionalImages.length : 0);
 
       const isHEIC = imageBase64.includes("data:image/heic") || imageBase64.includes("data:image/heif");
       if (isHEIC) return res.status(400).json({ success: false, error: "HEIC format is not supported. Please convert to JPEG or PNG first." });
@@ -1338,12 +1339,12 @@ Important rules:
       ];
 
       const response = await openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-5.1",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userContent },
         ],
-        max_tokens: 1000,
+        max_completion_tokens: 1000,
         temperature: 0.1,
       });
 
@@ -1366,8 +1367,9 @@ Important rules:
       console.log("AI analyze-prescription: Success, fields:", Object.keys(cleanedData).join(", "));
       return res.json({ success: true, data: cleanedData });
     } catch (err: any) {
-      console.error("AI analyze-prescription error:", err?.message || err);
-      return res.status(500).json({ success: false, error: "AI analysis failed. Please try again." });
+      const errMsg = err?.message || String(err);
+      console.error("AI analyze-prescription error:", errMsg);
+      return res.status(500).json({ success: false, error: "AI analysis failed. Please try again.", detail: errMsg });
     }
   });
 
@@ -1398,7 +1400,7 @@ Important rules:
       let aiResult: any = null;
       try {
         const response = await openai.chat.completions.create({
-          model: "gpt-4o",
+          model: "gpt-5.1",
           messages: [
             { role: "system", content: `You are a professional document scanner. Detect any document in the photo and return TIGHT crop coordinates that isolate ONLY the document. Use percentage coordinates (0-100). Return ONLY valid JSON: { "documentDetected": true, "crop": { "left": 15, "top": 8, "right": 85, "bottom": 92 }, "rotation": 0, "documentType": "prescription" }` },
             { role: "user", content: [
@@ -1406,7 +1408,7 @@ Important rules:
               { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } },
             ]},
           ],
-          max_tokens: 250,
+          max_completion_tokens: 250,
         });
         const text = response.choices?.[0]?.message?.content || "";
         const jsonMatch = text.match(/\{[\s\S]*\}/);

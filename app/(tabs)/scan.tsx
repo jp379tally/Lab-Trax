@@ -1228,17 +1228,18 @@ export default function ScanScreen() {
       console.log("AI: Response status:", res.status);
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
-        console.log("AI response error:", res.status, errText.substring(0, 200));
+        console.log("AI response error:", res.status, errText.substring(0, 300));
         try {
           const errJson = JSON.parse(errText);
           if (errJson.error && errJson.error.includes("HEIC")) {
             return { success: false, error: errJson.error };
           }
+          if (errJson.detail) console.log("AI error detail:", errJson.detail);
         } catch {}
         return { success: false };
       }
       const result = await res.json();
-      console.log("AI: Parsed result success:", result?.success);
+      console.log("AI: Parsed result success:", result?.success, "fields:", result?.data ? Object.keys(result.data).join(",") : "none");
       return result;
     } catch (err: any) {
       console.log("AI: Request failed:", err?.message || String(err));

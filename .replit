@@ -77,3 +77,8 @@ task = "shell.exec"
 args = "npm run expo:dev"
 waitForPort = 8081
 ensurePreviewReachable = "/status"
+
+[userenv]
+
+[userenv.shared]
+JWT_SECRET = "5c87a1e20b5f1f84bfd79880be8e46070c31ee6f50d67c395deae937297a15d2922190d0ec982df0a175ca20895766a913371892eb6e69781dfcc793bd3a36d8"
