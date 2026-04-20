@@ -134,6 +134,16 @@ Preferred communication style: Simple, everyday language.
 - Statement generation (`generatePreviewForClients`): multi-provider practices produce one statement per doctor; per-provider contact info overrides practice-level fallback; invoices matched to doctor via `caseIds → cases.doctorName`
 - "Clients" renamed to "Providers" throughout admin UI; "Add Client" → "Add Provider"; "Edit Client" → "Edit Provider"
 
+## Appliance Subcategories & Pricing
+- Appliance case type in the add-item modal (`app/case/[id].tsx`) uses a multi-step wizard:
+  1. **Type**: Night Guard | Retainer | Snore Guard | Sports Guard
+  2. **Arch** (Night Guard & Retainer only): Upper | Lower | Both — "Both" creates 2 invoice line items
+  3. **Variant**: Night Guard → Hard / Soft / Hard-Soft; Retainer → Hawley / Hard / Lingual
+  - Snore Guard and Sports Guard skip arch/variant and add directly (1 line item each)
+- 8 new pricing keys in `lib/data.ts` (`DEFAULT_TIER_ITEMS` + `DEFAULT_PRICING_TIERS`): `night_guard_hard`, `night_guard_soft`, `night_guard_hard_soft`, `retainer_hawley`, `retainer_hard`, `retainer_lingual`, `snore_guard`, `sports_guard`
+- Price lookup priority: client `customPricing[key]` > tier `prices[key]`; helpers `getAppliancePriceKey()`, `getApplianceUnitPrice()`, `addApplianceToInvoice()` in `case/[id].tsx`
+- Admin pricing editor in the Providers/Clients tab automatically shows the new keys (no code change needed there)
+
 ## Version Info
 - **Version**: 1.0.7, build **52**
 - **Safe area**: All admin screens use `paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16`

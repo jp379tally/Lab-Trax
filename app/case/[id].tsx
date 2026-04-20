@@ -70,7 +70,7 @@ function deriveDisplayInitials(input?: {
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh } = useApp();
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -102,7 +102,7 @@ export default function CaseDetailScreen() {
   const [entryNoteMode, setEntryNoteMode] = useState(false);
   const [entryNoteText, setEntryNoteText] = useState("");
   const [showAddItemModal, setShowAddItemModal] = useState(false);
-  type AddItemStep = "caseType" | "toothChart" | "material" | "removableSubtype" | "removableMaterial" | "gingivaShade" | "applianceSubtype" | "applianceNightGuard" | "applianceEssexTeeth" | "applianceEssexShade" | "complete";
+  type AddItemStep = "caseType" | "toothChart" | "material" | "removableSubtype" | "removableMaterial" | "gingivaShade" | "applianceSubtype" | "applianceArch" | "applianceNightGuardType" | "applianceRetainerType" | "applianceNightGuard" | "applianceEssexTeeth" | "applianceEssexShade" | "complete";
   const [addItemStep, setAddItemStep] = useState<AddItemStep>("caseType");
   const [itemCaseType, setItemCaseType] = useState<CaseTypeValue>("");
   const [itemSelectedTeeth, setItemSelectedTeeth] = useState<number[]>([]);
@@ -115,6 +115,8 @@ export default function CaseDetailScreen() {
   const [removableCustomMaterial, setRemovableCustomMaterial] = useState("");
   const [applianceSubtype, setApplianceSubtype] = useState("");
   const [nightGuardType, setNightGuardType] = useState("");
+  const [applianceArch, setApplianceArch] = useState<"" | "Upper" | "Lower" | "Both">("");
+  const [applianceVariant, setApplianceVariant] = useState("");
   const [essexShade, setEssexShade] = useState("");
 
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
@@ -710,8 +712,56 @@ export default function CaseDetailScreen() {
     setRemovableCustomMaterial("");
     setApplianceSubtype("");
     setNightGuardType("");
+    setApplianceArch("");
+    setApplianceVariant("");
     setEssexShade("");
     setShowAddItemModal(true);
+  }
+
+  function getAppliancePriceKey(subtype: string, variant: string): string {
+    if (subtype === "Night Guard") {
+      if (variant === "Hard") return "night_guard_hard";
+      if (variant === "Soft") return "night_guard_soft";
+      if (variant === "Hard/Soft") return "night_guard_hard_soft";
+    } else if (subtype === "Retainer") {
+      if (variant === "Hawley") return "retainer_hawley";
+      if (variant === "Hard") return "retainer_hard";
+      if (variant === "Lingual") return "retainer_lingual";
+    } else if (subtype === "Snore Guard") {
+      return "snore_guard";
+    } else if (subtype === "Sports Guard") {
+      return "sports_guard";
+    }
+    return "";
+  }
+
+  function getApplianceUnitPrice(priceKey: string): number {
+    const client = clients.find(c => c.practiceName === caseItem?.clientName);
+    if (client?.customPricing?.[priceKey] !== undefined && client.customPricing[priceKey] > 0) {
+      return client.customPricing[priceKey];
+    }
+    const tier = pricingTiers.find(t => t.name === client?.tier);
+    return tier?.prices?.[priceKey] || 0;
+  }
+
+  function addApplianceToInvoice(subtype: string, variant: string, arch: string) {
+    const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
+    if (!linkedInv) return;
+    const priceKey = getAppliancePriceKey(subtype, variant);
+    const unitPrice = getApplianceUnitPrice(priceKey);
+    const itemLabel = variant ? `${subtype} - ${variant}` : subtype;
+    let newItems;
+    if (arch === "Both") {
+      newItems = [
+        { qty: 1, item: itemLabel, description: `${itemLabel} (Upper)`, rate: unitPrice, amount: unitPrice },
+        { qty: 1, item: itemLabel, description: `${itemLabel} (Lower)`, rate: unitPrice, amount: unitPrice },
+      ];
+    } else {
+      const archLabel = arch ? ` (${arch})` : "";
+      newItems = [{ qty: 1, item: itemLabel, description: `${itemLabel}${archLabel}`, rate: unitPrice, amount: unitPrice }];
+    }
+    const updLi = [...linkedInv.lineItems, ...newItems];
+    updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
   }
 
   function handleSaveItem() {
@@ -721,8 +771,7 @@ export default function CaseDetailScreen() {
     }
     const skipToothValidation =
       (itemCaseType === "Removable" && (removableSubtype === "Full Denture" || removableSubtype === "Immediate Denture" || removableSubtype === "Denture")) ||
-      (itemCaseType === "Appliance" && ["Snore Guard", "Ortho Retainer", "Other"].includes(applianceSubtype)) ||
-      (itemCaseType === "Appliance" && applianceSubtype === "Night Guard");
+      (itemCaseType === "Appliance");
 
     if (!skipToothValidation && itemSelectedTeeth.length === 0) {
       Alert.alert("Missing Info", "Please select at least one tooth.");
@@ -2309,6 +2358,12 @@ export default function CaseDetailScreen() {
                   setAddItemStep("removableMaterial");
                 } else if (addItemStep === "applianceSubtype") {
                   setAddItemStep("caseType");
+                } else if (addItemStep === "applianceArch") {
+                  setAddItemStep("applianceSubtype");
+                } else if (addItemStep === "applianceNightGuardType") {
+                  setAddItemStep("applianceArch");
+                } else if (addItemStep === "applianceRetainerType") {
+                  setAddItemStep("applianceArch");
                 } else if (addItemStep === "applianceNightGuard") {
                   setAddItemStep("applianceSubtype");
                 } else if (addItemStep === "applianceEssexTeeth") {
@@ -2329,6 +2384,9 @@ export default function CaseDetailScreen() {
                  addItemStep === "removableMaterial" ? "Select Material" :
                  addItemStep === "gingivaShade" ? "Select Gingiva Shade" :
                  addItemStep === "applianceSubtype" ? "Select Appliance Type" :
+                 addItemStep === "applianceArch" ? "Select Arch" :
+                 addItemStep === "applianceNightGuardType" ? "Night Guard Type" :
+                 addItemStep === "applianceRetainerType" ? "Retainer Type" :
                  addItemStep === "applianceNightGuard" ? "Night Guard Type" :
                  addItemStep === "applianceEssexTeeth" ? "Select Teeth" :
                  addItemStep === "applianceEssexShade" ? "Select Shade" : "Add Item"}
@@ -2791,45 +2849,39 @@ export default function CaseDetailScreen() {
 
             {addItemStep === "applianceSubtype" && (
               <View style={styles.addItemCaseTypeList}>
-                {["Night Guard", "Snore Guard", "Essex", "Ortho Retainer", "Other"].map((sub) => (
+                {[
+                  { label: "Night Guard", icon: "moon" as const },
+                  { label: "Retainer", icon: "fitness" as const },
+                  { label: "Snore Guard", icon: "bed" as const },
+                  { label: "Sports Guard", icon: "shield" as const },
+                ].map(({ label, icon }) => (
                   <Pressable
-                    key={sub}
+                    key={label}
                     onPress={() => {
-                      setApplianceSubtype(sub);
+                      setApplianceSubtype(label);
+                      setApplianceArch("");
+                      setApplianceVariant("");
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      if (sub === "Night Guard") {
-                        setAddItemStep("applianceNightGuard");
-                      } else if (sub === "Essex") {
-                        setAddItemStep("applianceEssexTeeth");
+                      if (label === "Night Guard" || label === "Retainer") {
+                        setAddItemStep("applianceArch");
                       } else {
-                        const mat = sub;
-                        addCaseItem(caseItem!.id, itemCaseType, [], {}, mat, { applianceSubType: sub });
-                        const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
-                        if (linkedInv) {
-                          const unitPrice = MATERIAL_PRICES[mat] || 250;
-                          const newLi = { qty: 1, item: `${mat} Appliance`, description: `Appliance - ${sub}`, rate: unitPrice, amount: unitPrice };
-                          const updLi = [...linkedInv.lineItems, newLi];
-                          updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
-                        }
+                        addCaseItem(caseItem!.id, itemCaseType, [], {}, label, { applianceSubType: label });
+                        addApplianceToInvoice(label, "", "");
                         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                         setShowAddItemModal(false);
                       }
                     }}
                     style={({ pressed }) => [
                       styles.addItemCaseTypeItem,
-                      applianceSubtype === sub && styles.addItemCaseTypeItemSelected,
+                      applianceSubtype === label && styles.addItemCaseTypeItemSelected,
                       pressed && { opacity: 0.7 },
                     ]}
                   >
                     <View style={styles.addItemCaseTypeIcon}>
-                      <Ionicons
-                        name={sub === "Night Guard" ? "moon" : sub === "Snore Guard" ? "bed" : sub === "Essex" ? "layers" : sub === "Ortho Retainer" ? "fitness" : "ellipsis-horizontal"}
-                        size={20}
-                        color={applianceSubtype === sub ? Colors.light.tint : Colors.light.textSecondary}
-                      />
+                      <Ionicons name={icon} size={20} color={applianceSubtype === label ? Colors.light.tint : Colors.light.textSecondary} />
                     </View>
-                    <Text style={[styles.addItemCaseTypeText, applianceSubtype === sub && styles.addItemCaseTypeTextSelected]}>
-                      {sub}
+                    <Text style={[styles.addItemCaseTypeText, applianceSubtype === label && styles.addItemCaseTypeTextSelected]}>
+                      {label}
                     </Text>
                     <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
                   </Pressable>
@@ -2837,41 +2889,134 @@ export default function CaseDetailScreen() {
               </View>
             )}
 
-            {addItemStep === "applianceNightGuard" && (
+            {addItemStep === "applianceArch" && (
               <View style={styles.addItemCaseTypeList}>
-                {["Hard Night Guard", "Hard/Soft Night Guard"].map((ng) => (
+                <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                    {applianceSubtype} · Select arch
+                  </Text>
+                </View>
+                {(["Upper", "Lower", "Both"] as const).map((arch) => (
                   <Pressable
-                    key={ng}
+                    key={arch}
                     onPress={() => {
-                      setNightGuardType(ng);
+                      setApplianceArch(arch);
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      addCaseItem(caseItem!.id, itemCaseType, [], {}, applianceSubtype, { applianceSubType: applianceSubtype, nightGuardType: ng });
-                      const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
-                      if (linkedInv) {
-                        const unitPrice = MATERIAL_PRICES[applianceSubtype] || 250;
-                        const newLi = { qty: 1, item: `${ng} Appliance`, description: `Appliance - ${ng}`, rate: unitPrice, amount: unitPrice };
-                        const updLi = [...linkedInv.lineItems, newLi];
-                        updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
+                      if (applianceSubtype === "Night Guard") {
+                        setAddItemStep("applianceNightGuardType");
+                      } else {
+                        setAddItemStep("applianceRetainerType");
                       }
-                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                      setShowAddItemModal(false);
                     }}
                     style={({ pressed }) => [
                       styles.addItemCaseTypeItem,
-                      nightGuardType === ng && styles.addItemCaseTypeItemSelected,
+                      applianceArch === arch && styles.addItemCaseTypeItemSelected,
                       pressed && { opacity: 0.7 },
                     ]}
                   >
                     <View style={styles.addItemCaseTypeIcon}>
                       <Ionicons
-                        name={ng === "Hard Night Guard" ? "shield" : "shield-half"}
+                        name={arch === "Upper" ? "arrow-up-circle" : arch === "Lower" ? "arrow-down-circle" : "swap-vertical"}
                         size={20}
-                        color={nightGuardType === ng ? Colors.light.tint : Colors.light.textSecondary}
+                        color={applianceArch === arch ? Colors.light.tint : Colors.light.textSecondary}
                       />
                     </View>
-                    <Text style={[styles.addItemCaseTypeText, nightGuardType === ng && styles.addItemCaseTypeTextSelected]}>
-                      {ng}
-                    </Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.addItemCaseTypeText, applianceArch === arch && styles.addItemCaseTypeTextSelected]}>
+                        {arch}
+                      </Text>
+                      {arch === "Both" && (
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>
+                          Bills as 2 line items
+                        </Text>
+                      )}
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {addItemStep === "applianceNightGuardType" && (
+              <View style={styles.addItemCaseTypeList}>
+                <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                    Night Guard · {applianceArch} · Select type
+                  </Text>
+                </View>
+                {[
+                  { label: "Hard", icon: "shield" as const, desc: "Rigid acrylic" },
+                  { label: "Soft", icon: "water" as const, desc: "Flexible EVA" },
+                  { label: "Hard/Soft", icon: "shield-half" as const, desc: "Dual-laminate" },
+                ].map(({ label, icon, desc }) => (
+                  <Pressable
+                    key={label}
+                    onPress={() => {
+                      setApplianceVariant(label);
+                      setNightGuardType(label);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      addCaseItem(caseItem!.id, itemCaseType, [], {}, "Night Guard", { applianceSubType: "Night Guard", nightGuardType: label });
+                      addApplianceToInvoice("Night Guard", label, applianceArch);
+                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setShowAddItemModal(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.addItemCaseTypeItem,
+                      applianceVariant === label && styles.addItemCaseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={styles.addItemCaseTypeIcon}>
+                      <Ionicons name={icon} size={20} color={applianceVariant === label ? Colors.light.tint : Colors.light.textSecondary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.addItemCaseTypeText, applianceVariant === label && styles.addItemCaseTypeTextSelected]}>
+                        {label}
+                      </Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>{desc}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {addItemStep === "applianceRetainerType" && (
+              <View style={styles.addItemCaseTypeList}>
+                <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                    Retainer · {applianceArch} · Select type
+                  </Text>
+                </View>
+                {[
+                  { label: "Hawley", icon: "construct" as const, desc: "Wire + acrylic" },
+                  { label: "Hard", icon: "layers" as const, desc: "Clear rigid" },
+                  { label: "Lingual", icon: "git-commit" as const, desc: "Fixed wire" },
+                ].map(({ label, icon, desc }) => (
+                  <Pressable
+                    key={label}
+                    onPress={() => {
+                      setApplianceVariant(label);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      addCaseItem(caseItem!.id, itemCaseType, [], {}, "Retainer", { applianceSubType: "Retainer", nightGuardType: label });
+                      addApplianceToInvoice("Retainer", label, applianceArch);
+                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setShowAddItemModal(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.addItemCaseTypeItem,
+                      applianceVariant === label && styles.addItemCaseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={styles.addItemCaseTypeIcon}>
+                      <Ionicons name={icon} size={20} color={applianceVariant === label ? Colors.light.tint : Colors.light.textSecondary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.addItemCaseTypeText, applianceVariant === label && styles.addItemCaseTypeTextSelected]}>
+                        {label}
+                      </Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>{desc}</Text>
+                    </View>
                   </Pressable>
                 ))}
               </View>

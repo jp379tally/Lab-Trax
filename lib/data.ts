@@ -1095,6 +1095,14 @@ export const DEFAULT_TIER_ITEMS = [
   { key: "denture", label: "Denture" },
   { key: "partial", label: "Partial" },
   { key: "implant", label: "Implant" },
+  { key: "night_guard_hard", label: "Night Guard - Hard" },
+  { key: "night_guard_soft", label: "Night Guard - Soft" },
+  { key: "night_guard_hard_soft", label: "Night Guard - Hard/Soft" },
+  { key: "retainer_hawley", label: "Retainer - Hawley" },
+  { key: "retainer_hard", label: "Retainer - Hard" },
+  { key: "retainer_lingual", label: "Retainer - Lingual" },
+  { key: "snore_guard", label: "Snore Guard" },
+  { key: "sports_guard", label: "Sports Guard" },
 ];
 
 export interface InventoryItem {
@@ -1122,25 +1130,36 @@ export const sampleInventory: InventoryItem[] = [
   { id: generateId(), name: "Polishing Wheels", category: "Tools", quantity: 22, minQuantity: 10, unit: "pcs" },
 ];
 
+const APPLIANCE_PRICE_DEFAULTS = {
+  night_guard_hard: 0,
+  night_guard_soft: 0,
+  night_guard_hard_soft: 0,
+  retainer_hawley: 0,
+  retainer_hard: 0,
+  retainer_lingual: 0,
+  snore_guard: 0,
+  sports_guard: 0,
+};
+
 export const DEFAULT_PRICING_TIERS: PricingTier[] = [
   {
     id: "corporate",
     name: "Corporate",
-    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0, ...APPLIANCE_PRICE_DEFAULTS },
   },
   {
     id: "economy",
     name: "Economy",
-    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0, ...APPLIANCE_PRICE_DEFAULTS },
   },
   {
     id: "standard",
     name: "Standard",
-    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0, ...APPLIANCE_PRICE_DEFAULTS },
   },
   {
     id: "premium",
     name: "Premium",
-    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0, ...APPLIANCE_PRICE_DEFAULTS },
   },
 ];
