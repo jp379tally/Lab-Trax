@@ -44,8 +44,9 @@ Preferred communication style: Simple, everyday language.
 - **Membership & Requests**: `lab_memberships`, `join_requests`, `lab_invites`, `notifications`
 
 ### Admin Backup
-- **Endpoint**: `GET /api/admin/backup` — admin-only (role check enforced server-side). Streams a ZIP archive containing: `manifest.json`, `data/users.json` (no passwords), `data/cases.json`, and all `uploads/case-media/` files.
-- **Client UI**: Accessible from Admin Vault → "Backup Data". On mobile, uses `expo-file-system` + `expo-sharing` share sheet (Files, AirDrop, USB storage). On web, triggers browser file download. Shows what's included, HIPAA security note, and last backup timestamp.
+- **Local Backup Endpoint**: `GET /api/admin/backup` — admin-only. Streams a ZIP archive containing: `manifest.json`, `data/users.json` (no passwords), `data/cases.json`, and all `uploads/case-media/` files.
+- **OneDrive Backup Endpoint**: `POST /api/admin/backup/onedrive` — admin-only. Generates the same ZIP in-memory, uploads to the connected Microsoft OneDrive account via the Replit OneDrive connector (`ccfg_onedrive_default_org_up4ad9`). Returns `{ success, fileName, size, webUrl, folder }`. Uses `server/lib/onedrive.ts` which fetches an OAuth access token server-side through the Replit connector proxy (token never exposed to the client). Supports simple upload (≤4 MB) and chunked upload sessions (5 MB chunks) for large archives. Files land in "LabTrax Backups" folder on OneDrive.
+- **Client UI**: Accessible from Admin Vault → "Backup Data". Two buttons: "Local / Thumb Drive" (share sheet on mobile, file download on web) and "Save to OneDrive" (blue Microsoft button). After a successful OneDrive upload, a tappable success card shows the filename and links directly to the file in OneDrive. Shows what's included, HIPAA security note, and last backup timestamp.
 - **Package**: Uses `archiver` npm package for ZIP stream generation on the server.
 
 ### Key Features and Design Patterns
