@@ -41,6 +41,7 @@ import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
 import { LabFileDropZone } from "@/components/LabFileDropZone";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { apiRequest } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
@@ -1698,6 +1699,11 @@ function AdminDashboard() {
   const [editInvBillToSearch, setEditInvBillToSearch] = useState("");
   const [editInvShowProviderDrop, setEditInvShowProviderDrop] = useState(false);
   const [editInvItemDropdownIdx, setEditInvItemDropdownIdx] = useState<number | null>(null);
+  const [editInvNumber, setEditInvNumber] = useState("");
+  const [editInvIssuedAtStr, setEditInvIssuedAtStr] = useState("");
+  const [editInvDueAtStr, setEditInvDueAtStr] = useState("");
+  const [editInvCreditNote, setEditInvCreditNote] = useState("");
+  const [editInvCaseTypeOpen, setEditInvCaseTypeOpen] = useState(false);
   const [rpClientId, setRpClientId] = useState<string | null>(null);
   const [rpMethod, setRpMethod] = useState("Check");
   const [rpAmountText, setRpAmountText] = useState("");
@@ -3202,9 +3208,14 @@ function AdminDashboard() {
                 <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Total</Text>
                 <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(lineTotal)}</Text>
               </View>
-              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#ccc", paddingVertical: 6, paddingHorizontal: 10 }}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Credits</Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(inv.credits)}</Text>
+              <View style={{ borderBottomWidth: 1, borderBottomColor: "#ccc", paddingVertical: 6, paddingHorizontal: 10 }}>
+                <View style={{ flexDirection: "row" }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Credits</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(inv.credits)}</Text>
+                </View>
+                {!!inv.creditNote && (
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 2 }}>{inv.creditNote}</Text>
+                )}
               </View>
               <View style={{ flexDirection: "row", paddingVertical: 6, paddingHorizontal: 10 }}>
                 <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Total</Text>
@@ -3241,6 +3252,11 @@ function AdminDashboard() {
             setEditInvClientName(inv.clientName || "");
             setEditInvBillToSearch(inv.billTo || "");
             setEditInvShowProviderDrop(false);
+            setEditInvNumber(inv.invoiceNumber || "");
+            setEditInvIssuedAtStr(new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
+            setEditInvDueAtStr(new Date(inv.dueAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
+            setEditInvCreditNote(inv.creditNote || "");
+            setEditInvCaseTypeOpen(false);
             setAdminView("edit-invoice");
           }}
           style={({ pressed }) => ({
@@ -3325,11 +3341,22 @@ function AdminDashboard() {
         }).slice(0, 8)
       : [];
 
+    function parseDateStr(s: string): number | null {
+      const parts = s.trim().split("/");
+      if (parts.length !== 3) return null;
+      const [m, d, y] = parts.map(Number);
+      if (!m || !d || !y || y < 1900 || y > 2100) return null;
+      const dt = new Date(y, m - 1, d);
+      return isNaN(dt.getTime()) ? null : dt.getTime();
+    }
+
     function handleSave() {
       const newLineItems = editInvLineItems.filter(li => li.item.trim() || li.description.trim() || li.amount > 0);
       const newAmount = newLineItems.reduce((s, li) => s + li.amount, 0) - credits;
       const resolvedBillTo = editInvBillTo || editInvBillToSearch;
-      updateInvoice(inv.id, {
+      const parsedIssuedAt = parseDateStr(editInvIssuedAtStr);
+      const parsedDueAt = parseDateStr(editInvDueAtStr);
+      const updates: Partial<Invoice> = {
         lineItems: newLineItems,
         amount: newAmount,
         patientName: editInvPatientName,
@@ -3341,8 +3368,13 @@ function AdminDashboard() {
         shade: editInvShade,
         caseNotes: editInvCaseNotes,
         credits,
-      });
-      setSelectedInvoice({ ...inv, lineItems: newLineItems, amount: newAmount, patientName: editInvPatientName, billTo: resolvedBillTo, clientId: editInvClientId || inv.clientId, clientName: editInvClientName || inv.clientName, caseType: editInvCaseType, teeth: editInvTeeth, shade: editInvShade, caseNotes: editInvCaseNotes, credits });
+        creditNote: editInvCreditNote,
+        invoiceNumber: editInvNumber.trim() || inv.invoiceNumber,
+        issuedAt: parsedIssuedAt ?? inv.issuedAt,
+        dueAt: parsedDueAt ?? inv.dueAt,
+      };
+      updateInvoice(inv.id, updates);
+      setSelectedInvoice({ ...inv, ...updates });
       setAdminView("invoice-detail");
     }
 
@@ -3359,14 +3391,15 @@ function AdminDashboard() {
     };
 
     return (
-      <ScrollView
+      <KeyboardAwareScrollViewCompat
         style={{ flex: 1, backgroundColor: "#F0F4F8" }}
         contentContainerStyle={{
           paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 24 : 120,
+          paddingBottom: Platform.OS === "web" ? 84 + 24 : 200,
         }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
       >
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, marginBottom: 16 }}>
           <Pressable onPress={() => setAdminView("invoice-detail")} style={{ marginRight: 12, padding: 4 }}>
@@ -3387,16 +3420,40 @@ function AdminDashboard() {
             <View style={{ flexDirection: "row", gap: 10 }}>
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Invoice #</Text>
-                <View style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 4, paddingVertical: 6, paddingHorizontal: 8, backgroundColor: "#F9FAFB" }}>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#6B7280" }}>{formatInvNum(inv.invoiceNumber)}</Text>
-                </View>
+                <TextInput
+                  style={inputBase}
+                  value={editInvNumber}
+                  onChangeText={setEditInvNumber}
+                  placeholder="e.g. INV-2026-001"
+                  placeholderTextColor="#9CA3AF"
+                  autoCapitalize="characters"
+                />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Date</Text>
-                <View style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 4, paddingVertical: 6, paddingHorizontal: 8, backgroundColor: "#F9FAFB" }}>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#6B7280" }}>{new Date(inv.issuedAt).toLocaleDateString()}</Text>
-                </View>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Invoice Date</Text>
+                <TextInput
+                  style={inputBase}
+                  value={editInvIssuedAtStr}
+                  onChangeText={setEditInvIssuedAtStr}
+                  placeholder="MM/DD/YYYY"
+                  placeholderTextColor="#9CA3AF"
+                  keyboardType="numbers-and-punctuation"
+                />
               </View>
+            </View>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Due Date</Text>
+                <TextInput
+                  style={inputBase}
+                  value={editInvDueAtStr}
+                  onChangeText={setEditInvDueAtStr}
+                  placeholder="MM/DD/YYYY"
+                  placeholderTextColor="#9CA3AF"
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+              <View style={{ flex: 1 }} />
             </View>
 
             <View>
@@ -3429,7 +3486,7 @@ function AdminDashboard() {
                     Assigned to: {editInvClientName}
                   </Text>
                 )}
-                {editInvShowProviderDrop && providerSearchResults.length > 0 && (
+                {editInvShowProviderDrop && (providerSearchResults.length > 0 || (editInvBillToSearch.trim().length > 0 && providerSearchResults.length === 0)) && (
                   <View style={{ position: "absolute" as const, top: "100%" as any, left: 0, right: 0, zIndex: 999, backgroundColor: "#fff", borderRadius: 8, borderWidth: 1, borderColor: "#E5E7EB", shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 8, marginTop: 2 }}>
                     {providerSearchResults.map((c, i) => (
                       <Pressable
@@ -3456,6 +3513,29 @@ function AdminDashboard() {
                         <Ionicons name="arrow-forward-circle-outline" size={16} color="#9CA3AF" />
                       </Pressable>
                     ))}
+                    {editInvBillToSearch.trim().length > 0 && providerSearchResults.length === 0 && (
+                      <Pressable
+                        onPress={() => {
+                          const name = editInvBillToSearch.trim();
+                          const newClient = addClient({ practiceName: name, leadDoctor: name, phone: "", email: "", address: "" });
+                          if (newClient) {
+                            setEditInvBillTo(name);
+                            setEditInvBillToSearch(name);
+                            setEditInvClientId(newClient.id);
+                            setEditInvClientName(name);
+                          }
+                          setEditInvShowProviderDrop(false);
+                        }}
+                        style={({ pressed }) => ({ flexDirection: "row" as const, alignItems: "center" as const, padding: 10, backgroundColor: pressed ? "#FEF9C3" : "#FFFBEB", borderRadius: 8, gap: 8 })}
+                      >
+                        <Ionicons name="person-add-outline" size={16} color="#D97706" />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>Add "{editInvBillToSearch.trim()}" as new provider</Text>
+                          <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#B45309", marginTop: 1 }}>Creates a new provider record</Text>
+                        </View>
+                        <Ionicons name="add-circle" size={18} color="#D97706" />
+                      </Pressable>
+                    )}
                   </View>
                 )}
               </View>
@@ -3473,15 +3553,36 @@ function AdminDashboard() {
             </View>
 
             <View style={{ flexDirection: "row", gap: 10 }}>
-              <View style={{ flex: 2 }}>
+              <View style={{ flex: 2, zIndex: 50 }}>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Case Type</Text>
-                <TextInput
-                  style={inputBase}
-                  value={editInvCaseType}
-                  onChangeText={setEditInvCaseType}
-                  placeholder="e.g. Restorative"
-                  placeholderTextColor="#9CA3AF"
-                />
+                <View style={{ position: "relative" as const }}>
+                  <TextInput
+                    style={[inputBase, { borderColor: editInvCaseTypeOpen ? "#2563EB" : "#93C5FD" }]}
+                    value={editInvCaseType}
+                    onChangeText={(t) => { setEditInvCaseType(t); setEditInvCaseTypeOpen(true); }}
+                    onFocus={() => setEditInvCaseTypeOpen(true)}
+                    onBlur={() => setTimeout(() => setEditInvCaseTypeOpen(false), 160)}
+                    placeholder="Select or type..."
+                    placeholderTextColor="#9CA3AF"
+                    returnKeyType="done"
+                  />
+                  {editInvCaseTypeOpen && (
+                    <View style={{ position: "absolute" as const, top: "100%" as any, left: 0, right: 0, zIndex: 999, backgroundColor: "#fff", borderRadius: 6, borderWidth: 1, borderColor: "#3B82F6", borderTopWidth: 0, shadowColor: "#000", shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.1, shadowRadius: 6, elevation: 8 }}>
+                      {["Restorative", "Removable", "Appliance", "Temporary", "Other"]
+                        .filter(ct => !editInvCaseType.trim() || ct.toLowerCase().includes(editInvCaseType.toLowerCase()))
+                        .map((ct, i, arr) => (
+                          <Pressable
+                            key={ct}
+                            onPress={() => { setEditInvCaseType(ct); setEditInvCaseTypeOpen(false); }}
+                            style={({ pressed }) => ({ padding: 9, borderTopWidth: i > 0 ? 1 : 0, borderTopColor: "#F3F4F6", backgroundColor: pressed ? "#EFF6FF" : "#fff", borderRadius: i === arr.length - 1 ? 6 : 0 })}
+                          >
+                            <Text style={{ fontSize: 12, fontFamily: editInvCaseType === ct ? "Inter_700Bold" : "Inter_500Medium", color: editInvCaseType === ct ? "#2563EB" : "#111827" }}>{ct}</Text>
+                          </Pressable>
+                        ))
+                      }
+                    </View>
+                  )}
+                </View>
               </View>
               <View style={{ flex: 1.5 }}>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Teeth</Text>
@@ -3542,8 +3643,11 @@ function AdminDashboard() {
 
           {editInvLineItems.map((li, idx) => {
             const itemSearch = (li.item || "").toLowerCase().trim();
-            const filteredSuggestions = editInvItemDropdownIdx === idx && itemSearch.length > 0
-              ? allItemSuggestions.filter(s => s.item.toLowerCase().includes(itemSearch) && s.item.toLowerCase() !== itemSearch).slice(0, 6)
+            const filteredSuggestions = editInvItemDropdownIdx === idx
+              ? (itemSearch.length > 0
+                  ? allItemSuggestions.filter(s => s.item.toLowerCase().includes(itemSearch) && s.item.toLowerCase() !== itemSearch)
+                  : allItemSuggestions
+                ).slice(0, 8)
               : [];
             return (
               <View key={idx}>
@@ -3634,6 +3738,17 @@ function AdminDashboard() {
                 placeholderTextColor="#9CA3AF"
               />
             </View>
+            <View>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Credit / Payment Note (reason)</Text>
+              <TextInput
+                style={[inputBase, { minHeight: 44, textAlignVertical: "top" }]}
+                value={editInvCreditNote}
+                onChangeText={setEditInvCreditNote}
+                placeholder="e.g. Insurance payment received, courtesy adjustment..."
+                placeholderTextColor="#9CA3AF"
+                multiline
+              />
+            </View>
             <View style={{ height: 1, backgroundColor: "#E5E7EB" }} />
             <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
               <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#111827" }}>Balance Due</Text>
@@ -3657,7 +3772,7 @@ function AdminDashboard() {
             <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>Save & Close</Text>
           </Pressable>
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     );
   }
 

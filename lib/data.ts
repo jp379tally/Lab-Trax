@@ -645,6 +645,7 @@ export interface Invoice {
   shade: string;
   caseNotes: string;
   lineItems: InvoiceLineItem[];
+  creditNote?: string;
 }
 
 export const SAMPLE_CLIENTS: Client[] = [

@@ -65,7 +65,7 @@ interface AppContextValue {
   rushCaseCount: number;
   isLoading: boolean;
   clients: Client[];
-  addClient: (c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) => void;
+  addClient: (c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) => Client;
   updateClient: (id: string, c: Partial<Client>) => void;
   pricingTiers: PricingTier[];
   updateTierPricing: (tierId: string, prices: Record<string, number>) => void;
@@ -1865,12 +1865,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
   }
 
-  function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) {
+  function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">): Client {
     const maxNum = clients.reduce((max, cl) => Math.max(max, cl.clientNumber || 0), 0);
     const newClient: Client = { ...c, id: generateId(), clientNumber: maxNum + 1, accountNumber: "DS-" + Date.now().toString().slice(-6), createdAt: Date.now() };
     const updated = [newClient, ...clients];
     setClients(updated);
     AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updated));
+    return newClient;
   }
 
   function updateClient(id: string, c: Partial<Client>) {
