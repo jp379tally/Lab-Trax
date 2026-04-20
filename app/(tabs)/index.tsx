@@ -1693,6 +1693,10 @@ function AdminDashboard() {
   const [editInvShade, setEditInvShade] = useState("");
   const [editInvCaseNotes, setEditInvCaseNotes] = useState("");
   const [editInvCreditsText, setEditInvCreditsText] = useState("0");
+  const [editInvClientId, setEditInvClientId] = useState("");
+  const [editInvClientName, setEditInvClientName] = useState("");
+  const [editInvBillToSearch, setEditInvBillToSearch] = useState("");
+  const [editInvShowProviderDrop, setEditInvShowProviderDrop] = useState(false);
   const [rpClientId, setRpClientId] = useState<string | null>(null);
   const [rpMethod, setRpMethod] = useState("Check");
   const [rpAmountText, setRpAmountText] = useState("");
@@ -3231,6 +3235,10 @@ function AdminDashboard() {
             setEditInvShade(inv.shade || "");
             setEditInvCaseNotes(inv.caseNotes || "");
             setEditInvCreditsText(String(inv.credits || 0));
+            setEditInvClientId(inv.clientId || "");
+            setEditInvClientName(inv.clientName || "");
+            setEditInvBillToSearch(inv.billTo || "");
+            setEditInvShowProviderDrop(false);
             setAdminView("edit-invoice");
           }}
           style={({ pressed }) => ({
@@ -3285,21 +3293,33 @@ function AdminDashboard() {
       setEditInvLineItems(prev => prev.filter((_, i) => i !== idx));
     }
 
+    const providerSearchResults = editInvBillToSearch.trim().length > 0
+      ? clients.filter(c => {
+          const q = editInvBillToSearch.toLowerCase();
+          return (c.practiceName || "").toLowerCase().includes(q)
+            || (c.leadDoctor || "").toLowerCase().includes(q)
+            || (c.additionalProviders || []).some(p => p.toLowerCase().includes(q));
+        }).slice(0, 8)
+      : [];
+
     function handleSave() {
       const newLineItems = editInvLineItems.filter(li => li.item.trim() || li.description.trim() || li.amount > 0);
       const newAmount = newLineItems.reduce((s, li) => s + li.amount, 0) - credits;
+      const resolvedBillTo = editInvBillTo || editInvBillToSearch;
       updateInvoice(inv.id, {
         lineItems: newLineItems,
         amount: newAmount,
         patientName: editInvPatientName,
-        billTo: editInvBillTo,
+        billTo: resolvedBillTo,
+        clientId: editInvClientId || inv.clientId,
+        clientName: editInvClientName || inv.clientName,
         caseType: editInvCaseType,
         teeth: editInvTeeth,
         shade: editInvShade,
         caseNotes: editInvCaseNotes,
         credits,
       });
-      setSelectedInvoice({ ...inv, lineItems: newLineItems, amount: newAmount, patientName: editInvPatientName, billTo: editInvBillTo, caseType: editInvCaseType, teeth: editInvTeeth, shade: editInvShade, caseNotes: editInvCaseNotes, credits });
+      setSelectedInvoice({ ...inv, lineItems: newLineItems, amount: newAmount, patientName: editInvPatientName, billTo: resolvedBillTo, clientId: editInvClientId || inv.clientId, clientName: editInvClientName || inv.clientName, caseType: editInvCaseType, teeth: editInvTeeth, shade: editInvShade, caseNotes: editInvCaseNotes, credits });
       setAdminView("invoice-detail");
     }
 
@@ -3357,14 +3377,65 @@ function AdminDashboard() {
             </View>
 
             <View>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Bill To</Text>
-              <TextInput
-                style={inputBase}
-                value={editInvBillTo}
-                onChangeText={setEditInvBillTo}
-                placeholder="Practice / Doctor name"
-                placeholderTextColor="#9CA3AF"
-              />
+              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Bill To / Provider</Text>
+              <View style={{ position: "relative" as const }}>
+                <View style={{ flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: editInvShowProviderDrop ? "#2563EB" : "#93C5FD", borderRadius: 4, backgroundColor: "#EFF6FF", overflow: "hidden" }}>
+                  <TextInput
+                    style={[inputBase, { flex: 1, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", margin: 0 }]}
+                    value={editInvBillToSearch}
+                    onChangeText={(t) => {
+                      setEditInvBillToSearch(t);
+                      setEditInvBillTo(t);
+                      setEditInvShowProviderDrop(true);
+                      if (!t.trim()) { setEditInvClientId(""); setEditInvClientName(""); }
+                    }}
+                    onFocus={() => setEditInvShowProviderDrop(true)}
+                    placeholder="Type to search providers..."
+                    placeholderTextColor="#9CA3AF"
+                    returnKeyType="done"
+                    onSubmitEditing={() => setEditInvShowProviderDrop(false)}
+                  />
+                  {editInvClientId ? (
+                    <Ionicons name="checkmark-circle" size={16} color="#059669" style={{ marginRight: 8 }} />
+                  ) : (
+                    <Ionicons name="search" size={14} color="#6B7280" style={{ marginRight: 8 }} />
+                  )}
+                </View>
+                {editInvClientId && (
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#059669", marginTop: 2 }}>
+                    Assigned to: {editInvClientName}
+                  </Text>
+                )}
+                {editInvShowProviderDrop && providerSearchResults.length > 0 && (
+                  <View style={{ position: "absolute" as const, top: "100%" as any, left: 0, right: 0, zIndex: 999, backgroundColor: "#fff", borderRadius: 8, borderWidth: 1, borderColor: "#E5E7EB", shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 8, marginTop: 2 }}>
+                    {providerSearchResults.map((c, i) => (
+                      <Pressable
+                        key={c.id}
+                        onPress={() => {
+                          const display = c.practiceName || c.leadDoctor;
+                          setEditInvBillTo(display);
+                          setEditInvBillToSearch(display);
+                          setEditInvClientId(c.id);
+                          setEditInvClientName(display);
+                          setEditInvShowProviderDrop(false);
+                        }}
+                        style={({ pressed }) => ({ flexDirection: "row" as const, alignItems: "center" as const, padding: 10, borderBottomWidth: i < providerSearchResults.length - 1 ? 1 : 0, borderBottomColor: "#F3F4F6", backgroundColor: pressed ? "#EFF6FF" : "#fff", borderRadius: i === 0 ? 8 : 0 })}
+                      >
+                        <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: "#DBEAFE", alignItems: "center", justifyContent: "center", marginRight: 10 }}>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#1D4ED8" }}>{(c.practiceName || c.leadDoctor || "?")[0].toUpperCase()}</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{c.practiceName || c.leadDoctor}</Text>
+                          {c.practiceName && c.leadDoctor && c.practiceName !== c.leadDoctor && (
+                            <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{c.leadDoctor}</Text>
+                          )}
+                        </View>
+                        <Ionicons name="arrow-forward-circle-outline" size={16} color="#9CA3AF" />
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+              </View>
             </View>
 
             <View>

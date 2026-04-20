@@ -1546,6 +1546,18 @@ export default function ScanScreen() {
                     {
                       text: "No",
                       style: "cancel",
+                      onPress: () => {
+                        const drName = /^dr\.?\s/i.test(d.doctorName.trim()) ? d.doctorName.trim() : `Dr. ${d.doctorName.trim()}`;
+                        addClient({
+                          practiceName: d.practiceName || drName,
+                          leadDoctor: drName,
+                          phone: d.practicePhone || "",
+                          email: "",
+                          address: d.practiceAddress || "",
+                          tier: "Standard",
+                          discountRate: 0,
+                        });
+                      },
                     },
                     {
                       text: "Yes, Add Provider",
