@@ -34,6 +34,7 @@ import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, form
 import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
+import { ManualCropOverlay } from "@/components/ManualCropOverlay";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -178,7 +179,9 @@ export default function ScanScreen() {
   const [removableStageOpen, setRemovableStageOpen] = useState(false);
   const [removableArch, setRemovableArch] = useState<"Upper" | "Lower" | "Both" | "">("");
   const [isRush, setIsRush] = useState(false);
-  const [isCropping, setIsCropping] = useState(false);
+  const [showCropOverlay, setShowCropOverlay] = useState(false);
+  const [cropOverlayUri, setCropOverlayUri] = useState("");
+  const [cropOverlayIndex, setCropOverlayIndex] = useState(0);
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [dueDateOpen, setDueDateOpen] = useState(false);
@@ -623,56 +626,31 @@ export default function ScanScreen() {
     cropDoneRef.current = true;
   }
 
-  async function handleManualCrop() {
+  function handleManualCrop() {
     if (casePhotos.length === 0) return;
-
     const targetIndex = selectedReviewPhotos.length === 1
       ? selectedReviewPhotos[0]
       : casePhotos.length - 1;
     const targetPhoto = casePhotos[targetIndex];
     if (!targetPhoto) return;
+    setCropOverlayIndex(targetIndex);
+    setCropOverlayUri(targetPhoto);
+    setShowCropOverlay(true);
+  }
 
-    setIsCropping(true);
-    try {
-      let imageData = targetPhoto;
-      if (!imageData.startsWith("data:")) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(imageData, { encoding: FileSystem.EncodingType.Base64 });
-          imageData = `data:image/jpeg;base64,${base64}`;
-        } catch (readErr: any) {
-          console.log("Could not read photo for crop:", readErr?.message);
-          setIsCropping(false);
-          return;
-        }
-      }
-      const apiUrl = getApiUrl();
-      const cropUrl = new URL("/api/crop-document", apiUrl);
-      const resp = await resilientFetch(cropUrl.toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: imageData }),
-      });
-      const data = await resp.json();
-      if (data.croppedImageBase64) {
-        setCasePhotos(prev => {
-          const updated = [...prev];
-          updated[targetIndex] = data.croppedImageBase64;
-          return updated;
-        });
-        setCapturedUri(data.croppedImageBase64);
-        if (data.documentDetected) {
-          Alert.alert("Document Cropped", `Detected ${data.documentType || "document"} and cropped automatically.`);
-        } else {
-          Alert.alert("No Document Detected", "Could not detect a document. The image was auto-corrected but not cropped.");
-        }
-      } else {
-        Alert.alert("Crop Failed", "Unable to crop this image. Please try retaking the photo.");
-      }
-    } catch (e: any) {
-      console.log("Manual crop failed:", e?.message);
-      Alert.alert("Crop Error", "Something went wrong while cropping. Please try again.");
-    }
-    setIsCropping(false);
+  function handleCropOverlayCropped(croppedUri: string) {
+    setShowCropOverlay(false);
+    const idx = cropOverlayIndex;
+    setCasePhotos(prev => {
+      const updated = [...prev];
+      updated[idx] = croppedUri;
+      return updated;
+    });
+    setCapturedUri(croppedUri);
+  }
+
+  function handleCropOverlayCancel() {
+    setShowCropOverlay(false);
   }
 
   function toggleReviewPhotoSelection(index: number) {
@@ -2403,7 +2381,7 @@ export default function ScanScreen() {
     setRemovableStage("");
     setRemovableStageOpen(false);
     setRemovableArch("");
-    setIsCropping(false);
+    setShowCropOverlay(false);
     setIsRush(false);
     setNotes("");
     setDueDate("");
@@ -4444,20 +4422,14 @@ export default function ScanScreen() {
             </Pressable>
             <Pressable
               onPress={handleManualCrop}
-              disabled={isCropping}
               style={({ pressed }) => [
                 styles.reviewActionBtn,
                 { backgroundColor: "rgba(20,184,166,0.3)", borderWidth: 1, borderColor: "rgba(20,184,166,0.7)" },
                 pressed && { opacity: 0.7 },
-                isCropping && { opacity: 0.5 },
               ]}
             >
-              {isCropping ? (
-                <ActivityIndicator size="small" color="#5EEAD4" />
-              ) : (
-                <Ionicons name="crop" size={22} color="#5EEAD4" />
-              )}
-              <Text style={[styles.actionBtnText, { color: "#5EEAD4" }]}>{isCropping ? "Cropping..." : "Crop Photo"}</Text>
+              <Ionicons name="crop" size={22} color="#5EEAD4" />
+              <Text style={[styles.actionBtnText, { color: "#5EEAD4" }]}>Crop Photo</Text>
             </Pressable>
             <Pressable
               onPress={handleAddMoreFromReview}
@@ -4591,6 +4563,13 @@ export default function ScanScreen() {
       </Modal>
 
       {labelAndBarcodeModals}
+
+      <ManualCropOverlay
+        visible={showCropOverlay}
+        imageUri={cropOverlayUri}
+        onCancel={handleCropOverlayCancel}
+        onCropped={handleCropOverlayCropped}
+      />
     </View>
   );
 }
