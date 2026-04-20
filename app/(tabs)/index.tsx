@@ -1657,7 +1657,8 @@ type AdminView =
   | "client-stats"
   | "delete-cases"
   | "inactive-clients"
-  | "deleted-invoices";
+  | "deleted-invoices"
+  | "edit-invoice";
 
 function AdminDashboard() {
   const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite } = useApp();
@@ -1680,6 +1681,14 @@ function AdminDashboard() {
   const [newClientTier, setNewClientTier] = useState<string>("Standard");
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+  const [editInvLineItems, setEditInvLineItems] = useState<InvoiceLineItem[]>([]);
+  const [editInvPatientName, setEditInvPatientName] = useState("");
+  const [editInvBillTo, setEditInvBillTo] = useState("");
+  const [editInvCaseType, setEditInvCaseType] = useState("");
+  const [editInvTeeth, setEditInvTeeth] = useState("");
+  const [editInvShade, setEditInvShade] = useState("");
+  const [editInvCaseNotes, setEditInvCaseNotes] = useState("");
+  const [editInvCreditsText, setEditInvCreditsText] = useState("0");
 
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
@@ -3198,6 +3207,319 @@ function AdminDashboard() {
               <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 4 }}>{client.tier}</Text>
             </View>
           )}
+        </View>
+
+        <Pressable
+          onPress={() => {
+            setEditInvLineItems(inv.lineItems.map(li => ({ ...li })));
+            setEditInvPatientName(inv.patientName || "");
+            setEditInvBillTo(inv.billTo || "");
+            setEditInvCaseType(inv.caseType || "");
+            setEditInvTeeth(inv.teeth || "");
+            setEditInvShade(inv.shade || "");
+            setEditInvCaseNotes(inv.caseNotes || "");
+            setEditInvCreditsText(String(inv.credits || 0));
+            setAdminView("edit-invoice");
+          }}
+          style={({ pressed }) => ({
+            marginHorizontal: 16,
+            marginTop: 12,
+            backgroundColor: pressed ? "#1D4ED8" : "#2563EB",
+            borderRadius: 12,
+            paddingVertical: 14,
+            flexDirection: "row" as const,
+            alignItems: "center" as const,
+            justifyContent: "center" as const,
+            gap: 8,
+          })}
+        >
+          <Ionicons name="create-outline" size={20} color="#fff" />
+          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>Edit Invoice</Text>
+        </Pressable>
+      </ScrollView>
+    );
+  }
+
+  function renderEditInvoice() {
+    if (!selectedInvoice) return renderInvoiceDetail();
+    const inv = selectedInvoice;
+    const credits = parseFloat(editInvCreditsText) || 0;
+    const lineTotal = editInvLineItems.reduce((s, li) => s + li.amount, 0);
+    const balanceDue = lineTotal - credits;
+
+    function updateLineItem(idx: number, field: keyof InvoiceLineItem, rawVal: string) {
+      setEditInvLineItems(prev => {
+        const next = prev.map((li, i) => {
+          if (i !== idx) return li;
+          const updated = { ...li };
+          if (field === "qty" || field === "rate") {
+            const num = parseFloat(rawVal) || 0;
+            (updated as any)[field] = num;
+            updated.amount = (field === "qty" ? num : updated.qty) * (field === "rate" ? num : updated.rate);
+          } else {
+            (updated as any)[field] = rawVal;
+          }
+          return updated;
+        });
+        return next;
+      });
+    }
+
+    function addLineItem() {
+      setEditInvLineItems(prev => [...prev, { qty: 1, item: "", description: "", rate: 0, amount: 0 }]);
+    }
+
+    function removeLineItem(idx: number) {
+      setEditInvLineItems(prev => prev.filter((_, i) => i !== idx));
+    }
+
+    function handleSave() {
+      const newLineItems = editInvLineItems.filter(li => li.item.trim() || li.description.trim() || li.amount > 0);
+      const newAmount = newLineItems.reduce((s, li) => s + li.amount, 0) - credits;
+      updateInvoice(inv.id, {
+        lineItems: newLineItems,
+        amount: newAmount,
+        patientName: editInvPatientName,
+        billTo: editInvBillTo,
+        caseType: editInvCaseType,
+        teeth: editInvTeeth,
+        shade: editInvShade,
+        caseNotes: editInvCaseNotes,
+        credits,
+      });
+      setSelectedInvoice({ ...inv, lineItems: newLineItems, amount: newAmount, patientName: editInvPatientName, billTo: editInvBillTo, caseType: editInvCaseType, teeth: editInvTeeth, shade: editInvShade, caseNotes: editInvCaseNotes, credits });
+      setAdminView("invoice-detail");
+    }
+
+    const inputBase = {
+      fontFamily: "Inter_400Regular" as const,
+      fontSize: 12,
+      color: "#111",
+      borderWidth: 1,
+      borderColor: "#93C5FD",
+      borderRadius: 4,
+      paddingVertical: 4,
+      paddingHorizontal: 6,
+      backgroundColor: "#EFF6FF",
+    };
+
+    return (
+      <ScrollView
+        style={{ flex: 1, backgroundColor: "#F0F4F8" }}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 24 : 120,
+        }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, marginBottom: 16 }}>
+          <Pressable onPress={() => setAdminView("invoice-detail")} style={{ marginRight: 12, padding: 4 }}>
+            <Ionicons name="close" size={24} color="#374151" />
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#111827" }}>Edit Invoice</Text>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 1 }}>#{formatInvNum(inv.invoiceNumber)}</Text>
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
+          <View style={{ backgroundColor: "#1E3A5F", paddingVertical: 10, paddingHorizontal: 14 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5 }}>INVOICE INFO</Text>
+          </View>
+
+          <View style={{ padding: 14, gap: 10 }}>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Invoice #</Text>
+                <View style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 4, paddingVertical: 6, paddingHorizontal: 8, backgroundColor: "#F9FAFB" }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#6B7280" }}>{formatInvNum(inv.invoiceNumber)}</Text>
+                </View>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Date</Text>
+                <View style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 4, paddingVertical: 6, paddingHorizontal: 8, backgroundColor: "#F9FAFB" }}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#6B7280" }}>{new Date(inv.issuedAt).toLocaleDateString()}</Text>
+                </View>
+              </View>
+            </View>
+
+            <View>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Bill To</Text>
+              <TextInput
+                style={inputBase}
+                value={editInvBillTo}
+                onChangeText={setEditInvBillTo}
+                placeholder="Practice / Doctor name"
+                placeholderTextColor="#9CA3AF"
+              />
+            </View>
+
+            <View>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Patient Name</Text>
+              <TextInput
+                style={inputBase}
+                value={editInvPatientName}
+                onChangeText={setEditInvPatientName}
+                placeholder="Patient name"
+                placeholderTextColor="#9CA3AF"
+              />
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <View style={{ flex: 2 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Case Type</Text>
+                <TextInput
+                  style={inputBase}
+                  value={editInvCaseType}
+                  onChangeText={setEditInvCaseType}
+                  placeholder="e.g. Restorative"
+                  placeholderTextColor="#9CA3AF"
+                />
+              </View>
+              <View style={{ flex: 1.5 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Teeth</Text>
+                <TextInput
+                  style={inputBase}
+                  value={editInvTeeth}
+                  onChangeText={setEditInvTeeth}
+                  placeholder="#3, #14"
+                  placeholderTextColor="#9CA3AF"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Shade</Text>
+                <TextInput
+                  style={inputBase}
+                  value={editInvShade}
+                  onChangeText={setEditInvShade}
+                  placeholder="A2"
+                  placeholderTextColor="#9CA3AF"
+                />
+              </View>
+            </View>
+
+            <View>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Case Notes / Memo</Text>
+              <TextInput
+                style={[inputBase, { minHeight: 56, textAlignVertical: "top" }]}
+                value={editInvCaseNotes}
+                onChangeText={setEditInvCaseNotes}
+                placeholder="Additional notes..."
+                placeholderTextColor="#9CA3AF"
+                multiline
+              />
+            </View>
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
+          <View style={{ backgroundColor: "#1E3A5F", paddingVertical: 10, paddingHorizontal: 14, flexDirection: "row", alignItems: "center" }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5, flex: 1 }}>LINE ITEMS</Text>
+            <Pressable
+              onPress={addLineItem}
+              style={({ pressed }) => ({ backgroundColor: pressed ? "#60A5FA" : "#3B82F6", paddingVertical: 5, paddingHorizontal: 10, borderRadius: 6, flexDirection: "row", alignItems: "center", gap: 4 })}
+            >
+              <Ionicons name="add" size={14} color="#fff" />
+              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Add Item</Text>
+            </Pressable>
+          </View>
+
+          <View style={{ flexDirection: "row", backgroundColor: "#F1F5F9", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", paddingVertical: 8, paddingHorizontal: 10 }}>
+            <Text style={{ width: 32, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569" }}>Qty</Text>
+            <Text style={{ width: 80, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", paddingLeft: 4 }}>Item</Text>
+            <Text style={{ flex: 1, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", paddingLeft: 4 }}>Description</Text>
+            <Text style={{ width: 54, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "right" }}>Rate</Text>
+            <Text style={{ width: 60, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "right" }}>Amount</Text>
+            <View style={{ width: 24 }} />
+          </View>
+
+          {editInvLineItems.map((li, idx) => (
+            <View key={idx} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 6, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9", backgroundColor: idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
+              <TextInput
+                style={[inputBase, { width: 32, textAlign: "center", paddingHorizontal: 2 }]}
+                value={String(li.qty)}
+                onChangeText={(v) => updateLineItem(idx, "qty", v)}
+                keyboardType="decimal-pad"
+              />
+              <TextInput
+                style={[inputBase, { width: 80, marginLeft: 4 }]}
+                value={li.item}
+                onChangeText={(v) => updateLineItem(idx, "item", v)}
+                placeholder="Item"
+                placeholderTextColor="#9CA3AF"
+              />
+              <TextInput
+                style={[inputBase, { flex: 1, marginLeft: 4 }]}
+                value={li.description}
+                onChangeText={(v) => updateLineItem(idx, "description", v)}
+                placeholder="Description"
+                placeholderTextColor="#9CA3AF"
+              />
+              <TextInput
+                style={[inputBase, { width: 54, marginLeft: 4, textAlign: "right" }]}
+                value={String(li.rate)}
+                onChangeText={(v) => updateLineItem(idx, "rate", v)}
+                keyboardType="decimal-pad"
+              />
+              <View style={{ width: 60, marginLeft: 4, alignItems: "flex-end" }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{formatCurrency(li.amount)}</Text>
+              </View>
+              <Pressable onPress={() => removeLineItem(idx)} style={{ width: 24, alignItems: "center" }}>
+                <Ionicons name="trash-outline" size={15} color="#EF4444" />
+              </Pressable>
+            </View>
+          ))}
+
+          {editInvLineItems.length === 0 && (
+            <View style={{ paddingVertical: 20, alignItems: "center" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#9CA3AF" }}>No line items. Tap Add Item to begin.</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 16 }}>
+          <View style={{ backgroundColor: "#1E3A5F", paddingVertical: 10, paddingHorizontal: 14 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5 }}>TOTALS</Text>
+          </View>
+          <View style={{ padding: 14, gap: 8 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#374151" }}>Subtotal</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{formatCurrency(lineTotal)}</Text>
+            </View>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#374151" }}>Credits / Payments Applied</Text>
+              <TextInput
+                style={[inputBase, { width: 80, textAlign: "right" }]}
+                value={editInvCreditsText}
+                onChangeText={setEditInvCreditsText}
+                keyboardType="decimal-pad"
+                placeholder="0.00"
+                placeholderTextColor="#9CA3AF"
+              />
+            </View>
+            <View style={{ height: 1, backgroundColor: "#E5E7EB" }} />
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#111827" }}>Balance Due</Text>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: balanceDue > 0 ? "#DC2626" : "#059669" }}>{formatCurrency(balanceDue)}</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={{ flexDirection: "row", marginHorizontal: 16, gap: 10, marginBottom: 24 }}>
+          <Pressable
+            onPress={() => setAdminView("invoice-detail")}
+            style={({ pressed }) => ({ flex: 1, borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, backgroundColor: pressed ? "#F9FAFB" : "#fff" })}
+          >
+            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#374151" }}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleSave}
+            style={({ pressed }) => ({ flex: 2, backgroundColor: pressed ? "#1D4ED8" : "#2563EB", borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8 })}
+          >
+            <Ionicons name="checkmark-circle" size={18} color="#fff" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>Save & Close</Text>
+          </Pressable>
         </View>
       </ScrollView>
     );
@@ -7111,6 +7433,7 @@ function AdminDashboard() {
     case "text-invoice": return renderTextInvoice();
     case "pick-invoice-to-send": return renderPickInvoiceToSend();
     case "invoice-detail": return renderInvoiceDetail();
+    case "edit-invoice": return renderEditInvoice();
     case "statements": return renderStatements();
     case "statements-hub": return renderStatementsHub();
     case "view-statements": return renderViewStatements();
