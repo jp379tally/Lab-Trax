@@ -17,6 +17,7 @@ import {
   Notification,
   CaseStatus,
   ActivityEntry,
+  ActivityEntryType,
   Client,
   LabUser,
   Invoice,
@@ -217,6 +218,11 @@ function buildDirectConversationId(usernameA?: string | null, usernameB?: string
   }
 
   return `dm:${normalizedUsers.join("::")}`;
+}
+
+function isVideoUri(uri: string): boolean {
+  const lower = uri.toLowerCase();
+  return lower.includes(".mp4") || lower.includes(".mov") || lower.includes(".m4v") || lower.includes(".avi") || lower.includes(".webm") || lower.includes(".mkv");
 }
 
 function inferImageMimeType(imageUri: string) {
@@ -1360,11 +1366,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function addCasePhoto(caseId: string, photoUri: string, user?: string) {
     const sharedPhotoUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
     const now = Date.now();
+    const isVid = isVideoUri(sharedPhotoUri);
     const photoEntry: ActivityEntry = {
       id: generateId(),
-      type: "photo",
+      type: isVid ? "video" : "photo",
       timestamp: now,
-      description: "Photo added to case",
+      description: isVid ? "Video added to case" : "Photo added to case",
       imageUri: sharedPhotoUri,
       user: user || undefined,
     };
@@ -1421,14 +1428,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       photoUris.map(async (uri) => (await normalizeSharedImageUri(uri)) || uri)
     );
 
-    const photoEntries: ActivityEntry[] = normalizedUris.map((uri, i) => ({
-      id: generateId(),
-      type: "photo" as const,
-      timestamp: now + i,
-      description: "Photo added to case",
-      imageUri: uri,
-      user: user || undefined,
-    }));
+    const photoEntries: ActivityEntry[] = normalizedUris.map((uri, i) => {
+      const isVid = isVideoUri(uri);
+      return {
+        id: generateId(),
+        type: (isVid ? "video" : "photo") as ActivityEntryType,
+        timestamp: now + i,
+        description: isVid ? "Video added to case" : "Photo added to case",
+        imageUri: uri,
+        user: user || undefined,
+      };
+    });
 
     const noteEntry: ActivityEntry | null = note.trim()
       ? {

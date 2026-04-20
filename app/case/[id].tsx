@@ -1361,7 +1361,7 @@ export default function CaseDetailScreen() {
           {(caseItem.activityLog && caseItem.activityLog.length > 0
             ? (() => {
                 const sorted = [...caseItem.activityLog].sort((a, b) => b.timestamp - a.timestamp);
-                const photoTimestamps = sorted.filter(e => e.type === "photo").map(e => e.timestamp);
+                const photoTimestamps = sorted.filter(e => e.type === "photo" || e.type === "video").map(e => e.timestamp);
                 return sorted.filter(entry => {
                   if (entry.type !== "note") return true;
                   return !photoTimestamps.some(pt => Math.abs(pt - entry.timestamp) < 5000);
@@ -1381,6 +1381,7 @@ export default function CaseDetailScreen() {
             const isStation = entry.type === "station_change" || entry.type === "created" || entry.type === "scan";
             const isNote = entry.type === "note";
             const isPhoto = entry.type === "photo";
+            const isVideo = entry.type === "video";
             const isBarcode = entry.type === "barcode_assigned" || entry.type === "barcode_unassigned";
             const isInvoice = entry.type === "invoice_paid" || entry.type === "invoice_attached";
             const isTracking = entry.type === "tracking_added";
@@ -1395,7 +1396,7 @@ export default function CaseDetailScreen() {
               dotColor = isFirst ? stationInfo.color : Colors.light.textTertiary;
             } else if (isNote) {
               dotColor = "#F59E0B";
-            } else if (isPhoto) {
+            } else if (isPhoto || isVideo) {
               dotColor = "#8B5CF6";
             } else if (isBarcode) {
               dotColor = "#10B981";
@@ -1448,7 +1449,7 @@ export default function CaseDetailScreen() {
                   </View>
                   {!isLast && <View style={styles.timelineConnector} />}
                 </View>
-                <View style={[styles.timelineContent, isPhoto && entry.imageUri ? { paddingBottom: 20 } : {}]}>
+                <View style={[styles.timelineContent, (isPhoto || isVideo) && entry.imageUri ? { paddingBottom: 20 } : {}]}>
                   {isStation && stationInfo ? (
                     <View>
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -1541,6 +1542,14 @@ export default function CaseDetailScreen() {
                       onPress={() => {
                         if (isPhoto && entry.imageUri) {
                           setFullScreenPhoto(entry.imageUri);
+                        } else if (isVideo && entry.imageUri) {
+                          if (Platform.OS === "web") {
+                            (window as any).open(entry.imageUri, "_blank");
+                          } else {
+                            Linking.openURL(entry.imageUri).catch(() =>
+                              Alert.alert("Cannot play video", "Unable to open video on this device.")
+                            );
+                          }
                         } else if (isNote) {
                           Alert.alert("Note", entry.description);
                         }
@@ -1555,7 +1564,7 @@ export default function CaseDetailScreen() {
                     >
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <Ionicons
-                          name={isNote ? "document-text" : "camera"}
+                          name={isNote ? "document-text" : isVideo ? "videocam" : "camera"}
                           size={13}
                           color={isNote ? "#D97706" : "#7C3AED"}
                         />
@@ -1566,16 +1575,16 @@ export default function CaseDetailScreen() {
                           textTransform: "uppercase",
                           letterSpacing: 0.5,
                         }}>
-                          {isNote ? "Note" : "Photo"}
+                          {isNote ? "Note" : isVideo ? "Video" : "Photo"}
                         </Text>
                         {entry.user && (
                           <View style={styles.initialsChip}>
                             <Text style={styles.initialsText}>{entryUserInitials}</Text>
                           </View>
                         )}
-                        {isPhoto && entry.imageUri && (
+                        {(isPhoto || isVideo) && entry.imageUri && (
                           <View style={{ marginLeft: "auto" }}>
-                            <Ionicons name="expand-outline" size={14} color="#7C3AED" />
+                            <Ionicons name={isVideo ? "play-circle-outline" : "expand-outline"} size={14} color="#7C3AED" />
                           </View>
                         )}
                       </View>
@@ -1599,7 +1608,23 @@ export default function CaseDetailScreen() {
                           resizeMode="cover"
                         />
                       )}
-                      {isPhoto && (() => {
+                      {isVideo && entry.imageUri && (
+                        <View style={{
+                          width: "100%",
+                          height: 80,
+                          borderRadius: 8,
+                          marginTop: 8,
+                          backgroundColor: "#1E1B2E",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexDirection: "row",
+                          gap: 8,
+                        }}>
+                          <Ionicons name="play-circle" size={32} color="#A78BFA" />
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#C4B5FD" }}>Tap to play video</Text>
+                        </View>
+                      )}
+                      {(isPhoto || isVideo) && (() => {
                         const nearbyNote = (caseItem.activityLog || []).find(
                           (e) => e.type === "note" && Math.abs(e.timestamp - entry.timestamp) < 5000
                         );
@@ -2297,26 +2322,51 @@ export default function CaseDetailScreen() {
               <View style={styles.completeSectionWrap}>
                 <View style={styles.completeSectionHeader}>
                   <Ionicons name="camera" size={16} color="#8B5CF6" />
-                  <Text style={styles.completeSectionTitle}>Completion Photos</Text>
+                  <Text style={styles.completeSectionTitle}>Completion Media</Text>
                 </View>
                 {(() => {
-                  const completePhotos = (caseItem.activityLog || [])
-                    .filter((a) => a.type === "photo" && a.imageUri)
-                    .map((a) => a.imageUri!);
+                  const mediaEntries = (caseItem.activityLog || []).filter((a) => (a.type === "photo" || a.type === "video") && a.imageUri);
+                  const completePhotos = mediaEntries.filter(a => a.type === "photo").map((a) => a.imageUri!);
                   const allPhotos = [...(caseItem.photos || []), ...completePhotos];
                   const uniquePhotos = [...new Set(allPhotos)];
-                  if (uniquePhotos.length === 0) {
-                    return <Text style={styles.completeEmptyText}>No photos available</Text>;
+                  const videoEntries = mediaEntries.filter(a => a.type === "video");
+                  if (uniquePhotos.length === 0 && videoEntries.length === 0) {
+                    return <Text style={styles.completeEmptyText}>No media available</Text>;
                   }
                   return (
-                    <View style={styles.completePhotoGrid}>
-                      {uniquePhotos.map((uri, idx) => (
-                        <Image
-                          key={idx}
-                          source={{ uri }}
-                          style={styles.completePhoto}
-                          resizeMode="cover"
-                        />
+                    <View>
+                      {uniquePhotos.length > 0 && (
+                        <View style={styles.completePhotoGrid}>
+                          {uniquePhotos.map((uri, idx) => (
+                            <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
+                              <Image
+                                source={{ uri }}
+                                style={styles.completePhoto}
+                                resizeMode="cover"
+                              />
+                            </Pressable>
+                          ))}
+                        </View>
+                      )}
+                      {videoEntries.map((v, idx) => (
+                        <Pressable
+                          key={`vid-${idx}`}
+                          onPress={() => {
+                            if (Platform.OS === "web") {
+                              (window as any).open(v.imageUri, "_blank");
+                            } else {
+                              Linking.openURL(v.imageUri!).catch(() => Alert.alert("Cannot play video", "Unable to open video."));
+                            }
+                          }}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "#1E1B2E", borderRadius: 10, padding: 12, marginTop: 8 }}
+                        >
+                          <Ionicons name="play-circle" size={28} color="#A78BFA" />
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#C4B5FD" }}>Video {idx + 1}</Text>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#7C6FA0" }}>Tap to play</Text>
+                          </View>
+                          <Ionicons name="open-outline" size={16} color="#7C6FA0" />
+                        </Pressable>
                       ))}
                     </View>
                   );
