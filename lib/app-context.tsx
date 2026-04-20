@@ -1211,10 +1211,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const toothCount = c.toothMap?.length || toothStr.split(",").filter(Boolean).length || 1;
       const perUnitPrice = MATERIAL_PRICES[materialStr] ?? 250;
       const totalPrice = c.price || (toothCount * perUnitPrice);
+      const subtypeMatch = c.notes?.match(/^\[([^\]]+)\]/);
+      const subtypeLabel = subtypeMatch ? ` - ${subtypeMatch[1]}` : "";
       lineItems.push({
         qty: toothCount,
         item: materialStr,
-        description: `${c.caseType || "Restorative"} - ${toothStr || "N/A"}`,
+        description: `${c.caseType || "Restorative"}${subtypeLabel} - ${toothStr || "N/A"}`,
         rate: perUnitPrice,
         amount: totalPrice,
       });

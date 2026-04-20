@@ -176,6 +176,7 @@ export default function ScanScreen() {
   const [removableSubtypeOpen, setRemovableSubtypeOpen] = useState(false);
   const [removableStage, setRemovableStage] = useState("");
   const [removableStageOpen, setRemovableStageOpen] = useState(false);
+  const [removableArch, setRemovableArch] = useState<"Upper" | "Lower" | "Both" | "">("");
   const [isRush, setIsRush] = useState(false);
   const [isCropping, setIsCropping] = useState(false);
   const [notes, setNotes] = useState("");
@@ -460,8 +461,12 @@ export default function ScanScreen() {
 
   const calculatedPrice = React.useMemo(() => {
     const unitPrice = MATERIAL_PRICES[material] || 250;
+    if (caseType === "Removable") {
+      const archCount = removableArch === "Both" ? 2 : removableArch ? 1 : 1;
+      return unitPrice * archCount;
+    }
     return unitPrice * Math.max(billableTeethCount, 1);
-  }, [material, billableTeethCount]);
+  }, [material, billableTeethCount, caseType, removableArch]);
 
   useFocusEffect(
     useCallback(() => {
@@ -2133,7 +2138,15 @@ export default function ScanScreen() {
 
     const savedPatientName = patientName.trim();
 
-    const finalNotes = (removableSubtype ? `[${removableSubtype}]` : "") + (removableStage ? `[Stage: ${removableStage}] ` : (removableSubtype ? " " : "")) + notes.trim();
+    const archLabel = removableArch === "Both" ? "Upper, Lower" : removableArch || "";
+    const finalNotes = [
+      removableSubtype ? `[${removableSubtype}]` : "",
+      removableArch ? `[${removableArch === "Both" ? "Upper & Lower" : removableArch}]` : "",
+      removableStage ? `[Stage: ${removableStage}]` : "",
+      notes.trim(),
+    ].filter(Boolean).join(" ");
+
+    const effectiveToothIndices = caseType === "Removable" && archLabel ? archLabel : toothIndices.trim();
 
     const newCase = addCase({
       caseNumber,
@@ -2141,7 +2154,7 @@ export default function ScanScreen() {
       patientName: savedPatientName,
       patientInitials: savedPatientName.split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
       caseType: (caseType || "") as any,
-      toothIndices: toothIndices.trim(),
+      toothIndices: effectiveToothIndices,
       shade: shade.trim(),
       material,
       status: "INTAKE",
@@ -2389,6 +2402,7 @@ export default function ScanScreen() {
     setRemovableSubtypeOpen(false);
     setRemovableStage("");
     setRemovableStageOpen(false);
+    setRemovableArch("");
     setIsCropping(false);
     setIsRush(false);
     setNotes("");
@@ -3284,12 +3298,14 @@ export default function ScanScreen() {
                         setMaterial("Acrylic");
                         setRemovableSubtype("");
                         setRemovableStage("");
+                        setRemovableArch("");
                       } else {
                         setMaterial("Zirconia");
                         setRemovableSubtype("");
                         setRemovableSubtypeOpen(false);
                         setRemovableStage("");
                         setRemovableStageOpen(false);
+                        setRemovableArch("");
                       }
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
@@ -3353,6 +3369,53 @@ export default function ScanScreen() {
                       </Pressable>
                     ))}
                   </ScrollView>
+                </View>
+              )}
+            </View>
+          )}
+
+          {caseType === "Removable" && (
+            <View style={[styles.formGroup]}>
+              <Text style={styles.formLabel}>Arch</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {(["Upper", "Lower", "Both"] as const).map((arch) => (
+                  <Pressable
+                    key={arch}
+                    onPress={() => {
+                      setRemovableArch(removableArch === arch ? "" : arch);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => [
+                      {
+                        flex: 1,
+                        paddingVertical: 10,
+                        borderRadius: 8,
+                        borderWidth: 1.5,
+                        alignItems: "center" as const,
+                        borderColor: removableArch === arch ? Colors.light.tint : Colors.light.border,
+                        backgroundColor: removableArch === arch ? Colors.light.tint + "18" : Colors.light.background,
+                        opacity: pressed ? 0.7 : 1,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 14,
+                        fontWeight: removableArch === arch ? "700" : "500",
+                        color: removableArch === arch ? Colors.light.tint : Colors.light.textSecondary,
+                      }}
+                    >
+                      {arch}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              {removableArch && showPrice && (
+                <View style={[styles.toothPricingRow, { marginTop: 8 }]}>
+                  <Text style={styles.toothPricingLabel}>
+                    {removableArch === "Both" ? "2 arches" : "1 arch"} × ${MATERIAL_PRICES[material] || 250}/{material}
+                  </Text>
+                  <Text style={styles.toothPricingTotal}>${calculatedPrice.toLocaleString()}</Text>
                 </View>
               )}
             </View>
