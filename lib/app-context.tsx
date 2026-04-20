@@ -52,6 +52,7 @@ interface AppContextValue {
   updateCaseStatus: (caseId: string, newStatus: CaseStatus, user?: string) => void;
   addCasePhoto: (caseId: string, photoUri: string, user?: string) => Promise<void>;
   addCaseNote: (caseId: string, note: string, user?: string) => void;
+  addCasePhotosWithNote: (caseId: string, photoUris: string[], note: string, user?: string) => Promise<void>;
   addTrackingNumber: (caseId: string, tracking: string) => void;
   addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) => void;
   notifications: Notification[];
@@ -1414,6 +1415,54 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  async function addCasePhotosWithNote(caseId: string, photoUris: string[], note: string, user?: string) {
+    const now = Date.now();
+    const normalizedUris = await Promise.all(
+      photoUris.map(async (uri) => (await normalizeSharedImageUri(uri)) || uri)
+    );
+
+    const photoEntries: ActivityEntry[] = normalizedUris.map((uri, i) => ({
+      id: generateId(),
+      type: "photo" as const,
+      timestamp: now + i,
+      description: "Photo added to case",
+      imageUri: uri,
+      user: user || undefined,
+    }));
+
+    const noteEntry: ActivityEntry | null = note.trim()
+      ? {
+          id: generateId(),
+          type: "note" as const,
+          timestamp: now,
+          description: note.trim(),
+          user: user || undefined,
+        }
+      : null;
+
+    setCases((prevCases) => {
+      const updated = prevCases.map((c) => {
+        if (c.id === caseId) {
+          const updatedCase = {
+            ...c,
+            updatedAt: now,
+            photos: [...(c.photos || []), ...normalizedUris],
+            activityLog: [
+              ...(c.activityLog || []),
+              ...photoEntries,
+              ...(noteEntry ? [noteEntry] : []),
+            ],
+          };
+          void syncCaseToServer(updatedCase);
+          return updatedCase;
+        }
+        return c;
+      });
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }
+
   function addTrackingNumber(caseId: string, tracking: string) {
     const now = Date.now();
     setCases((prevCases) => {
@@ -2571,6 +2620,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateCaseStatus,
       addCasePhoto,
       addCaseNote,
+      addCasePhotosWithNote,
       addTrackingNumber,
       addCaseItem,
       notifications,

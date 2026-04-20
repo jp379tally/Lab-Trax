@@ -70,7 +70,7 @@ function deriveDisplayInitials(input?: {
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh } = useApp();
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -839,10 +839,7 @@ export default function CaseDetailScreen() {
 
     (async () => {
       try {
-        await Promise.all(photosToSave.map((uri) => addCasePhoto(caseId, uri, userInitials)));
-        if (noteToSave) {
-          addCaseNote(caseId, noteToSave, userInitials);
-        }
+        await addCasePhotosWithNote(caseId, photosToSave, noteToSave, userInitials);
         if (userType === "provider") {
           const photoCount = photosToSave.length;
           const hasNotes = !!noteToSave;
