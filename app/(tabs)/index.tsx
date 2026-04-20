@@ -1704,6 +1704,10 @@ function AdminDashboard() {
   const [editInvDueAtStr, setEditInvDueAtStr] = useState("");
   const [editInvCreditNote, setEditInvCreditNote] = useState("");
   const [editInvCaseTypeOpen, setEditInvCaseTypeOpen] = useState(false);
+  const [editInvSelectedPractice, setEditInvSelectedPractice] = useState<import("@/lib/data").Client | null>(null);
+  const [editInvSubProvider, setEditInvSubProvider] = useState("");
+  const [editInvSubProviderOpen, setEditInvSubProviderOpen] = useState(false);
+  const [sendPhoneTo, setSendPhoneTo] = useState("");
   const [rpClientId, setRpClientId] = useState<string | null>(null);
   const [rpMethod, setRpMethod] = useState("Check");
   const [rpAmountText, setRpAmountText] = useState("");
@@ -3048,7 +3052,44 @@ function AdminDashboard() {
           <Pressable onPress={() => { setSelectedInvoice(null); setAdminView("invoices-hub"); }} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color="#333" />
           </Pressable>
-          <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#333" }}>Invoice Detail</Text>
+          <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#333", flex: 1 }}>Invoice Detail</Text>
+          <Pressable
+            onPress={() => {
+              setEditInvLineItems(inv.lineItems.map(li => ({ ...li })));
+              setEditInvPatientName(inv.patientName || "");
+              setEditInvBillTo(inv.billTo || "");
+              setEditInvCaseType(inv.caseType || "");
+              setEditInvTeeth(inv.teeth || "");
+              setEditInvShade(inv.shade || "");
+              setEditInvCaseNotes(inv.caseNotes || "");
+              setEditInvCreditsText(String(inv.credits || 0));
+              setEditInvClientId(inv.clientId || "");
+              setEditInvClientName(inv.clientName || "");
+              setEditInvBillToSearch(inv.billTo || "");
+              setEditInvShowProviderDrop(false);
+              setEditInvNumber(inv.invoiceNumber || "");
+              setEditInvIssuedAtStr(new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
+              setEditInvDueAtStr(new Date(inv.dueAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
+              setEditInvCreditNote(inv.creditNote || "");
+              setEditInvCaseTypeOpen(false);
+              setEditInvSelectedPractice(null);
+              setEditInvSubProvider("");
+              setEditInvSubProviderOpen(false);
+              setAdminView("edit-invoice");
+            }}
+            style={({ pressed }) => ({
+              flexDirection: "row" as const,
+              alignItems: "center" as const,
+              backgroundColor: pressed ? "#1D4ED8" : "#2563EB",
+              borderRadius: 8,
+              paddingVertical: 8,
+              paddingHorizontal: 14,
+              gap: 6,
+            })}
+          >
+            <Ionicons name="create-outline" size={16} color="#fff" />
+            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff" }}>Edit</Text>
+          </Pressable>
         </View>
 
         <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 4, borderWidth: 1, borderColor: "#333", overflow: "hidden" }}>
@@ -3238,42 +3279,6 @@ function AdminDashboard() {
           )}
         </View>
 
-        <Pressable
-          onPress={() => {
-            setEditInvLineItems(inv.lineItems.map(li => ({ ...li })));
-            setEditInvPatientName(inv.patientName || "");
-            setEditInvBillTo(inv.billTo || "");
-            setEditInvCaseType(inv.caseType || "");
-            setEditInvTeeth(inv.teeth || "");
-            setEditInvShade(inv.shade || "");
-            setEditInvCaseNotes(inv.caseNotes || "");
-            setEditInvCreditsText(String(inv.credits || 0));
-            setEditInvClientId(inv.clientId || "");
-            setEditInvClientName(inv.clientName || "");
-            setEditInvBillToSearch(inv.billTo || "");
-            setEditInvShowProviderDrop(false);
-            setEditInvNumber(inv.invoiceNumber || "");
-            setEditInvIssuedAtStr(new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
-            setEditInvDueAtStr(new Date(inv.dueAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
-            setEditInvCreditNote(inv.creditNote || "");
-            setEditInvCaseTypeOpen(false);
-            setAdminView("edit-invoice");
-          }}
-          style={({ pressed }) => ({
-            marginHorizontal: 16,
-            marginTop: 12,
-            backgroundColor: pressed ? "#1D4ED8" : "#2563EB",
-            borderRadius: 12,
-            paddingVertical: 14,
-            flexDirection: "row" as const,
-            alignItems: "center" as const,
-            justifyContent: "center" as const,
-            gap: 8,
-          })}
-        >
-          <Ionicons name="create-outline" size={20} color="#fff" />
-          <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>Edit Invoice</Text>
-        </Pressable>
       </ScrollView>
     );
   }
@@ -3457,7 +3462,7 @@ function AdminDashboard() {
             </View>
 
             <View>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Bill To / Provider</Text>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Bill To / Group or Practice</Text>
               <View style={{ position: "relative" as const }}>
                 <View style={{ flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: editInvShowProviderDrop ? "#2563EB" : "#93C5FD", borderRadius: 4, backgroundColor: "#EFF6FF", overflow: "hidden" }}>
                   <TextInput
@@ -3467,10 +3472,13 @@ function AdminDashboard() {
                       setEditInvBillToSearch(t);
                       setEditInvBillTo(t);
                       setEditInvShowProviderDrop(true);
+                      setEditInvSelectedPractice(null);
+                      setEditInvSubProvider("");
+                      setEditInvSubProviderOpen(false);
                       if (!t.trim()) { setEditInvClientId(""); setEditInvClientName(""); }
                     }}
                     onFocus={() => setEditInvShowProviderDrop(true)}
-                    placeholder="Type to search providers..."
+                    placeholder="Type to search group or practice..."
                     placeholderTextColor="#9CA3AF"
                     returnKeyType="done"
                     onSubmitEditing={() => setEditInvShowProviderDrop(false)}
@@ -3483,7 +3491,7 @@ function AdminDashboard() {
                 </View>
                 {editInvClientId && (
                   <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#059669", marginTop: 2 }}>
-                    Assigned to: {editInvClientName}
+                    Practice: {editInvClientName}
                   </Text>
                 )}
                 {editInvShowProviderDrop && (providerSearchResults.length > 0 || (editInvBillToSearch.trim().length > 0 && providerSearchResults.length === 0)) && (
@@ -3493,11 +3501,21 @@ function AdminDashboard() {
                         key={c.id}
                         onPress={() => {
                           const display = c.practiceName || c.leadDoctor;
-                          setEditInvBillTo(display);
                           setEditInvBillToSearch(display);
                           setEditInvClientId(c.id);
                           setEditInvClientName(display);
                           setEditInvShowProviderDrop(false);
+                          setEditInvSelectedPractice(c);
+                          setEditInvSubProvider("");
+                          setEditInvSubProviderOpen(true);
+                          const provList = [c.leadDoctor, ...(c.additionalProviders || [])].filter(Boolean);
+                          if (provList.length === 1) {
+                            setEditInvBillTo(provList[0]);
+                            setEditInvSubProvider(provList[0]);
+                            setEditInvSubProviderOpen(false);
+                          } else {
+                            setEditInvBillTo(display);
+                          }
                         }}
                         style={({ pressed }) => ({ flexDirection: "row" as const, alignItems: "center" as const, padding: 10, borderBottomWidth: i < providerSearchResults.length - 1 ? 1 : 0, borderBottomColor: "#F3F4F6", backgroundColor: pressed ? "#EFF6FF" : "#fff", borderRadius: i === 0 ? 8 : 0 })}
                       >
@@ -3507,10 +3525,10 @@ function AdminDashboard() {
                         <View style={{ flex: 1 }}>
                           <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{c.practiceName || c.leadDoctor}</Text>
                           {c.practiceName && c.leadDoctor && c.practiceName !== c.leadDoctor && (
-                            <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{c.leadDoctor}</Text>
+                            <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{c.leadDoctor}{(c.additionalProviders || []).length > 0 ? ` + ${(c.additionalProviders || []).length} more` : ""}</Text>
                           )}
                         </View>
-                        <Ionicons name="arrow-forward-circle-outline" size={16} color="#9CA3AF" />
+                        <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
                       </Pressable>
                     ))}
                     {editInvBillToSearch.trim().length > 0 && providerSearchResults.length === 0 && (
@@ -3523,6 +3541,7 @@ function AdminDashboard() {
                             setEditInvBillToSearch(name);
                             setEditInvClientId(newClient.id);
                             setEditInvClientName(name);
+                            setEditInvSubProvider(name);
                           }
                           setEditInvShowProviderDrop(false);
                         }}
@@ -3539,6 +3558,37 @@ function AdminDashboard() {
                   </View>
                 )}
               </View>
+
+              {editInvSelectedPractice && editInvSubProviderOpen && (() => {
+                const provList = [editInvSelectedPractice.leadDoctor, ...(editInvSelectedPractice.additionalProviders || [])].filter(Boolean);
+                return (
+                  <View style={{ marginTop: 8 }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Select Specific Provider</Text>
+                    <View style={{ backgroundColor: "#fff", borderRadius: 8, borderWidth: 1, borderColor: "#93C5FD", overflow: "hidden" }}>
+                      {provList.map((prov, i) => (
+                        <Pressable
+                          key={i}
+                          onPress={() => {
+                            setEditInvBillTo(prov);
+                            setEditInvSubProvider(prov);
+                            setEditInvSubProviderOpen(false);
+                          }}
+                          style={({ pressed }) => ({ flexDirection: "row" as const, alignItems: "center" as const, padding: 10, borderBottomWidth: i < provList.length - 1 ? 1 : 0, borderBottomColor: "#EFF6FF", backgroundColor: editInvSubProvider === prov ? "#DBEAFE" : pressed ? "#EFF6FF" : "#fff" })}
+                        >
+                          <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: editInvSubProvider === prov ? "#2563EB" : "#EFF6FF", alignItems: "center", justifyContent: "center", marginRight: 10 }}>
+                            <Ionicons name="person" size={14} color={editInvSubProvider === prov ? "#fff" : "#2563EB"} />
+                          </View>
+                          <Text style={{ fontSize: 12, fontFamily: editInvSubProvider === prov ? "Inter_700Bold" : "Inter_500Medium", color: editInvSubProvider === prov ? "#1D4ED8" : "#111827", flex: 1 }}>{prov}</Text>
+                          {editInvSubProvider === prov && <Ionicons name="checkmark-circle" size={16} color="#2563EB" />}
+                        </Pressable>
+                      ))}
+                    </View>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 3 }}>
+                      Billing: {editInvBillTo || editInvBillToSearch}
+                    </Text>
+                  </View>
+                );
+              })()}
             </View>
 
             <View>
@@ -4428,6 +4478,7 @@ function AdminDashboard() {
   }
 
   function renderSendInvoice() {
+    const client = sendInvoiceTarget ? clients.find(c => c.practiceName === sendInvoiceTarget.clientName) : null;
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
@@ -4443,64 +4494,72 @@ function AdminDashboard() {
               <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>{sendInvoiceTarget.clientName} · {formatCurrency(sendInvoiceTarget.amount)}</Text>
             </View>
           )}
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address</Text>
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address(es)</Text>
           <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendEmailTo} onChangeText={setSendEmailTo} placeholder="Enter email address" keyboardType="email-address" autoCapitalize="none" />
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Please separate each email address with a ;</Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Separate multiple addresses with a ; — invoice sent as PDF attachment</Text>
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Phone Number(s) — Text PDF</Text>
+          <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendPhoneTo} onChangeText={setSendPhoneTo} placeholder="Enter phone number" keyboardType="phone-pad" />
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Separate multiple numbers with a ; — PDF shared via messaging app</Text>
 
           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Subject</Text>
           <TextInput style={[adm.input, { marginBottom: 16 }]} value={sendEmailSubject} onChangeText={setSendEmailSubject} placeholder="Email subject" />
 
           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Message</Text>
-          <TextInput style={[adm.input, { height: 160, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Email message" multiline numberOfLines={8} />
-
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4, marginBottom: 16 }}>The invoice will be attached as a PDF</Text>
+          <TextInput style={[adm.input, { height: 140, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Message body" multiline numberOfLines={6} />
 
           <Pressable
-            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
-            onPress={() => {
-              if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address."); return; }
+            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1, marginTop: 16 })}
+            onPress={async () => {
+              if (!sendEmailTo.trim() && !sendPhoneTo.trim()) { Alert.alert("Required", "Please enter an email address or phone number."); return; }
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
               const emails = sendEmailTo.split(";").map(e => e.trim()).filter(e => e.length > 0);
-              emails.forEach(email => {
-                sendStatementEmail(sendInvoiceTarget?.clientName || "", email, sendEmailSubject, sendEmailMessage);
-              });
-              addNotification({ title: "Invoice Sent", message: `Invoice ${sendInvoiceTarget ? formatInvNum(sendInvoiceTarget.invoiceNumber) : ""} emailed to ${emails.join(", ")}`, type: "update" });
+              const phones = sendPhoneTo.split(";").map(p => p.trim()).filter(p => p.length > 0);
 
-              const client = sendInvoiceTarget ? clients.find(c => c.practiceName === sendInvoiceTarget.clientName) : null;
+              if (emails.length > 0) {
+                emails.forEach(email => {
+                  sendStatementEmail(sendInvoiceTarget?.clientName || "", email, sendEmailSubject, sendEmailMessage);
+                });
+                addNotification({ title: "Invoice Emailed", message: `Invoice ${sendInvoiceTarget ? formatInvNum(sendInvoiceTarget.invoiceNumber) : ""} sent to ${emails.join(", ")}`, type: "update" });
+              }
+
+              if (phones.length > 0) {
+                const smsBody = encodeURIComponent(sendEmailMessage);
+                const smsUrl = Platform.OS === "ios" ? `sms:${phones.join(",")}&body=${smsBody}` : `sms:${phones.join(",")}?body=${smsBody}`;
+                Linking.openURL(smsUrl).catch(() => Alert.alert("Unable to Open", "Could not open the messaging app."));
+                addNotification({ title: "Invoice Texted", message: `Invoice PDF shared to ${phones.join(", ")}`, type: "update" });
+              }
+
               const onFileEmail = client?.email || "";
-              const allEnteredEmails = emails.join("; ");
-              const emailChanged = onFileEmail.toLowerCase().trim() !== allEnteredEmails.toLowerCase().trim() && allEnteredEmails.length > 0;
+              const enteredEmails = emails.join("; ");
+              const emailChanged = onFileEmail.toLowerCase().trim() !== enteredEmails.toLowerCase().trim() && enteredEmails.length > 0;
+              const onFilePhone = client?.phone || "";
+              const enteredPhones = phones.join("; ");
+              const phoneChanged = onFilePhone.trim() !== enteredPhones.trim() && enteredPhones.length > 0;
 
-              if (emailChanged && client) {
+              const updates: Record<string, string> = {};
+              const savePrompts: string[] = [];
+              if (emailChanged && client) { updates.email = enteredEmails; savePrompts.push(`email (${enteredEmails})`); }
+              if (phoneChanged && client) { updates.phone = enteredPhones; savePrompts.push(`phone (${enteredPhones})`); }
+
+              if (savePrompts.length > 0 && client) {
                 Alert.alert(
-                  "Save Email Address?",
-                  `The email address you entered (${allEnteredEmails}) is different from what's on file for ${client.practiceName}. Would you like to save this as the default email for future invoices and statements?`,
+                  "Save to Provider?",
+                  `The ${savePrompts.join(" and ")} entered ${savePrompts.length > 1 ? "are" : "is"} not on file for ${client.practiceName}. Would you like to save ${savePrompts.length > 1 ? "them" : "it"} to the provider record?`,
                   [
-                    {
-                      text: "Yes, Save",
-                      onPress: () => {
-                        updateClient(client.id, { email: allEnteredEmails });
-                        Alert.alert("Invoice Sent & Email Saved", `Invoice emailed to ${emails.length} recipient${emails.length > 1 ? "s" : ""}. Email address updated for ${client.practiceName}.`);
-                        setAdminView("invoices-hub");
-                      },
-                    },
-                    {
-                      text: "No, Just Send",
-                      onPress: () => {
-                        Alert.alert("Invoice Sent", `Invoice emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
-                        setAdminView("invoices-hub");
-                      },
-                    },
+                    { text: "Yes, Save", onPress: () => { updateClient(client.id, updates); setAdminView("invoices-hub"); } },
+                    { text: "No, Just Send", onPress: () => setAdminView("invoices-hub") },
                   ]
                 );
               } else {
-                Alert.alert("Invoice Sent", `Invoice emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
                 setAdminView("invoices-hub");
               }
             }}
           >
             <Ionicons name="send" size={18} color="#FFF" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Email</Text>
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Invoice</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -4519,32 +4578,22 @@ function AdminDashboard() {
         const inv = selected[0];
         setSendInvoiceTarget(inv);
         const client = clients.find(c => c.practiceName === inv.clientName);
-        if (sendInvoiceMode === "email") {
-          setSendEmailTo(client?.email || "");
-          setSendEmailSubject(`Invoice ${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}`);
-          setSendEmailMessage(`Dear ${inv.clientName},\n\nPlease find attached invoice ${formatInvNum(inv.invoiceNumber)} for ${formatCurrency(inv.amount)}.\n\nDue Date: ${new Date(inv.dueAt).toLocaleDateString()}\n\n${statementDefaultMessage}`);
-          setAdminView("send-invoice");
-        } else {
-          setSendTextTo(client?.phone || "");
-          setSendTextMessage(`${statementDefaultMessage}\n\nInvoice ${formatInvNum(inv.invoiceNumber)}\nAmount: ${formatCurrency(inv.amount)}\nDue: ${new Date(inv.dueAt).toLocaleDateString()}\n\nPlease see the attached invoice PDF for details.`);
-          setAdminView("text-invoice");
-        }
+        setSendEmailTo(client?.email || "");
+        setSendPhoneTo(client?.phone || "");
+        setSendEmailSubject(`Invoice ${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}`);
+        setSendEmailMessage(`Dear ${inv.clientName},\n\nPlease find attached invoice ${formatInvNum(inv.invoiceNumber)} for ${formatCurrency(inv.amount)}.\n\nDue Date: ${new Date(inv.dueAt).toLocaleDateString()}\n\n${statementDefaultMessage}`);
+        setAdminView("send-invoice");
       } else {
         const totalAmt = selected.reduce((s, inv) => s + inv.amount, 0);
         const invSummary = selected.map(inv => `${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}: ${formatCurrency(inv.amount)}`).join("\n");
         const clientNames = [...new Set(selected.map(inv => inv.clientName))];
         const firstClient = clients.find(c => c.practiceName === clientNames[0]);
         setSendInvoiceTarget(selected[0]);
-        if (sendInvoiceMode === "email") {
-          setSendEmailTo(firstClient?.email || "");
-          setSendEmailSubject(`Invoices - ${selected.length} invoices totaling ${formatCurrency(totalAmt)}`);
-          setSendEmailMessage(`Dear Client,\n\nPlease find the following invoices attached:\n\n${invSummary}\n\nTotal: ${formatCurrency(totalAmt)}\n\n${statementDefaultMessage}`);
-          setAdminView("send-invoice");
-        } else {
-          setSendTextTo(firstClient?.phone || "");
-          setSendTextMessage(`${statementDefaultMessage}\n\nInvoices:\n${invSummary}\n\nTotal: ${formatCurrency(totalAmt)}\n\nPlease see the attached invoice PDFs for details.`);
-          setAdminView("text-invoice");
-        }
+        setSendEmailTo(firstClient?.email || "");
+        setSendPhoneTo(firstClient?.phone || "");
+        setSendEmailSubject(`Invoices - ${selected.length} invoices totaling ${formatCurrency(totalAmt)}`);
+        setSendEmailMessage(`Dear Client,\n\nPlease find the following invoices attached:\n\n${invSummary}\n\nTotal: ${formatCurrency(totalAmt)}\n\n${statementDefaultMessage}`);
+        setAdminView("send-invoice");
       }
     }
 
@@ -4561,22 +4610,9 @@ function AdminDashboard() {
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Invoice</Text>
         </View>
         <View style={adm.listArea}>
-          <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 12 }}>How would you like to send?</Text>
-          <View style={{ flexDirection: "row", gap: 10, marginBottom: 20 }}>
-            <Pressable
-              onPress={() => setSendInvoiceMode("email")}
-              style={({ pressed }) => ({ flex: 1, backgroundColor: sendInvoiceMode === "email" ? Colors.light.tint : Colors.light.surface, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, borderWidth: 1, borderColor: sendInvoiceMode === "email" ? Colors.light.tint : Colors.light.border, opacity: pressed ? 0.85 : 1 })}
-            >
-              <Ionicons name="mail" size={18} color={sendInvoiceMode === "email" ? "#fff" : Colors.light.text} />
-              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: sendInvoiceMode === "email" ? "#fff" : Colors.light.text }}>Email</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setSendInvoiceMode("text")}
-              style={({ pressed }) => ({ flex: 1, backgroundColor: sendInvoiceMode === "text" ? Colors.light.tint : Colors.light.surface, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, borderWidth: 1, borderColor: sendInvoiceMode === "text" ? Colors.light.tint : Colors.light.border, opacity: pressed ? 0.85 : 1 })}
-            >
-              <Ionicons name="chatbubble-ellipses" size={18} color={sendInvoiceMode === "text" ? "#fff" : Colors.light.text} />
-              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: sendInvoiceMode === "text" ? "#fff" : Colors.light.text }}>Text</Text>
-            </Pressable>
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 12, padding: 12, marginBottom: 16, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: Colors.light.border }}>
+            <Ionicons name="information-circle" size={18} color={Colors.light.tint} />
+            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, flex: 1 }}>Email and text options are available on the next screen. Invoices are sent as PDF.</Text>
           </View>
 
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -4930,6 +4966,7 @@ function AdminDashboard() {
               onPress={() => {
                 setSendStatementTarget(client);
                 setSendEmailTo(client.email || "");
+                setSendPhoneTo(client.phone || "");
                 setSendEmailSubject(`Billing Statement - ${client.practiceName}`);
                 const invDetails = sortedCInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
                 setSendEmailMessage(`Dear ${client.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(totalDue)}\n\n${statementDefaultMessage}`);
@@ -4937,8 +4974,8 @@ function AdminDashboard() {
               }}
               style={({ pressed }) => ({ backgroundColor: "#16A34A", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, flexDirection: "row" as const, alignItems: "center" as const, gap: 4, opacity: pressed ? 0.8 : 1 })}
             >
-              <Ionicons name="mail" size={16} color="#fff" />
-              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Email</Text>
+              <Ionicons name="send" size={16} color="#fff" />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Send</Text>
             </Pressable>
           </View>
         </View>
@@ -5043,24 +5080,10 @@ function AdminDashboard() {
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Statement</Text>
         </View>
         <View style={adm.listArea}>
-          <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 12 }}>How would you like to send?</Text>
-          <View style={{ flexDirection: "row", gap: 10, marginBottom: 20 }}>
-            <Pressable
-              onPress={() => setSendStatementMode("email")}
-              style={({ pressed }) => ({ flex: 1, backgroundColor: sendStatementMode === "email" ? Colors.light.tint : Colors.light.surface, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, borderWidth: 1, borderColor: sendStatementMode === "email" ? Colors.light.tint : Colors.light.border, opacity: pressed ? 0.85 : 1 })}
-            >
-              <Ionicons name="mail" size={18} color={sendStatementMode === "email" ? "#fff" : Colors.light.text} />
-              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: sendStatementMode === "email" ? "#fff" : Colors.light.text }}>Email</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setSendStatementMode("text")}
-              style={({ pressed }) => ({ flex: 1, backgroundColor: sendStatementMode === "text" ? Colors.light.tint : Colors.light.surface, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, borderWidth: 1, borderColor: sendStatementMode === "text" ? Colors.light.tint : Colors.light.border, opacity: pressed ? 0.85 : 1 })}
-            >
-              <Ionicons name="chatbubble-ellipses" size={18} color={sendStatementMode === "text" ? "#fff" : Colors.light.text} />
-              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: sendStatementMode === "text" ? "#fff" : Colors.light.text }}>Text</Text>
-            </Pressable>
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 12, padding: 12, marginBottom: 16, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: Colors.light.border }}>
+            <Ionicons name="information-circle" size={18} color={Colors.light.tint} />
+            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, flex: 1 }}>Email and text options are available on the next screen. Statements are sent as PDF.</Text>
           </View>
-
           <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 10 }}>Select a client</Text>
           {clientsWithOpenInvs.length === 0 && (
             <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", paddingVertical: 20 }}>No clients with open invoices.</Text>
@@ -5074,18 +5097,12 @@ function AdminDashboard() {
                 style={({ pressed }) => ({ backgroundColor: pressed ? Colors.light.tintLight : Colors.light.surface, borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border, flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const })}
                 onPress={() => {
                   setSendStatementTarget(c);
-                  if (sendStatementMode === "email") {
-                    setSendEmailTo(c.email || "");
-                    setSendEmailSubject(`Billing Statement - ${c.practiceName}`);
-                    const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
-                    setSendEmailMessage(`Dear ${c.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(total)}\n\n${statementDefaultMessage}`);
-                    setAdminView("send-statement");
-                  } else {
-                    setSendTextTo(c.phone || "");
-                    const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
-                    setSendTextMessage(`${statementDefaultMessage}\n\nBilling Statement for ${c.practiceName}\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(total)}\n\nPlease see the attached statement PDF for details.`);
-                    setAdminView("text-statement");
-                  }
+                  setSendEmailTo(c.email || "");
+                  setSendPhoneTo(c.phone || "");
+                  setSendEmailSubject(`Billing Statement - ${c.practiceName}`);
+                  const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
+                  setSendEmailMessage(`Dear ${c.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(total)}\n\n${statementDefaultMessage}`);
+                  setAdminView("send-statement");
                 }}
               >
                 <View style={{ flex: 1 }}>
@@ -5201,6 +5218,7 @@ function AdminDashboard() {
   }
 
   function renderSendStatement() {
+    const client = sendStatementTarget;
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
@@ -5210,62 +5228,88 @@ function AdminDashboard() {
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Statement</Text>
         </View>
         <View style={adm.listArea}>
-          {sendStatementTarget && (
+          {client && (
             <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border }}>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 4 }}>{sendStatementTarget.practiceName}</Text>
-              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Billing Statement</Text>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 4 }}>{client.practiceName}</Text>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Billing Statement — PDF</Text>
             </View>
           )}
 
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address</Text>
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address(es)</Text>
           <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendEmailTo} onChangeText={setSendEmailTo} placeholder="Enter email address" keyboardType="email-address" autoCapitalize="none" />
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Please separate each email address with a ;</Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Separate multiple addresses with a ; — statement sent as PDF attachment</Text>
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Phone Number(s) — Text PDF</Text>
+          <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendPhoneTo} onChangeText={setSendPhoneTo} placeholder="Enter phone number" keyboardType="phone-pad" />
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Separate multiple numbers with a ; — PDF shared via messaging app</Text>
 
           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Subject</Text>
           <TextInput style={[adm.input, { marginBottom: 16 }]} value={sendEmailSubject} onChangeText={setSendEmailSubject} placeholder="Email subject" />
 
           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Message</Text>
-          <TextInput style={[adm.input, { height: 160, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Email message" multiline numberOfLines={8} />
+          <TextInput style={[adm.input, { height: 140, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Message body" multiline numberOfLines={6} />
 
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4, marginBottom: 16 }}>The statement will be attached as a PDF</Text>
-
-          <Pressable
-            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
-            onPress={() => {
-              if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address."); return; }
-              const client = sendStatementTarget;
-              if (client) {
-                const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
-                const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
-                setEmailPreviewStmtData([{
-                  clientName: client.practiceName,
-                  email: client.email || "",
-                  address: client.address || "",
-                  leadDoctor: client.leadDoctor || "",
-                  invoices: sortedInvs.map(inv => ({
-                    invoiceNumber: inv.invoiceNumber,
-                    amount: inv.amount,
-                    issuedAt: inv.issuedAt,
-                    dueAt: inv.dueAt,
-                    patientName: inv.patientName,
-                    lineItems: (inv.lineItems || []).map(li => ({
-                      item: li.item,
-                      description: li.description,
-                      qty: li.qty,
-                      rate: li.rate,
-                      amount: li.amount,
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
+            <Pressable
+              style={({ pressed }) => ({ flex: 1, backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+              onPress={() => {
+                if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address to preview."); return; }
+                if (client) {
+                  const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                  const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
+                  setEmailPreviewStmtData([{
+                    clientName: client.practiceName,
+                    email: client.email || "",
+                    address: client.address || "",
+                    leadDoctor: client.leadDoctor || "",
+                    invoices: sortedInvs.map(inv => ({
+                      invoiceNumber: inv.invoiceNumber,
+                      amount: inv.amount,
+                      issuedAt: inv.issuedAt,
+                      dueAt: inv.dueAt,
+                      patientName: inv.patientName,
+                      lineItems: (inv.lineItems || []).map(li => ({ item: li.item, description: li.description, qty: li.qty, rate: li.rate, amount: li.amount })),
                     })),
-                  })),
-                  totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0),
-                }]);
-              }
-              setEmailPreviewBackView("send-statement");
-              setAdminView("email-statement-preview");
-            }}
-          >
-            <Ionicons name="eye" size={18} color="#FFF" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Preview & Send</Text>
-          </Pressable>
+                    totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0),
+                  }]);
+                }
+                setEmailPreviewBackView("send-statement");
+                setAdminView("email-statement-preview");
+              }}
+            >
+              <Ionicons name="eye" size={18} color="#FFF" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Preview Email</Text>
+            </Pressable>
+
+            {sendPhoneTo.trim().length > 0 && (
+              <Pressable
+                style={({ pressed }) => ({ flex: 1, backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+                onPress={async () => {
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  const phones = sendPhoneTo.split(";").map(p => p.trim()).filter(p => p.length > 0);
+                  if (client) {
+                    const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                    const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
+                    const stmtData = [{ clientName: client.practiceName, email: client.email || "", address: client.address || "", leadDoctor: client.leadDoctor || "", invoices: sortedInvs.map(inv => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, issuedAt: inv.issuedAt, dueAt: inv.dueAt, patientName: inv.patientName, lineItems: (inv.lineItems || []).map(li => ({ item: li.item, description: li.description, qty: li.qty, rate: li.rate, amount: li.amount })) })), totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0) }];
+                    await generateStatementPdfAndShare(stmtData, sendEmailMessage);
+                  }
+                  addNotification({ title: "Statement Texted", message: `Statement PDF shared for ${client?.practiceName || "client"}`, type: "update" });
+                  const onFilePhone = client?.phone || "";
+                  const enteredPhones = phones.join("; ");
+                  const phoneChanged = onFilePhone.trim() !== enteredPhones.trim() && enteredPhones.length > 0;
+                  if (phoneChanged && client) {
+                    Alert.alert("Save Phone Number?", `${enteredPhones} is not on file for ${client.practiceName}. Would you like to save it?`, [
+                      { text: "Yes, Save", onPress: () => { updateClient(client.id, { phone: enteredPhones }); setAdminView("statements-hub"); } },
+                      { text: "No", onPress: () => setAdminView("statements-hub") },
+                    ]);
+                  } else { setAdminView("statements-hub"); }
+                }}
+              >
+                <Ionicons name="chatbubble-ellipses" size={18} color="#FFF" />
+                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Text PDF</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
       </ScrollView>
     );
