@@ -127,6 +127,13 @@ Preferred communication style: Simple, everyday language.
 ### AI Services
 - **OpenAI API**: Used for GPT-5.1 vision (prescription and document scanning), chat (gpt-5.1), and gpt-image-1 (smile preview). All accessed via Replit AI integration proxy at `localhost:1106/modelfarm/openai`. Note: use `max_completion_tokens` (not `max_tokens`) with gpt-5.x models.
 
+## Per-Provider Contact Info
+- `ProviderContact` interface in `lib/data.ts`: `{ name, email?, phone?, address? }`
+- `Client.providerContacts?: ProviderContact[]` — indexed to match `leadDoctor` (0) and `additionalProviders` (1+)
+- Edit Provider form: each provider (lead + up to 5 additional) gets its own card with name, email, phone, address fields
+- Statement generation (`generatePreviewForClients`): multi-provider practices produce one statement per doctor; per-provider contact info overrides practice-level fallback; invoices matched to doctor via `caseIds → cases.doctorName`
+- "Clients" renamed to "Providers" throughout admin UI; "Add Client" → "Add Provider"; "Edit Client" → "Edit Provider"
+
 ## Version Info
 - **Version**: 1.0.7, build **52**
 - **Safe area**: All admin screens use `paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16`

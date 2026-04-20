@@ -39,7 +39,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase } from "@/lib/data";
+import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
 import { LabFileDropZone } from "@/components/LabFileDropZone";
 import { apiRequest } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -2025,7 +2025,7 @@ function AdminDashboard() {
     }, 0);
 
     const menuItems: { icon: string; iconSet: "ion" | "mci" | "feather"; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
-      { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · Add, Edit, Price List`, view: "client-hub" },
+      { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Providers", sub: `${clients.length} practices · Add, Edit, Price List`, view: "client-hub" },
       { icon: "wallet", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Financial", sub: "Invoices, Statements, Sales & more", view: "financial-hub" as AdminView },
       { icon: "layers", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Edit Tier Pricing", sub: `${pricingTiers.length} pricing tiers`, view: "edit-tier-pricing" as AdminView },
       { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
@@ -2033,7 +2033,7 @@ function AdminDashboard() {
       { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Lab Users", sub: `${labPortalUsers.length} lab members`, view: "lab-users" as AdminView },
       { icon: "cloud-upload", iconSet: "ion", color: "#2563EB", bg: "#DBEAFE", title: "Integrations", sub: "iTero · Scanner connections", view: "integrations" as AdminView },
       { icon: "trash", iconSet: "ion", color: "#EF4444", bg: "#FEE2E2", title: "Delete Case", sub: "Remove an active case", view: "delete-cases" as AdminView },
-      { icon: "person-remove", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Inactive Clients", sub: `${inactiveClients.length} inactive accounts`, view: "inactive-clients" as AdminView },
+      { icon: "person-remove", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Inactive Providers", sub: `${inactiveClients.length} inactive accounts`, view: "inactive-clients" as AdminView },
       { icon: "document-attach", iconSet: "ion", color: "#DC2626", bg: "#FEE2E2", title: "Deleted Client Invoices", sub: `${deletedClientInvoices.length} archived invoices`, view: "deleted-invoices" as AdminView },
     ];
 
@@ -2108,8 +2108,8 @@ function AdminDashboard() {
     }, 0);
     const activeClientCount = clients.filter(c => c.status !== "inactive").length;
     const clientMenuItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
-      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${activeClientCount} practices · ${formatCurrency(totalOpenBalance)} open`, view: "clients" },
-      { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
+      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Providers", sub: `${activeClientCount} practices · ${formatCurrency(totalOpenBalance)} open`, view: "clients" },
+      { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Provider", sub: "Onboard a new provider", view: "add-client" },
     ];
     return (
       <ScrollView
@@ -2120,7 +2120,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Clients")}
+        {renderBackHeader("Providers")}
         <View style={adm.menuSection}>
           {clientMenuItems.map((item) => (
             <Pressable
@@ -2191,9 +2191,9 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Add Client", "client-hub")}
+        {renderBackHeader("Add Provider", "client-hub")}
         <View style={adm.formArea}>
-          <Text style={adm.formDesc}>Onboard a new dental practice.</Text>
+          <Text style={adm.formDesc}>Onboard a new provider / dental practice.</Text>
 
           <View style={adm.field}>
             <Text style={adm.fieldLabel}>Practice Name</Text>
@@ -2326,6 +2326,20 @@ function AdminDashboard() {
         }
       }
 
+      function getAllPCFromEdit(ec: Client): ProviderContact[] {
+        const paddedAdditional = ec.additionalProviders && ec.additionalProviders.length >= 5
+          ? ec.additionalProviders
+          : [...(ec.additionalProviders || []), ...Array(5 - (ec.additionalProviders?.length || 0)).fill("")];
+        const allNames = [ec.leadDoctor, ...paddedAdditional];
+        const existing = ec.providerContacts || [];
+        return allNames.map((n, i) => ({
+          name: existing[i]?.name || n || "",
+          email: existing[i]?.email || "",
+          phone: existing[i]?.phone || "",
+          address: existing[i]?.address || "",
+        }));
+      }
+
       return (
         <ScrollView
           style={styles.container}
@@ -2335,7 +2349,7 @@ function AdminDashboard() {
           }}
           showsVerticalScrollIndicator={false}
         >
-          {renderBackHeader("Edit Client", selectedClient ? "client-detail" : "client-hub")}
+          {renderBackHeader("Edit Provider", selectedClient ? "client-detail" : "client-hub")}
           <View style={adm.formArea}>
             <View style={adm.field}>
               <Text style={adm.fieldLabel}>Practice Name</Text>
@@ -2346,43 +2360,104 @@ function AdminDashboard() {
               <TextInput style={adm.input} value={editingClient.accountNumber || ""} onChangeText={(v) => setEditingClient({ ...editingClient, accountNumber: v })} placeholder="e.g. DS-066707" placeholderTextColor={Colors.light.textTertiary} autoCapitalize="characters" />
             </View>
             <View style={adm.field}>
-              <Text style={adm.fieldLabel}>Main Provider</Text>
-              <TextInput style={adm.input} value={editingClient.leadDoctor} onChangeText={(v) => setEditingClient({ ...editingClient, leadDoctor: v })} />
-            </View>
-            <View style={adm.field}>
-              <Text style={adm.fieldLabel}>Additional Providers</Text>
-              {(editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <Text style={adm.fieldLabel}>Providers</Text>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>Each gets their own statement</Text>
+              </View>
+              {[editingClient.leadDoctor, ...(editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
                 ? editingClient.additionalProviders
-                : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")]
-              ).map((prov: string, idx: number) => (
-                <TextInput
-                  key={idx}
-                  style={[adm.input, { marginBottom: idx < 4 ? 8 : 0 }]}
-                  value={prov}
-                  onChangeText={(v) => {
-                    const current = editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
-                      ? [...editingClient.additionalProviders]
-                      : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")];
-                    current[idx] = v;
-                    setEditingClient({ ...editingClient, additionalProviders: current });
-                  }}
-                  placeholder={`Provider ${idx + 2}`}
-                  placeholderTextColor={Colors.light.textTertiary}
-                />
-              ))}
+                : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")])
+              ].map((_, providerIdx) => {
+                const isLead = providerIdx === 0;
+                const paddedAdditional = editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
+                  ? editingClient.additionalProviders
+                  : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")];
+                const provName = isLead ? editingClient.leadDoctor : (paddedAdditional[providerIdx - 1] || "");
+                const pc = (editingClient.providerContacts || [])[providerIdx] || { name: provName };
+                const isPopulated = isLead || provName.trim().length > 0;
+                return (
+                  <View key={providerIdx} style={{ backgroundColor: isLead ? "#F0F9FF" : "#F9FAFB", borderRadius: 12, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: isLead ? "#BAE6FD" : Colors.light.border }}>
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: isLead ? "#0284C7" : Colors.light.textSecondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{isLead ? "Main Provider" : `Provider ${providerIdx + 1}`}</Text>
+                    <TextInput
+                      style={[adm.input, { marginBottom: isPopulated ? 8 : 0 }]}
+                      value={provName}
+                      onChangeText={(v) => {
+                        if (isLead) {
+                          const newContacts = getAllPCFromEdit(editingClient);
+                          newContacts[0] = { ...newContacts[0], name: v };
+                          setEditingClient({ ...editingClient, leadDoctor: v, providerContacts: newContacts });
+                        } else {
+                          const current = editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
+                            ? [...editingClient.additionalProviders]
+                            : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")];
+                          current[providerIdx - 1] = v;
+                          const updated = { ...editingClient, additionalProviders: current };
+                          const newContacts = getAllPCFromEdit(updated);
+                          newContacts[providerIdx] = { ...newContacts[providerIdx], name: v };
+                          setEditingClient({ ...updated, providerContacts: newContacts });
+                        }
+                      }}
+                      placeholder={isLead ? "Dr. Name" : `Provider ${providerIdx + 1} name`}
+                      placeholderTextColor={Colors.light.textTertiary}
+                    />
+                    {isPopulated && (
+                      <>
+                        <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+                          <TextInput
+                            style={[adm.input, { flex: 1 }]}
+                            value={pc.email || ""}
+                            onChangeText={(v) => {
+                              const newContacts = getAllPCFromEdit(editingClient);
+                              newContacts[providerIdx] = { ...newContacts[providerIdx], email: v };
+                              setEditingClient({ ...editingClient, providerContacts: newContacts });
+                            }}
+                            placeholder="Email"
+                            keyboardType="email-address"
+                            autoCapitalize="none"
+                            placeholderTextColor={Colors.light.textTertiary}
+                          />
+                          <TextInput
+                            style={[adm.input, { flex: 1 }]}
+                            value={pc.phone || ""}
+                            onChangeText={(v) => {
+                              const newContacts = getAllPCFromEdit(editingClient);
+                              newContacts[providerIdx] = { ...newContacts[providerIdx], phone: v };
+                              setEditingClient({ ...editingClient, providerContacts: newContacts });
+                            }}
+                            placeholder="Phone"
+                            keyboardType="phone-pad"
+                            placeholderTextColor={Colors.light.textTertiary}
+                          />
+                        </View>
+                        <TextInput
+                          style={adm.input}
+                          value={pc.address || ""}
+                          onChangeText={(v) => {
+                            const newContacts = getAllPCFromEdit(editingClient);
+                            newContacts[providerIdx] = { ...newContacts[providerIdx], address: v };
+                            setEditingClient({ ...editingClient, providerContacts: newContacts });
+                          }}
+                          placeholder="Address (optional)"
+                          placeholderTextColor={Colors.light.textTertiary}
+                        />
+                      </>
+                    )}
+                  </View>
+                );
+              })}
             </View>
             <View style={adm.fieldRow}>
               <View style={[adm.field, { flex: 1 }]}>
-                <Text style={adm.fieldLabel}>Phone</Text>
+                <Text style={adm.fieldLabel}>Practice Phone</Text>
                 <TextInput style={adm.input} value={editingClient.phone} onChangeText={(v) => setEditingClient({ ...editingClient, phone: v })} keyboardType="phone-pad" />
               </View>
               <View style={[adm.field, { flex: 1 }]}>
-                <Text style={adm.fieldLabel}>Email</Text>
+                <Text style={adm.fieldLabel}>Practice Email</Text>
                 <TextInput style={adm.input} value={editingClient.email} onChangeText={(v) => setEditingClient({ ...editingClient, email: v })} keyboardType="email-address" autoCapitalize="none" />
               </View>
             </View>
             <View style={adm.field}>
-              <Text style={adm.fieldLabel}>Address</Text>
+              <Text style={adm.fieldLabel}>Practice Address</Text>
               <TextInput style={adm.input} value={editingClient.address} onChangeText={(v) => setEditingClient({ ...editingClient, address: v })} placeholder="Address" placeholderTextColor={Colors.light.textTertiary} />
             </View>
             <View style={adm.field}>
@@ -2410,7 +2485,7 @@ function AdminDashboard() {
                 </View>
                 <View>
                   <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Edit Pricing</Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>Customize service prices for this client</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>Customize service prices for this provider</Text>
                 </View>
               </View>
               <Ionicons name={showEditClientPricing ? "chevron-up" : "chevron-down"} size={18} color={Colors.light.subText} />
@@ -2555,9 +2630,9 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Edit Client", "client-hub")}
+        {renderBackHeader("Edit Provider", "client-hub")}
         <View style={adm.listArea}>
-          <Text style={adm.formDesc}>Select a client to edit.</Text>
+          <Text style={adm.formDesc}>Select a provider to edit.</Text>
           {clients.filter(c => c.status !== "inactive").map((c) => (
             <Pressable key={c.id} style={({ pressed }) => [adm.listItem, pressed && { opacity: 0.7 }]} onPress={() => {
               setEditingClient({ ...c });
@@ -3306,32 +3381,69 @@ function AdminDashboard() {
             const clientsWithOpen = clients.filter(c => allOpenInvoices.some(inv => inv.clientName === c.practiceName));
 
             function generatePreviewForClients(selectedClients: typeof clients) {
-              return selectedClients.map((c) => {
+              const results: Array<{ clientName: string; email: string; address: string; leadDoctor: string; invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; qty: number; rate: number; amount: number }[] }[]; totalDue: number }> = [];
+
+              for (const c of selectedClients) {
                 const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
                 clientInvs.sort((a, b) => a.issuedAt - b.issuedAt);
-                const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
-                return {
-                  clientName: c.practiceName,
-                  email: c.email || "",
-                  address: c.address || "",
-                  leadDoctor: c.leadDoctor || "",
-                  invoices: clientInvs.map(inv => ({
-                    invoiceNumber: inv.invoiceNumber,
-                    amount: inv.amount,
-                    issuedAt: inv.issuedAt,
-                    dueAt: inv.dueAt,
-                    patientName: inv.patientName,
-                    lineItems: (inv.lineItems || []).map(li => ({
-                      item: li.item,
-                      description: li.description,
-                      qty: li.qty,
-                      rate: li.rate,
-                      amount: li.amount,
-                    })),
+
+                const mapInv = (inv: typeof allOpenInvoices[0]) => ({
+                  invoiceNumber: inv.invoiceNumber,
+                  amount: inv.amount,
+                  issuedAt: inv.issuedAt,
+                  dueAt: inv.dueAt,
+                  patientName: inv.patientName,
+                  lineItems: (inv.lineItems || []).map(li => ({
+                    item: li.item,
+                    description: li.description,
+                    qty: li.qty,
+                    rate: li.rate,
+                    amount: li.amount,
                   })),
-                  totalDue: clientTotal,
-                };
-              }).filter(p => p.invoices.length > 0);
+                });
+
+                const allProviderNames = [c.leadDoctor, ...(c.additionalProviders || []).filter(p => p.trim())];
+
+                if (allProviderNames.length <= 1) {
+                  if (clientInvs.length === 0) continue;
+                  const pc = (c.providerContacts || [])[0];
+                  results.push({
+                    clientName: c.practiceName,
+                    email: pc?.email || c.email || "",
+                    address: pc?.address || c.address || "",
+                    leadDoctor: c.leadDoctor || "",
+                    invoices: clientInvs.map(mapInv),
+                    totalDue: clientInvs.reduce((s, inv) => s + inv.amount, 0),
+                  });
+                  continue;
+                }
+
+                for (let provIdx = 0; provIdx < allProviderNames.length; provIdx++) {
+                  const provName = allProviderNames[provIdx];
+                  if (!provName.trim()) continue;
+
+                  const provInvs = clientInvs.filter(inv => {
+                    const invCaseIds = (inv as any).caseIds as string[] | undefined;
+                    if (!invCaseIds || invCaseIds.length === 0) return provIdx === 0;
+                    const invCases = cases.filter(cs => invCaseIds.includes(cs.id));
+                    if (invCases.length === 0) return provIdx === 0;
+                    return invCases.some(cs => cs.doctorName === provName);
+                  });
+
+                  if (provInvs.length === 0) continue;
+                  const pc = (c.providerContacts || [])[provIdx];
+                  results.push({
+                    clientName: c.practiceName,
+                    email: pc?.email || c.email || "",
+                    address: pc?.address || c.address || "",
+                    leadDoctor: provName,
+                    invoices: provInvs.map(mapInv),
+                    totalDue: provInvs.reduce((s, inv) => s + inv.amount, 0),
+                  });
+                }
+              }
+
+              return results;
             }
 
             return (
@@ -3368,12 +3480,12 @@ function AdminDashboard() {
                   <View>
                     <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Generate All Statements</Text>
                     <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", marginTop: 2 }}>
-                      {clientsWithOpen.length} client{clientsWithOpen.length !== 1 ? "s" : ""} · {allOpenInvoices.length} invoice{allOpenInvoices.length !== 1 ? "s" : ""} · {formatCurrency(totalOpenAmount)}
+                      {clientsWithOpen.length} provider{clientsWithOpen.length !== 1 ? "s" : ""} · {allOpenInvoices.length} invoice{allOpenInvoices.length !== 1 ? "s" : ""} · {formatCurrency(totalOpenAmount)}
                     </Text>
                   </View>
                 </Pressable>
 
-                <Text style={[adm.formDesc, { marginBottom: 12 }]}>Or select a client to generate their statement:</Text>
+                <Text style={[adm.formDesc, { marginBottom: 12 }]}>Or select a provider to generate their statement:</Text>
 
                 {clientsWithOpen.map((c) => {
                   const clientOpenInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
@@ -3404,7 +3516,7 @@ function AdminDashboard() {
                 {clientsWithOpen.length === 0 && (
                   <View style={{ alignItems: "center", paddingVertical: 40 }}>
                     <Ionicons name="document-text-outline" size={48} color={Colors.light.textTertiary} />
-                    <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 12, textAlign: "center" }}>No clients with open invoices</Text>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 12, textAlign: "center" }}>No providers with open invoices</Text>
                   </View>
                 )}
               </>

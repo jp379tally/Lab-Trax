@@ -578,6 +578,13 @@ export const SAMPLE_CASES: LabCase[] = [
   },
 ];
 
+export interface ProviderContact {
+  name: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+}
+
 export interface Client {
   id: string;
   clientNumber: number;
@@ -585,6 +592,7 @@ export interface Client {
   practiceName: string;
   leadDoctor: string;
   additionalProviders?: string[];
+  providerContacts?: ProviderContact[];
   phone: string;
   email: string;
   address: string;
