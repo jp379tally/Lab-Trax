@@ -1736,6 +1736,7 @@ function AdminDashboard() {
   }[] | null>(null);
 
   const [invoiceFilter, setInvoiceFilter] = useState<"open" | "pastdue" | "all">("open");
+  const [expandedInvoiceProviders, setExpandedInvoiceProviders] = useState<Record<string, boolean>>({});
   const [statementFilter, setStatementFilter] = useState<"open" | "pastdue" | "all">("open");
   const [statementViewClient, setStatementViewClient] = useState<Client | null>(null);
   const [sendEmailTo, setSendEmailTo] = useState("");
@@ -4168,10 +4169,17 @@ function AdminDashboard() {
     };
     const filterLabel = invoiceFilter === "open" ? "Open Invoices" : invoiceFilter === "pastdue" ? "Past Due Invoices" : "All Invoices";
     const filteredInvoices = invoiceFilter === "open"
-      ? invoices.filter(i => i.status === "open")
+      ? invoices.filter(i => i.status === "open" || i.status === "overdue")
       : invoiceFilter === "pastdue"
         ? invoices.filter(i => i.status === "overdue")
         : invoices;
+
+    const providerNames = [...new Set(filteredInvoices.map(i => i.clientName || "Unknown"))].sort();
+    const providerGroups = providerNames.map(name => ({
+      name,
+      invoices: filteredInvoices.filter(i => (i.clientName || "Unknown") === name).sort((a, b) => b.issuedAt - a.issuedAt),
+    }));
+
     return (
       <ScrollView
         style={styles.container}
@@ -4184,34 +4192,118 @@ function AdminDashboard() {
           </Pressable>
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, flex: 1 }}>{filterLabel}</Text>
           <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 4 }}>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>{filteredInvoices.length}</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>{providerGroups.length} providers</Text>
           </View>
         </View>
+
         <View style={adm.listArea}>
-          {filteredInvoices.length === 0 ? (
+          {providerGroups.length === 0 ? (
             <View style={{ alignItems: "center", paddingVertical: 40 }}>
               <Ionicons name="document-text-outline" size={48} color={Colors.light.textTertiary} />
               <Text style={{ fontSize: 16, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 12 }}>No {filterLabel.toLowerCase()} found</Text>
             </View>
           ) : (
-            filteredInvoices.map((inv) => {
-              const sc = getStatusColor(inv.status);
+            providerGroups.map(({ name, invoices: groupInvs }) => {
+              const isExpanded = !!expandedInvoiceProviders[name];
+              const groupTotal = groupInvs.reduce((s, i) => s + i.amount, 0);
+              const hasOverdue = groupInvs.some(i => i.status === "overdue");
+              const headerColor = hasOverdue ? Colors.light.error : Colors.light.tint;
               return (
-                <Pressable key={inv.id} style={({ pressed }) => [adm.invoiceCard, pressed && { opacity: 0.7 }]} onPress={() => { setSelectedInvoice(inv); setAdminView("invoice-detail"); }}>
-                  <View style={adm.invoiceCardTop}>
-                    <View>
-                      <Text style={adm.invoiceNumber}>{formatInvNum(inv.invoiceNumber)}</Text>
-                      <Text style={adm.invoiceClient}>{inv.clientName}</Text>
+                <View key={name} style={{ marginBottom: 10, borderRadius: 14, borderWidth: 1, borderColor: isExpanded ? headerColor + "40" : Colors.light.border, overflow: "hidden", backgroundColor: "#fff" }}>
+                  <Pressable
+                    onPress={() => setExpandedInvoiceProviders(prev => ({ ...prev, [name]: !prev[name] }))}
+                    style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 16, backgroundColor: pressed ? Colors.light.tintLight : "#fff", gap: 12 })}
+                  >
+                    <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: headerColor + "18", alignItems: "center", justifyContent: "center" }}>
+                      <Ionicons name="business-outline" size={18} color={headerColor} />
                     </View>
-                    <Text style={adm.invoiceAmount}>{formatCurrency(inv.amount)}</Text>
-                  </View>
-                  <View style={adm.invoiceCardBottom}>
-                    <Text style={adm.invoiceDate}>Due {new Date(inv.dueAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</Text>
-                    <View style={[adm.invoiceStatus, { backgroundColor: sc + "18" }]}>
-                      <Text style={[adm.invoiceStatusText, { color: sc }]}>{inv.status.toUpperCase()}</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }} numberOfLines={1}>{name}</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 }}>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                          {groupInvs.length} invoice{groupInvs.length !== 1 ? "s" : ""}
+                        </Text>
+                        {hasOverdue && (
+                          <View style={{ backgroundColor: Colors.light.error + "18", borderRadius: 6, paddingHorizontal: 6, paddingVertical: 1 }}>
+                            <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.error }}>OVERDUE</Text>
+                          </View>
+                        )}
+                      </View>
                     </View>
-                  </View>
-                </Pressable>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: hasOverdue ? Colors.light.error : Colors.light.text, marginRight: 4 }}>
+                      {formatCurrency(groupTotal)}
+                    </Text>
+                    <Ionicons
+                      name={isExpanded ? "chevron-down" : "chevron-forward"}
+                      size={20}
+                      color={Colors.light.textTertiary}
+                    />
+                  </Pressable>
+
+                  {isExpanded && (
+                    <View style={{ borderTopWidth: 1, borderTopColor: Colors.light.border }}>
+                      {groupInvs.map((inv, invIdx) => {
+                        const sc = getStatusColor(inv.status);
+                        const isOverdue = inv.status === "overdue" || (inv.dueAt < Date.now() && inv.status !== "paid");
+                        return (
+                          <Pressable
+                            key={inv.id}
+                            onPress={() => { setSelectedInvoice(inv); setAdminView("invoice-detail"); }}
+                            style={({ pressed }) => ({
+                              paddingVertical: 12,
+                              paddingHorizontal: 16,
+                              backgroundColor: pressed ? Colors.light.tintLight : invIdx % 2 === 0 ? "#FAFBFC" : "#fff",
+                              borderBottomWidth: invIdx < groupInvs.length - 1 ? 1 : 0,
+                              borderBottomColor: Colors.light.border,
+                              flexDirection: "row",
+                              alignItems: "flex-start",
+                              gap: 10,
+                            })}
+                          >
+                            <View style={{ width: 36, height: 36, borderRadius: 8, backgroundColor: sc + "18", alignItems: "center", justifyContent: "center", marginTop: 2 }}>
+                              <Ionicons name="document-text-outline" size={16} color={sc} />
+                            </View>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 3 }}>
+                                <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
+                                <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: isOverdue ? Colors.light.error : Colors.light.text }}>{formatCurrency(inv.amount)}</Text>
+                              </View>
+                              {inv.patientName ? (
+                                <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 2 }}>
+                                  Patient: {inv.patientName}
+                                </Text>
+                              ) : null}
+                              {inv.caseType ? (
+                                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 2 }}>
+                                  {inv.caseType}{inv.teeth ? ` · Teeth: ${inv.teeth}` : ""}{inv.shade ? ` · Shade: ${inv.shade}` : ""}
+                                </Text>
+                              ) : null}
+                              {(inv.lineItems || []).length > 0 && (
+                                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 2 }}>
+                                  {(inv.lineItems || []).map(li => `${li.item || li.description}${li.qty !== 1 ? ` ×${li.qty}` : ""}`).join(" · ")}
+                                </Text>
+                              )}
+                              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+                                <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary }}>
+                                    Issued {new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                                  </Text>
+                                  <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: isOverdue ? Colors.light.error : Colors.light.textTertiary }}>
+                                    Due {new Date(inv.dueAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                                  </Text>
+                                </View>
+                                <View style={{ backgroundColor: sc + "18", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 }}>
+                                  <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: sc, textTransform: "uppercase" }}>{inv.status}</Text>
+                                </View>
+                              </View>
+                            </View>
+                            <Ionicons name="chevron-forward" size={16} color={Colors.light.textTertiary} style={{ marginTop: 10 }} />
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  )}
+                </View>
               );
             })
           )}
