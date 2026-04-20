@@ -1697,6 +1697,7 @@ function AdminDashboard() {
   const [editInvClientName, setEditInvClientName] = useState("");
   const [editInvBillToSearch, setEditInvBillToSearch] = useState("");
   const [editInvShowProviderDrop, setEditInvShowProviderDrop] = useState(false);
+  const [editInvItemDropdownIdx, setEditInvItemDropdownIdx] = useState<number | null>(null);
   const [rpClientId, setRpClientId] = useState<string | null>(null);
   const [rpMethod, setRpMethod] = useState("Check");
   const [rpAmountText, setRpAmountText] = useState("");
@@ -3293,6 +3294,27 @@ function AdminDashboard() {
       setEditInvLineItems(prev => prev.filter((_, i) => i !== idx));
     }
 
+    const allItemSuggestions: { item: string; description: string; rate: number }[] = (() => {
+      const map = new Map<string, { description: string; rate: number }>();
+      for (const inv of invoices) {
+        for (const li of (inv.lineItems || [])) {
+          const key = (li.item || "").trim();
+          if (!key || map.has(key)) continue;
+          map.set(key, { description: li.description || "", rate: li.rate || 0 });
+        }
+      }
+      return Array.from(map.entries()).map(([item, vals]) => ({ item, ...vals }));
+    })();
+
+    function selectItemSuggestion(idx: number, suggestion: { item: string; description: string; rate: number }) {
+      setEditInvLineItems(prev => prev.map((li, i) => {
+        if (i !== idx) return li;
+        const qty = li.qty || 1;
+        return { ...li, item: suggestion.item, description: suggestion.description, rate: suggestion.rate, amount: qty * suggestion.rate };
+      }));
+      setEditInvItemDropdownIdx(null);
+    }
+
     const providerSearchResults = editInvBillToSearch.trim().length > 0
       ? clients.filter(c => {
           const q = editInvBillToSearch.toLowerCase();
@@ -3517,42 +3539,72 @@ function AdminDashboard() {
             <View style={{ width: 24 }} />
           </View>
 
-          {editInvLineItems.map((li, idx) => (
-            <View key={idx} style={{ flexDirection: "row", alignItems: "center", paddingVertical: 6, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9", backgroundColor: idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
-              <TextInput
-                style={[inputBase, { width: 32, textAlign: "center", paddingHorizontal: 2 }]}
-                value={String(li.qty)}
-                onChangeText={(v) => updateLineItem(idx, "qty", v)}
-                keyboardType="decimal-pad"
-              />
-              <TextInput
-                style={[inputBase, { width: 80, marginLeft: 4 }]}
-                value={li.item}
-                onChangeText={(v) => updateLineItem(idx, "item", v)}
-                placeholder="Item"
-                placeholderTextColor="#9CA3AF"
-              />
-              <TextInput
-                style={[inputBase, { flex: 1, marginLeft: 4 }]}
-                value={li.description}
-                onChangeText={(v) => updateLineItem(idx, "description", v)}
-                placeholder="Description"
-                placeholderTextColor="#9CA3AF"
-              />
-              <TextInput
-                style={[inputBase, { width: 54, marginLeft: 4, textAlign: "right" }]}
-                value={String(li.rate)}
-                onChangeText={(v) => updateLineItem(idx, "rate", v)}
-                keyboardType="decimal-pad"
-              />
-              <View style={{ width: 60, marginLeft: 4, alignItems: "flex-end" }}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{formatCurrency(li.amount)}</Text>
+          {editInvLineItems.map((li, idx) => {
+            const itemSearch = (li.item || "").toLowerCase().trim();
+            const filteredSuggestions = editInvItemDropdownIdx === idx && itemSearch.length > 0
+              ? allItemSuggestions.filter(s => s.item.toLowerCase().includes(itemSearch) && s.item.toLowerCase() !== itemSearch).slice(0, 6)
+              : [];
+            return (
+              <View key={idx}>
+                <View style={{ flexDirection: "row", alignItems: "center", paddingVertical: 6, paddingHorizontal: 10, borderBottomWidth: filteredSuggestions.length > 0 ? 0 : 1, borderBottomColor: "#F1F5F9", backgroundColor: idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
+                  <TextInput
+                    style={[inputBase, { width: 32, textAlign: "center", paddingHorizontal: 2 }]}
+                    value={String(li.qty)}
+                    onChangeText={(v) => updateLineItem(idx, "qty", v)}
+                    keyboardType="decimal-pad"
+                    onFocus={() => setEditInvItemDropdownIdx(null)}
+                  />
+                  <TextInput
+                    style={[inputBase, { width: 80, marginLeft: 4, borderColor: editInvItemDropdownIdx === idx ? "#3B82F6" : "#93C5FD" }]}
+                    value={li.item}
+                    onChangeText={(v) => { updateLineItem(idx, "item", v); setEditInvItemDropdownIdx(idx); }}
+                    onFocus={() => setEditInvItemDropdownIdx(idx)}
+                    onBlur={() => setTimeout(() => setEditInvItemDropdownIdx(null), 180)}
+                    placeholder="Item"
+                    placeholderTextColor="#9CA3AF"
+                  />
+                  <TextInput
+                    style={[inputBase, { flex: 1, marginLeft: 4 }]}
+                    value={li.description}
+                    onChangeText={(v) => updateLineItem(idx, "description", v)}
+                    placeholder="Description"
+                    placeholderTextColor="#9CA3AF"
+                    onFocus={() => setEditInvItemDropdownIdx(null)}
+                  />
+                  <TextInput
+                    style={[inputBase, { width: 54, marginLeft: 4, textAlign: "right" }]}
+                    value={String(li.rate)}
+                    onChangeText={(v) => updateLineItem(idx, "rate", v)}
+                    keyboardType="decimal-pad"
+                    onFocus={() => setEditInvItemDropdownIdx(null)}
+                  />
+                  <View style={{ width: 60, marginLeft: 4, alignItems: "flex-end" }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{formatCurrency(li.amount)}</Text>
+                  </View>
+                  <Pressable onPress={() => removeLineItem(idx)} style={{ width: 24, alignItems: "center" }}>
+                    <Ionicons name="trash-outline" size={15} color="#EF4444" />
+                  </Pressable>
+                </View>
+                {filteredSuggestions.length > 0 && (
+                  <View style={{ marginHorizontal: 10, backgroundColor: "#fff", borderWidth: 1, borderColor: "#3B82F6", borderTopWidth: 0, borderBottomLeftRadius: 6, borderBottomRightRadius: 6, zIndex: 100, elevation: 10 }}>
+                    {filteredSuggestions.map((s, si) => (
+                      <Pressable
+                        key={si}
+                        onPress={() => selectItemSuggestion(idx, s)}
+                        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 8, paddingHorizontal: 10, backgroundColor: pressed ? "#EFF6FF" : si % 2 === 0 ? "#F8FAFF" : "#fff", borderTopWidth: si > 0 ? 1 : 0, borderTopColor: "#E5E7EB" })}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#1E3A5F" }}>{s.item}</Text>
+                          {s.description ? <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 1 }}>{s.description}</Text> : null}
+                        </View>
+                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#059669", marginLeft: 8 }}>{formatCurrency(s.rate)}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
               </View>
-              <Pressable onPress={() => removeLineItem(idx)} style={{ width: 24, alignItems: "center" }}>
-                <Ionicons name="trash-outline" size={15} color="#EF4444" />
-              </Pressable>
-            </View>
-          ))}
+            );
+          })}
 
           {editInvLineItems.length === 0 && (
             <View style={{ paddingVertical: 20, alignItems: "center" }}>
