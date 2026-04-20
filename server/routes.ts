@@ -1331,6 +1331,7 @@ Important rules:
 - Only set isRush to true if explicitly marked as rush/urgent
 - For caseType, match to the closest category listed above
 - Extract the shade exactly as written on the prescription
+- NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel" or "Sharpstein, Daniel"), the prescription is using Last, First format. You MUST swap it to First Last order and remove the comma. Examples: "Kidder, Daniel" → "Daniel Kidder", "Dr. Sharpstein, Daniel" → "Dr. Daniel Sharpstein". Always output names in natural First Last order with no commas.
 - Return ONLY the JSON object, no other text`;
 
       const userContent: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "auto" } }> = [
@@ -1357,10 +1358,27 @@ Important rules:
 
       const data = JSON.parse(jsonMatch[0]);
 
+      function fixNameOrder(name: string | null | undefined): string | null | undefined {
+        if (!name || typeof name !== "string") return name;
+        const commaIdx = name.indexOf(",");
+        if (commaIdx === -1) return name;
+        const prefix = name.match(/^(Dr\.|Dr|Mr\.|Mrs\.|Ms\.|Prof\.)\s*/i)?.[0] || "";
+        const nameWithoutPrefix = name.slice(prefix.length);
+        const commaIdxInner = nameWithoutPrefix.indexOf(",");
+        if (commaIdxInner === -1) return name;
+        const last = nameWithoutPrefix.slice(0, commaIdxInner).trim();
+        const first = nameWithoutPrefix.slice(commaIdxInner + 1).trim();
+        return `${prefix}${first} ${last}`.trim();
+      }
+
       const cleanedData: Record<string, any> = {};
       for (const [key, value] of Object.entries(data)) {
         if (value !== null && value !== undefined && value !== "" && value !== "null") {
-          cleanedData[key] = value;
+          if ((key === "doctorName" || key === "patientName") && typeof value === "string") {
+            cleanedData[key] = fixNameOrder(value) ?? value;
+          } else {
+            cleanedData[key] = value;
+          }
         }
       }
 
