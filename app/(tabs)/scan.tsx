@@ -604,12 +604,10 @@ export default function ScanScreen() {
     }
 
     if (dataUri.startsWith("data:")) {
-      const cropped = await cropDocumentIfNeeded(dataUri);
-      const finalUri = cropped !== dataUri ? cropped : dataUri;
-      setCapturedUri(finalUri);
+      setCapturedUri(dataUri);
       setCasePhotos((prev) => {
-        if (prev.includes(finalUri)) return prev;
-        return [...prev, finalUri];
+        if (prev.includes(dataUri)) return prev;
+        return [...prev, dataUri];
       });
     } else {
       setCasePhotos((prev) => {
@@ -886,12 +884,10 @@ export default function ScanScreen() {
       }
 
       if (dataUri.startsWith("data:")) {
-        const cropped = await cropDocumentIfNeeded(dataUri);
-        const finalUri = cropped !== dataUri ? cropped : dataUri;
-        setCapturedUri(finalUri);
+        setCapturedUri(dataUri);
         setCasePhotos((prev) => {
-          if (prev.includes(finalUri)) return prev;
-          return [...prev, finalUri];
+          if (prev.includes(dataUri)) return prev;
+          return [...prev, dataUri];
         });
       } else {
         setCasePhotos((prev) => {
@@ -4357,17 +4353,17 @@ export default function ScanScreen() {
               disabled={isCropping}
               style={({ pressed }) => [
                 styles.reviewActionBtn,
-                { backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
+                { backgroundColor: "rgba(20,184,166,0.3)", borderWidth: 1, borderColor: "rgba(20,184,166,0.7)" },
                 pressed && { opacity: 0.7 },
                 isCropping && { opacity: 0.5 },
               ]}
             >
               {isCropping ? (
-                <ActivityIndicator size="small" color="#FFF" />
+                <ActivityIndicator size="small" color="#5EEAD4" />
               ) : (
-                <Ionicons name="crop" size={22} color="#FFF" />
+                <Ionicons name="crop" size={22} color="#5EEAD4" />
               )}
-              <Text style={styles.actionBtnText}>{isCropping ? "Cropping..." : "Crop Photo"}</Text>
+              <Text style={[styles.actionBtnText, { color: "#5EEAD4" }]}>{isCropping ? "Cropping..." : "Crop Photo"}</Text>
             </Pressable>
             <Pressable
               onPress={handleAddMoreFromReview}
