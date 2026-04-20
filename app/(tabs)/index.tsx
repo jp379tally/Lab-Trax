@@ -42,7 +42,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
 import { LabFileDropZone } from "@/components/LabFileDropZone";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
-import { apiRequest } from "@/lib/query-client";
+import { apiRequest, getApiUrl, getAccessToken } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 
@@ -1663,7 +1663,8 @@ type AdminView =
   | "ar-aging"
   | "pl-report"
   | "sales-by-item"
-  | "receive-payment";
+  | "receive-payment"
+  | "backup";
 
 function AdminDashboard() {
   const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite } = useApp();
@@ -1833,6 +1834,8 @@ function AdminDashboard() {
   const [iteroSaving, setIteroSaving] = useState(false);
   const [iteroImporting, setIteroImporting] = useState(false);
   const [iteroImportResults, setIteroImportResults] = useState<{ doctor: string; teeth: string; shade: string; material: string; notes: string }[]>([]);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [lastBackupTime, setLastBackupTime] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -2072,6 +2075,7 @@ function AdminDashboard() {
       { icon: "trash", iconSet: "ion", color: "#EF4444", bg: "#FEE2E2", title: "Delete Case", sub: "Remove an active case", view: "delete-cases" as AdminView },
       { icon: "person-remove", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Inactive Providers", sub: `${inactiveClients.length} inactive accounts`, view: "inactive-clients" as AdminView },
       { icon: "document-attach", iconSet: "ion", color: "#DC2626", bg: "#FEE2E2", title: "Deleted Client Invoices", sub: `${deletedClientInvoices.length} archived invoices`, view: "deleted-invoices" as AdminView },
+      { icon: "cloud-download", iconSet: "ion", color: "#059669", bg: "#D1FAE5", title: "Backup Data", sub: "Export all data to ZIP archive", view: "backup" as AdminView },
     ];
 
     return (
@@ -8310,10 +8314,174 @@ function AdminDashboard() {
     );
   }
 
+  function renderBackup() {
+    async function handleDownloadBackup() {
+      if (isBackingUp) return;
+      setIsBackingUp(true);
+      try {
+        const token = getAccessToken();
+        const apiBase = getApiUrl();
+        const backupUrl = new URL("/api/admin/backup", apiBase).toString();
+
+        if (Platform.OS === "web") {
+          const resp = await fetch(backupUrl, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          });
+          if (!resp.ok) throw new Error(`Server error ${resp.status}`);
+          const blob = await resp.blob();
+          const dateStr = new Date().toISOString().split("T")[0];
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `labtrax-backup-${dateStr}.zip`;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+          setLastBackupTime(new Date().toLocaleString());
+        } else {
+          const FileSystem = await import("expo-file-system");
+          const dateStr = new Date().toISOString().split("T")[0];
+          const destPath = `${FileSystem.documentDirectory}labtrax-backup-${dateStr}.zip`;
+
+          const dlRes = await FileSystem.downloadAsync(backupUrl, destPath, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          });
+          if (dlRes.status !== 200) throw new Error(`Server returned ${dlRes.status}`);
+
+          const isAvail = await Sharing.isAvailableAsync();
+          if (isAvail) {
+            await Sharing.shareAsync(dlRes.uri, {
+              mimeType: "application/zip",
+              dialogTitle: "Save LabTrax Backup",
+              UTI: "public.zip-archive",
+            });
+            setLastBackupTime(new Date().toLocaleString());
+          } else {
+            Alert.alert("Backup Saved", `Backup saved to:\n${dlRes.uri}`);
+            setLastBackupTime(new Date().toLocaleString());
+          }
+        }
+      } catch (e: any) {
+        console.error("Backup error:", e?.message);
+        Alert.alert("Backup Failed", e?.message || "Something went wrong. Please try again.");
+      }
+      setIsBackingUp(false);
+    }
+
+    const included = [
+      { icon: "people-outline", label: "All user accounts", sub: `${users.length} registered users` },
+      { icon: "folder-open-outline", label: "All case records", sub: `${cases.length} cases with full data` },
+      { icon: "images-outline", label: "Case photos & attachments", sub: "All uploaded media files" },
+      { icon: "pricetag-outline", label: "Clients & pricing", sub: `${clients.length} providers with pricing` },
+      { icon: "receipt-outline", label: "Invoices & payments", sub: `${invoices.length} financial records` },
+    ];
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Backup Data")}
+
+        <View style={{ paddingHorizontal: 20 }}>
+          <LinearGradient
+            colors={["#064E3B", "#065F46"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ borderRadius: 20, padding: 22, marginBottom: 20 }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+              <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center", marginRight: 14 }}>
+                <Ionicons name="cloud-download" size={24} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#fff" }}>Data Backup</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.65)", marginTop: 2 }}>Export a complete ZIP archive to a local server or thumb drive</Text>
+              </View>
+            </View>
+            {lastBackupTime && (
+              <View style={{ backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginTop: 4 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>
+                  Last backup: {lastBackupTime}
+                </Text>
+              </View>
+            )}
+          </LinearGradient>
+
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, letterSpacing: 0.5, marginBottom: 10 }}>
+            WHAT'S INCLUDED
+          </Text>
+          <View style={{ backgroundColor: "#fff", borderRadius: 16, borderWidth: 1, borderColor: Colors.light.border, marginBottom: 24, overflow: "hidden" }}>
+            {included.map((item, idx) => (
+              <View key={idx} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderBottomWidth: idx < included.length - 1 ? 1 : 0, borderBottomColor: Colors.light.borderLight }}>
+                <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: "#D1FAE5", alignItems: "center", justifyContent: "center", marginRight: 14 }}>
+                  <Ionicons name={item.icon as any} size={18} color="#059669" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{item.label}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>{item.sub}</Text>
+                </View>
+                <Ionicons name="checkmark-circle" size={18} color="#059669" />
+              </View>
+            ))}
+          </View>
+
+          <View style={{ backgroundColor: "#FEF3C7", borderRadius: 14, padding: 14, marginBottom: 24, flexDirection: "row", alignItems: "flex-start", borderWidth: 1, borderColor: "#FDE68A" }}>
+            <Ionicons name="information-circle-outline" size={18} color="#D97706" style={{ marginRight: 10, marginTop: 1 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>Security Note</Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#A16207", marginTop: 3, lineHeight: 18 }}>
+                Passwords are never included in backups. Store your backup file securely — it contains patient and financial data subject to HIPAA regulations.
+              </Text>
+            </View>
+          </View>
+
+          <Pressable
+            onPress={handleDownloadBackup}
+            disabled={isBackingUp}
+            style={({ pressed }) => [{
+              backgroundColor: isBackingUp ? "#6EE7B7" : "#059669",
+              borderRadius: 16,
+              paddingVertical: 18,
+              alignItems: "center",
+              justifyContent: "center",
+              flexDirection: "row",
+              gap: 10,
+              opacity: pressed ? 0.85 : 1,
+            }]}
+          >
+            {isBackingUp
+              ? <ActivityIndicator color="#fff" size="small" />
+              : <Ionicons name="cloud-download" size={22} color="#fff" />}
+            <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>
+              {isBackingUp ? "Generating Backup…" : "Download Backup"}
+            </Text>
+          </Pressable>
+
+          {Platform.OS !== "web" && (
+            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", marginTop: 12 }}>
+              On mobile, the share sheet lets you save to Files, AirDrop, or connected storage
+            </Text>
+          )}
+          {Platform.OS === "web" && (
+            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", marginTop: 12 }}>
+              The ZIP file will download to your computer — you can then copy it to a thumb drive or local server
+            </Text>
+          )}
+        </View>
+      </ScrollView>
+    );
+  }
+
   switch (adminView) {
     case "delete-cases": return renderDeleteCases();
     case "inactive-clients": return renderInactiveClients();
     case "deleted-invoices": return renderDeletedInvoices();
+    case "backup": return renderBackup();
     case "financial-hub": return renderFinancialHub();
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();

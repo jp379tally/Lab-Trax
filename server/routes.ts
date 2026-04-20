@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import archiver from "archiver";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -1565,6 +1566,67 @@ Important rules:
       }
       res.json({ success: true, deleted: deletedCount, found: matches.length });
     } catch { res.status(500).json({ error: "Cleanup failed" }); }
+  });
+
+  // ── Admin Data Backup ─────────────────────────────────────────────────────
+  app.get("/api/admin/backup", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+
+      const allUsers = await db.select().from(users);
+      const allCases = await db.select().from(labCases);
+
+      const safeUsers = allUsers.map(u => {
+        const { password: _pw, ...rest } = u as any;
+        return rest;
+      });
+
+      const manifest = {
+        version: "1.0",
+        appName: "LabTrax",
+        exportedAt: new Date().toISOString(),
+        exportedBy: reqUser.username || reqUser.id,
+        counts: {
+          users: safeUsers.length,
+          cases: allCases.length,
+        },
+        tables: ["users", "lab_cases"],
+        note: "Passwords are excluded from user records for security. Media files are included in the media/ directory.",
+      };
+
+      const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
+      const mediaExists = fs.existsSync(mediaDir);
+
+      const dateStr = new Date().toISOString().split("T")[0];
+      const filename = `labtrax-backup-${dateStr}.zip`;
+
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Cache-Control", "no-store");
+
+      const archive = archiver("zip", { zlib: { level: 6 } });
+      archive.on("error", (err: Error) => {
+        console.error("Backup archive error:", err);
+        if (!res.headersSent) res.status(500).json({ error: "Backup failed." });
+      });
+      archive.pipe(res);
+
+      archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
+      archive.append(JSON.stringify(safeUsers, null, 2), { name: "data/users.json" });
+      archive.append(JSON.stringify(allCases, null, 2), { name: "data/cases.json" });
+
+      if (mediaExists) {
+        archive.directory(mediaDir, "media");
+      }
+
+      await archive.finalize();
+    } catch (e: any) {
+      console.error("Backup endpoint error:", e?.message);
+      if (!res.headersSent) res.status(500).json({ error: "Backup failed." });
+    }
   });
 
   const httpServer = createServer(app);

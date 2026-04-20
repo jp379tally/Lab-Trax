@@ -43,6 +43,11 @@ Preferred communication style: Simple, everyday language.
 - **Legacy**: `lab_cases` (JSON blob storage, still used by frontend app-context), `chat_conversations`, `chat_messages`
 - **Membership & Requests**: `lab_memberships`, `join_requests`, `lab_invites`, `notifications`
 
+### Admin Backup
+- **Endpoint**: `GET /api/admin/backup` — admin-only (role check enforced server-side). Streams a ZIP archive containing: `manifest.json`, `data/users.json` (no passwords), `data/cases.json`, and all `uploads/case-media/` files.
+- **Client UI**: Accessible from Admin Vault → "Backup Data". On mobile, uses `expo-file-system` + `expo-sharing` share sheet (Files, AirDrop, USB storage). On web, triggers browser file download. Shows what's included, HIPAA security note, and last backup timestamp.
+- **Package**: Uses `archiver` npm package for ZIP stream generation on the server.
+
 ### Key Features and Design Patterns
 - **3-Portal Architecture**: Differentiated access for Master Admin, Lab Portal, and Provider Portal based on `userType`.
 - **Role-Based Access**: `user`, `admin` roles with additional `adminUnlocked` state for sensitive actions.
