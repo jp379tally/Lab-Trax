@@ -167,6 +167,7 @@ export default function CaseDetailScreen() {
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
   const [photoNotes, setPhotoNotes] = useState("");
   const [showPhotoNotes, setShowPhotoNotes] = useState(false);
+  const finishPhotosRef = useRef(false);
   const [showQuickEdit, setShowQuickEdit] = useState(false);
   const [qeDoctor, setQeDoctor] = useState("");
   const [qePatient, setQePatient] = useState("");
@@ -818,39 +819,47 @@ export default function CaseDetailScreen() {
     );
   }
 
-  async function handleFinishPhotos() {
-    await Promise.all(capturedPhotos.map((uri) => addCasePhoto(caseItem!.id, uri, userInitials)));
-    if (photoNotes.trim()) {
-      addCaseNote(caseItem!.id, photoNotes.trim(), userInitials);
-    }
-    if (Platform.OS !== "web") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
-    const photoCount = capturedPhotos.length;
-    const hasNotes = !!photoNotes.trim();
+  function handleFinishPhotos() {
+    if (finishPhotosRef.current) return;
+    finishPhotosRef.current = true;
 
-    if (userType === "provider") {
-      const parts: string[] = [];
-      parts.push(`${photoCount} file${photoCount > 1 ? "s" : ""}`);
-      if (hasNotes) parts.push("notes");
-      const notifTitle = "Provider Media Added";
-      const notifMsg = `${currentUser || "Provider"} added ${parts.join(" and ")} to Case ${caseItem!.caseNumber}`;
-      addNotification({
-        title: notifTitle,
-        message: notifMsg,
-        type: "alert",
-        caseId: caseItem!.id,
-      });
-    }
+    const photosToSave = [...capturedPhotos];
+    const noteToSave = photoNotes.trim();
+    const caseId = caseItem!.id;
+    const caseNumber = caseItem!.caseNumber;
 
-    const msg = hasNotes
-      ? `${photoCount} file${photoCount > 1 ? "s" : ""} and notes added to case.`
-      : `${photoCount} file${photoCount > 1 ? "s" : ""} added to case.`;
-    Alert.alert("Saved", msg);
     setCapturedPhotos([]);
     setPhotoNotes("");
     setShowPhotoNotes(false);
     setShowPhotoPreview(false);
+
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+
+    (async () => {
+      try {
+        await Promise.all(photosToSave.map((uri) => addCasePhoto(caseId, uri, userInitials)));
+        if (noteToSave) {
+          addCaseNote(caseId, noteToSave, userInitials);
+        }
+        if (userType === "provider") {
+          const photoCount = photosToSave.length;
+          const hasNotes = !!noteToSave;
+          const parts: string[] = [];
+          parts.push(`${photoCount} file${photoCount > 1 ? "s" : ""}`);
+          if (hasNotes) parts.push("notes");
+          addNotification({
+            title: "Provider Media Added",
+            message: `${currentUser || "Provider"} added ${parts.join(" and ")} to Case ${caseNumber}`,
+            type: "alert",
+            caseId,
+          });
+        }
+      } finally {
+        finishPhotosRef.current = false;
+      }
+    })();
   }
 
   function handleSaveNote() {
