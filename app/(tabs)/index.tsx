@@ -1658,7 +1658,11 @@ type AdminView =
   | "delete-cases"
   | "inactive-clients"
   | "deleted-invoices"
-  | "edit-invoice";
+  | "edit-invoice"
+  | "ar-aging"
+  | "pl-report"
+  | "sales-by-item"
+  | "receive-payment";
 
 function AdminDashboard() {
   const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite } = useApp();
@@ -1689,6 +1693,14 @@ function AdminDashboard() {
   const [editInvShade, setEditInvShade] = useState("");
   const [editInvCaseNotes, setEditInvCaseNotes] = useState("");
   const [editInvCreditsText, setEditInvCreditsText] = useState("0");
+  const [rpClientId, setRpClientId] = useState<string | null>(null);
+  const [rpMethod, setRpMethod] = useState("Check");
+  const [rpAmountText, setRpAmountText] = useState("");
+  const [rpRef, setRpRef] = useState("");
+  const [rpSelectedInvIds, setRpSelectedInvIds] = useState<string[]>([]);
+  const [plPeriod, setPlPeriod] = useState<"mtd" | "qtd" | "ytd" | "custom">("ytd");
+  const [plCustomStart, setPlCustomStart] = useState("");
+  const [plCustomEnd, setPlCustomEnd] = useState("");
 
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
@@ -3850,19 +3862,30 @@ function AdminDashboard() {
   }
 
   function renderFinancialHub() {
+    const now = new Date();
+    const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
     const openInvCount = invoices.filter(i => i.status === "open").length;
     const overdueInvCount = invoices.filter(i => i.status === "overdue").length;
     const totalOpenAmt = invoices
       .filter(i => i.status === "open" || i.status === "overdue")
+      .reduce((s, inv) => s + inv.amount, 0);
+    const collectedYTD = invoices
+      .filter(i => i.status === "paid" && i.issuedAt >= yearStart)
+      .reduce((s, inv) => s + inv.amount, 0);
+    const overdueAmt = invoices
+      .filter(i => i.status === "overdue")
       .reduce((s, inv) => s + inv.amount, 0);
     const lowStockCount = inventory.filter(i => i.quantity <= i.minQuantity).length;
 
     const financialItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
       { icon: "document-text", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Invoices", sub: `${openInvCount} open · ${overdueInvCount} overdue`, view: "invoices-hub" as AdminView },
       { icon: "receipt-outline", color: "#06B6D4", bg: "#CFFAFE", title: "Statements", sub: "View & send billing statements", view: "statements-hub" as AdminView },
-      { icon: "trending-up", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
+      { icon: "cash-outline", color: "#059669", bg: "#D1FAE5", title: "Receive Payment", sub: "Record payments from clients", view: "receive-payment" as AdminView },
+      { icon: "trending-up", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales Report", sub: "Revenue & analytics", view: "sales" as AdminView },
+      { icon: "stats-chart", color: "#0EA5E9", bg: "#E0F2FE", title: "P&L Report", sub: "Profit & loss by period", view: "pl-report" as AdminView },
+      { icon: "time-outline", color: "#F59E0B", bg: "#FEF3C7", title: "A/R Aging", sub: "Outstanding by age bucket", view: "ar-aging" as AdminView },
+      { icon: "pricetag-outline", color: "#8B5CF6", bg: "#F3E8FF", title: "Sales by Item", sub: "Revenue by product/service", view: "sales-by-item" as AdminView },
       { icon: "cube", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items · ${lowStockCount} low stock`, view: "inventory" as AdminView },
-      { icon: "card", color: "#7C3AED", bg: "#F3E8FF", title: "Payment Processing", sub: "Process payments & refunds", view: "payment-processing" as AdminView },
     ];
 
     return (
@@ -3877,19 +3900,25 @@ function AdminDashboard() {
         {renderBackHeader("Financial")}
 
         <LinearGradient
-          colors={["#065F46", "#047857"]}
+          colors={["#1E3A5F", "#1D4ED8"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={[styles.heroCard, { marginHorizontal: 20, marginBottom: 20 }]}
+          style={{ marginHorizontal: 16, borderRadius: 16, padding: 20, marginBottom: 12 }}
         >
-          <Text style={[styles.heroLabel, { opacity: 0.6 }]}>TOTAL OPEN BALANCE</Text>
-          <Text style={styles.heroCount}>{formatCurrency(totalOpenAmt)}</Text>
-          <View style={adm.heroBadgeRow}>
-            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,255,255,0.15)" }]}>
-              <Text style={adm.heroBadgeText}>{openInvCount} Open</Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.65)", letterSpacing: 1, marginBottom: 4 }}>ACCOUNTS RECEIVABLE</Text>
+          <Text style={{ fontSize: 34, fontFamily: "Inter_700Bold", color: "#fff", marginBottom: 12 }}>{formatCurrency(totalOpenAmt)}</Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <View style={{ flex: 1, backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 10, padding: 10 }}>
+              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>Open</Text>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff", marginTop: 2 }}>{openInvCount}</Text>
             </View>
-            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,255,255,0.15)" }]}>
-              <Text style={adm.heroBadgeText}>{overdueInvCount} Overdue</Text>
+            <View style={{ flex: 1, backgroundColor: "rgba(239,68,68,0.25)", borderRadius: 10, padding: 10 }}>
+              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>Overdue</Text>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FCA5A5", marginTop: 2 }}>{formatCurrency(overdueAmt)}</Text>
+            </View>
+            <View style={{ flex: 1, backgroundColor: "rgba(16,185,129,0.25)", borderRadius: 10, padding: 10 }}>
+              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>Collected YTD</Text>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#6EE7B7", marginTop: 2 }}>{formatCurrency(collectedYTD)}</Text>
             </View>
           </View>
         </LinearGradient>
@@ -6785,6 +6814,502 @@ function AdminDashboard() {
     );
   }
 
+  function renderARAgingReport() {
+    const today = Date.now();
+    const MS_DAY = 86400000;
+    const unpaid = invoices.filter(i => i.status === "open" || i.status === "overdue" || i.status === "sent");
+
+    const clientMap: Record<string, { name: string; buckets: [number, number, number, number] }> = {};
+    unpaid.forEach(inv => {
+      const daysLate = Math.floor((today - inv.dueAt) / MS_DAY);
+      if (!clientMap[inv.clientId]) clientMap[inv.clientId] = { name: inv.clientName || inv.billTo || "Unknown", buckets: [0, 0, 0, 0] };
+      const b = clientMap[inv.clientId].buckets;
+      if (daysLate <= 30) b[0] += inv.amount;
+      else if (daysLate <= 60) b[1] += inv.amount;
+      else if (daysLate <= 90) b[2] += inv.amount;
+      else b[3] += inv.amount;
+    });
+
+    const rows = Object.values(clientMap).sort((a, b) => (b.buckets[3] + b.buckets[2]) - (a.buckets[3] + a.buckets[2]));
+    const totals: [number, number, number, number] = [0, 0, 0, 0];
+    rows.forEach(r => r.buckets.forEach((v, i) => (totals[i] += v)));
+    const grandTotal = totals.reduce((s, v) => s + v, 0);
+    const bucketHeaders = ["Current\n(0–30)", "31–60\nDays", "61–90\nDays", "90+\nDays"];
+    const bucketColors = ["#059669", "#D97706", "#EF4444", "#7C2D12"];
+
+    const colW = [0, 52, 52, 52, 52];
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 24 : 120 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("A/R Aging Summary", "financial-hub")}
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
+          <LinearGradient colors={["#1E3A5F", "#1D4ED8"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ padding: 16 }}>
+            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.65)", letterSpacing: 1 }}>TOTAL OUTSTANDING</Text>
+            <Text style={{ fontSize: 32, fontFamily: "Inter_700Bold", color: "#fff", marginTop: 4 }}>{formatCurrency(grandTotal)}</Text>
+            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", marginTop: 4 }}>{rows.length} client{rows.length !== 1 ? "s" : ""} with open balances</Text>
+          </LinearGradient>
+
+          <View style={{ flexDirection: "row", paddingHorizontal: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9", backgroundColor: "#F8FAFC" }}>
+            <Text style={{ flex: 1, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569" }}>CLIENT</Text>
+            {bucketHeaders.map((h, i) => (
+              <Text key={i} style={{ width: colW[i + 1] as number, fontSize: 10, fontFamily: "Inter_700Bold", color: bucketColors[i], textAlign: "right" }}>{h}</Text>
+            ))}
+            <Text style={{ width: 60, fontSize: 10, fontFamily: "Inter_700Bold", color: "#1E293B", textAlign: "right" }}>TOTAL</Text>
+          </View>
+
+          {rows.length === 0 && (
+            <View style={{ padding: 32, alignItems: "center" }}>
+              <Ionicons name="checkmark-circle" size={40} color="#10B981" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#065F46", marginTop: 8 }}>All Caught Up!</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 4 }}>No outstanding balances.</Text>
+            </View>
+          )}
+
+          {rows.map((row, idx) => {
+            const rowTotal = row.buckets.reduce((s, v) => s + v, 0);
+            return (
+              <View key={idx} style={{ flexDirection: "row", paddingHorizontal: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9", backgroundColor: idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
+                <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_500Medium", color: "#111827" }} numberOfLines={1}>{row.name}</Text>
+                {row.buckets.map((v, i) => (
+                  <Text key={i} style={{ width: colW[i + 1] as number, fontSize: 11, fontFamily: v > 0 ? "Inter_600SemiBold" : "Inter_400Regular", color: v > 0 ? bucketColors[i] : "#D1D5DB", textAlign: "right" }}>{v > 0 ? formatCurrency(v) : "–"}</Text>
+                ))}
+                <Text style={{ width: 60, fontSize: 12, fontFamily: "Inter_700Bold", color: "#111827", textAlign: "right" }}>{formatCurrency(rowTotal)}</Text>
+              </View>
+            );
+          })}
+
+          <View style={{ flexDirection: "row", paddingHorizontal: 10, paddingVertical: 12, backgroundColor: "#1E3A5F" }}>
+            <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff" }}>TOTAL</Text>
+            {totals.map((v, i) => (
+              <Text key={i} style={{ width: colW[i + 1] as number, fontSize: 11, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "right" }}>{v > 0 ? formatCurrency(v) : "–"}</Text>
+            ))}
+            <Text style={{ width: 60, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "right" }}>{formatCurrency(grandTotal)}</Text>
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 16, flexDirection: "row", gap: 8, marginBottom: 16 }}>
+          {bucketHeaders.map((h, i) => (
+            <View key={i} style={{ flex: 1, backgroundColor: "#fff", borderRadius: 10, padding: 10, borderWidth: 1, borderColor: "#E5E7EB", alignItems: "center" }}>
+              <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: bucketColors[i], textAlign: "center" }}>{h.replace("\n", " ")}</Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: totals[i] > 0 ? bucketColors[i] : "#9CA3AF", marginTop: 4 }}>{totals[i] > 0 ? formatCurrency(totals[i]) : "–"}</Text>
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderPLReport() {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const q = Math.floor(now.getMonth() / 3);
+    const qtdStart = new Date(now.getFullYear(), q * 3, 1).getTime();
+    const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+
+    let pStart = yearStart;
+    let pEnd = Date.now();
+    let pLabel = "Year to Date";
+    if (plPeriod === "mtd") { pStart = monthStart; pLabel = "Month to Date"; }
+    else if (plPeriod === "qtd") { pStart = qtdStart; pLabel = "Quarter to Date"; }
+    else if (plPeriod === "custom") {
+      pLabel = "Custom Range";
+      if (plCustomStart) { const p = new Date(plCustomStart); if (!isNaN(p.getTime())) pStart = p.getTime(); }
+      if (plCustomEnd) { const p = new Date(plCustomEnd); if (!isNaN(p.getTime())) pEnd = p.getTime() + 86400000; }
+    }
+
+    const periodInvoices = invoices.filter(i => i.issuedAt >= pStart && i.issuedAt <= pEnd);
+    const totalBilled = periodInvoices.reduce((s, i) => s + i.amount, 0);
+    const collected = periodInvoices.filter(i => i.status === "paid").reduce((s, i) => s + i.amount, 0);
+    const outstanding = periodInvoices.filter(i => i.status !== "paid").reduce((s, i) => s + i.amount, 0);
+    const creditsMemo = periodInvoices.reduce((s, i) => s + (i.credits || 0), 0);
+
+    const monthlyMap: Record<string, { billed: number; collected: number }> = {};
+    periodInvoices.forEach(inv => {
+      const d = new Date(inv.issuedAt);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      if (!monthlyMap[key]) monthlyMap[key] = { billed: 0, collected: 0 };
+      monthlyMap[key].billed += inv.amount;
+      if (inv.status === "paid") monthlyMap[key].collected += inv.amount;
+    });
+    const months = Object.keys(monthlyMap).sort();
+    const maxBilled = Math.max(...months.map(m => monthlyMap[m].billed), 1);
+
+    const pills: { label: string; val: "mtd" | "qtd" | "ytd" | "custom" }[] = [
+      { label: "MTD", val: "mtd" }, { label: "QTD", val: "qtd" }, { label: "YTD", val: "ytd" }, { label: "Custom", val: "custom" },
+    ];
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 24 : 120 }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {renderBackHeader("Profit & Loss", "financial-hub")}
+
+        <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 6 }}>
+          {pills.map(p => (
+            <Pressable key={p.val} onPress={() => setPlPeriod(p.val)}
+              style={{ flex: 1, paddingVertical: 8, borderRadius: 8, backgroundColor: plPeriod === p.val ? "#1D4ED8" : "#fff", borderWidth: 1, borderColor: plPeriod === p.val ? "#1D4ED8" : "#E5E7EB", alignItems: "center" }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: plPeriod === p.val ? "#fff" : "#6B7280" }}>{p.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {plPeriod === "custom" && (
+          <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 8 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#6B7280", marginBottom: 4 }}>Start Date</Text>
+              <TextInput style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 8, padding: 8, fontSize: 13, fontFamily: "Inter_400Regular", backgroundColor: "#fff" }} value={plCustomStart} onChangeText={setPlCustomStart} placeholder="YYYY-MM-DD" placeholderTextColor="#9CA3AF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#6B7280", marginBottom: 4 }}>End Date</Text>
+              <TextInput style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 8, padding: 8, fontSize: 13, fontFamily: "Inter_400Regular", backgroundColor: "#fff" }} value={plCustomEnd} onChangeText={setPlCustomEnd} placeholder="YYYY-MM-DD" placeholderTextColor="#9CA3AF" />
+            </View>
+          </View>
+        )}
+
+        <LinearGradient colors={["#1E3A5F", "#1D4ED8"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ marginHorizontal: 16, borderRadius: 14, padding: 18, marginBottom: 12 }}>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.6)", letterSpacing: 1 }}>{pLabel.toUpperCase()}</Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2, marginBottom: 10 }}>{periodInvoices.length} invoice{periodInvoices.length !== 1 ? "s" : ""}</Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <View style={{ flex: 1, backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 10, padding: 10 }}>
+              <Text style={{ fontSize: 9, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>TOTAL BILLED</Text>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#fff", marginTop: 4 }}>{formatCurrency(totalBilled)}</Text>
+            </View>
+            <View style={{ flex: 1, backgroundColor: "rgba(16,185,129,0.3)", borderRadius: 10, padding: 10 }}>
+              <Text style={{ fontSize: 9, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>COLLECTED</Text>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#6EE7B7", marginTop: 4 }}>{formatCurrency(collected)}</Text>
+            </View>
+            <View style={{ flex: 1, backgroundColor: "rgba(239,68,68,0.25)", borderRadius: 10, padding: 10 }}>
+              <Text style={{ fontSize: 9, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>OUTSTANDING</Text>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FCA5A5", marginTop: 4 }}>{formatCurrency(outstanding)}</Text>
+            </View>
+          </View>
+        </LinearGradient>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
+          <View style={{ backgroundColor: "#F8FAFC", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", padding: 14 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#1E293B" }}>INCOME</Text>
+          </View>
+          <View style={{ padding: 14, gap: 0 }}>
+            {[
+              { label: "Total Revenue (Billed)", val: totalBilled, color: "#111827" },
+              { label: "Credits / Memos Applied", val: -creditsMemo, color: "#D97706" },
+              { label: "Net Revenue", val: totalBilled - creditsMemo, color: "#059669", bold: true },
+            ].map((row, i) => (
+              <View key={i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: i < 2 ? 1 : 0, borderBottomColor: "#F1F5F9" }}>
+                <Text style={{ fontSize: 13, fontFamily: row.bold ? "Inter_700Bold" : "Inter_400Regular", color: "#374151" }}>{row.label}</Text>
+                <Text style={{ fontSize: 13, fontFamily: row.bold ? "Inter_700Bold" : "Inter_500Medium", color: row.color }}>{formatCurrency(Math.abs(row.val))}{row.val < 0 ? " CR" : ""}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
+          <View style={{ backgroundColor: "#F8FAFC", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", padding: 14 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#1E293B" }}>COLLECTIONS</Text>
+          </View>
+          <View style={{ padding: 14, gap: 0 }}>
+            {[
+              { label: "Collected (Paid Invoices)", val: collected, color: "#059669" },
+              { label: "Outstanding A/R", val: outstanding, color: "#DC2626" },
+              { label: "Collection Rate", val: totalBilled > 0 ? ((collected / totalBilled) * 100).toFixed(1) + "%" : "0%", isText: true, color: "#1D4ED8" },
+            ].map((row, i) => (
+              <View key={i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: i < 2 ? 1 : 0, borderBottomColor: "#F1F5F9" }}>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#374151" }}>{row.label}</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: row.color }}>{(row as any).isText ? (row.val as string) : formatCurrency(row.val as number)}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {months.length > 0 && (
+          <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 16 }}>
+            <View style={{ backgroundColor: "#F8FAFC", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", padding: 14 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#1E293B" }}>MONTHLY BREAKDOWN</Text>
+            </View>
+            {months.map((mo, i) => {
+              const d = monthlyMap[mo];
+              const barW = (d.billed / maxBilled) * 100;
+              const colW2 = (d.collected / maxBilled) * 100;
+              const [yr, mn] = mo.split("-");
+              const label = new Date(Number(yr), Number(mn) - 1, 1).toLocaleString("default", { month: "short", year: "2-digit" });
+              return (
+                <View key={mo} style={{ paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: i < months.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9" }}>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#374151" }}>{label}</Text>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#111827" }}>{formatCurrency(d.billed)}</Text>
+                  </View>
+                  <View style={{ height: 6, backgroundColor: "#F1F5F9", borderRadius: 3, marginBottom: 2 }}>
+                    <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${barW}%` as any, backgroundColor: "#BFDBFE", borderRadius: 3 }} />
+                    <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${colW2}%` as any, backgroundColor: "#1D4ED8", borderRadius: 3 }} />
+                  </View>
+                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280" }}>Collected: {formatCurrency(d.collected)}</Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#FEF3C7", borderRadius: 14, padding: 14, borderWidth: 1, borderColor: "#FDE68A", marginBottom: 16, flexDirection: "row", gap: 10, alignItems: "center" }}>
+          <Ionicons name="construct-outline" size={20} color="#D97706" />
+          <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", color: "#92400E" }}>Expense tracking is coming soon. Once available, your full P&amp;L with COGS and net profit will appear here.</Text>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderSalesByItem() {
+    const itemMap: Record<string, { count: number; total: number }> = {};
+    invoices.forEach(inv => {
+      inv.lineItems.forEach(li => {
+        const key = li.item.trim() || li.description.trim() || "Unlabeled";
+        if (!itemMap[key]) itemMap[key] = { count: 0, total: 0 };
+        itemMap[key].count += li.qty;
+        itemMap[key].total += li.amount;
+      });
+    });
+
+    const rows = Object.entries(itemMap)
+      .map(([item, data]) => ({ item, ...data }))
+      .sort((a, b) => b.total - a.total);
+
+    const grandTotal = rows.reduce((s, r) => s + r.total, 0);
+    const grandCount = rows.reduce((s, r) => s + r.count, 0);
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 24 : 120 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Sales by Item", "financial-hub")}
+
+        <LinearGradient colors={["#1E3A5F", "#1D4ED8"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ marginHorizontal: 16, borderRadius: 14, padding: 18, marginBottom: 12 }}>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.6)", letterSpacing: 1 }}>ALL TIME</Text>
+          <Text style={{ fontSize: 32, fontFamily: "Inter_700Bold", color: "#fff", marginTop: 4 }}>{formatCurrency(grandTotal)}</Text>
+          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.55)", marginTop: 4 }}>{rows.length} product/service types · {grandCount} units</Text>
+        </LinearGradient>
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 16 }}>
+          <View style={{ flexDirection: "row", backgroundColor: "#F8FAFC", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", paddingHorizontal: 14, paddingVertical: 10 }}>
+            <Text style={{ flex: 1, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569" }}>ITEM / SERVICE</Text>
+            <Text style={{ width: 50, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "center" }}>QTY</Text>
+            <Text style={{ width: 80, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "right" }}>AMOUNT</Text>
+            <Text style={{ width: 44, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "right" }}>%</Text>
+          </View>
+
+          {rows.length === 0 && (
+            <View style={{ padding: 32, alignItems: "center" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#9CA3AF" }}>No invoice line items yet.</Text>
+            </View>
+          )}
+
+          {rows.map((row, idx) => {
+            const pct = grandTotal > 0 ? (row.total / grandTotal) * 100 : 0;
+            return (
+              <View key={idx} style={{ borderBottomWidth: idx < rows.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9" }}>
+                <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 10, backgroundColor: idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#111827" }} numberOfLines={1}>{row.item}</Text>
+                  </View>
+                  <Text style={{ width: 50, fontSize: 12, fontFamily: "Inter_500Medium", color: "#374151", textAlign: "center" }}>{row.count % 1 === 0 ? row.count : row.count.toFixed(1)}</Text>
+                  <Text style={{ width: 80, fontSize: 13, fontFamily: "Inter_700Bold", color: "#111827", textAlign: "right" }}>{formatCurrency(row.total)}</Text>
+                  <Text style={{ width: 44, fontSize: 11, fontFamily: "Inter_500Medium", color: "#6B7280", textAlign: "right" }}>{pct.toFixed(1)}%</Text>
+                </View>
+                <View style={{ marginHorizontal: 14, height: 3, backgroundColor: "#F1F5F9", borderRadius: 2, marginBottom: 2 }}>
+                  <View style={{ width: `${pct}%` as any, height: "100%" as any, backgroundColor: "#1D4ED8", borderRadius: 2 }} />
+                </View>
+              </View>
+            );
+          })}
+
+          <View style={{ flexDirection: "row", backgroundColor: "#1E3A5F", paddingHorizontal: 14, paddingVertical: 12 }}>
+            <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff" }}>TOTAL</Text>
+            <Text style={{ width: 50, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "center" }}>{grandCount % 1 === 0 ? grandCount : grandCount.toFixed(1)}</Text>
+            <Text style={{ width: 80, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "right" }}>{formatCurrency(grandTotal)}</Text>
+            <Text style={{ width: 44, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "right" }}>100%</Text>
+          </View>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  function renderReceivePayment() {
+    const clientsWithOpen = clients.filter(c =>
+      invoices.some(i => i.clientId === c.id && (i.status === "open" || i.status === "overdue" || i.status === "sent"))
+    );
+    const rpClient = rpClientId ? clients.find(c => c.id === rpClientId) : null;
+    const openForClient = rpClientId
+      ? invoices.filter(i => i.clientId === rpClientId && (i.status === "open" || i.status === "overdue" || i.status === "sent"))
+      : [];
+    const selectedTotal = openForClient
+      .filter(i => rpSelectedInvIds.includes(i.id))
+      .reduce((s, i) => s + i.amount, 0);
+    const paymentAmt = parseFloat(rpAmountText) || 0;
+    const methods = ["Check", "ACH", "Credit Card", "Cash", "Wire Transfer", "Zelle"];
+
+    function toggleInv(id: string) {
+      setRpSelectedInvIds(prev => {
+        const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+        const newTotal = openForClient.filter(i => next.includes(i.id)).reduce((s, i) => s + i.amount, 0);
+        setRpAmountText(newTotal.toFixed(2));
+        return next;
+      });
+    }
+
+    function handleSavePayment() {
+      if (rpSelectedInvIds.length === 0) { Alert.alert("No Invoices", "Select at least one invoice to apply this payment to."); return; }
+      if (paymentAmt <= 0) { Alert.alert("Invalid Amount", "Enter a valid payment amount."); return; }
+      let remaining = paymentAmt;
+      rpSelectedInvIds.forEach(id => {
+        const inv = invoices.find(i => i.id === id);
+        if (!inv) return;
+        if (remaining <= 0) return;
+        const applied = Math.min(remaining, inv.amount);
+        remaining -= applied;
+        const newStatus: "paid" | "open" = applied >= inv.amount ? "paid" : "open";
+        updateInvoice(id, { status: newStatus, credits: (inv.credits || 0) + applied });
+      });
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Payment Recorded", `${formatCurrency(paymentAmt)} applied to ${rpSelectedInvIds.length} invoice(s).`);
+      setRpClientId(null);
+      setRpSelectedInvIds([]);
+      setRpAmountText("");
+      setRpRef("");
+      setRpMethod("Check");
+      setAdminView("financial-hub");
+    }
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 24 : 120 }}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {renderBackHeader("Receive Payment", "financial-hub")}
+
+        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
+          <View style={{ backgroundColor: "#1E3A5F", padding: 14 }}>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5 }}>SELECT CLIENT</Text>
+          </View>
+          {clientsWithOpen.length === 0 && (
+            <View style={{ padding: 24, alignItems: "center" }}>
+              <Ionicons name="checkmark-circle" size={36} color="#10B981" />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#065F46", marginTop: 8 }}>No outstanding balances</Text>
+            </View>
+          )}
+          {clientsWithOpen.map((client, idx) => {
+            const openAmt = invoices.filter(i => i.clientId === client.id && (i.status === "open" || i.status === "overdue" || i.status === "sent")).reduce((s, i) => s + i.amount, 0);
+            const selected = rpClientId === client.id;
+            return (
+              <Pressable key={client.id} onPress={() => { setRpClientId(selected ? null : client.id); setRpSelectedInvIds([]); setRpAmountText(""); }}
+                style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: idx < clientsWithOpen.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9", backgroundColor: selected ? "#EFF6FF" : idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
+                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: selected ? "#1D4ED8" : "#F1F5F9", alignItems: "center", justifyContent: "center", marginRight: 12 }}>
+                  {selected ? <Ionicons name="checkmark" size={18} color="#fff" /> : <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#6B7280" }}>{(client.practiceName || client.doctorName || "?")[0].toUpperCase()}</Text>}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: selected ? "#1D4ED8" : "#111827" }}>{client.practiceName || client.doctorName}</Text>
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{invoices.filter(i => i.clientId === client.id && i.status !== "paid").length} open invoice(s)</Text>
+                </View>
+                <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#DC2626" }}>{formatCurrency(openAmt)}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {rpClientId && openForClient.length > 0 && (
+          <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
+            <View style={{ backgroundColor: "#1E3A5F", padding: 14, flexDirection: "row", alignItems: "center" }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5, flex: 1 }}>OUTSTANDING INVOICES</Text>
+              <Pressable onPress={() => {
+                const allIds = openForClient.map(i => i.id);
+                const allSelected = allIds.every(id => rpSelectedInvIds.includes(id));
+                if (allSelected) { setRpSelectedInvIds([]); setRpAmountText("0.00"); }
+                else { setRpSelectedInvIds(allIds); setRpAmountText(openForClient.reduce((s, i) => s + i.amount, 0).toFixed(2)); }
+              }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#93C5FD" }}>
+                  {openForClient.every(i => rpSelectedInvIds.includes(i.id)) ? "Deselect All" : "Select All"}
+                </Text>
+              </Pressable>
+            </View>
+            {openForClient.map((inv, idx) => {
+              const checked = rpSelectedInvIds.includes(inv.id);
+              const daysLate = Math.max(0, Math.floor((Date.now() - inv.dueAt) / 86400000));
+              return (
+                <Pressable key={inv.id} onPress={() => toggleInv(inv.id)}
+                  style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: idx < openForClient.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9", backgroundColor: checked ? "#EFF6FF" : "transparent" }}>
+                  <View style={{ width: 22, height: 22, borderRadius: 4, borderWidth: 2, borderColor: checked ? "#1D4ED8" : "#D1D5DB", backgroundColor: checked ? "#1D4ED8" : "#fff", alignItems: "center", justifyContent: "center", marginRight: 12 }}>
+                    {checked && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#111827" }}>#{formatInvNum(inv.invoiceNumber)}</Text>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{inv.patientName || "No patient"} · Due {new Date(inv.dueAt).toLocaleDateString()}</Text>
+                    {daysLate > 0 && <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#DC2626" }}>{daysLate} day{daysLate !== 1 ? "s" : ""} overdue</Text>}
+                  </View>
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#111827" }}>{formatCurrency(inv.amount)}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+
+        {rpClientId && (
+          <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
+            <View style={{ backgroundColor: "#1E3A5F", padding: 14 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5 }}>PAYMENT DETAILS</Text>
+            </View>
+            <View style={{ padding: 14, gap: 12 }}>
+              <View>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 6 }}>Payment Method</Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  {methods.map(m => (
+                    <Pressable key={m} onPress={() => setRpMethod(m)}
+                      style={{ paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: rpMethod === m ? "#1D4ED8" : "#D1D5DB", backgroundColor: rpMethod === m ? "#EFF6FF" : "#fff" }}>
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: rpMethod === m ? "#1D4ED8" : "#6B7280" }}>{m}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+              <View>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Reference / Check #</Text>
+                <TextInput style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 8, padding: 10, fontSize: 13, fontFamily: "Inter_400Regular", backgroundColor: "#F9FAFB" }} value={rpRef} onChangeText={setRpRef} placeholder="Optional" placeholderTextColor="#9CA3AF" />
+              </View>
+              <View>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Amount Received</Text>
+                <TextInput style={{ borderWidth: 2, borderColor: "#1D4ED8", borderRadius: 8, padding: 10, fontSize: 18, fontFamily: "Inter_700Bold", color: "#111827", backgroundColor: "#EFF6FF" }} value={rpAmountText} onChangeText={setRpAmountText} keyboardType="decimal-pad" placeholder="0.00" placeholderTextColor="#9CA3AF" />
+                {rpSelectedInvIds.length > 0 && Math.abs(paymentAmt - selectedTotal) > 0.01 && (
+                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#D97706", marginTop: 4 }}>Selected total: {formatCurrency(selectedTotal)}</Text>
+                )}
+              </View>
+            </View>
+          </View>
+        )}
+
+        {rpClientId && (
+          <View style={{ flexDirection: "row", marginHorizontal: 16, gap: 10, marginBottom: 24 }}>
+            <Pressable onPress={() => { setRpClientId(null); setRpSelectedInvIds([]); setRpAmountText(""); setRpRef(""); }}
+              style={({ pressed }) => ({ flex: 1, borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, backgroundColor: pressed ? "#F9FAFB" : "#fff" })}>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#374151" }}>Clear</Text>
+            </Pressable>
+            <Pressable onPress={handleSavePayment}
+              style={({ pressed }) => ({ flex: 2, backgroundColor: pressed ? "#1D4ED8" : "#2563EB", borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8 })}>
+              <Ionicons name="checkmark-circle" size={18} color="#fff" />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>Save Payment</Text>
+            </Pressable>
+          </View>
+        )}
+      </ScrollView>
+    );
+  }
+
   function renderLabUsers() {
     const filteredLabUsers = labUserSearchQuery.trim()
       ? labPortalUsers.filter(u => u.username.toLowerCase().includes(labUserSearchQuery.toLowerCase()) || (u.email && u.email.toLowerCase().includes(labUserSearchQuery.toLowerCase())))
@@ -7434,6 +7959,10 @@ function AdminDashboard() {
     case "pick-invoice-to-send": return renderPickInvoiceToSend();
     case "invoice-detail": return renderInvoiceDetail();
     case "edit-invoice": return renderEditInvoice();
+    case "ar-aging": return renderARAgingReport();
+    case "pl-report": return renderPLReport();
+    case "sales-by-item": return renderSalesByItem();
+    case "receive-payment": return renderReceivePayment();
     case "statements": return renderStatements();
     case "statements-hub": return renderStatementsHub();
     case "view-statements": return renderViewStatements();
