@@ -4594,8 +4594,8 @@ function AdminDashboard() {
     const filterLabel = statementFilter === "open" ? "Open Statements" : statementFilter === "pastdue" ? "Past Due Statements" : "All Statements";
     const activeClients = clients.filter(c => c.status !== "inactive");
     const filteredClients = activeClients.filter(c => {
-      const cInvs = invoices.filter(inv => inv.clientName === c.practiceName);
-      if (statementFilter === "open") return cInvs.some(inv => inv.status === "open");
+      const cInvs = invoices.filter(inv => inv.clientName === c.practiceName || inv.clientId === c.id);
+      if (statementFilter === "open") return cInvs.some(inv => inv.status === "open" || inv.status === "overdue");
       if (statementFilter === "pastdue") return cInvs.some(inv => inv.status === "overdue");
       return cInvs.length > 0;
     });
@@ -4619,10 +4619,10 @@ function AdminDashboard() {
           ) : (
             filteredClients.map(c => {
               const cInvs = statementFilter === "open"
-                ? invoices.filter(inv => inv.clientName === c.practiceName && inv.status === "open")
+                ? invoices.filter(inv => (inv.clientName === c.practiceName || inv.clientId === c.id) && (inv.status === "open" || inv.status === "overdue"))
                 : statementFilter === "pastdue"
-                  ? invoices.filter(inv => inv.clientName === c.practiceName && inv.status === "overdue")
-                  : invoices.filter(inv => inv.clientName === c.practiceName);
+                  ? invoices.filter(inv => (inv.clientName === c.practiceName || inv.clientId === c.id) && inv.status === "overdue")
+                  : invoices.filter(inv => inv.clientName === c.practiceName || inv.clientId === c.id);
               const total = cInvs.reduce((s, inv) => s + inv.amount, 0);
               return (
                 <Pressable key={c.id} style={({ pressed }) => [adm.statementCard, pressed && { opacity: 0.7 }]} onPress={() => { setStatementViewClient(c); setAdminView("statement-detail-view"); }}>
@@ -4649,11 +4649,12 @@ function AdminDashboard() {
     const client = statementViewClient;
     if (!client) return renderViewStatements();
     const cInvs = statementFilter === "open"
-      ? invoices.filter(inv => inv.clientName === client.practiceName && inv.status === "open")
+      ? invoices.filter(inv => (inv.clientName === client.practiceName || inv.clientId === client.id) && (inv.status === "open" || inv.status === "overdue"))
       : statementFilter === "pastdue"
-        ? invoices.filter(inv => inv.clientName === client.practiceName && inv.status === "overdue")
-        : invoices.filter(inv => inv.clientName === client.practiceName);
-    const totalDue = cInvs.reduce((s, inv) => s + inv.amount, 0);
+        ? invoices.filter(inv => (inv.clientName === client.practiceName || inv.clientId === client.id) && inv.status === "overdue")
+        : invoices.filter(inv => inv.clientName === client.practiceName || inv.clientId === client.id);
+    const sortedCInvs = [...cInvs].sort((a, b) => a.issuedAt - b.issuedAt);
+    const totalDue = sortedCInvs.reduce((s, inv) => s + inv.amount, 0);
     const today = new Date();
     const dateStr = today.toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" });
     let runningBalance = 0;
@@ -4671,7 +4672,7 @@ function AdminDashboard() {
                 setSendStatementTarget(client);
                 setSendEmailTo(client.email || "");
                 setSendEmailSubject(`Billing Statement - ${client.practiceName}`);
-                const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
+                const invDetails = sortedCInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
                 setSendEmailMessage(`Dear ${client.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(totalDue)}\n\n${statementDefaultMessage}`);
                 setAdminView("send-statement");
               }}
@@ -4730,7 +4731,7 @@ function AdminDashboard() {
                 <Text style={{ flex: 1, fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff", textAlign: "right" }}>Amount</Text>
                 <Text style={{ flex: 1.2, fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff", textAlign: "right" }}>Balance</Text>
               </View>
-              {cInvs.map((inv, idx) => {
+              {sortedCInvs.map((inv, idx) => {
                 runningBalance += inv.amount;
                 const invDate = new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
                 return (
@@ -4740,7 +4741,7 @@ function AdminDashboard() {
                       <View style={{ flex: 3 }}>
                         <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#333" }}>INV #{inv.invoiceNumber}. PO #{inv.patientName}.</Text>
                         <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#555" }}>Orig. Amount {formatCurrency(inv.amount)}</Text>
-                        {inv.lineItems.map((li, liIdx) => (
+                        {(inv.lineItems || []).map((li, liIdx) => (
                           <Text key={liIdx} style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#666", marginTop: 1 }}>
                             --- {li.item}{li.description ? ` - ${li.description}` : ""}, {formatCurrency(li.amount)}
                           </Text>
