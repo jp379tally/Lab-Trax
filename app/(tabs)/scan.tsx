@@ -1532,10 +1532,29 @@ export default function ScanScreen() {
           }
 
           if (d.doctorName) {
-            const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
-            const drNameNorm = stripDr(d.doctorName);
+            const normName = (n: string) => n.trim().toLowerCase()
+              .replace(/^dr\.?\s*/i, "")
+              .replace(/,?\s*(dds|dmd|ms|bds|bchd|phd|dmd\/phd)\b.*$/i, "")
+              .replace(/[,.']/g, "")
+              .replace(/\s+/g, " ")
+              .trim();
+            const namesOverlap = (a: string, b: string) => {
+              const na = normName(a);
+              const nb = normName(b);
+              if (!na || !nb) return false;
+              if (na === nb) return true;
+              const partsA = na.split(" ");
+              const partsB = nb.split(" ");
+              const sharedWords = partsA.filter(w => w.length > 1 && partsB.includes(w));
+              return sharedWords.length >= Math.min(2, Math.min(partsA.length, partsB.length));
+            };
             const existingClient = clients.find(
-              (c) => stripDr(c.leadDoctor) === drNameNorm || (c.additionalProviders || []).some(p => stripDr(p) === drNameNorm)
+              (c) =>
+                namesOverlap(c.leadDoctor || "", d.doctorName) ||
+                (c.additionalProviders || []).some(p => namesOverlap(p, d.doctorName)) ||
+                namesOverlap(c.practiceName || "", d.doctorName) ||
+                (d.practiceName && normName(c.practiceName || "").includes(normName(d.practiceName))) ||
+                (d.practiceName && normName(d.practiceName).includes(normName(c.practiceName || "")))
             );
             if (!existingClient) {
               setTimeout(() => {
