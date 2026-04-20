@@ -6,7 +6,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import multer from "multer";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "./db";
@@ -719,7 +719,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/legacy/cases/:caseId", requireAuth, async (req, res) => {
     try {
-      const { caseId } = req.params;
+      const caseId = req.params.caseId as string;
       await db.delete(labCases).where(eq(labCases.id, caseId));
       res.json({ success: true });
     } catch (error: any) {
@@ -1522,7 +1522,8 @@ Important rules:
 
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
       const imgBuffer = Buffer.from(base64Data, "base64");
-      const response = await openai.images.edit({ model: "gpt-image-1", image: imgBuffer, prompt, size: "1024x1024" });
+      const imgFile = await toFile(imgBuffer, "image.png", { type: "image/png" });
+      const response = await openai.images.edit({ model: "gpt-image-1", image: imgFile, prompt, size: "1024x1024" });
       const outputBase64 = response.data?.[0]?.b64_json;
       if (!outputBase64) return res.status(500).json({ error: "AI did not return an image." });
       res.json({ imageBase64: `data:image/png;base64,${outputBase64}` });
