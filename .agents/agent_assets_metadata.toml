@@ -54,3 +54,9 @@ id = "hzohzYyzSRbrbgz9VavaU"
 uri = "file://labtrax-source.zip"
 type = "unspecified"
 title = "LabTrax Source Code"
+
+[[outputs]]
+id = "PB9bWBqiJYDY7jksf5aZQ"
+uri = "file://labtrax-full.zip"
+type = "unspecified"
+title = "LabTrax Full Project (1.5 GB)"
