@@ -16,3 +16,4 @@ labtrax-part2of4.zip.part filter=lfs diff=lfs merge=lfs -text
 labtrax-part3of4.zip.part filter=lfs diff=lfs merge=lfs -text
 labtrax-part4of4.zip.part filter=lfs diff=lfs merge=lfs -text
 attached_assets/labtrax-full-source-part2-attached-assets-2026-04-22_1776889022361.zip filter=lfs diff=lfs merge=lfs -text
+attached_assets/labtrax-full-source-part4-attached-assets-2026-04-22_1776889646007.zip filter=lfs diff=lfs merge=lfs -text
