@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   InteractionManager,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -526,9 +527,16 @@ export function LabFileDropZone({
       </Pressable>
 
       {/* ── Immediate note prompt ── */}
-      <Modal visible={noteModalVisible} transparent animationType="fade" onRequestClose={dismissNoteModal}>
-        <View style={s.noteBackdrop}>
-          <View style={s.noteCard}>
+      <Modal visible={noteModalVisible} transparent animationType="slide" onRequestClose={dismissNoteModal}>
+        <KeyboardAvoidingView
+          style={s.noteBackdrop}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={0}
+        >
+          {/* Tapping the dim area dismisses */}
+          <Pressable style={{ flex: 1 }} onPress={dismissNoteModal} />
+          <View style={[s.noteCard, { paddingBottom: Math.max(insets.bottom + 12, 28) }]}>
+            <View style={s.noteHandleBar} />
             <Text style={s.noteCardTitle}>Add a note</Text>
             <Text style={s.noteCardSub}>
               Describe what this file is so it's easy to find later.
@@ -540,8 +548,10 @@ export function LabFileDropZone({
               placeholder="e.g. Bite open, prep photo, shade reference, patient screenshot..."
               placeholderTextColor="#94A3B8"
               multiline
-              numberOfLines={4}
+              numberOfLines={3}
               autoFocus
+              returnKeyType="default"
+              scrollEnabled
             />
             <View style={s.noteActions}>
               <Pressable
@@ -558,7 +568,7 @@ export function LabFileDropZone({
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ── Full-screen preview modal ── */}
@@ -974,12 +984,20 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.45)",
     justifyContent: "flex-end",
   },
+  noteHandleBar: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#CBD5E1",
+    alignSelf: "center",
+    marginBottom: 8,
+  },
   noteCard: {
     backgroundColor: "#FFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     padding: 24,
-    paddingBottom: 36,
+    paddingTop: 16,
     gap: 12,
   },
   noteCardTitle: {
