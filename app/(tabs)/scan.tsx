@@ -1541,15 +1541,22 @@ export default function ScanScreen() {
             );
             if (!existingClient) {
               setTimeout(() => {
+                const drName = /^dr\.?\s/i.test(d.doctorName.trim())
+                  ? d.doctorName.trim()
+                  : `Dr. ${d.doctorName.trim()}`;
                 Alert.alert(
                   "New Provider Detected",
-                  `"${d.doctorName}" is not in your active provider list. Would you like to add them?`,
+                  `"${drName}" is not in your provider list. Add them now so they appear in the admin hub and can be assigned to invoices?\n\nYou can fill in full details from the admin hub afterwards.`,
                   [
                     {
-                      text: "No",
+                      text: "Not Now",
                       style: "cancel",
+                      // No action — provider not added
+                    },
+                    {
+                      text: "Add Provider",
                       onPress: () => {
-                        const drName = /^dr\.?\s/i.test(d.doctorName.trim()) ? d.doctorName.trim() : `Dr. ${d.doctorName.trim()}`;
+                        // Immediately save the provider — no second step needed.
                         addClient({
                           practiceName: d.practiceName || drName,
                           leadDoctor: drName,
@@ -1559,18 +1566,13 @@ export default function ScanScreen() {
                           tier: "Standard",
                           discountRate: 0,
                         });
-                      },
-                    },
-                    {
-                      text: "Yes, Add Provider",
-                      onPress: () => {
-                        setAddingNewDoctor(true);
-                        setNewDoctorInput(d.doctorName.replace(/^Dr\.\s*/i, "") || "");
-                        setNewDoctorPractice(d.practiceName || "");
-                        setNewDoctorAddress(d.practiceAddress || "");
-                        setNewDoctorPhone(d.practicePhone || "");
-                        setNewDoctorEmail("");
-                        setDoctorDropdownOpen(true);
+                        // Let the user know it's done and editable in the admin hub.
+                        setTimeout(() => {
+                          Alert.alert(
+                            "Provider Added ✓",
+                            `${drName} has been added to your provider list. You can edit their full details (address, email, pricing) from the admin hub anytime.`
+                          );
+                        }, 300);
                       },
                     },
                   ]
