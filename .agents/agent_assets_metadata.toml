@@ -48,3 +48,9 @@ id = "lJn-2dZhHBVm61hObyiBi"
 uri = "file://scan_and_dropzone.tar.gz"
 type = "unspecified"
 title = "scan.tsx + LabFileDropZone.tsx"
+
+[[outputs]]
+id = "hzohzYyzSRbrbgz9VavaU"
+uri = "file://labtrax-source.zip"
+type = "unspecified"
+title = "LabTrax Source Code"
