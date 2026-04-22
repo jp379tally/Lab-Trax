@@ -1569,6 +1569,26 @@ Important rules:
     } catch { res.status(500).json({ error: "Cleanup failed" }); }
   });
 
+  // ── Temporary source-code download (no auth — remove after use) ───────────
+  app.get("/dl/source", async (_req, res) => {
+    try {
+      const root = process.cwd();
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", 'attachment; filename="labtrax-source.zip"');
+      res.setHeader("Cache-Control", "no-store");
+      const archive = archiver("zip", { zlib: { level: 6 } });
+      archive.on("error", (e: Error) => { if (!res.headersSent) res.status(500).end(); });
+      archive.pipe(res);
+      archive.glob("**/*.{ts,tsx,js,cjs,json,md,html,sh,toml,css}", {
+        cwd: root,
+        ignore: ["node_modules/**",".git/**","server_dist/**",".expo/**",".cache/**","dist/**","build/**","attached_assets/**","uploads/**","public/**"],
+      });
+      await archive.finalize();
+    } catch (e: any) {
+      if (!res.headersSent) res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── Admin Data Backup ─────────────────────────────────────────────────────
   app.get("/api/admin/backup", requireAuth, async (req, res) => {
     try {
