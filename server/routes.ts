@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import archiver from "archiver";
+import AdmZip from "adm-zip";
 import { uploadToOneDrive } from "./lib/onedrive";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
@@ -1668,12 +1669,47 @@ Important rules:
     return archive;
   }
 
+  // ── Local backup retention manager ───────────────────────────────────────
+  async function pruneLocalBackups(folder: string, keep: number) {
+    try {
+      const dir = path.resolve(process.cwd(), "backups", folder);
+      await mkdir(dir, { recursive: true });
+      const files = fs.readdirSync(dir)
+        .filter(f => f.endsWith(".zip"))
+        .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtime.getTime() }))
+        .sort((a, b) => b.mtime - a.mtime);
+      for (const file of files.slice(keep)) {
+        fs.unlinkSync(path.join(dir, file.name));
+        console.log(`[Backup Retention] Removed old backup: ${folder}/${file.name}`);
+      }
+    } catch (e: any) {
+      console.error("[Backup Retention] prune error:", e?.message);
+    }
+  }
+
+  async function saveLocalBackup(zipBuffer: Buffer, fileName: string, folder: "daily" | "weekly" | "monthly") {
+    const dir = path.resolve(process.cwd(), "backups", folder);
+    await mkdir(dir, { recursive: true });
+    const filePath = path.join(dir, fileName);
+    fs.writeFileSync(filePath, zipBuffer);
+    return filePath;
+  }
+
   // Export this so server/index.ts can call it for the nightly scheduler
   (app as any)._runScheduledBackup = async () => {
     try {
       const data = await gatherBackupData("nightly-scheduler");
-      const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const fileName = `labtrax-backup-${dateStr}.zip`;
+      const now = new Date();
+      const dateStr = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const dayOfWeek = now.getDay(); // 0 = Sunday
+      const dayOfMonth = now.getDate();
+
+      // Determine retention tier
+      const isWeekly = dayOfWeek === 0;   // Sunday → weekly
+      const isMonthly = dayOfMonth === 1; // 1st → monthly
+      const tier: "daily" | "weekly" | "monthly" = isMonthly ? "monthly" : isWeekly ? "weekly" : "daily";
+      const fileName = `labtrax-${tier}-${dateStr}.zip`;
+
       const zipBuffer: Buffer = await new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
         const archive = buildBackupArchive(data);
@@ -1682,14 +1718,177 @@ Important rules:
         archive.on("error", reject);
         archive.finalize();
       });
-      const result = await uploadToOneDrive(zipBuffer, fileName, "LabTrax Backups");
-      console.log(`[Nightly Backup] Uploaded ${fileName} (${(zipBuffer.length / 1024 / 1024).toFixed(1)} MB) → ${result.webUrl}`);
-      return { success: true, fileName, size: zipBuffer.length, webUrl: result.webUrl };
+
+      const sizeMB = (zipBuffer.length / 1024 / 1024).toFixed(1);
+
+      // 1. Save to local server
+      await saveLocalBackup(zipBuffer, fileName, tier);
+      await pruneLocalBackups("daily", 7);
+      await pruneLocalBackups("weekly", 4);
+      await pruneLocalBackups("monthly", 3);
+      console.log(`[Nightly Backup] Saved locally: backups/${tier}/${fileName} (${sizeMB} MB)`);
+
+      // 2. Upload to OneDrive
+      let webUrl = "";
+      try {
+        const result = await uploadToOneDrive(zipBuffer, fileName, `LabTrax Backups/${tier}`);
+        webUrl = result.webUrl;
+        console.log(`[Nightly Backup] OneDrive: ${result.name} → ${webUrl}`);
+      } catch (odErr: any) {
+        console.error("[Nightly Backup] OneDrive upload failed (local copy preserved):", odErr?.message);
+      }
+
+      return { success: true, fileName, size: zipBuffer.length, tier, webUrl };
     } catch (e: any) {
       console.error("[Nightly Backup] Failed:", e?.message);
       return { success: false, error: e?.message };
     }
   };
+
+  // ── Restore endpoint ──────────────────────────────────────────────────────
+  const restoreUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
+
+  app.post("/api/admin/restore", requireAuth, restoreUpload.single("backup"), async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+
+      const { confirmation, mode = "merge" } = req.body as { confirmation?: string; mode?: string };
+      if (confirmation !== "RESTORE") {
+        return res.status(400).json({ error: 'Send confirmation: "RESTORE" to proceed.' });
+      }
+      if (!["merge", "replace"].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be "merge" or "replace".' });
+      }
+      if (!req.file) {
+        return res.status(400).json({ error: "No backup file uploaded." });
+      }
+
+      const zip = new AdmZip(req.file.buffer);
+      const manifestEntry = zip.getEntry("manifest.json");
+      if (!manifestEntry) return res.status(400).json({ error: "Invalid backup: missing manifest.json" });
+
+      const manifest = JSON.parse(manifestEntry.getData().toString("utf8"));
+      if (manifest.appName !== "LabTrax") {
+        return res.status(400).json({ error: "This backup is not from LabTrax." });
+      }
+
+      const readTable = (name: string) => {
+        const entry = zip.getEntry(`data/${name}`);
+        if (!entry) return [];
+        try { return JSON.parse(entry.getData().toString("utf8")); } catch { return []; }
+      };
+
+      const restoredCases    = readTable("lab_cases.json");
+      const restoredOrgs     = readTable("organizations.json");
+      const restoredMembers  = readTable("memberships.json");
+      const restoredInvoices = readTable("invoices.json");
+      const restoredLineItems= readTable("invoice_line_items.json");
+      const restoredPayments = readTable("payments.json");
+
+      const counts: Record<string, number> = {};
+
+      if (mode === "replace") {
+        // Clear tables in dependency order before reinserting
+        await db.delete(payments);
+        await db.delete(invoiceLineItems);
+        await db.delete(invoices);
+        await db.delete(organizationMemberships);
+        await db.delete(labCases);
+        await db.delete(organizations);
+      }
+
+      // Upsert helper — skips rows that violate unique constraints on conflict
+      const upsertRows = async (table: any, rows: any[], label: string) => {
+        if (!rows.length) { counts[label] = 0; return; }
+        let restored = 0;
+        for (const row of rows) {
+          try {
+            await db.insert(table).values(row).onConflictDoNothing();
+            restored++;
+          } catch { /* skip conflicting rows */ }
+        }
+        counts[label] = restored;
+      };
+
+      await upsertRows(labCases,               restoredCases,     "cases");
+      await upsertRows(organizations,           restoredOrgs,      "organizations");
+      await upsertRows(organizationMemberships, restoredMembers,   "memberships");
+      await upsertRows(invoices,                restoredInvoices,  "invoices");
+      await upsertRows(invoiceLineItems,        restoredLineItems, "lineItems");
+      await upsertRows(payments,                restoredPayments,  "payments");
+
+      // Log the restore action
+      try {
+        await db.insert(auditLogs).values({
+          userId: reqUser.id,
+          action: "RESTORE",
+          entityType: "system",
+          entityId: "full-restore",
+          details: JSON.stringify({ mode, backupDate: manifest.exportedAt, counts }),
+        } as any);
+      } catch { /* audit log failure non-fatal */ }
+
+      return res.json({
+        success: true,
+        mode,
+        backupDate: manifest.exportedAt,
+        restored: counts,
+      });
+    } catch (e: any) {
+      console.error("Restore error:", e?.message);
+      return res.status(500).json({ error: e?.message || "Restore failed." });
+    }
+  });
+
+  // ── List local backups ────────────────────────────────────────────────────
+  app.get("/api/admin/backups/list", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      const result: Record<string, any[]> = { daily: [], weekly: [], monthly: [] };
+      for (const tier of ["daily", "weekly", "monthly"] as const) {
+        const dir = path.resolve(process.cwd(), "backups", tier);
+        if (!fs.existsSync(dir)) continue;
+        result[tier] = fs.readdirSync(dir)
+          .filter(f => f.endsWith(".zip"))
+          .map(f => {
+            const stat = fs.statSync(path.join(dir, f));
+            return { name: f, size: stat.size, createdAt: stat.mtime.toISOString(), tier };
+          })
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      }
+      return res.json(result);
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message });
+    }
+  });
+
+  // ── Download a specific local backup ─────────────────────────────────────
+  app.get("/api/admin/backups/download/:tier/:filename", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      const { tier, filename } = req.params;
+      if (!["daily", "weekly", "monthly"].includes(tier)) {
+        return res.status(400).json({ error: "Invalid tier." });
+      }
+      const safeName = path.basename(filename);
+      const filePath = path.resolve(process.cwd(), "backups", tier, safeName);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Backup not found." });
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
+      res.sendFile(filePath);
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message });
+    }
+  });
 
   app.get("/api/admin/backup", requireAuth, async (req, res) => {
     try {
