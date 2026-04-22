@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
+  InteractionManager,
   Modal,
   Platform,
   Pressable,
@@ -19,6 +20,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Colors from "@/constants/colors";
 import { Client, LabCase } from "@/lib/data";
+import { popSharedFiles } from "@/lib/shared-file-inbox";
 
 function getStorageKey(user: string | null): string {
   const safeUser = (user || "unknown").replace(/[^a-zA-Z0-9_@.-]/g, "_");
@@ -87,6 +89,51 @@ export function LabFileDropZone({
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
   }, [pendingFiles]);
+
+  // Check for files shared to LabTrax via the iOS/Android share sheet
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    let cancelled = false;
+
+    async function processInbox() {
+      const entries = await popSharedFiles();
+      if (cancelled || entries.length === 0) return;
+
+      for (const entry of entries) {
+        try {
+          const uri = entry.url;
+          // Derive a rough mime type from the extension
+          const ext = uri.split("?")[0].split(".").pop()?.toLowerCase() || "";
+          let mimeType = "application/octet-stream";
+          if (["jpg", "jpeg"].includes(ext)) mimeType = "image/jpeg";
+          else if (ext === "png") mimeType = "image/png";
+          else if (["heic", "heif"].includes(ext)) mimeType = "image/heic";
+          else if (ext === "gif") mimeType = "image/gif";
+          else if (ext === "webp") mimeType = "image/webp";
+          else if (ext === "pdf") mimeType = "application/pdf";
+          else if (["mp4", "m4v"].includes(ext)) mimeType = "video/mp4";
+          else if (ext === "mov") mimeType = "video/quicktime";
+          else if (uri.startsWith("file://") || uri.startsWith("content://")) mimeType = "image/jpeg";
+
+          const fileName = uri.split("/").pop()?.split("?")[0] || "shared-file";
+          const pending: PendingFile = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            uri,
+            fileName,
+            mimeType,
+            uploadedBy: currentUser || "Unknown",
+            uploadedAt: Date.now(),
+            notes: "",
+          };
+          if (!cancelled) await addFileAndPromptNote(pending);
+        } catch {}
+      }
+    }
+
+    processInbox().catch(() => {});
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFocused]);
 
   const persistFiles = useCallback(
     async (files: PendingFile[]) => {
@@ -235,6 +282,8 @@ export function LabFileDropZone({
     } catch {}
   }
 
+  // On iOS/Android: screenshots live in the Photos library (Camera Roll).
+  // Use ImagePicker so screenshots are reachable via this button.
   async function handlePickFromFiles() {
     if (Platform.OS === "web") {
       const input = document.createElement("input");
@@ -248,8 +297,38 @@ export function LabFileDropZone({
       return;
     }
     try {
+      // iOS/Android: screenshots are stored in the Photos library, not the Files app.
+      // ImagePicker.launchImageLibraryAsync reaches the Camera Roll including screenshots.
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images", "videos"],
+        allowsMultipleSelection: false,
+        quality: 1,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      for (const asset of result.assets) {
+        const pending: PendingFile = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+          uri: asset.uri,
+          fileName: asset.fileName || "screenshot",
+          mimeType: asset.mimeType || "image/jpeg",
+          uploadedBy: currentUser || "Unknown",
+          uploadedAt: Date.now(),
+          notes: "",
+        };
+        await addFileAndPromptNote(pending);
+      }
+    } catch {}
+  }
+
+  // Separate handler for iCloud Drive / Files app documents (PDFs, etc.)
+  async function handlePickFromDocuments() {
+    if (Platform.OS === "web") {
+      handlePickFromFiles();
+      return;
+    }
+    try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ["image/*", "video/*", "application/pdf", "*/*"],
+        type: ["application/pdf", "*/*"],
         copyToCacheDirectory: true,
         multiple: false,
       });
@@ -276,8 +355,8 @@ export function LabFileDropZone({
     }
     Alert.alert("Add File", "Choose a source", [
       { text: "Cancel", style: "cancel" },
-      { text: "Photos & Videos", onPress: handlePickFromPhotos },
-      { text: "Files & Screenshots", onPress: handlePickFromFiles },
+      { text: "Photos, Videos & Screenshots", onPress: handlePickFromPhotos },
+      { text: "Files & Documents (PDF)", onPress: handlePickFromDocuments },
     ]);
   }
 
@@ -595,18 +674,34 @@ export function LabFileDropZone({
             >
               <View style={s.addMoreRow}>
                 <Pressable
-                  onPress={() => { setReviewOpen(false); setTimeout(showPickOptions, 300); }}
+                  onPress={() => {
+                    setReviewOpen(false);
+                    InteractionManager.runAfterInteractions(() => { handlePickFromPhotos(); });
+                  }}
                   style={({ pressed }) => [s.addMoreBtn, pressed && { opacity: 0.8 }]}
                 >
                   <Ionicons name="images-outline" size={16} color={Colors.light.tint} />
-                  <Text style={s.addMoreBtnText}>Photos &amp; Videos</Text>
+                  <Text style={s.addMoreBtnText} numberOfLines={1}>Photos &amp; Videos</Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => { setReviewOpen(false); setTimeout(handlePickFromFiles, 300); }}
+                  onPress={() => {
+                    setReviewOpen(false);
+                    InteractionManager.runAfterInteractions(() => { handlePickFromFiles(); });
+                  }}
                   style={({ pressed }) => [s.addMoreBtn, pressed && { opacity: 0.8 }]}
                 >
-                  <Ionicons name="document-outline" size={16} color={Colors.light.tint} />
-                  <Text style={s.addMoreBtnText}>Files &amp; Screenshots</Text>
+                  <Ionicons name="phone-portrait-outline" size={16} color={Colors.light.tint} />
+                  <Text style={s.addMoreBtnText} numberOfLines={1}>Screenshots</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    setReviewOpen(false);
+                    InteractionManager.runAfterInteractions(() => { handlePickFromDocuments(); });
+                  }}
+                  style={({ pressed }) => [s.addMoreBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="document-text-outline" size={16} color={Colors.light.tint} />
+                  <Text style={s.addMoreBtnText} numberOfLines={1}>Files &amp; PDFs</Text>
                 </Pressable>
               </View>
 
