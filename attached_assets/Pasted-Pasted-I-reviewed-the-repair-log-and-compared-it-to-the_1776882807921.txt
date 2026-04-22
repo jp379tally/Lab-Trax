@@ -1,0 +1,65 @@
+Pasted-I-reviewed-the-repair-log-and-compared-it-to-the-curren_1776879848514.txt
+I reviewed the repair log and compared it to the current app bundle.
+
+My take: Replit fixed part of the problem, but not the whole backup problem.
+
+What they appear to have fixed correctly:
+
+* Their log says the case-loss bug came from local lab cases being deleted when lab membership briefly failed during publish/server restarts. That diagnosis is internally consistent with the repair notes you shared. 
+* In the current code, the admin Settings screen now has the renamed backup actions:
+
+  * **Create LabTrax Backup**
+  * **Import LabTrax Data**
+* The Settings screen also now shows status text for a daily OneDrive backup and lets the user export a downloadable backup file for USB/server use.
+
+What is still not good enough:
+
+* This is **not a real OneDrive integration** right now.
+
+  * The server backup route writes JSON files to a local/server folder named `data/onedrive-backups` unless an env var points elsewhere.
+  * I do **not** see Microsoft Graph, OneDrive API, OAuth refresh logic, or anything that actually pushes files into a Microsoft OneDrive account.
+  * So “OneDrive backup” is mostly a label at the moment, not a verified cloud sync.
+* The “daily backup” is **app-driven**, not server-driven.
+
+  * It runs from the app layout with an interval and only fires when an authenticated user is in the app.
+  * That means it is **not** a guaranteed unattended nightly backup if nobody opens the app.
+* The backup being created is mostly a snapshot of **AsyncStorage keys** with `@drivesync` / `@labtrax` prefixes.
+
+  * That helps for app-state recovery.
+  * But it is **not the same thing** as a verified full PostgreSQL/database backup of all server-side records.
+* The repair log itself admits the system was not fully server-synced when the loss happened, and only a few cases were actually in the database. 
+* The backend starter docs also explicitly say this is a strong starter and **not finished production**, with core engine/storage work still needing completion. 
+
+So on the specific question “are they doing what they need to do on their end?”:
+
+* **For the deletion bug:** probably yes, or at least mostly yes.
+* **For reliable backups and recovery:** no, not yet.
+
+What still needs to exist before I’d call this dependable:
+
+1. A true **server-side scheduled backup job** that runs whether the app is open or not.
+2. A real **OneDrive upload integration** using Microsoft APIs, not just a local folder named like OneDrive.
+3. A full **Postgres backup/export** of cases, invoices, doctors, organizations, users, attachments metadata, and audit logs.
+4. At least one additional destination besides OneDrive:
+
+   * local server share
+   * downloadable encrypted backup file
+   * optional USB export by admin
+5. Restore testing:
+
+   * prove a blank environment can be restored from backup
+   * verify cases reappear after restore
+6. Retention policy:
+
+   * daily backups
+   * multiple restore points
+   * not just “latest”
+
+Bottom line:
+
+* Replit’s repair addressed the immediate disappearing-cases bug.
+* It did **not** fully solve the business risk you’re worried about: guaranteed daily recoverable backups in multiple places.
+
+The most important gap is this: **the app currently looks backup-ready in the UI, but the backend backup architecture is not yet strong enough to trust after a real outage.**
+
+If you want, I can turn this into a punch-list you can send back to Replit with exact requirements they still need to complete.

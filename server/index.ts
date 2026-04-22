@@ -437,4 +437,32 @@ async function runStartupMigrations() {
       log(`express server serving on port ${port}`);
     },
   );
+
+  // ── Nightly OneDrive backup scheduler ─────────────────────────────────────
+  // Runs automatically every 24 hours regardless of whether the app is open.
+  // First backup fires ~2 minutes after server start (to let DB settle),
+  // then repeats every 24 hours at the same offset.
+  const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+  const scheduleNightlyBackup = () => {
+    const runBackup = async () => {
+      log("[Nightly Backup] Starting scheduled backup...");
+      const backupFn = (app as any)._runScheduledBackup;
+      if (typeof backupFn === "function") {
+        const result = await backupFn();
+        if (result.success) {
+          log(`[Nightly Backup] Success — ${result.fileName} (${((result.size || 0) / 1024 / 1024).toFixed(1)} MB)`);
+        } else {
+          log(`[Nightly Backup] Failed — ${result.error}`);
+        }
+      }
+    };
+
+    // Wait 2 minutes after startup, then run every 24 h
+    setTimeout(async () => {
+      await runBackup();
+      setInterval(runBackup, TWENTY_FOUR_HOURS);
+    }, 2 * 60 * 1000);
+  };
+
+  scheduleNightlyBackup();
 })();

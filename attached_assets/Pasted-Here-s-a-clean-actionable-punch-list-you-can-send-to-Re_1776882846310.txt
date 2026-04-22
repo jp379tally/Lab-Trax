@@ -1,0 +1,198 @@
+Here’s a clean, **actionable punch-list you can send to Replit** so there’s zero ambiguity about what still needs to be built/fixed 👇
+
+---
+
+## 🚨 CRITICAL: Data Loss + Backup Requirements (LabTrax)
+
+### 1. Fix is NOT complete without real backups
+
+The case deletion bug may be fixed, but **there is currently NO reliable recovery system in place**.
+
+We need **true, redundant backups**, not just UI buttons.
+
+---
+
+## ✅ REQUIRED IMPLEMENTATIONS
+
+### 🔐 1. Full Database Backup (MANDATORY)
+
+Create a backend job that exports the entire database:
+
+* Cases
+* Invoices
+* Doctors
+* Organizations
+* Users
+* Memberships
+* Attachments metadata
+* Audit logs
+
+**Format:**
+
+* JSON or SQL dump (preferred: both)
+
+**Endpoint example:**
+
+```
+POST /api/admin/backup/full
+```
+
+**This must NOT rely on frontend or AsyncStorage.**
+
+---
+
+### ☁️ 2. Real OneDrive Integration (NOT local folder)
+
+Current system is **fake OneDrive** (writing to local directory).
+
+We need:
+
+* Microsoft Graph API integration
+* OAuth with refresh tokens
+* Automatic upload to actual OneDrive account
+* Folder structure:
+
+  ```
+  /LabTrax Backups/
+      daily/
+      manual/
+  ```
+
+**File naming:**
+
+```
+labtrax-backup-YYYY-MM-DD-HHMM.json
+```
+
+---
+
+### ⏱️ 3. TRUE Daily Automatic Backup (Server-side)
+
+Must run even if:
+
+* No users are logged in
+* App is closed
+* Frontend is offline
+
+**Implementation:**
+
+* Cron job (or equivalent)
+* Runs every 24 hours
+
+Example:
+
+```bash
+0 2 * * *  → run backup at 2 AM daily
+```
+
+---
+
+### 💾 4. Manual Backup (Admin UI)
+
+Update your existing buttons to actually work:
+
+#### Rename (as requested):
+
+* “Export Cases” → **Create LabTrax Backup**
+* “Import Cases” → **Import LabTrax Data**
+
+#### Behavior:
+
+* Download full system backup file
+* Not just cases — EVERYTHING
+
+---
+
+### 🔄 5. Restore / Import System (CRITICAL)
+
+Add a restore endpoint:
+
+```
+POST /api/admin/restore
+```
+
+Must:
+
+* Accept backup file
+* Restore ALL data safely
+* Handle conflicts (merge or overwrite option)
+
+---
+
+### 🧱 6. Multi-Destination Backup (Redundancy)
+
+Backups must go to:
+
+* ✅ OneDrive (cloud)
+* ✅ Local server directory
+* ✅ Downloadable file (USB/manual storage)
+
+Optional but recommended:
+
+* AWS S3 or similar
+
+---
+
+### 🧪 7. Restore Test (PROVE IT WORKS)
+
+We need confirmation:
+
+1. Create test data
+2. Run backup
+3. Delete all data
+4. Restore from backup
+5. Verify everything returns
+
+If this test is not passed → system is NOT production safe
+
+---
+
+### 🛡️ 8. Data Integrity Safeguards
+
+Prevent future catastrophic loss:
+
+* ❌ NEVER auto-delete cases on network failure
+* ❌ NEVER clear local storage without explicit user action
+* ✅ Add “soft delete” instead of hard delete
+* ✅ Add audit logging for deletions (already partially exists) 
+
+---
+
+### 📦 9. Versioned Backup Retention
+
+Keep multiple backups:
+
+* Last 7 daily backups
+* Last 4 weekly backups
+* Last 3 monthly backups
+
+---
+
+## ⚠️ CURRENT RISKS (IMPORTANT)
+
+Right now:
+
+* “OneDrive backup” is **not real**
+* “Daily backup” depends on app being open
+* Data is **NOT guaranteed recoverable**
+* System is still vulnerable to total data loss
+
+---
+
+## 🎯 FINAL REQUIREMENT
+
+We need confirmation of:
+
+* ✅ Working OneDrive upload (real cloud files)
+* ✅ Automated daily backup (server-side)
+* ✅ Full database backup (not partial)
+* ✅ Successful restore test
+
+---
+
+If you want, I can next:
+
+* Write the **actual backend code for backup + restore**
+* Or design exactly how this plugs into your current LabTrax backend structure
+
+Just tell me 👍
