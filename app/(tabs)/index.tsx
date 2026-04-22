@@ -816,7 +816,7 @@ function TechDashboard() {
       />
 
       {isLabAdmin && pendingJoinRequests.length > 0 && (
-        <View style={styles.joinRequestSection}>
+        <View style={invStyles.joinRequestSection}>
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Connection Requests</Text>
             <View style={[styles.dueTodayBadge, { backgroundColor: "#EF4444" }]}>
@@ -829,29 +829,29 @@ function TechDashboard() {
             const displayName = reqUser?.doctorName ? `Dr. ${reqUser.doctorName}` : req.requestingUsername;
             const practiceName = reqUser?.practiceName;
             return (
-              <View key={req.id} style={styles.joinReqCard}>
-                <View style={[styles.joinReqIconWrap, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
+              <View key={req.id} style={invStyles.joinReqCard}>
+                <View style={[invStyles.joinReqIconWrap, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
                   <Ionicons name={isProvider ? "medical" : "person-add"} size={22} color={isProvider ? "#2563EB" : "#D97706"} />
                 </View>
-                <View style={styles.joinReqContent}>
-                  <Text style={styles.joinReqTitle}>{isProvider ? "Provider Connection Request" : "Join Request"}</Text>
-                  <Text style={styles.joinReqName}>{displayName}</Text>
-                  {practiceName ? <Text style={styles.joinReqPractice}>{practiceName}</Text> : null}
-                  <Text style={styles.joinReqMsg}>{req.message}</Text>
-                  <View style={styles.joinReqBtns}>
+                <View style={invStyles.joinReqContent}>
+                  <Text style={invStyles.joinReqTitle}>{isProvider ? "Provider Connection Request" : "Join Request"}</Text>
+                  <Text style={invStyles.joinReqName}>{displayName}</Text>
+                  {practiceName ? <Text style={invStyles.joinReqPractice}>{practiceName}</Text> : null}
+                  <Text style={invStyles.joinReqMsg}>{req.message}</Text>
+                  <View style={invStyles.joinReqBtns}>
                     <Pressable
-                      style={({ pressed }) => [styles.joinReqAcceptBtn, pressed && { opacity: 0.8 }]}
+                      style={({ pressed }) => [invStyles.joinReqAcceptBtn, pressed && { opacity: 0.8 }]}
                       onPress={() => setConfirmJoinReq({ requestId: req.id, username: displayName, accept: true })}
                     >
                       <Ionicons name="checkmark" size={16} color="#FFF" />
-                      <Text style={styles.joinReqAcceptText}>Accept</Text>
+                      <Text style={invStyles.joinReqAcceptText}>Accept</Text>
                     </Pressable>
                     <Pressable
-                      style={({ pressed }) => [styles.joinReqDeclineBtn, pressed && { opacity: 0.8 }]}
+                      style={({ pressed }) => [invStyles.joinReqDeclineBtn, pressed && { opacity: 0.8 }]}
                       onPress={() => setConfirmJoinReq({ requestId: req.id, username: displayName, accept: false })}
                     >
                       <Ionicons name="close" size={16} color="#EF4444" />
-                      <Text style={styles.joinReqDeclineText}>Decline</Text>
+                      <Text style={invStyles.joinReqDeclineText}>Decline</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -1351,28 +1351,28 @@ function TechDashboard() {
     </Modal>
 
     <Modal transparent visible={!!confirmJoinReq} animationType="fade" onRequestClose={() => setConfirmJoinReq(null)}>
-      <View style={styles.joinReqOverlay}>
-        <View style={styles.joinReqConfirmCard}>
-          <View style={[styles.joinReqConfirmIconWrap, { backgroundColor: confirmJoinReq?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
+      <View style={invStyles.joinReqOverlay}>
+        <View style={invStyles.joinReqConfirmCard}>
+          <View style={[invStyles.joinReqConfirmIconWrap, { backgroundColor: confirmJoinReq?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
             <Ionicons
               name={confirmJoinReq?.accept ? "person-add" : "close-circle"}
               size={32}
               color={confirmJoinReq?.accept ? "#16A34A" : "#EF4444"}
             />
           </View>
-          <Text style={styles.joinReqConfirmTitle}>
+          <Text style={invStyles.joinReqConfirmTitle}>
             {confirmJoinReq?.accept ? "Accept Request" : "Decline Request?"}
           </Text>
-          <Text style={styles.joinReqConfirmDesc}>
+          <Text style={invStyles.joinReqConfirmDesc}>
             {confirmJoinReq?.accept
               ? `Would you like ${confirmJoinReq?.username} to join as a User or Admin?`
               : `${confirmJoinReq?.username}'s request to join will be declined. They will be notified.`}
           </Text>
           {confirmJoinReq?.accept ? (
-            <View style={styles.joinReqConfirmBtns}>
+            <View style={invStyles.joinReqConfirmBtns}>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmYesBtn, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
                 onPress={async () => {
                   if (!confirmJoinReq || isProcessingJoinReq) return;
                   setIsProcessingJoinReq(true);
@@ -1389,11 +1389,11 @@ function TechDashboard() {
                   }
                 }}
               >
-                <Text style={styles.joinReqConfirmYesText}>Accept as User</Text>
+                <Text style={invStyles.joinReqConfirmYesText}>Accept as User</Text>
               </Pressable>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#7C3AED" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#7C3AED" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
                 onPress={async () => {
                   if (!confirmJoinReq || isProcessingJoinReq) return;
                   setIsProcessingJoinReq(true);
@@ -1410,11 +1410,11 @@ function TechDashboard() {
                   }
                 }}
               >
-                <Text style={styles.joinReqConfirmYesText}>Accept as Admin</Text>
+                <Text style={invStyles.joinReqConfirmYesText}>Accept as Admin</Text>
               </Pressable>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
                 onPress={async () => {
                   if (!confirmJoinReq || isProcessingJoinReq) return;
                   setIsProcessingJoinReq(true);
@@ -1431,21 +1431,21 @@ function TechDashboard() {
                   }
                 }}
               >
-                <Text style={styles.joinReqConfirmYesText}>Decline</Text>
+                <Text style={invStyles.joinReqConfirmYesText}>Decline</Text>
               </Pressable>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
                 onPress={() => { if (!isProcessingJoinReq) setConfirmJoinReq(null); }}
               >
-                <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
+                <Text style={invStyles.joinReqConfirmNoText}>Cancel</Text>
               </Pressable>
             </View>
           ) : (
-            <View style={styles.joinReqConfirmBtns}>
+            <View style={invStyles.joinReqConfirmBtns}>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
                 onPress={async () => {
                   if (!confirmJoinReq || isProcessingJoinReq) return;
                   setIsProcessingJoinReq(true);
@@ -1462,14 +1462,14 @@ function TechDashboard() {
                   }
                 }}
               >
-                <Text style={styles.joinReqConfirmYesText}>Decline</Text>
+                <Text style={invStyles.joinReqConfirmYesText}>Decline</Text>
               </Pressable>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
                 onPress={() => { if (!isProcessingJoinReq) setConfirmJoinReq(null); }}
               >
-                <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
+                <Text style={invStyles.joinReqConfirmNoText}>Cancel</Text>
               </Pressable>
             </View>
           )}
@@ -1854,7 +1854,7 @@ function AdminDashboard() {
   }, []);
 
   const labPortalUsers = registeredUsers.filter(
-    (u) => (u.userType === "lab" || !u.userType) && u.userType !== "master_admin",
+    (u) => (u.userType === "lab" || !u.userType) && (u as any).userType !== "master_admin",
   );
 
   function resetClientForm() {
@@ -2358,7 +2358,7 @@ function AdminDashboard() {
       }
 
       function handleSelectTierInEdit(tierName: string) {
-        setEditingClient({ ...editingClient, tier: tierName });
+        setEditingClient((prev) => prev ? { ...prev, tier: tierName } : prev);
         const tier = pricingTiers.find(t => t.name === tierName);
         if (tier) {
           const newPrices: Record<string, string> = {};
@@ -10887,6 +10887,40 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: Colors.light.tintLight,
   },
+  aiChatCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Colors.light.surface,
+    borderRadius: 16,
+    padding: 14,
+    marginHorizontal: 20,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    gap: 12,
+  },
+  aiChatIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  aiChatInfo: {
+    flex: 1,
+  },
+  aiChatTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  aiChatSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
 });
 
 const adm = StyleSheet.create({
@@ -11389,6 +11423,17 @@ const adm = StyleSheet.create({
   clientRevenueAmount: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  textInput: {
+    height: 44,
+    backgroundColor: Colors.light.surfaceSecondary,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    paddingHorizontal: 12,
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
     color: Colors.light.text,
   },
 });
