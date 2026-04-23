@@ -119,7 +119,7 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
       )
     );
 
-  const organizationIds = [...new Set(memberships.map((membership) => membership.organizationId))];
+  const organizationIds = [...new Set(memberships.map((membership) => membership.labId))];
   const membershipOrganizations = organizationIds.length
     ? await db
         .select()
@@ -143,12 +143,12 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
     const activeMemberships = membershipsByUserId.get(user.id) ?? [];
     const primaryMembership =
       activeMemberships.find((membership) => {
-        const organization = organizationsById.get(membership.organizationId);
+        const organization = organizationsById.get(membership.labId);
         return organization?.type === "lab";
       }) ?? activeMemberships[0];
 
     const primaryOrganization = primaryMembership
-      ? organizationsById.get(primaryMembership.organizationId)
+      ? organizationsById.get(primaryMembership.labId)
       : null;
 
     return {
@@ -287,7 +287,7 @@ router.post(
         .where(eq(organizations.id, input.joinOrganizationId));
       if (org) {
         await db.insert(organizationJoinRequests).values({
-          organizationId: org.id,
+          labId: org.id,
           requestedByUserId: user.id,
           requestedRole: input.role === "admin" ? "admin" : "user",
           message: `${user.username} would like to join ${org.displayName || org.name}.`,
@@ -312,7 +312,7 @@ router.post(
         })
         .returning();
       await db.insert(organizationMemberships).values({
-        organizationId: org.id,
+        labId: org.id,
         userId: user.id,
         role: "owner",
         status: "active",
@@ -472,7 +472,7 @@ router.get(
           (req as any).auth.userId
         ),
       });
-    const orgIds = memberships.map((m: any) => m.organizationId);
+    const orgIds = memberships.map((m: any) => m.labId);
     const orgs = orgIds.length
       ? await db
           .select()
@@ -489,8 +489,8 @@ router.get(
         id: m.id,
         role: m.role,
         status: m.status,
-        organizationId: m.organizationId,
-        organization: orgs.find((org) => org.id === m.organizationId) ?? null,
+        organizationId: m.labId,
+        organization: orgs.find((org) => org.id === m.labId) ?? null,
       })),
     });
   })

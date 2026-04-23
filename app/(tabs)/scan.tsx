@@ -22,7 +22,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import { Share } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
@@ -561,7 +561,7 @@ export default function ScanScreen() {
     let dataUri = rawUri;
     if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
       try {
-        const FileSystem = await import("expo-file-system");
+        const FileSystem = await import("expo-file-system/legacy");
         const b64 = await FileSystem.readAsStringAsync(rawUri, {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -786,14 +786,14 @@ export default function ScanScreen() {
       let dataUri = rawUri;
       if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
         try {
-          const FSystem = await import("expo-file-system");
+          const FSystem = await import("expo-file-system/legacy");
           const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: FSystem.EncodingType.Base64 });
           dataUri = `data:image/jpeg;base64,${b64}`;
           setCapturedUri(dataUri);
         } catch (e: any) {
           console.log("Gallery crop: could not read file:", e?.message);
           try {
-            const FSystem = await import("expo-file-system");
+            const FSystem = await import("expo-file-system/legacy");
             const destUri = FSystem.cacheDirectory + "gallery_" + Date.now() + ".jpg";
             await FSystem.copyAsync({ from: rawUri, to: destUri });
             const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
@@ -1032,7 +1032,7 @@ export default function ScanScreen() {
         throw new Error("Web image compression failed: " + (webErr?.message || "unknown"));
       }
     } else {
-      const FileSystem = require("expo-file-system");
+      const FileSystem = require("expo-file-system/legacy");
 
       const urisToTry: string[] = [];
 
@@ -1213,7 +1213,7 @@ export default function ScanScreen() {
           normalizedImages.push(photo);
         } else if (Platform.OS !== "web") {
           try {
-            const FSystem = await import("expo-file-system");
+            const FSystem = await import("expo-file-system/legacy");
             const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
             normalizedImages.push(`data:image/jpeg;base64,${b64}`);
           } catch {
@@ -1276,7 +1276,7 @@ export default function ScanScreen() {
           normalizedImages.push(photo);
         } else if (Platform.OS !== "web") {
           try {
-            const FSystem = await import("expo-file-system");
+            const FSystem = await import("expo-file-system/legacy");
             const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
             normalizedImages.push(`data:image/jpeg;base64,${b64}`);
           } catch {
@@ -1332,7 +1332,7 @@ export default function ScanScreen() {
     }
     if (Platform.OS !== "web" && !uri.startsWith("data:")) {
       try {
-        const FSystem = await import("expo-file-system");
+        const FSystem = await import("expo-file-system/legacy");
         const destUri = FSystem.cacheDirectory + "hq_" + Date.now() + ".jpg";
         await FSystem.copyAsync({ from: uri, to: destUri });
         const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
@@ -1355,7 +1355,7 @@ export default function ScanScreen() {
           return `data:image/jpeg;base64,${manipResult.base64}`;
         }
         if (manipResult.uri) {
-          const FSystem = await import("expo-file-system");
+          const FSystem = await import("expo-file-system/legacy");
           const b64 = await FSystem.readAsStringAsync(manipResult.uri, { encoding: FSystem.EncodingType.Base64 });
           if (b64 && b64.length > 10000) {
             console.log("AI quality: manipulator+read succeeded, length:", b64.length);
@@ -1419,7 +1419,7 @@ export default function ScanScreen() {
           console.log("AI: Primary compression failed, trying direct base64 read:", compErr?.message || compErr);
           if (Platform.OS !== "web" && !analyzeUri.startsWith("data:")) {
             try {
-              const FSystem = await import("expo-file-system");
+              const FSystem = await import("expo-file-system/legacy");
               const destUri = FSystem.cacheDirectory + "ai_fallback_" + Date.now() + ".jpg";
               await FSystem.copyAsync({ from: analyzeUri, to: destUri });
               const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
@@ -1965,14 +1965,14 @@ export default function ScanScreen() {
           let dataUri = asset.uri;
           if (!asset.uri.startsWith("data:") && Platform.OS !== "web") {
             try {
-              const FSystem = await import("expo-file-system");
+              const FSystem = await import("expo-file-system/legacy");
               const b64 = await FSystem.readAsStringAsync(asset.uri, { encoding: FSystem.EncodingType.Base64 });
               const mime = asset.mimeType || "image/jpeg";
               dataUri = `data:${mime};base64,${b64}`;
             } catch (e: any) {
               console.log("Attach file read error:", e?.message);
               try {
-                const FSystem = await import("expo-file-system");
+                const FSystem = await import("expo-file-system/legacy");
                 const destUri = FSystem.cacheDirectory + "attach_" + Date.now() + ".jpg";
                 await FSystem.copyAsync({ from: asset.uri, to: destUri });
                 const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });

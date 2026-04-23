@@ -17,5 +17,16 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "attached_assets",
+    "scripts",
+    "restore-staging",
+    "server_dist",
+    "static-build",
+    "backups",
+    ".expo",
+    "public"
   ]
 }

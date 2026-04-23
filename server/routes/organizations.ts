@@ -94,7 +94,7 @@ async function syncUsersToOrganization(organizationId: string, organization?: an
 
   const memberships = await db.query.organizationMemberships.findMany({
     where: and(
-      eq(organizationMemberships.organizationId, organizationId),
+      eq(organizationMemberships.labId, organizationId),
       eq(organizationMemberships.status, "active")
     ),
   });
@@ -136,7 +136,7 @@ async function syncUserFromActiveMemberships(userId: string) {
   const primaryMembership = memberships[0];
   await syncUserToOrganization(
     userId,
-    primaryMembership.organizationId,
+    primaryMembership.labId,
     primaryMembership.role
   );
 }
@@ -155,7 +155,7 @@ router.post(
       .returning();
 
     await db.insert(organizationMemberships).values({
-      organizationId: organization.id,
+      labId: organization.id,
       userId: (req as any).auth.userId,
       role: "owner",
       status: "active",
@@ -194,7 +194,7 @@ router.get(
       });
     const orgIds = memberships
       .filter((m: any) => m.status === "active")
-      .map((m: any) => m.organizationId);
+      .map((m: any) => m.labId);
     const orgs = orgIds.length
       ? await db
           .select()
@@ -220,7 +220,7 @@ router.get(
       ),
     });
 
-    const organizationIds = [...new Set(invites.map((invite) => invite.organizationId))];
+    const organizationIds = [...new Set(invites.map((invite) => invite.labId))];
     const inviterIds = [...new Set(invites.map((invite) => invite.invitedByUserId))];
 
     const inviteOrganizations = organizationIds.length
@@ -242,7 +242,7 @@ router.get(
       res,
       invites.map((invite) => ({
         ...invite,
-        organization: organizationsById.get(invite.organizationId) ?? null,
+        organization: organizationsById.get(invite.labId) ?? null,
         invitedByUser: invitersById.get(invite.invitedByUserId)
           ? {
               id: invitersById.get(invite.invitedByUserId)!.id,
@@ -319,7 +319,7 @@ router.get(
     const memberships =
       await db.query.organizationMemberships.findMany({
         where: eq(
-          organizationMemberships.organizationId,
+          organizationMemberships.labId,
           organizationId
         ),
       });
@@ -374,7 +374,7 @@ router.post(
 
     const existingInvite = await db.query.organizationInvites.findFirst({
       where: and(
-        eq(organizationInvites.organizationId, organizationId),
+        eq(organizationInvites.labId, organizationId),
         eq(organizationInvites.email, input.email.toLowerCase()),
         eq(organizationInvites.status, "pending")
       ),
@@ -421,7 +421,7 @@ router.get(
       ADMIN_ROLES
     );
     const invites = await db.query.organizationInvites.findMany({
-      where: eq(organizationInvites.organizationId, organizationId),
+      where: eq(organizationInvites.labId, organizationId),
     });
     return ok(res, invites);
   })
@@ -456,7 +456,7 @@ router.post(
 
     await writeAuditLog({
       req,
-      organizationId: invite.organizationId,
+      organizationId: invite.labId,
       action: "organization_invite_declined",
       entityType: "organization_invite",
       entityId: invite.id,
@@ -490,7 +490,7 @@ router.post(
     await db
       .insert(organizationMemberships)
       .values({
-        organizationId: invite.organizationId,
+        labId: invite.labId,
         userId,
         role: invite.roleToAssign,
         status: "active",
@@ -500,7 +500,7 @@ router.post(
       })
       .onConflictDoUpdate({
         target: [
-          organizationMemberships.organizationId,
+          organizationMemberships.labId,
           organizationMemberships.userId,
         ],
         set: {
@@ -520,11 +520,11 @@ router.post(
       })
       .where(eq(organizationInvites.id, invite.id));
 
-    await syncUserToOrganization(userId, invite.organizationId, invite.roleToAssign);
+    await syncUserToOrganization(userId, invite.labId, invite.roleToAssign);
 
     await writeAuditLog({
       req,
-      organizationId: invite.organizationId,
+      organizationId: invite.labId,
       action: "organization_invite_accepted",
       entityType: "organization_invite",
       entityId: invite.id,
@@ -550,7 +550,7 @@ router.post(
     const alreadyMember =
       await db.query.organizationMemberships.findFirst({
         where: and(
-          eq(organizationMemberships.organizationId, organizationId),
+          eq(organizationMemberships.labId, organizationId),
           eq(
             organizationMemberships.userId,
             (req as any).auth.userId
@@ -566,9 +566,9 @@ router.post(
     const existingPendingRequest =
       await db.query.organizationJoinRequests.findFirst({
         where: and(
-          eq(organizationJoinRequests.organizationId, organizationId),
+          eq(organizationJoinRequests.labId, organizationId),
           eq(
-            organizationJoinRequests.requestedByUserId,
+            organizationJoinRequests.userId,
             (req as any).auth.userId
           ),
           eq(organizationJoinRequests.status, "pending")
@@ -582,8 +582,8 @@ router.post(
     const [request] = await db
       .insert(organizationJoinRequests)
       .values({
-        organizationId,
-        requestedByUserId: (req as any).auth.userId,
+        labId: organizationId,
+        userId: (req as any).auth.userId,
         requestedRole: input.requestedRole,
         message: input.message ?? null,
       })
@@ -607,12 +607,12 @@ router.get(
     const currentUserId = (req as any).auth.userId;
     const requests = await db.query.organizationJoinRequests.findMany({
       where: and(
-        eq(organizationJoinRequests.requestedByUserId, currentUserId),
+        eq(organizationJoinRequests.userId, currentUserId),
         eq(organizationJoinRequests.status, "pending")
       ),
     });
 
-    const organizationIds = [...new Set(requests.map((request) => request.organizationId))];
+    const organizationIds = [...new Set(requests.map((request) => request.labId))];
     const requestOrganizations = organizationIds.length
       ? await db
           .select()
@@ -627,7 +627,7 @@ router.get(
       res,
       requests.map((request) => ({
         ...request,
-        organization: organizationsById.get(request.organizationId) ?? null,
+        organization: organizationsById.get(request.labId) ?? null,
       }))
     );
   })
@@ -645,7 +645,7 @@ router.get(
     const requests =
       await db.query.organizationJoinRequests.findMany({
         where: eq(
-          organizationJoinRequests.organizationId,
+          organizationJoinRequests.labId,
           organizationId
         ),
       });
@@ -667,7 +667,7 @@ router.post(
 
     await requireAnyRole(
       (req as any).auth.userId,
-      request.organizationId,
+      request.labId,
       ADMIN_ROLES
     );
 
@@ -676,8 +676,8 @@ router.post(
     const [membership] = await db
       .insert(organizationMemberships)
       .values({
-        organizationId: request.organizationId,
-        userId: request.requestedByUserId,
+        labId: request.labId,
+        userId: request.userId,
         role: roleToAssign,
         status: "active",
         approvedByUserId: (req as any).auth.userId,
@@ -685,7 +685,7 @@ router.post(
       })
       .onConflictDoUpdate({
         target: [
-          organizationMemberships.organizationId,
+          organizationMemberships.labId,
           organizationMemberships.userId,
         ],
         set: {
@@ -708,14 +708,14 @@ router.post(
       .returning();
 
     await syncUserToOrganization(
-      request.requestedByUserId,
-      request.organizationId,
+      request.userId,
+      request.labId,
       roleToAssign
     );
 
     await writeAuditLog({
       req,
-      organizationId: request.organizationId,
+      organizationId: request.labId,
       action: "organization_join_approved",
       entityType: "organization_join_request",
       entityId: request.id,
@@ -737,7 +737,7 @@ router.delete(
       });
     if (!request) throw new HttpError(404, "Join request not found.");
 
-    if (request.requestedByUserId !== (req as any).auth.userId) {
+    if (request.userId !== (req as any).auth.userId) {
       throw new HttpError(403, "You can only cancel your own join request.");
     }
 
@@ -757,7 +757,7 @@ router.delete(
 
     await writeAuditLog({
       req,
-      organizationId: request.organizationId,
+      organizationId: request.labId,
       action: "organization_join_cancelled",
       entityType: "organization_join_request",
       entityId: request.id,
@@ -781,7 +781,7 @@ router.post(
     if (!request) throw new HttpError(404, "Join request not found.");
     await requireAnyRole(
       (req as any).auth.userId,
-      request.organizationId,
+      request.labId,
       ADMIN_ROLES
     );
 
@@ -797,7 +797,7 @@ router.post(
 
     await writeAuditLog({
       req,
-      organizationId: request.organizationId,
+      organizationId: request.labId,
       action: "organization_join_rejected",
       entityType: "organization_join_request",
       entityId: request.id,
@@ -920,7 +920,7 @@ router.patch(
     if (!membership) throw new HttpError(404, "Membership not found.");
     await requireAnyRole(
       (req as any).auth.userId,
-      membership.organizationId,
+      membership.labId,
       ADMIN_ROLES
     );
 
@@ -932,7 +932,7 @@ router.patch(
 
     await writeAuditLog({
       req,
-      organizationId: membership.organizationId,
+      organizationId: membership.labId,
       action: "membership_updated",
       entityType: "organization_membership",
       entityId: membership.id,
@@ -960,7 +960,7 @@ router.delete(
     if (!isOwnMembership) {
       await requireAnyRole(
         (req as any).auth.userId,
-        membership.organizationId,
+        membership.labId,
         ADMIN_ROLES
       );
     }
@@ -973,7 +973,7 @@ router.delete(
 
     await writeAuditLog({
       req,
-      organizationId: membership.organizationId,
+      organizationId: membership.labId,
       action: "membership_removed",
       entityType: "organization_membership",
       entityId: membership.id,

@@ -715,7 +715,7 @@ function TechDashboard() {
         )}
         <Text style={[styles.avatarName, { color: themeColors.textSecondary }]}>{(currentUserData?.role === "admin" || role === "admin") ? "Administrator" : "User"}</Text>
         {currentUserData?.practiceName ? (
-          <Text style={{ fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.light.primary, marginTop: 2 }}>{currentUserData.practiceName}</Text>
+          <Text style={{ fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.light.tint, marginTop: 2 }}>{currentUserData.practiceName}</Text>
         ) : null}
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
@@ -2035,7 +2035,7 @@ function AdminDashboard() {
           throw new Error("Your session needs to be refreshed before downloading a backup.");
         }
 
-        const FileSystem = await import("expo-file-system");
+        const FileSystem = await import("expo-file-system/legacy");
         const filename = `labtrax-backup-${new Date().toISOString().slice(0, 10)}.zip`;
         const directory = FileSystem.documentDirectory || FileSystem.cacheDirectory;
         if (!directory) {
@@ -9983,6 +9983,37 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: Colors.light.tintLight,
   },
+  joinRequestSection: { paddingHorizontal: 20, marginTop: 16 },
+  joinReqCard: { flexDirection: "row", alignItems: "flex-start", backgroundColor: "#EFF6FF", borderRadius: 18, padding: 16, borderWidth: 1, borderColor: "#BFDBFE", gap: 14, marginBottom: 10 },
+  joinReqIconWrap: { width: 44, height: 44, borderRadius: 14, justifyContent: "center", alignItems: "center" },
+  joinReqContent: { flex: 1 },
+  joinReqTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 },
+  joinReqName: { fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text },
+  joinReqPractice: { fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 },
+  joinReqMsg: { fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, marginTop: 4, lineHeight: 18 },
+  joinReqBtns: { flexDirection: "row", gap: 10, marginTop: 12 },
+  joinReqAcceptBtn: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#16A34A", borderRadius: 8, paddingHorizontal: 14, paddingVertical: 7 },
+  joinReqAcceptText: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  joinReqDeclineBtn: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FEE2E2", borderRadius: 8, paddingHorizontal: 14, paddingVertical: 7 },
+  joinReqDeclineText: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#EF4444" },
+  joinReqOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", alignItems: "center", padding: 24 },
+  joinReqConfirmCard: { backgroundColor: "#FFF", borderRadius: 24, padding: 24, width: "100%", maxWidth: 360, alignItems: "center" },
+  joinReqConfirmIconWrap: { width: 56, height: 56, borderRadius: 28, justifyContent: "center", alignItems: "center", marginBottom: 16 },
+  joinReqConfirmTitle: { fontSize: 17, fontFamily: "Inter_700Bold", color: Colors.light.text, textAlign: "center", marginBottom: 8 },
+  joinReqConfirmDesc: { fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.subText, textAlign: "center", lineHeight: 20, marginBottom: 20 },
+  joinReqConfirmBtns: { flexDirection: "row", gap: 12, width: "100%" },
+  joinReqConfirmYesBtn: { flex: 1, backgroundColor: Colors.light.tint, borderRadius: 12, paddingVertical: 12, alignItems: "center" },
+  joinReqConfirmYesText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#FFF" },
+  joinReqConfirmNoBtn: { flex: 1, backgroundColor: Colors.light.surfaceAlt, borderRadius: 12, paddingVertical: 12, alignItems: "center" },
+  joinReqConfirmNoText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text },
+  aiChatCard: { flexDirection: "row", padding: 16, backgroundColor: Colors.light.surface, borderRadius: 16, alignItems: "center", marginHorizontal: 20, marginTop: 12, gap: 12, borderWidth: 1, borderColor: Colors.light.borderLight },
+  aiChatIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: Colors.light.tintLight, justifyContent: "center", alignItems: "center" },
+  aiChatInfo: { flex: 1 },
+  aiChatTitle: { fontFamily: "Inter_600SemiBold", fontSize: 15, color: Colors.light.text },
+  aiChatSub: { fontFamily: "Inter_400Regular", fontSize: 13, color: Colors.light.textSecondary, marginTop: 2 },
+  clientName: { fontFamily: "Inter_500Medium", fontSize: 14, color: Colors.light.text },
+  textInput: { backgroundColor: Colors.light.surfaceSecondary, borderRadius: 10, padding: 12, fontFamily: "Inter_400Regular", fontSize: 14, color: Colors.light.text },
+  toothNumbers: { fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.light.textSecondary },
 });
 
 const adm = StyleSheet.create({

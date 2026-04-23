@@ -159,7 +159,7 @@ router.get(
               (req as any).auth.userId
             ),
           })
-        ).map((m: any) => m.organizationId);
+        ).map((m: any) => m.labId);
 
     const rows = membershipOrgIds.length
       ? await db.query.cases.findMany({

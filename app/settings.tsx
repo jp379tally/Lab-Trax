@@ -1450,6 +1450,33 @@ const styles = StyleSheet.create({
     height: 1,
     marginLeft: 68,
   },
+  input: {
+    backgroundColor: Colors.light.surfaceSecondary,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontFamily: "Inter_400Regular",
+    fontSize: 15,
+    color: Colors.light.text,
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+    marginBottom: 10,
+  },
+  sendBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tint,
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginTop: 6,
+  },
+  sendBtnText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 15,
+    color: "#FFF",
+  },
 });
 
 const joinStyles = StyleSheet.create({
