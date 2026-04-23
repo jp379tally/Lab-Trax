@@ -1,0 +1,5811 @@
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import {
+  StyleSheet,
+  View,
+  Text,
+  Pressable,
+  Platform,
+  TextInput,
+  ScrollView,
+  Alert,
+  Modal,
+  Animated as RNAnimated,
+  ActivityIndicator,
+  Dimensions,
+} from "react-native";
+import { Image } from "expo-image";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
+import * as Haptics from "expo-haptics";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
+import * as FileSystem from "expo-file-system";
+import { Share } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
+import { useApp } from "@/lib/app-context";
+import { useAuth } from "@/lib/auth-context";
+import Colors from "@/constants/colors";
+import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
+import { getApiBaseUrlCandidates, getApiUrl, resilientFetch } from "@/lib/query-client";
+
+type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
+
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts);
+  const month = d.toLocaleString("en-US", { month: "short" });
+  const day = d.getDate();
+  const hours = d.getHours();
+  const mins = d.getMinutes().toString().padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  const h = hours % 12 || 12;
+  return `${month} ${day}, ${h}:${mins} ${ampm}`;
+}
+
+function getActivityIcon(type: string): { name: string; color: string } {
+  switch (type) {
+    case "photo":
+      return { name: "camera", color: "#8B5CF6" };
+    case "scan":
+      return { name: "scan", color: Colors.light.tint };
+    case "note":
+      return { name: "document-text", color: "#F59E0B" };
+    case "station_change":
+      return { name: "swap-horizontal", color: "#06B6D4" };
+    case "created":
+      return { name: "add-circle", color: Colors.light.success };
+    default:
+      return { name: "ellipse", color: Colors.light.textTertiary };
+  }
+}
+
+interface LabelData {
+  caseNumber: string;
+  doctorName: string;
+  patientName: string;
+  caseType: string;
+  toothIndices: string;
+  shade: string;
+  material: string;
+  isRush: boolean;
+  dueDate: string;
+  notes: string;
+  price: number;
+  createdAt: string;
+  toothDiagram?: number[];
+}
+
+function deriveDisplayInitials(input?: {
+  firstName?: string | null;
+  lastName?: string | null;
+  label?: string | null;
+}) {
+  const firstInitial = input?.firstName?.trim()?.[0];
+  const lastInitial = input?.lastName?.trim()?.[0];
+  if (firstInitial && lastInitial) {
+    return `${firstInitial}${lastInitial}`.toUpperCase();
+  }
+
+  const normalizedLabel = input?.label?.trim() || "";
+  if (!normalizedLabel) {
+    return "??";
+  }
+
+  const parts = normalizedLabel
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+  }
+
+  return normalizedLabel.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "??";
+}
+
+export default function ScanScreen() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const isFocused = useIsFocused();
+  const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode } = useApp();
+  const { currentUser, registeredUsers } = useAuth();
+  const currentRegisteredUser = registeredUsers.find(
+    (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
+  );
+  const userInitials = deriveDisplayInitials({
+    firstName: currentRegisteredUser?.firstName,
+    lastName: currentRegisteredUser?.lastName,
+    label: currentRegisteredUser?.username || currentUser,
+  });
+  const showPrice = role === "admin" && adminUnlocked;
+  const [labelModalVisible, setLabelModalVisible] = useState(false);
+  const [labelData, setLabelData] = useState<LabelData | null>(null);
+  const [pendingRemakeCheck, setPendingRemakeCheck] = useState<{caseId: string, patientName: string} | null>(null);
+  const lastCreatedCaseIdRef = useRef<string | null>(null);
+  const barcodeAlreadyAttachedRef = useRef(false);
+  const [phase, setPhase] = useState<ScanPhase>("camera");
+  const [capturedUri, setCapturedUri] = useState<string | null>(null);
+  const scanAnim = useRef(new RNAnimated.Value(0)).current;
+  const cameraRef = useRef<CameraView>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraPaused, setCameraPaused] = useState(false);
+  const isPickingFilesRef = useRef(false);
+
+  const [permission, requestPermission] = useCameraPermissions();
+
+  const [doctorName, setDoctorName] = useState("");
+  const [patientName, setPatientName] = useState("");
+  const [caseType, setCaseType] = useState("");
+  const [caseTypeOpen, setCaseTypeOpen] = useState(false);
+  const [toothIndices, setToothIndices] = useState("");
+  const [selectedTeeth, setSelectedTeeth] = useState<number[]>([]);
+  const [toothTypes, setToothTypes] = useState<Record<number, ToothType>>({});
+  const [toothConnectors, setToothConnectors] = useState<Record<string, boolean>>({});
+  const [toothChartOpen, setToothChartOpen] = useState(false);
+  const [shade, setShade] = useState("");
+  const [material, setMaterial] = useState("Zirconia");
+  const [removableSubtype, setRemovableSubtype] = useState("");
+  const [removableSubtypeOpen, setRemovableSubtypeOpen] = useState(false);
+  const [removableStage, setRemovableStage] = useState("");
+  const [removableStageOpen, setRemovableStageOpen] = useState(false);
+  const [isRush, setIsRush] = useState(false);
+  const [isCropping, setIsCropping] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [dueDateOpen, setDueDateOpen] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
+  const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
+  const [timeDue, setTimeDue] = useState("");
+  const [timeDueOpen, setTimeDueOpen] = useState(false);
+  const [timeDueHour, setTimeDueHour] = useState(9);
+  const [timeDueMinute, setTimeDueMinute] = useState(0);
+  const [timeDuePeriod, setTimeDuePeriod] = useState<"AM" | "PM">("AM");
+  const [casePhotos, setCasePhotos] = useState<string[]>([]);
+  const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
+  const [doctorSearch, setDoctorSearch] = useState("");
+  const [patientDropdownOpen, setPatientDropdownOpen] = useState(false);
+  const [patientSearch, setPatientSearch] = useState("");
+  const [addingNewPatient, setAddingNewPatient] = useState(false);
+  const [newPatientInput, setNewPatientInput] = useState("");
+  const [newPatientFirst, setNewPatientFirst] = useState("");
+  const [newPatientMiddle, setNewPatientMiddle] = useState("");
+  const [newPatientLast, setNewPatientLast] = useState("");
+  const [addingNewDoctor, setAddingNewDoctor] = useState(false);
+  const [newDoctorInput, setNewDoctorInput] = useState("");
+  const [newDoctorPractice, setNewDoctorPractice] = useState("");
+  const [newDoctorAddress, setNewDoctorAddress] = useState("");
+  const [newDoctorPhone, setNewDoctorPhone] = useState("");
+  const [newDoctorEmail, setNewDoctorEmail] = useState("");
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [barcodeScanned, setBarcodeScanned] = useState(false);
+  const [barcodeScanForCase, setBarcodeScanForCase] = useState<string | null>(null);
+  const [barcodeAttachScanned, setBarcodeAttachScanned] = useState(false);
+  const [pendingBarcode, setPendingBarcode] = useState<string | null>(null);
+  const [webBarcodeInput, setWebBarcodeInput] = useState("");
+  const [barcodeCameraLayout, setBarcodeCameraLayout] = useState({ width: 0, height: 0 });
+  const [shadeOpen, setShadeOpen] = useState(false);
+  const [isSavingPdf, setIsSavingPdf] = useState(false);
+  const [selectedPrinter, setSelectedPrinter] = useState<{ name: string; url: string } | null>(null);
+
+  const SHADE_OPTIONS = ["A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
+  const [customShadePhotos, setCustomShadePhotos] = useState<string[]>([]);
+  const [customShadeVideos, setCustomShadeVideos] = useState<string[]>([]);
+
+  const allProviderEntries = React.useMemo(() => {
+    const entries: { providerName: string; practiceName: string; address: string; phone: string; accountNumber: string; clientId: string }[] = [];
+    const seen = new Set<string>();
+    clients.forEach(c => {
+      const key1 = `${c.leadDoctor.toLowerCase()}::${c.id}`;
+      if (!seen.has(key1)) {
+        seen.add(key1);
+        entries.push({ providerName: c.leadDoctor, practiceName: c.practiceName, address: c.address, phone: c.phone, accountNumber: c.accountNumber, clientId: c.id });
+      }
+      (c.additionalProviders || []).forEach(prov => {
+        const trimmed = prov.trim();
+        if (!trimmed) return;
+        const key2 = `${trimmed.toLowerCase()}::${c.id}`;
+        if (!seen.has(key2)) {
+          seen.add(key2);
+          entries.push({ providerName: trimmed, practiceName: c.practiceName, address: c.address, phone: c.phone, accountNumber: c.accountNumber, clientId: c.id });
+        }
+      });
+    });
+    return entries;
+  }, [clients]);
+
+  const filteredProviderEntries = allProviderEntries.filter((e) => {
+    const q = doctorSearch.toLowerCase();
+    return e.providerName.toLowerCase().includes(q) || e.practiceName.toLowerCase().includes(q);
+  });
+
+  const filteredClients = clients.filter((c) => {
+    const q = doctorSearch.toLowerCase();
+    return c.leadDoctor.toLowerCase().includes(q) || c.practiceName.toLowerCase().includes(q);
+  });
+
+  const existingPatients = React.useMemo(() => {
+    const names = new Set<string>();
+    const filtered = cases.filter(c => !doctorName || c.doctorName === doctorName);
+    filtered.forEach((c) => {
+      if (c.patientName && c.patientName.trim()) names.add(c.patientName.trim());
+    });
+    return Array.from(names).sort();
+  }, [cases, doctorName]);
+
+  const filteredPatients = existingPatients.filter((name) =>
+    name && name.toLowerCase().includes((patientSearch || "").toLowerCase())
+  );
+
+  function updateToothDisplay(teeth: number[], types: Record<number, ToothType>) {
+    const sorted = [...teeth].sort((a, b) => a - b);
+    const parts: string[] = [];
+    let i = 0;
+    while (i < sorted.length) {
+      const t = sorted[i];
+      const tp = types[t] || "normal";
+      if (tp === "missing") {
+        parts.push(`X${t}`);
+        i++;
+      } else if (tp === "bridge") {
+        let end = i;
+        while (end + 1 < sorted.length && (types[sorted[end + 1]] || "normal") === "bridge") {
+          end++;
+        }
+        if (end > i) {
+          parts.push(`#${sorted[i]}-#${sorted[end]}`);
+        } else {
+          parts.push(`#${t}`);
+        }
+        i = end + 1;
+      } else {
+        parts.push(`#${t}`);
+        i++;
+      }
+    }
+    setToothIndices(parts.join(", "));
+  }
+
+  function handleToothTap(num: number) {
+    setSelectedTeeth((prev) => {
+      const next = prev.includes(num) ? prev.filter((t) => t !== num) : [...prev, num];
+      const sorted = next.sort((a, b) => a - b);
+      if (!prev.includes(num)) {
+        updateToothDisplay(sorted, toothTypes);
+      } else {
+        setToothTypes((prevTypes) => {
+          const updated = { ...prevTypes };
+          delete updated[num];
+          updateToothDisplay(sorted, updated);
+          return updated;
+        });
+        setToothConnectors((prev) => {
+          const updated = { ...prev };
+          Object.keys(updated).forEach(k => {
+            const [a, b] = k.split("-").map(Number);
+            if (a === num || b === num) delete updated[k];
+          });
+          return updated;
+        });
+      }
+      return sorted;
+    });
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }
+
+  function handleToothLongPress(num: number) {
+    if (!selectedTeeth.includes(num)) {
+      setSelectedTeeth((prev) => [...prev, num].sort((a, b) => a - b));
+    }
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    Alert.alert(
+      `Tooth #${num}`,
+      "Select a designation for this tooth:",
+      [
+        {
+          text: "Pontic",
+          onPress: () => {
+            setToothTypes((prev) => {
+              const updated = { ...prev, [num]: "bridge" as ToothType };
+              const teeth = selectedTeeth.includes(num) ? selectedTeeth : [...selectedTeeth, num].sort((a, b) => a - b);
+              updateToothDisplay(teeth, updated);
+              return updated;
+            });
+          },
+        },
+        {
+          text: "Missing",
+          onPress: () => {
+            setToothTypes((prev) => {
+              const updated = { ...prev, [num]: "missing" as ToothType };
+              const teeth = selectedTeeth.includes(num) ? selectedTeeth : [...selectedTeeth, num].sort((a, b) => a - b);
+              updateToothDisplay(teeth, updated);
+              return updated;
+            });
+            setToothConnectors((prev) => {
+              const updated = { ...prev };
+              Object.keys(updated).forEach(k => {
+                const [a, b] = k.split("-").map(Number);
+                if (a === num || b === num) delete updated[k];
+              });
+              return updated;
+            });
+          },
+        },
+        {
+          text: "Normal",
+          onPress: () => {
+            setToothTypes((prev) => {
+              const updated = { ...prev };
+              delete updated[num];
+              const teeth = selectedTeeth.includes(num) ? selectedTeeth : [...selectedTeeth, num].sort((a, b) => a - b);
+              updateToothDisplay(teeth, updated);
+              return updated;
+            });
+            setToothConnectors((prev) => {
+              const updated = { ...prev };
+              Object.keys(updated).forEach(k => {
+                const [a, b] = k.split("-").map(Number);
+                if (a === num || b === num) delete updated[k];
+              });
+              return updated;
+            });
+          },
+        },
+        { text: "Cancel", style: "cancel" },
+      ]
+    );
+  }
+
+  const setDueDateOneWeek = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    setDueDate(`${yyyy}-${mm}-${dd}`);
+    setCalendarMonth(d.getMonth());
+    setCalendarYear(d.getFullYear());
+    setDueDateOpen(false);
+  };
+
+  const selectCalendarDay = (day: number) => {
+    const yyyy = calendarYear;
+    const mm = String(calendarMonth + 1).padStart(2, "0");
+    const dd = String(day).padStart(2, "0");
+    setDueDate(`${yyyy}-${mm}-${dd}`);
+    setDueDateOpen(false);
+  };
+
+  const applyTimeDue = () => {
+    const hh = String(timeDueHour).padStart(2, "0");
+    const min = String(timeDueMinute).padStart(2, "0");
+    setTimeDue(`${hh}:${min} ${timeDuePeriod}`);
+    setTimeDueOpen(false);
+  };
+
+  const calendarDays = React.useMemo(() => {
+    const firstDay = new Date(calendarYear, calendarMonth, 1).getDay();
+    const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+    const blanks = Array.from({ length: firstDay }, (_, i) => ({ key: `b${i}`, day: 0 }));
+    const days = Array.from({ length: daysInMonth }, (_, i) => ({ key: `d${i + 1}`, day: i + 1 }));
+    return [...blanks, ...days];
+  }, [calendarMonth, calendarYear]);
+
+  const calendarMonthLabel = React.useMemo(() => {
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    return `${monthNames[calendarMonth]} ${calendarYear}`;
+  }, [calendarMonth, calendarYear]);
+
+  const selectedCalendarDay = React.useMemo(() => {
+    if (!dueDate) return -1;
+    const parts = dueDate.split("-");
+    if (parseInt(parts[0]) === calendarYear && parseInt(parts[1]) - 1 === calendarMonth) {
+      return parseInt(parts[2]);
+    }
+    return -1;
+  }, [dueDate, calendarMonth, calendarYear]);
+
+  const todayCalendarDay = React.useMemo(() => {
+    const now = new Date();
+    if (now.getMonth() === calendarMonth && now.getFullYear() === calendarYear) {
+      return now.getDate();
+    }
+    return -1;
+  }, [calendarMonth, calendarYear]);
+
+  const dueDateDisplay = React.useMemo(() => {
+    if (!dueDate) return "";
+    const parts = dueDate.split("-");
+    return `${parts[1]}/${parts[2]}/${parts[0]}`;
+  }, [dueDate]);
+
+  const billableTeethCount = React.useMemo(() => {
+    const normalCount = selectedTeeth.filter((t) => (toothTypes[t] || "normal") === "normal").length;
+    const hasPontic = selectedTeeth.some((t) => (toothTypes[t] || "normal") === "bridge");
+    return normalCount + (hasPontic ? 1 : 0);
+  }, [selectedTeeth, toothTypes]);
+
+  const calculatedPrice = React.useMemo(() => {
+    const unitPrice = MATERIAL_PRICES[material] || 250;
+    return unitPrice * Math.max(billableTeethCount, 1);
+  }, [material, billableTeethCount]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (phase !== "form") {
+        setPhase("camera");
+        setCapturedUri(null);
+      }
+      return () => {};
+    }, [])
+  );
+
+  const cropDoneRef = useRef(false);
+
+  useEffect(() => {
+    if (phase === "scanning") {
+      RNAnimated.loop(
+        RNAnimated.sequence([
+          RNAnimated.timing(scanAnim, {
+            toValue: 1,
+            duration: 2500,
+            useNativeDriver: true,
+          }),
+          RNAnimated.timing(scanAnim, {
+            toValue: 0,
+            duration: 2500,
+            useNativeDriver: true,
+          }),
+        ]),
+      ).start();
+
+      let cancelled = false;
+      const waitAndTransition = async () => {
+        const start = Date.now();
+        while (!cropDoneRef.current && Date.now() - start < 15000) {
+          await new Promise(r => setTimeout(r, 300));
+          if (cancelled) return;
+        }
+        await new Promise(r => setTimeout(r, 800));
+        if (cancelled) return;
+        setPhase("review");
+        if (Platform.OS !== "web") {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      };
+      waitAndTransition();
+      return () => { cancelled = true; };
+    }
+  }, [phase]);
+
+  async function cropDocumentIfNeeded(imageDataUri: string): Promise<string> {
+    try {
+      const resp = await resilientFetch("/api/crop-document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: imageDataUri }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.croppedImageBase64) {
+          if (data.documentDetected) {
+            console.log("Document detected and cropped, type:", data.documentType);
+          } else {
+            console.log("No document detected, using EXIF-corrected image");
+          }
+          return data.croppedImageBase64;
+        }
+      }
+    } catch (e: any) {
+      console.log("Document crop failed, using original:", e?.message);
+    }
+    return imageDataUri;
+  }
+
+  async function handleTakePhoto() {
+    let rawUri: string | null = null;
+
+    if (cameraRef.current) {
+      try {
+        if (!cameraReady) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, base64: true });
+        if (photo?.uri) {
+          rawUri = photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri;
+        }
+      } catch {}
+    }
+
+    if (!rawUri && Platform.OS === "web") {
+      try {
+        const videoEl = document.querySelector("video");
+        if (videoEl) {
+          const canvas = document.createElement("canvas");
+          canvas.width = videoEl.videoWidth || 640;
+          canvas.height = videoEl.videoHeight || 480;
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+            rawUri = canvas.toDataURL("image/jpeg", 0.8);
+          }
+        }
+      } catch {}
+    }
+
+    if (!rawUri) {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+        base64: true,
+      });
+      if (!result.canceled && result.assets[0]) {
+        const asset = result.assets[0];
+        rawUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+      }
+    }
+
+    if (!rawUri) return;
+
+    cropDoneRef.current = false;
+    setCapturedUri(rawUri);
+    setPhase("scanning");
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    let dataUri = rawUri;
+    if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
+      try {
+        const FileSystem = await import("expo-file-system");
+        const b64 = await FileSystem.readAsStringAsync(rawUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        dataUri = `data:image/jpeg;base64,${b64}`;
+        setCapturedUri(dataUri);
+      } catch (e: any) {
+        console.log("Could not read file for cropping:", e?.message);
+      }
+    }
+
+    if (dataUri.startsWith("data:")) {
+      const cropped = await cropDocumentIfNeeded(dataUri);
+      const finalUri = cropped !== dataUri ? cropped : dataUri;
+      setCapturedUri(finalUri);
+      setCasePhotos((prev) => {
+        if (prev.includes(finalUri)) return prev;
+        return [...prev, finalUri];
+      });
+    } else {
+      setCasePhotos((prev) => {
+        if (prev.includes(rawUri)) return prev;
+        return [...prev, rawUri];
+      });
+    }
+    cropDoneRef.current = true;
+  }
+
+  async function handleManualCrop() {
+    if (casePhotos.length === 0) return;
+    setIsCropping(true);
+    try {
+      const lastPhoto = casePhotos[casePhotos.length - 1];
+      let imageData = lastPhoto;
+      if (!imageData.startsWith("data:")) {
+        try {
+          const base64 = await FileSystem.readAsStringAsync(imageData, { encoding: FileSystem.EncodingType.Base64 });
+          imageData = `data:image/jpeg;base64,${base64}`;
+        } catch (readErr: any) {
+          console.log("Could not read photo for crop:", readErr?.message);
+          setIsCropping(false);
+          return;
+        }
+      }
+      const apiUrl = getApiUrl();
+      const cropUrl = new URL("/api/crop-document", apiUrl);
+      const resp = await resilientFetch(cropUrl.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: imageData }),
+      });
+      const data = await resp.json();
+      if (data.croppedImageBase64) {
+        setCasePhotos(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = data.croppedImageBase64;
+          return updated;
+        });
+        setCapturedUri(data.croppedImageBase64);
+        if (data.documentDetected) {
+          Alert.alert("Document Cropped", `Detected ${data.documentType || "document"} and cropped automatically.`);
+        } else {
+          Alert.alert("No Document Detected", "Could not detect a document. The image was auto-corrected but not cropped.");
+        }
+      } else {
+        Alert.alert("Crop Failed", "Unable to crop this image. Please try retaking the photo.");
+      }
+    } catch (e: any) {
+      console.log("Manual crop failed:", e?.message);
+      Alert.alert("Crop Error", "Something went wrong while cropping. Please try again.");
+    }
+    setIsCropping(false);
+  }
+
+  async function handleTakeRegularPhoto() {
+    let photoUri: string | null = null;
+
+    if (cameraRef.current) {
+      try {
+        if (!cameraReady) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        const photo = await cameraRef.current.takePictureAsync({ quality: 1.0 });
+        if (photo?.uri) {
+          photoUri = photo.uri;
+        }
+      } catch {
+        if (Platform.OS === "web") {
+          try {
+            const videoEl = document.querySelector("video");
+            if (videoEl) {
+              const canvas = document.createElement("canvas");
+              canvas.width = videoEl.videoWidth || 640;
+              canvas.height = videoEl.videoHeight || 480;
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+                photoUri = canvas.toDataURL("image/jpeg", 0.8);
+              }
+            }
+          } catch {}
+        }
+        if (!photoUri) {
+          const result = await ImagePicker.launchCameraAsync({
+            mediaTypes: ["images"],
+            quality: 0.8,
+          });
+          if (!result.canceled && result.assets[0]) {
+            photoUri = result.assets[0].uri;
+          }
+        }
+      }
+    } else {
+      if (Platform.OS === "web") {
+        try {
+          const videoEl = document.querySelector("video");
+          if (videoEl) {
+            const canvas = document.createElement("canvas");
+            canvas.width = videoEl.videoWidth || 640;
+            canvas.height = videoEl.videoHeight || 480;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+              photoUri = canvas.toDataURL("image/jpeg", 0.8);
+            }
+          }
+        } catch {}
+      }
+      if (!photoUri) {
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          quality: 0.8,
+        });
+        if (!result.canceled && result.assets[0]) {
+          photoUri = result.assets[0].uri;
+        }
+      }
+    }
+
+    if (photoUri) {
+      setCasePhotos((prev) => [...prev, photoUri!]);
+      const entry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: Date.now(),
+        description: "Photo captured",
+        imageUri: photoUri,
+        user: userInitials,
+      };
+      setActivityEntries((prev) => [...prev, entry]);
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+      Alert.alert("Photo Added", `${casePhotos.length + 1} photo(s) attached to this case.`);
+    }
+  }
+
+  async function handleCustomShadeCapture() {
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images", "videos"],
+      quality: 0.8,
+      videoMaxDuration: 30,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const asset = result.assets[0];
+      const isVideo = asset.type === "video";
+      if (isVideo) {
+        setCustomShadeVideos(prev => [...prev, asset.uri]);
+      } else {
+        setCustomShadePhotos(prev => [...prev, asset.uri]);
+      }
+      setCasePhotos(prev => [...prev, asset.uri]);
+      const entry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: Date.now(),
+        description: `Custom shading ${isVideo ? "video" : "photo"} captured`,
+        imageUri: asset.uri,
+        user: userInitials,
+      };
+      setActivityEntries(prev => [...prev, entry]);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      Alert.alert(
+        "Media Added",
+        `Custom shade ${isVideo ? "video" : "photo"} added. Would you like to add more?`,
+        [
+          { text: "Done", style: "cancel" },
+          { text: "Add More", onPress: () => handleCustomShadeCapture() },
+        ]
+      );
+    }
+  }
+
+  async function handlePickImage() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Gallery Permission",
+        "Gallery access is needed to select prescription images.",
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.9,
+      base64: true,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      const asset = result.assets[0];
+      const mimeType = asset.mimeType || (asset.uri?.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
+      let rawUri = asset.base64 ? `data:${mimeType};base64,${asset.base64}` : asset.uri;
+
+      cropDoneRef.current = false;
+      setCapturedUri(rawUri);
+      setPhase("scanning");
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
+
+      let dataUri = rawUri;
+      if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
+        try {
+          const FSystem = await import("expo-file-system");
+          const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: FSystem.EncodingType.Base64 });
+          dataUri = `data:image/jpeg;base64,${b64}`;
+          setCapturedUri(dataUri);
+        } catch (e: any) {
+          console.log("Gallery crop: could not read file:", e?.message);
+          try {
+            const FSystem = await import("expo-file-system");
+            const destUri = FSystem.cacheDirectory + "gallery_" + Date.now() + ".jpg";
+            await FSystem.copyAsync({ from: rawUri, to: destUri });
+            const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+            dataUri = `data:image/jpeg;base64,${b64}`;
+            setCapturedUri(dataUri);
+            console.log("Gallery crop: copy+read succeeded, length:", b64.length);
+          } catch (copyErr: any) {
+            console.log("Gallery crop: copy fallback also failed:", copyErr?.message);
+          }
+        }
+      }
+
+      if (dataUri.startsWith("data:")) {
+        const cropped = await cropDocumentIfNeeded(dataUri);
+        const finalUri = cropped !== dataUri ? cropped : dataUri;
+        setCapturedUri(finalUri);
+        setCasePhotos((prev) => {
+          if (prev.includes(finalUri)) return prev;
+          return [...prev, finalUri];
+        });
+      } else {
+        setCasePhotos((prev) => {
+          if (prev.includes(rawUri)) return prev;
+          return [...prev, rawUri];
+        });
+      }
+      cropDoneRef.current = true;
+    }
+  }
+
+  const [webDragOver, setWebDragOver] = useState(false);
+
+  async function convertPdfToImages(arrayBuffer: ArrayBuffer): Promise<string[]> {
+    try {
+      const pdfjsLib = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+      const pageImages: string[] = [];
+      const maxPages = Math.min(pdf.numPages, 10);
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const scale = 2.0;
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const imgDataUri = canvas.toDataURL("image/png");
+        pageImages.push(imgDataUri);
+      }
+      console.log(`PDF converted: ${pageImages.length} page(s) from ${pdf.numPages} total`);
+      return pageImages;
+    } catch (err: any) {
+      console.log("PDF conversion failed:", err?.message);
+      return [];
+    }
+  }
+
+  async function processWebFiles(files: FileList | File[]) {
+    if (!files || (files as any).length === 0) return;
+    setPhase("scanning");
+    setCapturedUri(null);
+    const uploadedUris: string[] = [];
+    const fileArray = Array.from(files);
+    for (const file of fileArray) {
+      const validTypes = ["image/", "application/pdf"];
+      const validExts = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tiff", ".webp", ".pdf"];
+      const isValid = validTypes.some((t) => file.type.startsWith(t)) || validExts.some((ext) => file.name.toLowerCase().endsWith(ext));
+      if (!isValid) continue;
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      if (isPdf) {
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const pdfImages = await convertPdfToImages(arrayBuffer);
+          uploadedUris.push(...pdfImages);
+        } catch (err: any) {
+          console.log("Web upload: PDF conversion failed:", file.name, err?.message);
+        }
+        continue;
+      }
+      try {
+        const dataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsDataURL(file);
+        });
+        uploadedUris.push(dataUri);
+      } catch (err: any) {
+        console.log("Web upload: failed to read file:", file.name, err?.message);
+      }
+    }
+    if (uploadedUris.length === 0) {
+      Alert.alert("Upload Error", "Could not read the selected file(s). Please try again with a supported format.");
+      setPhase("camera");
+      return;
+    }
+    setCasePhotos(uploadedUris);
+    setCapturedUri(uploadedUris[0]);
+    setPhase("review");
+  }
+
+  async function handleWebUploadRx() {
+    if (Platform.OS !== "web") return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*,.pdf,.jpg,.jpeg,.png,.heic,.heif,.bmp,.tiff,.webp";
+    input.multiple = true;
+    input.onchange = async () => {
+      if (input.files) await processWebFiles(input.files);
+    };
+    input.click();
+  }
+
+  const dropZoneRef = useRef<View>(null);
+  const dragCounterRef = useRef(0);
+
+  async function processWebFilesAsAttachments(files: FileList | File[]) {
+    const fileArray = Array.from(files);
+    const newUris: string[] = [];
+    for (const file of fileArray) {
+      const validTypes = ["image/", "application/pdf"];
+      const validExts = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tiff", ".webp", ".pdf"];
+      const isValid = validTypes.some((t) => file.type.startsWith(t)) || validExts.some((ext) => file.name.toLowerCase().endsWith(ext));
+      if (!isValid) continue;
+      try {
+        const dataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsDataURL(file);
+        });
+        newUris.push(dataUri);
+      } catch {}
+    }
+    if (newUris.length > 0) {
+      setCasePhotos((prev) => [...prev, ...newUris]);
+    }
+  }
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (!isFocused) {
+      setWebDragOver(false);
+      dragCounterRef.current = 0;
+      return;
+    }
+    const allowedPhases = ["camera", "form"];
+    if (!allowedPhases.includes(phase)) return;
+    dragCounterRef.current = 0;
+    const onDragEnter = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounterRef.current++; setWebDragOver(true); };
+    const onDragOver = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); };
+    const onDragLeave = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounterRef.current--; if (dragCounterRef.current <= 0) { dragCounterRef.current = 0; setWebDragOver(false); } };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounterRef.current = 0;
+      setWebDragOver(false);
+      if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return;
+      if (phase === "camera") {
+        processWebFiles(e.dataTransfer.files);
+      } else {
+        processWebFilesAsAttachments(e.dataTransfer.files);
+      }
+    };
+    document.addEventListener("dragenter", onDragEnter);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
+    document.addEventListener("drop", onDrop);
+    return () => { document.removeEventListener("dragenter", onDragEnter); document.removeEventListener("dragover", onDragOver); document.removeEventListener("dragleave", onDragLeave); document.removeEventListener("drop", onDrop); };
+  }, [phase, isFocused]);
+
+  function handleAddMoreFromReview() {
+    setCapturedUri(null);
+    setPhase("camera");
+    scanAnim.setValue(0);
+  }
+
+  async function compressImageForAI(uri: string): Promise<string> {
+    if (uri.startsWith("data:")) {
+      const commaIdx = uri.indexOf(",");
+      const b64Len = commaIdx >= 0 ? uri.length - commaIdx - 1 : uri.length;
+      console.log("AI compress: URI is already a data URI, base64 payload length:", b64Len);
+      if (b64Len < 5000) {
+        console.log("AI compress: data URI suspiciously small, may be corrupted");
+        const enhanced = await ensureHighQualityBase64(uri);
+        if (enhanced !== uri && enhanced.length > uri.length) return enhanced;
+      }
+      return uri;
+    }
+
+    if (Platform.OS === "web") {
+      try {
+        const response = await globalThis.fetch(uri);
+        const blob = await response.blob();
+        return new Promise<string>((resolve, reject) => {
+          const img = new (globalThis as any).Image();
+          img.crossOrigin = "anonymous";
+          const objUrl = URL.createObjectURL(blob);
+          img.onload = () => {
+            URL.revokeObjectURL(objUrl);
+            const maxDim = 1536;
+            let w = img.width;
+            let h = img.height;
+            if (w > maxDim || h > maxDim) {
+              if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+              else { w = Math.round(w * maxDim / h); h = maxDim; }
+            }
+            const canvas = (globalThis as any).document.createElement("canvas");
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+              return;
+            }
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL("image/jpeg", 0.85));
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(objUrl);
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          };
+          img.src = objUrl;
+        });
+      } catch (webErr: any) {
+        console.log("AI compress web: fetch+canvas failed:", webErr?.message);
+        throw new Error("Web image compression failed: " + (webErr?.message || "unknown"));
+      }
+    } else {
+      const FileSystem = require("expo-file-system");
+
+      const urisToTry: string[] = [];
+
+      if (uri.startsWith("content://") || uri.startsWith("ph://")) {
+        try {
+          const destUri = FileSystem.cacheDirectory + "ai_compress_" + Date.now() + ".jpg";
+          await FileSystem.copyAsync({ from: uri, to: destUri });
+          urisToTry.push(destUri);
+          console.log("AI compress: copied content/ph URI to cache:", destUri);
+        } catch (copyErr: any) {
+          console.log("AI compress: copy from content/ph failed:", copyErr?.message);
+          try {
+            const ImagePkr = require("expo-image-picker");
+            const reResult = await ImagePkr.launchImageLibraryAsync({
+              mediaTypes: ["images"],
+              quality: 0.9,
+              base64: true,
+              allowsEditing: false,
+            });
+            if (!reResult.canceled && reResult.assets[0]?.base64) {
+              console.log("AI compress: re-picked with base64, length:", reResult.assets[0].base64.length);
+              return `data:image/jpeg;base64,${reResult.assets[0].base64}`;
+            }
+          } catch (rePickErr: any) {
+            console.log("AI compress: re-pick fallback failed:", rePickErr?.message);
+          }
+        }
+      }
+
+      if (uri.startsWith("file://")) {
+        urisToTry.push(uri);
+        urisToTry.push(uri.replace("file://", ""));
+      } else if (!uri.startsWith("content://") && !uri.startsWith("ph://")) {
+        urisToTry.push(uri);
+        if (!uri.startsWith("/")) {
+          urisToTry.push(`file://${uri}`);
+        } else {
+          urisToTry.push(`file://${uri}`);
+        }
+      }
+
+      urisToTry.push(uri);
+
+      const uniqueUris = [...new Set(urisToTry)];
+      console.log("AI compress: trying URIs:", JSON.stringify(uniqueUris));
+
+      for (const tryUri of uniqueUris) {
+        try {
+          const ImageManipulator = require("expo-image-manipulator");
+          if (ImageManipulator.manipulateAsync) {
+            const manipulated = await ImageManipulator.manipulateAsync(
+              tryUri,
+              [{ resize: { width: 1200 } }],
+              { compress: 0.85, format: ImageManipulator.SaveFormat?.JPEG || "jpeg" }
+            );
+            console.log("AI compress: manipulator succeeded with:", tryUri);
+            const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            console.log("AI compress: base64 length:", fileBase64.length);
+            return `data:image/jpeg;base64,${fileBase64}`;
+          }
+        } catch (manipErr: any) {
+          console.log("AI compress: manipulator failed for", tryUri, ":", manipErr?.message);
+        }
+
+        try {
+          const fileBase64 = await FileSystem.readAsStringAsync(tryUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (fileBase64 && fileBase64.length > 100) {
+            console.log("AI compress: raw read succeeded for", tryUri, "length:", fileBase64.length);
+            return `data:image/jpeg;base64,${fileBase64}`;
+          }
+        } catch (readErr: any) {
+          console.log("AI compress: raw read failed for", tryUri, ":", readErr?.message);
+        }
+      }
+
+      const info = await FileSystem.getInfoAsync(uri).catch(() => null);
+      console.log("AI compress: file info for original uri:", JSON.stringify(info));
+      if (info?.exists && info?.uri) {
+        try {
+          const fileBase64 = await FileSystem.readAsStringAsync(info.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (fileBase64 && fileBase64.length > 100) {
+            console.log("AI compress: read via getInfoAsync uri succeeded, length:", fileBase64.length);
+            return `data:image/jpeg;base64,${fileBase64}`;
+          }
+        } catch (infoReadErr: any) {
+          console.log("AI compress: read via getInfoAsync uri failed:", infoReadErr?.message);
+        }
+      }
+
+      throw new Error("Could not read image file after trying all URI formats");
+    }
+  }
+
+  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any }> {
+    const { getApiUrl } = await import("@/lib/query-client");
+    const payload: any = { imageBase64: base64Data };
+    if (additionalImages && additionalImages.length > 0) {
+      payload.additionalImages = additionalImages;
+    }
+    const jsonBody = JSON.stringify(payload);
+    console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
+
+    const urls = getApiBaseUrlCandidates()
+      .map((baseUrl) => {
+        try {
+          return new URL("/api/analyze-prescription", baseUrl).toString();
+        } catch (e: any) {
+          console.log("AI: URL construction failed for base:", baseUrl, e?.message);
+          return null;
+        }
+      })
+      .filter((url): url is string => Boolean(url));
+
+    if (urls.length === 0) {
+      console.log("AI: No valid URLs constructed. EXPO_PUBLIC_DOMAIN:", process.env.EXPO_PUBLIC_DOMAIN);
+      return { success: false };
+    }
+
+    let lastErr: any = null;
+    for (const url of urls) {
+      try {
+        console.log("AI: Trying URL:", url);
+        const fetchPromise = globalThis.fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
+          body: jsonBody,
+        });
+
+        const timeoutPromise = new Promise<Response>((_, reject) => {
+          setTimeout(() => reject(new Error("Request timeout after 90s")), 90000);
+        });
+
+        const res = await Promise.race([fetchPromise, timeoutPromise]);
+        console.log("AI: Response status:", res.status);
+        if (!res.ok) {
+          const errText = await res.text().catch(() => "");
+          console.log("AI response error:", res.status, errText.substring(0, 200));
+          try {
+            const errJson = JSON.parse(errText);
+            if (errJson.error && errJson.error.includes("HEIC")) {
+              return { success: false, error: errJson.error };
+            }
+          } catch {}
+          lastErr = new Error(`HTTP ${res.status}: ${errText.substring(0, 100)}`);
+          continue;
+        }
+        const result = await res.json();
+        console.log("AI: Parsed result success:", result?.success);
+        return result;
+      } catch (err: any) {
+        console.log("AI: URL failed:", url, err?.message || String(err));
+        lastErr = err;
+      }
+    }
+    console.log("AI: All URLs failed. Last error:", lastErr?.message || String(lastErr));
+    return { success: false };
+  }
+
+  async function handleSavePDF() {
+    if (casePhotos.length === 0) {
+      Alert.alert("No Photos", "Take at least one photo before saving as PDF.");
+      return;
+    }
+    setIsSavingPdf(true);
+    try {
+      const normalizedImages: string[] = [];
+      for (const photo of casePhotos) {
+        if (photo.startsWith("data:")) {
+          normalizedImages.push(photo);
+        } else if (Platform.OS !== "web") {
+          try {
+            const FSystem = await import("expo-file-system");
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
+            normalizedImages.push(`data:image/jpeg;base64,${b64}`);
+          } catch {
+            console.log("Could not read file URI for PDF:", photo);
+          }
+        }
+      }
+      if (normalizedImages.length === 0) {
+        Alert.alert("Error", "Could not process photos for PDF.");
+        setIsSavingPdf(false);
+        return;
+      }
+      const resp = await resilientFetch("/api/document-to-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ images: normalizedImages }),
+      });
+      if (!resp.ok) throw new Error("PDF generation failed");
+      const data = await resp.json();
+      if (!data.success || !data.pdfBase64) throw new Error("No PDF returned");
+
+      const b64 = data.pdfBase64.replace(/^data:application\/pdf;base64,/, "");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const fileName = `Scan_${timestamp}.pdf`;
+
+      if (Platform.OS !== "web") {
+        const cacheDir = FileSystem.cacheDirectory;
+        if (!cacheDir) throw new Error("Cache directory unavailable");
+        const fileUri = `${cacheDir}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, { mimeType: "application/pdf", UTI: "com.adobe.pdf" });
+        } else {
+          Alert.alert("PDF Saved", `PDF saved to: ${fileUri}`);
+        }
+      } else {
+        const link = document.createElement("a");
+        link.href = data.pdfBase64;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        Alert.alert("PDF Downloaded", `${data.pageCount} page PDF saved as ${fileName}`);
+      }
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err: any) {
+      console.log("PDF save error:", err?.message || err);
+      Alert.alert("PDF Error", "Failed to generate PDF. Please try again.");
+    } finally {
+      setIsSavingPdf(false);
+    }
+  }
+
+  async function autoGeneratePdf(photos: string[]): Promise<string | null> {
+    if (photos.length === 0) return null;
+    try {
+      const normalizedImages: string[] = [];
+      for (const photo of photos) {
+        if (photo.startsWith("data:")) {
+          normalizedImages.push(photo);
+        } else if (Platform.OS !== "web") {
+          try {
+            const FSystem = await import("expo-file-system");
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
+            normalizedImages.push(`data:image/jpeg;base64,${b64}`);
+          } catch {
+            console.log("Auto PDF: could not read file URI:", photo);
+          }
+        }
+      }
+      if (normalizedImages.length === 0) return null;
+
+      const resp = await resilientFetch("/api/document-to-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ images: normalizedImages }),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      if (!data.success || !data.pdfBase64) return null;
+
+      const b64 = data.pdfBase64.replace(/^data:application\/pdf;base64,/, "");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const fileName = `Rx_${timestamp}.pdf`;
+
+      if (Platform.OS !== "web") {
+        const cacheDir = FileSystem.cacheDirectory;
+        if (!cacheDir) return null;
+        const fileUri = `${cacheDir}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+        console.log("Auto PDF: saved to", fileUri);
+        return fileUri;
+      } else {
+        const link = document.createElement("a");
+        link.href = data.pdfBase64;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        console.log("Auto PDF: downloaded", fileName);
+        return fileName;
+      }
+    } catch (err: any) {
+      console.log("Auto PDF generation failed (non-blocking):", err?.message);
+      return null;
+    }
+  }
+
+  async function ensureHighQualityBase64(uri: string): Promise<string> {
+    if (!uri) return uri;
+    if (uri.startsWith("data:")) {
+      const commaIdx = uri.indexOf(",");
+      const b64Part = commaIdx >= 0 ? uri.substring(commaIdx + 1) : uri;
+      if (b64Part.length > 10000) return uri;
+      console.log("AI quality: data URI too small (" + b64Part.length + " chars), attempting re-read");
+    }
+    if (Platform.OS !== "web" && !uri.startsWith("data:")) {
+      try {
+        const FSystem = await import("expo-file-system");
+        const destUri = FSystem.cacheDirectory + "hq_" + Date.now() + ".jpg";
+        await FSystem.copyAsync({ from: uri, to: destUri });
+        const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+        if (b64 && b64.length > 10000) {
+          console.log("AI quality: re-read succeeded, length:", b64.length);
+          return `data:image/jpeg;base64,${b64}`;
+        }
+      } catch (e: any) {
+        console.log("AI quality: re-read failed:", e?.message);
+      }
+      try {
+        const ImageManip = require("expo-image-manipulator");
+        const manipResult = await ImageManip.manipulateAsync(
+          uri,
+          [{ resize: { width: 1500 } }],
+          { compress: 0.9, format: ImageManip.SaveFormat?.JPEG || "jpeg", base64: true }
+        );
+        if (manipResult.base64 && manipResult.base64.length > 10000) {
+          console.log("AI quality: manipulator with base64 succeeded, length:", manipResult.base64.length);
+          return `data:image/jpeg;base64,${manipResult.base64}`;
+        }
+        if (manipResult.uri) {
+          const FSystem = await import("expo-file-system");
+          const b64 = await FSystem.readAsStringAsync(manipResult.uri, { encoding: FSystem.EncodingType.Base64 });
+          if (b64 && b64.length > 10000) {
+            console.log("AI quality: manipulator+read succeeded, length:", b64.length);
+            return `data:image/jpeg;base64,${b64}`;
+          }
+        }
+      } catch (e: any) {
+        console.log("AI quality: manipulator fallback failed:", e?.message);
+      }
+    }
+    return uri;
+  }
+
+  async function handleFinishedReview() {
+    const entries: ActivityEntry[] = [];
+    casePhotos.forEach((uri) => {
+      const photoEntry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: Date.now(),
+        description: "Rx photo captured",
+        imageUri: uri,
+        user: userInitials,
+      };
+      entries.push(photoEntry);
+    });
+
+    let analyzeUri = casePhotos[0] || capturedUri;
+    let aiSuccess = false;
+    if (analyzeUri) {
+      setIsAnalyzing(true);
+      let failReason = "";
+
+      try {
+        analyzeUri = await ensureHighQualityBase64(analyzeUri);
+      } catch (e: any) {
+        console.log("AI: ensureHighQualityBase64 failed:", e?.message);
+      }
+
+      autoGeneratePdf(casePhotos).then((pdfUri) => {
+        if (pdfUri) {
+          setActivityEntries((prev) => [
+            ...prev,
+            {
+              id: generateId(),
+              type: "document",
+              timestamp: Date.now(),
+              description: "Prescription auto-converted to PDF",
+              user: userInitials,
+            },
+          ]);
+        }
+      });
+
+      try {
+        let base64Data: string;
+        try {
+          base64Data = await compressImageForAI(analyzeUri);
+          console.log("AI: Compressed primary image, base64 length:", base64Data.length);
+        } catch (compErr: any) {
+          console.log("AI: Primary compression failed, trying direct base64 read:", compErr?.message || compErr);
+          if (Platform.OS !== "web" && !analyzeUri.startsWith("data:")) {
+            try {
+              const FSystem = await import("expo-file-system");
+              const destUri = FSystem.cacheDirectory + "ai_fallback_" + Date.now() + ".jpg";
+              await FSystem.copyAsync({ from: analyzeUri, to: destUri });
+              const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+              base64Data = `data:image/jpeg;base64,${b64}`;
+              console.log("AI: Fallback copy+read succeeded, length:", b64.length);
+            } catch (fallbackErr: any) {
+              console.log("AI: Fallback also failed:", fallbackErr?.message);
+              failReason = "Could not read the image file";
+              throw compErr;
+            }
+          } else {
+            failReason = "Image compression failed";
+            throw compErr;
+          }
+        }
+
+        const additionalBase64: string[] = [];
+        if (casePhotos.length > 1) {
+          for (let i = 1; i < casePhotos.length; i++) {
+            try {
+              const compressed = await compressImageForAI(casePhotos[i]);
+              additionalBase64.push(compressed);
+              console.log(`AI: Compressed page ${i + 1}, base64 length:`, compressed.length);
+            } catch (compErr: any) {
+              console.log(`AI: Failed to compress page ${i + 1}:`, compErr?.message);
+            }
+          }
+        }
+
+        let result: { success: boolean; data?: any; error?: string };
+        try {
+          result = await sendToAI(base64Data, additionalBase64.length > 0 ? additionalBase64 : undefined);
+          console.log("AI: Response received, success:", result.success, "pages sent:", 1 + additionalBase64.length);
+        } catch (sendErr: any) {
+          failReason = "Network request failed";
+          console.log("AI: Send error:", sendErr?.message || sendErr);
+          throw sendErr;
+        }
+
+        if (result.error && result.error.includes("HEIC")) {
+          failReason = result.error;
+        } else if (result.success && result.data) {
+          const d = result.data;
+          if (d.doctorName) setDoctorName(d.doctorName);
+          if (d.patientName) setPatientName(d.patientName);
+          else if (d.patientInitials) setPatientName(d.patientInitials);
+          if (d.caseType) setCaseType(d.caseType);
+          if (d.toothIndices) {
+            setToothIndices(d.toothIndices);
+            const nums = d.toothIndices.match(/\d+/g);
+            if (nums) setSelectedTeeth(nums.map(Number).filter((n: number) => n >= 1 && n <= 32).sort((a: number, b: number) => a - b));
+          }
+          if (d.shade) setShade(d.shade);
+          if (d.material) setMaterial(d.material);
+          if (d.dueDate) {
+            let normalizedDate = d.dueDate;
+            const slashMatch = d.dueDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+            if (slashMatch) {
+              normalizedDate = `${slashMatch[3]}-${slashMatch[1].padStart(2, "0")}-${slashMatch[2].padStart(2, "0")}`;
+            }
+            setDueDate(normalizedDate);
+          }
+          if (d.isRush !== undefined) setIsRush(d.isRush);
+          if (d.notes) setNotes(d.notes);
+          aiSuccess = true;
+
+          if (Platform.OS !== "web") {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+
+          if (d.doctorName) {
+            const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
+            const drNameNorm = stripDr(d.doctorName);
+            const existingClient = clients.find(
+              (c) => stripDr(c.leadDoctor) === drNameNorm || (c.additionalProviders || []).some(p => stripDr(p) === drNameNorm)
+            );
+            if (!existingClient) {
+              setTimeout(() => {
+                Alert.alert(
+                  "New Provider Detected",
+                  `"${d.doctorName}" is not in your active provider list. Would you like to add them?`,
+                  [
+                    {
+                      text: "No",
+                      style: "cancel",
+                    },
+                    {
+                      text: "Yes, Add Provider",
+                      onPress: () => {
+                        setAddingNewDoctor(true);
+                        setNewDoctorInput(d.doctorName.replace(/^Dr\.\s*/i, "") || "");
+                        setNewDoctorPractice(d.practiceName || "");
+                        setNewDoctorAddress(d.practiceAddress || "");
+                        setNewDoctorPhone(d.practicePhone || "");
+                        setNewDoctorEmail("");
+                        setDoctorDropdownOpen(true);
+                      },
+                    },
+                  ]
+                );
+              }, 600);
+            }
+          }
+        } else {
+          failReason = "AI could not parse the prescription";
+        }
+      } catch (err: any) {
+        console.log("AI analysis failed:", failReason, err?.message || err);
+        if (!failReason) failReason = err?.message || "Unknown error";
+      } finally {
+        setIsAnalyzing(false);
+      }
+
+      if (!aiSuccess) {
+        Alert.alert(
+          "AI Analysis",
+          "Could not read the prescription automatically. Please fill in the fields manually." +
+          (failReason ? `\n\n(${failReason})` : "")
+        );
+      }
+    }
+
+    const scanEntry: ActivityEntry = {
+      id: generateId(),
+      type: "scan",
+      timestamp: Date.now(),
+      description: aiSuccess
+        ? "Prescription analyzed via AI - fields auto-populated"
+        : "Prescription scanned - manual review needed",
+      user: userInitials,
+    };
+    entries.push(scanEntry);
+
+    setActivityEntries(entries);
+    setPhase("form");
+  }
+
+  function handleManualEntry() {
+    setCapturedUri(null);
+    setCasePhotos([]);
+    setActivityEntries([{
+      id: generateId(),
+      type: "scan",
+      timestamp: Date.now(),
+      description: "Manual entry started",
+      user: userInitials,
+    }]);
+    setPhase("form");
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+  }
+
+  async function handleSelectPrinter() {
+    if (Platform.OS === "ios") {
+      try {
+        const printer = await Print.selectPrinterAsync();
+        if (printer) {
+          setSelectedPrinter({ name: printer.name, url: printer.url });
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      } catch (e: any) {
+        if (!e?.message?.includes("cancelled")) {
+          Alert.alert("Printer Error", "Could not select printer. Please try again.");
+        }
+      }
+    } else {
+      Alert.alert("Printer Selection", "Printer selection is handled in the print dialog on this platform.");
+    }
+  }
+
+  async function printCaseLabel(label: LabelData) {
+    const toothRows = label.toothDiagram && label.toothDiagram.length > 0 ? `
+      <div style="margin-top:8px;text-align:center;">
+        <div style="font-size:8px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Tooth Diagram</div>
+        <div style="display:flex;justify-content:center;gap:1px;margin-bottom:2px;">
+          ${[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(t => {
+            const active = label.toothDiagram!.includes(t);
+            return `<div style="width:16px;height:16px;border:1px solid ${active ? '#22C55E' : '#DDD'};border-radius:2px;background:${active ? '#22C55E' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:6px;color:${active ? '#FFF' : '#CCC'};font-weight:${active ? '700' : '400'};">${t}</div>`;
+          }).join('')}
+        </div>
+        <div style="width:90%;height:1px;background:#DDD;margin:2px auto;"></div>
+        <div style="display:flex;justify-content:center;gap:1px;">
+          ${[32,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17].map(t => {
+            const active = label.toothDiagram!.includes(t);
+            return `<div style="width:16px;height:16px;border:1px solid ${active ? '#22C55E' : '#DDD'};border-radius:2px;background:${active ? '#22C55E' : 'transparent'};display:flex;align-items:center;justify-content:center;font-size:6px;color:${active ? '#FFF' : '#CCC'};font-weight:${active ? '700' : '400'};">${t}</div>`;
+          }).join('')}
+        </div>
+      </div>` : '';
+
+    const html = `
+      <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 0; padding: 16px; }
+          .label { border: 2px solid #333; border-radius: 8px; padding: 12px; max-width: 380px; margin: 0 auto; }
+          .lab-name { font-size: 14px; font-weight: 800; color: #1E3A5F; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px; }
+          .rush { display: inline-block; background: #FEE2E2; color: #DC2626; font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-left: 8px; }
+          .divider { height: 1px; background: #E5E7EB; margin: 6px 0; }
+          .row { display: flex; justify-content: space-between; padding: 3px 0; }
+          .key { font-size: 11px; color: #6B7280; font-weight: 500; }
+          .val { font-size: 11px; color: #111; font-weight: 600; text-align: right; }
+          .notes-title { font-size: 9px; color: #3B82F6; font-weight: 600; text-transform: uppercase; margin-top: 4px; }
+          .notes-text { font-size: 10px; color: #374151; margin-top: 2px; line-height: 1.4; }
+        </style>
+      </head>
+      <body>
+        <div class="label">
+          <div class="lab-name">DRIVESYNC LAB ${label.isRush ? '<span class="rush">RUSH</span>' : ''}</div>
+          <div class="divider"></div>
+          <div class="row"><span class="key">Case #</span><span class="val">${label.caseNumber}</span></div>
+          <div class="row"><span class="key">Patient</span><span class="val">${label.patientName}</span></div>
+          <div class="row"><span class="key">Doctor</span><span class="val">${label.doctorName}</span></div>
+          ${label.caseType ? `<div class="row"><span class="key">Case Type</span><span class="val">${label.caseType}</span></div>` : ''}
+          ${label.toothIndices ? `<div class="row"><span class="key">Tooth #</span><span class="val">${label.toothIndices}</span></div>` : ''}
+          ${label.shade ? `<div class="row"><span class="key">Shade</span><span class="val">${label.shade}</span></div>` : ''}
+          <div class="row"><span class="key">Material</span><span class="val">${label.material}</span></div>
+          ${label.dueDate ? `<div class="row"><span class="key">Due Date</span><span class="val">${label.dueDate}</span></div>` : ''}
+          <div class="row"><span class="key">Created</span><span class="val">${label.createdAt}</span></div>
+          ${label.notes ? `<div class="divider"></div><div class="notes-title">Notes</div><div class="notes-text">${label.notes}</div>` : ''}
+          ${toothRows ? `<div class="divider"></div>${toothRows}` : ''}
+        </div>
+      </body>
+      </html>
+    `;
+
+    try {
+      const printOptions: Print.PrintOptions = { html };
+      if (selectedPrinter?.url && Platform.OS === "ios") {
+        (printOptions as any).printerUrl = selectedPrinter.url;
+      }
+      await Print.printAsync(printOptions);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      const msg = e?.message || "";
+      if (!msg.includes("cancelled") && e?.code !== "ERR_CANCELLED") {
+        Alert.alert("Print Notice", "Print may not have completed. You can reprint from the case details later.");
+      }
+    }
+    setLabelModalVisible(false);
+    setTimeout(() => {
+      promptAttachBarcode();
+    }, 500);
+  }
+
+  function promptAttachBarcode() {
+    const caseId = lastCreatedCaseIdRef.current;
+    if (!caseId) {
+      proceedAfterLabel();
+      return;
+    }
+    setBarcodeAttachScanned(false);
+    setBarcodeScanForCase(caseId);
+  }
+
+  function proceedAfterLabel() {
+    resetForm();
+    setLabelModalVisible(false);
+    setBarcodeScanForCase(null);
+    setShowBarcodeScanner(false);
+    setBarcodeAttachScanned(false);
+    barcodeAttachProcessingRef.current = false;
+    lastCreatedCaseIdRef.current = null;
+    setTimeout(() => {
+      if (pendingRemakeCheck) {
+        const { caseId, patientName: pName } = pendingRemakeCheck;
+        setPendingRemakeCheck(null);
+        startRemakeCheck(caseId, pName);
+      } else {
+        router.navigate("/(tabs)/cases");
+      }
+    }, 300);
+  }
+
+  const SCAN_TARGET_WIDTH = 280;
+  const SCAN_TARGET_HEIGHT = 180;
+
+  function isBarcodeInTargetArea(bounds: any, cornerPoints: any, cameraWidth: number, cameraHeight: number): boolean {
+    if (!cameraWidth || !cameraHeight) return true;
+
+    const targetLeft = (cameraWidth - SCAN_TARGET_WIDTH) / 2;
+    const targetTop = (cameraHeight - SCAN_TARGET_HEIGHT) / 2;
+    const targetRight = (cameraWidth + SCAN_TARGET_WIDTH) / 2;
+    const targetBottom = (cameraHeight + SCAN_TARGET_HEIGHT) / 2;
+
+    if (cornerPoints && cornerPoints.length >= 4) {
+      for (const p of cornerPoints) {
+        if (p.x < targetLeft || p.x > targetRight || p.y < targetTop || p.y > targetBottom) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (bounds && bounds.origin) {
+      const bLeft = bounds.origin.x;
+      const bTop = bounds.origin.y;
+      const bRight = bLeft + (bounds.size?.width || 0);
+      const bBottom = bTop + (bounds.size?.height || 0);
+      return bLeft >= targetLeft && bTop >= targetTop && bRight <= targetRight && bBottom <= targetBottom;
+    }
+
+    return true;
+  }
+
+  const barcodeAttachProcessingRef = useRef(false);
+  function handleBarcodeAttachScanned({ data }: { data: string }) {
+    if (barcodeAttachScanned || barcodeAttachProcessingRef.current) return;
+    barcodeAttachProcessingRef.current = true;
+    setBarcodeAttachScanned(true);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    const caseId = barcodeScanForCase;
+    if (!caseId) {
+      barcodeAttachProcessingRef.current = false;
+      return;
+    }
+
+    const existingCase = findCaseByBarcode(data);
+    const isShared = existingCase && existingCase.id !== caseId;
+
+    assignBarcodeToCase(caseId, data);
+
+    const savedPendingRemake = pendingRemakeCheck;
+    setBarcodeScanForCase(null);
+    setShowBarcodeScanner(false);
+    setLabelModalVisible(false);
+    lastCreatedCaseIdRef.current = null;
+
+    setTimeout(() => {
+      resetForm();
+      barcodeAttachProcessingRef.current = true;
+      Alert.alert(
+        isShared ? "Barcode Shared" : "Barcode Assigned",
+        isShared
+          ? `Barcode "${data}" is now shared with case ${existingCase.caseNumber || existingCase.id}.`
+          : `Barcode "${data}" has been assigned to this case.`,
+        [{ text: "OK", onPress: () => {
+          barcodeAttachProcessingRef.current = false;
+          if (savedPendingRemake) {
+            setPendingRemakeCheck(null);
+            startRemakeCheck(savedPendingRemake.caseId, savedPendingRemake.patientName);
+          } else {
+            setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+          }
+        }}]
+      );
+    }, 600);
+  }
+
+  function handleBarcodeScanned({ data }: { data: string }) {
+    if (barcodeScanned || barcodeAttachProcessingRef.current || barcodeScanForCase) return;
+    setBarcodeScanned(true);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    const foundCase = cases.find(c => c.id === data || c.caseNumber === data || c.assignedBarcode === data);
+    if (foundCase) {
+      setShowBarcodeScanner(false);
+      setBarcodeScanned(false);
+      setTimeout(() => {
+        router.navigate(`/case/${foundCase.id}`);
+      }, 400);
+    } else {
+      setShowBarcodeScanner(false);
+      if (Platform.OS === "web") {
+        setBarcodeScanned(false);
+        setPendingBarcode(data);
+        handleManualEntry();
+      } else {
+        setTimeout(() => {
+          Alert.alert("No Case Found", `No case matches barcode: ${data}`, [
+            { text: "Scan Again", onPress: () => { setBarcodeScanned(false); setShowBarcodeScanner(true); } },
+            {
+              text: "Create New Case",
+              onPress: () => {
+                setBarcodeScanned(false);
+                setPendingBarcode(data);
+                handleManualEntry();
+              },
+            },
+            { text: "Cancel", style: "cancel", onPress: () => setBarcodeScanned(false) },
+          ]);
+        }, 500);
+      }
+    }
+  }
+
+  async function openBarcodeScanner() {
+    if (Platform.OS === "web") {
+      setShowBarcodeScanner(true);
+      return;
+    }
+    if (!permission?.granted) {
+      const result = await requestPermission();
+      if (!result.granted) {
+        Alert.alert("Camera Permission", "Camera access is needed to scan barcodes.");
+        return;
+      }
+    }
+    setShowBarcodeScanner(true);
+    setBarcodeScanned(false);
+  }
+
+  async function handleAddMorePhotos() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      const newUris = result.assets.map((a) => a.uri);
+      setCasePhotos((prev) => [...prev, ...newUris]);
+      const newEntries: ActivityEntry[] = newUris.map((uri) => ({
+        id: generateId(),
+        type: "photo" as const,
+        timestamp: Date.now(),
+        description: "Photo added",
+        imageUri: uri,
+        user: userInitials,
+      }));
+      setActivityEntries((prev) => [...newEntries, ...prev]);
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+    }
+  }
+
+  function handleTakePhotoPrompt() {
+    Alert.alert("Add Photo", "Choose a source", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Photo Library", onPress: () => handlePickPhotoFromLibrary() },
+      { text: "Camera", onPress: () => handleCapturePhotoFromCamera() },
+    ]);
+  }
+
+  async function handlePickPhotoFromLibrary() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Gallery Permission", "Gallery access is needed to select photos.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      const newUris = result.assets.map((a) => a.uri);
+      setCasePhotos((prev) => [...prev, ...newUris]);
+      const newEntries: ActivityEntry[] = newUris.map((uri) => ({
+        id: generateId(),
+        type: "photo" as const,
+        timestamp: Date.now(),
+        description: "Photo added from library",
+        imageUri: uri,
+        user: userInitials,
+      }));
+      setActivityEntries((prev) => [...newEntries, ...prev]);
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+    }
+  }
+
+  async function handleCapturePhotoFromCamera() {
+    if (cameraRef.current) {
+      try {
+        const photo = await cameraRef.current.takePictureAsync();
+        if (photo?.uri) {
+          setCasePhotos((prev) => [...prev, photo.uri]);
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "photo",
+            timestamp: Date.now(),
+            description: "Photo captured from camera",
+            imageUri: photo.uri,
+            user: userInitials,
+          };
+          setActivityEntries((prev) => [entry, ...prev]);
+          if (Platform.OS !== "web") {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }
+          return;
+        }
+      } catch {}
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      const uri = result.assets[0].uri;
+      setCasePhotos((prev) => [...prev, uri]);
+      const entry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: Date.now(),
+        description: "Photo captured from camera",
+        imageUri: uri,
+        user: userInitials,
+      };
+      setActivityEntries((prev) => [entry, ...prev]);
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+    }
+  }
+
+  async function handleAttachFiles() {
+    if (isPickingFilesRef.current) return;
+    isPickingFilesRef.current = true;
+    const wasInCameraPhase = phase === "camera";
+
+    try {
+      if (wasInCameraPhase) {
+        setCameraReady(false);
+        setCameraPaused(true);
+        await new Promise((r) => setTimeout(r, Platform.OS === "ios" ? 400 : 200));
+      }
+
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["image/*", "application/pdf"],
+        multiple: Platform.OS !== "ios",
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        if (wasInCameraPhase) setCameraPaused(false);
+        isPickingFilesRef.current = false;
+        return;
+      }
+
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
+
+      for (const asset of result.assets) {
+        const isImage = asset.mimeType?.startsWith("image/");
+
+        if (wasInCameraPhase && isImage) {
+          cropDoneRef.current = false;
+          let dataUri = asset.uri;
+          if (!asset.uri.startsWith("data:") && Platform.OS !== "web") {
+            try {
+              const FSystem = await import("expo-file-system");
+              const b64 = await FSystem.readAsStringAsync(asset.uri, { encoding: FSystem.EncodingType.Base64 });
+              const mime = asset.mimeType || "image/jpeg";
+              dataUri = `data:${mime};base64,${b64}`;
+            } catch (e: any) {
+              console.log("Attach file read error:", e?.message);
+              try {
+                const FSystem = await import("expo-file-system");
+                const destUri = FSystem.cacheDirectory + "attach_" + Date.now() + ".jpg";
+                await FSystem.copyAsync({ from: asset.uri, to: destUri });
+                const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+                dataUri = `data:image/jpeg;base64,${b64}`;
+              } catch (copyErr: any) {
+                console.log("Attach file copy fallback failed:", copyErr?.message);
+              }
+            }
+          }
+
+          setCapturedUri(dataUri);
+          setCameraPaused(false);
+          setPhase("scanning");
+
+          if (dataUri.startsWith("data:")) {
+            const cropped = await cropDocumentIfNeeded(dataUri);
+            const finalUri = cropped !== dataUri ? cropped : dataUri;
+            setCapturedUri(finalUri);
+            setCasePhotos((prev) => {
+              if (prev.includes(finalUri)) return prev;
+              return [...prev, finalUri];
+            });
+          } else {
+            setCasePhotos((prev) => {
+              if (prev.includes(dataUri)) return prev;
+              return [...prev, dataUri];
+            });
+          }
+          cropDoneRef.current = true;
+          isPickingFilesRef.current = false;
+          return;
+        }
+
+        if (wasInCameraPhase && asset.mimeType === "application/pdf") {
+          setCasePhotos((prev) => [...prev, asset.uri]);
+          setCapturedUri(asset.uri);
+          setCameraPaused(false);
+          setPhase("scanning");
+          cropDoneRef.current = true;
+          isPickingFilesRef.current = false;
+          return;
+        }
+
+        if (isImage) {
+          setCasePhotos((prev) => [...prev, asset.uri]);
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "photo" as const,
+            timestamp: Date.now(),
+            description: `File attached: ${asset.name}`,
+            imageUri: asset.uri,
+            user: userInitials,
+          };
+          setActivityEntries((prev) => [entry, ...prev]);
+        } else if (asset.mimeType === "application/pdf") {
+          const entry: ActivityEntry = {
+            id: generateId(),
+            type: "note" as const,
+            timestamp: Date.now(),
+            description: `PDF attached: ${asset.name}`,
+            user: userInitials,
+          };
+          setActivityEntries((prev) => [entry, ...prev]);
+          setCasePhotos((prev) => [...prev, asset.uri]);
+        }
+      }
+
+      if (wasInCameraPhase) setCameraPaused(false);
+
+      if (!wasInCameraPhase) {
+        const totalCount = result.assets.length;
+        Alert.alert(
+          "Files Attached",
+          `${totalCount} file${totalCount !== 1 ? "s" : ""} attached successfully.`
+        );
+      }
+      isPickingFilesRef.current = false;
+    } catch (e: any) {
+      if (wasInCameraPhase) setCameraPaused(false);
+      isPickingFilesRef.current = false;
+      console.error("Attach files error:", e);
+      if (
+        e?.message?.includes("cancel") ||
+        e?.message?.includes("Cancel") ||
+        e?.code === "DOCUMENT_PICKER_CANCELED" ||
+        e?.code === "ERR_CANCELED"
+      ) {
+        return;
+      }
+      Alert.alert("Error", "Could not attach files. Please try again.");
+    }
+  }
+
+  function handleAddPrescription() {
+    setPhase("camera");
+    setCapturedUri(null);
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+  }
+
+  function createCase(isDuplicate?: boolean) {
+    try {
+    const currentYear = new Date().getFullYear();
+    const yy = String(currentYear).slice(-2);
+    const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
+    const maxN = yearCases.reduce((max, c) => {
+      const parts = c.caseNumber.split("-");
+      const n = parseInt(parts[1]) || 0;
+      return n > max ? n : max;
+    }, 0);
+    const nextN = maxN + 1;
+    const caseNumber = `${yy}-${nextN}`;
+
+    const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
+      num,
+      type: (toothTypes[num] || "normal") as ToothType,
+    }));
+
+    const savedPatientName = patientName.trim();
+
+    const finalNotes = (removableSubtype ? `[${removableSubtype}]` : "") + (removableStage ? `[Stage: ${removableStage}] ` : (removableSubtype ? " " : "")) + notes.trim();
+
+    const newCase = addCase({
+      caseNumber,
+      doctorName: doctorName.trim(),
+      patientName: savedPatientName,
+      patientInitials: savedPatientName.split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
+      caseType: (caseType || "") as any,
+      toothIndices: toothIndices.trim(),
+      shade: shade.trim(),
+      material,
+      status: "INTAKE",
+      isRush,
+      notes: finalNotes,
+      price: calculatedPrice,
+      dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
+      photos: casePhotos,
+      activityLog: activityEntries,
+      toothMap: toothMapEntries,
+    });
+
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+
+    const now = new Date();
+    const createdStr = `${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getDate().toString().padStart(2, "0")}/${now.getFullYear()}`;
+
+    const diagramTeeth: number[] = [];
+    const tiStr = toothIndices.trim();
+    if (tiStr) {
+      const nums = tiStr.match(/\d+/g);
+      if (nums) nums.forEach(n => { const v = parseInt(n, 10); if (v >= 1 && v <= 32) diagramTeeth.push(v); });
+    }
+
+    const savedLabel: LabelData = {
+      caseNumber,
+      doctorName: doctorName.trim(),
+      patientName: savedPatientName,
+      caseType: caseType || "",
+      toothIndices: toothIndices.trim(),
+      shade: shade.trim(),
+      material,
+      isRush,
+      dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
+      notes: notes.trim(),
+      price: calculatedPrice,
+      createdAt: createdStr,
+      toothDiagram: diagramTeeth.length > 0 ? diagramTeeth : undefined,
+    };
+
+    lastCreatedCaseIdRef.current = newCase.id;
+
+    if (isDuplicate) {
+      setPendingRemakeCheck({ caseId: newCase.id, patientName: savedPatientName });
+    }
+
+    if (pendingBarcode) {
+      assignBarcodeToCase(newCase.id, pendingBarcode);
+      setPendingBarcode(null);
+      barcodeAlreadyAttachedRef.current = true;
+      if (Platform.OS === "web") {
+        setLabelData(savedLabel);
+        setLabelModalVisible(true);
+      } else {
+        Alert.alert(
+          "Case Added",
+          `Case ${caseNumber} has been created and barcode has been attached.`,
+          [
+            { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
+            { text: "Done", onPress: () => {
+              if (isDuplicate) {
+                startRemakeCheck(newCase.id, savedPatientName);
+              } else {
+                resetForm();
+                setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+              }
+            }},
+          ],
+        );
+      }
+    } else {
+      Alert.alert(
+        "Case Added",
+        `Case ${caseNumber} has been created and is now in Intake.`,
+        [
+          { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
+          { text: "Done", onPress: () => {
+            setTimeout(() => {
+              promptAttachBarcode();
+            }, 300);
+          }},
+        ],
+      );
+    }
+    } catch (err) {
+      console.error("[createCase] ERROR:", err);
+      Alert.alert("Error", "Failed to create case: " + String(err));
+    }
+  }
+
+  function startRemakeCheck(caseId: string, pName: string) {
+    setPendingRemakeCheck(null);
+    Alert.alert("Is this a remake?", "Was this case created to replace a previous case?", [
+      { text: "No", onPress: () => router.push("/(tabs)") },
+      { text: "Yes", onPress: () => askRemakeReason(caseId, pName) },
+    ]);
+  }
+
+  function askRemakeReason(caseId: string, pName: string) {
+    Alert.alert("Remake Reason", "Select the reason for the remake:", [
+      { text: "Doesn't Fit", onPress: () => askRecharge(caseId, pName, "Doesn't Fit") },
+      { text: "Open Margins", onPress: () => askRecharge(caseId, pName, "Open Margins") },
+      { text: "Open Contacts", onPress: () => askRecharge(caseId, pName, "Open Contacts") },
+      { text: "Wrong Shade", onPress: () => askRecharge(caseId, pName, "Wrong Shade") },
+      { text: "Other", onPress: () => askRecharge(caseId, pName, "Other") },
+    ]);
+  }
+
+  function askRecharge(caseId: string, pName: string, reason: string) {
+    Alert.alert("Recharge?", "Will this remake be recharged to the client?", [
+      { text: "No", onPress: () => handleNoRecharge(caseId, pName, reason) },
+      { text: "Yes", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(pName)}`) },
+    ]);
+  }
+
+  function handleNoRecharge(caseId: string, pName: string, reason: string) {
+    updateCase(caseId, {
+      isRemake: true,
+      price: 0,
+      remakeReason: reason,
+      notes: `Remake - ${reason}\n(REMAKE - No Charge)`,
+    });
+    const existingInvoice = invoices.find(inv =>
+      inv.patientName?.toLowerCase() === pName.toLowerCase() &&
+      inv.id !== cases.find(c => c.id === caseId)?.invoiceId
+    );
+    if (existingInvoice) {
+      const autoInvoiceId = cases.find(c => c.id === caseId)?.invoiceId;
+      if (autoInvoiceId) removeInvoice(autoInvoiceId);
+      attachCaseToInvoice(caseId, existingInvoice.id);
+    }
+    router.push(`/chart-history?patient=${encodeURIComponent(pName)}`);
+  }
+
+  function handleSubmit() {
+    if (!doctorName.trim()) {
+      Alert.alert("Required", "Doctor name is required");
+      return;
+    }
+    if (!patientName.trim()) {
+      Alert.alert("Required", "Patient name is required");
+      return;
+    }
+
+    const matchingCases = cases.filter(
+      (c) => (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase()
+    );
+
+    if (matchingCases.length > 0) {
+      const caseNums = matchingCases.map((c) => c.caseNumber).join(", ");
+      Alert.alert(
+        "Patient Already on File",
+        `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "View Chart", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`) },
+          { text: "Add Case", onPress: () => createCase(true) },
+        ]
+      );
+    } else {
+      createCase(false);
+    }
+  }
+
+  function resetForm() {
+    setPhase("camera");
+    setCapturedUri(null);
+    setShowBarcodeScanner(false);
+    setBarcodeScanned(false);
+    setBarcodeAttachScanned(false);
+    barcodeAttachProcessingRef.current = false;
+    barcodeAlreadyAttachedRef.current = false;
+    setPendingBarcode(null);
+    setDoctorName("");
+    setPatientName("");
+    setPatientDropdownOpen(false);
+    setPatientSearch("");
+    setAddingNewPatient(false);
+    setNewPatientInput("");
+    setAddingNewDoctor(false);
+    setNewDoctorInput("");
+    setCaseType("");
+    setCaseTypeOpen(false);
+    setToothIndices("");
+    setSelectedTeeth([]);
+    setToothTypes({});
+    setToothConnectors({});
+    setToothChartOpen(false);
+    setShade("");
+    setCustomShadePhotos([]);
+    setCustomShadeVideos([]);
+    setMaterial("Zirconia");
+    setRemovableSubtype("");
+    setRemovableSubtypeOpen(false);
+    setRemovableStage("");
+    setRemovableStageOpen(false);
+    setIsCropping(false);
+    setIsRush(false);
+    setNotes("");
+    setDueDate("");
+    setDueDateOpen(false);
+    setCalendarMonth(new Date().getMonth());
+    setCalendarYear(new Date().getFullYear());
+    setTimeDue("");
+    setTimeDueOpen(false);
+    setTimeDueHour(9);
+    setTimeDueMinute(0);
+    setTimeDuePeriod("AM");
+    setCasePhotos([]);
+    setActivityEntries([]);
+    scanAnim.setValue(0);
+  }
+
+  const screenHeight = Dimensions.get("window").height;
+  const scanTranslateY = scanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, screenHeight],
+  });
+
+  const labelAndBarcodeModals = (
+    <>
+      <Modal
+        visible={labelModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {
+          setLabelModalVisible(false);
+          if (barcodeAlreadyAttachedRef.current) {
+            barcodeAlreadyAttachedRef.current = false;
+            resetForm();
+            setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+          } else {
+            setTimeout(() => { promptAttachBarcode(); }, 500);
+          }
+        }}
+      >
+        <View style={labelStyles.overlay}>
+          <View style={labelStyles.container}>
+            <View style={labelStyles.header}>
+              <Text style={labelStyles.headerTitle}>Case Label</Text>
+              <Pressable onPress={() => {
+                setLabelModalVisible(false);
+                if (barcodeAlreadyAttachedRef.current) {
+                  barcodeAlreadyAttachedRef.current = false;
+                  resetForm();
+                  setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+                } else {
+                  setTimeout(() => { promptAttachBarcode(); }, 500);
+                }
+              }} hitSlop={12}>
+                <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+
+            {labelData && (
+              <ScrollView style={labelStyles.scroll} showsVerticalScrollIndicator={false}>
+                <View style={labelStyles.labelCard}>
+                  <View style={labelStyles.labelTopBar}>
+                    <Text style={labelStyles.labName}>DRIVESYNC LAB</Text>
+                    {labelData.isRush && (
+                      <View style={labelStyles.rushTag}>
+                        <Text style={labelStyles.rushTagText}>RUSH</Text>
+                      </View>
+                    )}
+                  </View>
+                  <View style={labelStyles.divider} />
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Case #</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.caseNumber}</Text>
+                  </View>
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Patient</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.patientName}</Text>
+                  </View>
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Doctor</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.doctorName}</Text>
+                  </View>
+                  {labelData.caseType ? (
+                    <View style={labelStyles.labelRow}>
+                      <Text style={labelStyles.labelKey}>Case Type</Text>
+                      <Text style={labelStyles.labelValue}>{labelData.caseType}</Text>
+                    </View>
+                  ) : null}
+                  {labelData.toothIndices ? (
+                    <View style={labelStyles.labelRow}>
+                      <Text style={labelStyles.labelKey}>Tooth #</Text>
+                      <Text style={labelStyles.labelValue}>{labelData.toothIndices}</Text>
+                    </View>
+                  ) : null}
+                  {labelData.shade ? (
+                    <View style={labelStyles.labelRow}>
+                      <Text style={labelStyles.labelKey}>Shade</Text>
+                      <Text style={labelStyles.labelValue}>{labelData.shade}</Text>
+                    </View>
+                  ) : null}
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Material</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.material}</Text>
+                  </View>
+                  {labelData.dueDate ? (
+                    <View style={labelStyles.labelRow}>
+                      <Text style={labelStyles.labelKey}>Due Date</Text>
+                      <Text style={labelStyles.labelValue}>{labelData.dueDate}</Text>
+                    </View>
+                  ) : null}
+                  <View style={labelStyles.labelRow}>
+                    <Text style={labelStyles.labelKey}>Created</Text>
+                    <Text style={labelStyles.labelValue}>{labelData.createdAt}</Text>
+                  </View>
+                  {labelData.notes ? (
+                    <>
+                      <View style={labelStyles.divider} />
+                      <View style={labelStyles.notesSection}>
+                        <Text style={labelStyles.labelKey}>Notes</Text>
+                        <Text style={labelStyles.notesText}>{labelData.notes}</Text>
+                      </View>
+                    </>
+                  ) : null}
+                  {labelData.toothDiagram && labelData.toothDiagram.length > 0 ? (
+                    <>
+                      <View style={labelStyles.divider} />
+                      <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textTransform: "uppercase", marginBottom: 6, letterSpacing: 0.5 }}>Tooth Diagram</Text>
+                      <View style={{ alignItems: "center" }}>
+                        <View style={{ flexDirection: "row", marginBottom: 2 }}>
+                          {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16].map(t => {
+                            const active = labelData.toothDiagram!.includes(t);
+                            return (
+                              <View key={t} style={{ width: 18, height: 18, borderRadius: 3, borderWidth: 1, borderColor: active ? "#22C55E" : "#E0E0E0", backgroundColor: active ? "#22C55E" : "transparent", justifyContent: "center", alignItems: "center", marginHorizontal: 0.5 }}>
+                                <Text style={{ fontSize: 7, fontFamily: active ? "Inter_700Bold" : "Inter_400Regular", color: active ? "#FFF" : "#BBB" }}>{t}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                        <View style={{ width: "90%", height: 1, backgroundColor: "#DDD", marginVertical: 2 }} />
+                        <View style={{ flexDirection: "row" }}>
+                          {[32,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17].map(t => {
+                            const active = labelData.toothDiagram!.includes(t);
+                            return (
+                              <View key={t} style={{ width: 18, height: 18, borderRadius: 3, borderWidth: 1, borderColor: active ? "#22C55E" : "#E0E0E0", backgroundColor: active ? "#22C55E" : "transparent", justifyContent: "center", alignItems: "center", marginHorizontal: 0.5 }}>
+                                <Text style={{ fontSize: 7, fontFamily: active ? "Inter_700Bold" : "Inter_400Regular", color: active ? "#FFF" : "#BBB" }}>{t}</Text>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    </>
+                  ) : null}
+                </View>
+              </ScrollView>
+            )}
+            {Platform.OS === "ios" && (
+              <Pressable
+                style={({ pressed }) => ({
+                  flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                  paddingVertical: 10, paddingHorizontal: 16, marginHorizontal: 20, marginBottom: 8,
+                  borderRadius: 12, borderWidth: 1,
+                  borderColor: selectedPrinter ? "rgba(34,197,94,0.4)" : "rgba(255,255,255,0.2)",
+                  backgroundColor: selectedPrinter ? "rgba(34,197,94,0.1)" : "rgba(255,255,255,0.06)",
+                  opacity: pressed ? 0.7 : 1,
+                })}
+                onPress={handleSelectPrinter}
+              >
+                <Ionicons name="wifi" size={18} color={selectedPrinter ? "#22C55E" : "#9CA3AF"} />
+                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 13, color: selectedPrinter ? "#22C55E" : "#9CA3AF" }}>
+                  {selectedPrinter ? selectedPrinter.name : "Select Network Printer"}
+                </Text>
+                {selectedPrinter && (
+                  <Pressable onPress={() => setSelectedPrinter(null)} hitSlop={8}>
+                    <Ionicons name="close-circle" size={16} color="rgba(255,255,255,0.4)" />
+                  </Pressable>
+                )}
+              </Pressable>
+            )}
+            <View style={labelStyles.actions}>
+              <Pressable
+                style={({ pressed }) => [labelStyles.printBtn, pressed && { opacity: 0.8 }]}
+                onPress={() => {
+                  if (labelData) printCaseLabel(labelData);
+                }}
+              >
+                <Ionicons name="print-outline" size={20} color="#FFF" />
+                <Text style={labelStyles.printBtnText}>Print Label</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [labelStyles.doneBtn, pressed && { opacity: 0.8 }]}
+                onPress={() => {
+                  setLabelModalVisible(false);
+                  if (barcodeAlreadyAttachedRef.current) {
+                    barcodeAlreadyAttachedRef.current = false;
+                    resetForm();
+                    setTimeout(() => router.navigate("/(tabs)/cases"), 100);
+                  } else {
+                    setTimeout(() => {
+                      promptAttachBarcode();
+                    }, 500);
+                  }
+                }}
+                testID="label-done-btn"
+              >
+                <Text style={labelStyles.doneBtnText}>Done</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={!!barcodeScanForCase}
+        animationType="slide"
+        statusBarTranslucent
+        onRequestClose={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
+      >
+        <View style={{ flex: 1, backgroundColor: "#000" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Attach Barcode</Text>
+            <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}>
+              <Ionicons name="close" size={28} color="#FFF" />
+            </Pressable>
+          </View>
+          {Platform.OS === "web" ? (
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+              <Ionicons name="barcode-outline" size={60} color="#FFF" />
+              <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
+              <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
+              <TextInput
+                style={{ backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 10, paddingHorizontal: 16, paddingVertical: 12, color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", width: 260, marginTop: 12, textAlign: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}
+                placeholder="Enter barcode..."
+                placeholderTextColor="rgba(255,255,255,0.4)"
+                autoCapitalize="none"
+                onSubmitEditing={(e) => {
+                  const val = e.nativeEvent.text.trim();
+                  if (val) handleBarcodeAttachScanned({ data: val });
+                }}
+              />
+              <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }} style={{ marginTop: 20, backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 28, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}>
+                <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={{ flex: 1 }}>
+              {permission?.granted ? (
+                <CameraView
+                  style={{ flex: 1 }}
+                  facing="back"
+                  autofocus="on"
+                  barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
+                  onBarcodeScanned={barcodeAttachScanned ? undefined : (e) => {
+                    if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
+                    handleBarcodeAttachScanned(e);
+                  }}
+                  onLayout={(e) => {
+                    const { width, height } = e.nativeEvent.layout;
+                    setBarcodeCameraLayout({ width, height });
+                  }}
+                >
+                  <View style={{ flex: 1 }} pointerEvents="none">
+                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                    <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
+                      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                      <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
+                        <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
+                        <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
+                        <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
+                        <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                        <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
+                      </View>
+                      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                    </View>
+                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
+                      <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                      <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
+                    </View>
+                  </View>
+                </CameraView>
+              ) : (
+                <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+                  <Ionicons name="camera-outline" size={48} color="rgba(255,255,255,0.4)" />
+                  <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 15, fontFamily: "Inter_500Medium", marginTop: 12, textAlign: "center", paddingHorizontal: 40 }}>Camera permission is required to scan barcodes.</Text>
+                  <Pressable onPress={async () => { const r = await requestPermission(); if (!r.granted) Alert.alert("Permission Denied", "Please enable camera access in your device settings."); }} style={({ pressed }) => ({ marginTop: 16, backgroundColor: "#4F8EF7", paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, opacity: pressed ? 0.8 : 1 })}>
+                    <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Grant Camera Access</Text>
+                  </Pressable>
+                </View>
+              )}
+              <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, paddingTop: 12, backgroundColor: "rgba(0,0,0,0.85)" }}>
+                <Pressable
+                  onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
+                  style={({ pressed }) => ({
+                    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+                    paddingVertical: 14, borderRadius: 14,
+                    backgroundColor: "rgba(255,255,255,0.12)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)",
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                >
+                  <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip — No Barcode</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </View>
+      </Modal>
+    </>
+  );
+
+  if (phase === "form") {
+    return (
+      <View style={[styles.container, { backgroundColor: Colors.light.backgroundSolid }]}>
+        {Platform.OS === "web" && webDragOver && (
+          <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(37,99,235,0.12)", zIndex: 999, justifyContent: "center", alignItems: "center", borderWidth: 3, borderColor: "#2563EB", borderStyle: "dashed", borderRadius: 16 }} pointerEvents="none">
+            <Ionicons name="arrow-down-circle" size={48} color="#2563EB" />
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 12 }}>Drop files to attach</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#4B7BDB", marginTop: 4 }}>Files will be added as attachments</Text>
+          </View>
+        )}
+        <View
+          style={[
+            styles.formHeader,
+            { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
+          ]}
+        >
+          <Pressable onPress={resetForm} style={styles.backBtn}>
+            <Ionicons name="close" size={24} color={Colors.light.text} />
+          </Pressable>
+          <Text style={styles.formTitle}>New Case</Text>
+          <Pressable
+            onPress={handleSubmit}
+            style={({ pressed }) => [
+              styles.submitBtn,
+              pressed && { opacity: 0.8 },
+            ]}
+            testID="submit-case-btn"
+            accessibilityLabel="Submit Case"
+          >
+            <View pointerEvents="none">
+              <Ionicons name="checkmark" size={22} color="#FFF" />
+            </View>
+          </Pressable>
+        </View>
+        <ScrollView
+          style={styles.formScroll}
+          contentContainerStyle={{
+            paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
+          }}
+          showsVerticalScrollIndicator={false}
+        >
+          {pendingBarcode && (
+            <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "rgba(139,92,246,0.1)", borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "rgba(139,92,246,0.3)" }}>
+              <Ionicons name="barcode-outline" size={20} color="#8B5CF6" />
+              <Text style={{ marginLeft: 8, fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#8B5CF6", flex: 1 }}>
+                Barcode "{pendingBarcode}" will be attached to this case
+              </Text>
+              <Pressable onPress={() => setPendingBarcode(null)} hitSlop={8}>
+                <Ionicons name="close-circle" size={18} color="rgba(139,92,246,0.5)" />
+              </Pressable>
+            </View>
+          )}
+          {casePhotos.length > 0 ? (
+            <View style={styles.photoStripSection}>
+              <View style={styles.photoStripHeader}>
+                <Text style={styles.formLabel}>Photos ({casePhotos.length})</Text>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoStrip}>
+                {casePhotos.map((uri, idx) => (
+                  <View key={idx} style={styles.photoThumbWrap}>
+                    <Image source={{ uri }} style={styles.photoThumb} contentFit="cover" />
+                    <Pressable
+                      onPress={() => {
+                        setCasePhotos((prev) => prev.filter((_, i) => i !== idx));
+                        setActivityEntries((prev) => prev.filter((e) => e.imageUri !== uri));
+                      }}
+                      style={styles.photoRemoveBtn}
+                    >
+                      <Ionicons name="close-circle" size={20} color="#EF4444" />
+                    </Pressable>
+                  </View>
+                ))}
+                <Pressable onPress={handleTakePhotoPrompt} style={styles.addPhotoThumb}>
+                  <Ionicons name="add" size={28} color={Colors.light.tint} />
+                </Pressable>
+              </ScrollView>
+            </View>
+          ) : (
+            <View style={styles.detectedBanner}>
+              <Ionicons
+                name="checkmark-circle"
+                size={20}
+                color={Colors.light.success}
+              />
+              <Text style={styles.detectedText}>Rx Document Detected</Text>
+            </View>
+          )}
+
+          <View style={styles.addPhotoBtnRow}>
+            {Platform.OS === "web" ? (
+              <>
+                <Pressable
+                  onPress={handleWebUploadRx}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="cloud-upload-outline" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Upload RX</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleAttachFiles}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="attach" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Attach Files</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  onPress={handleAddPrescription}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="scan-outline" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Add Prescription</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleTakePhotoPrompt}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="camera-outline" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Take Photo</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleAttachFiles}
+                  style={({ pressed }) => [styles.addMorePhotosBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Ionicons name="attach" size={18} color={Colors.light.tint} />
+                  <Text style={styles.addMorePhotosBtnText}>Attach Files</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+
+          <View style={[styles.formGroup, { zIndex: 10 }]}>
+            <Text style={styles.formLabel}>Doctor Name</Text>
+            <Pressable
+              onPress={() => {
+                setDoctorDropdownOpen(!doctorDropdownOpen);
+                setDoctorSearch("");
+              }}
+              style={[styles.formInput, styles.dropdownTrigger]}
+              testID="doctor-dropdown-trigger"
+            >
+              <Text style={[styles.dropdownTriggerText, !doctorName && { color: Colors.light.textTertiary }]}>
+                {doctorName ? cleanDoctorDisplay(doctorName) : "Select Doctor"}
+              </Text>
+              <Ionicons
+                name={doctorDropdownOpen ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={Colors.light.textSecondary}
+              />
+            </Pressable>
+            {doctorDropdownOpen && (
+              <View style={styles.dropdownPanel}>
+                {!addingNewDoctor ? (
+                  <>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={doctorSearch}
+                        onChangeText={setDoctorSearch}
+                        placeholder="Search by name..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoFocus
+                      />
+                      {doctorSearch.length > 0 && (
+                        <Pressable onPress={() => setDoctorSearch("")}>
+                          <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                        </Pressable>
+                      )}
+                    </View>
+                    <Pressable
+                      onPress={() => {
+                        setAddingNewDoctor(true);
+                        setNewDoctorInput("");
+                        setNewDoctorPractice("");
+                        setNewDoctorAddress("");
+                        setNewDoctorPhone("");
+                        setNewDoctorEmail("");
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }}
+                      style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
+                      testID="add-new-doctor-btn"
+                    >
+                      <Ionicons name="person-add-outline" size={18} color={Colors.light.tint} />
+                      <Text style={styles.addNewPatientBtnText}>Add New Doctor</Text>
+                    </Pressable>
+                    <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                      {filteredProviderEntries.length === 0 ? (
+                        <Text style={styles.dropdownEmpty}>No matching providers</Text>
+                      ) : (
+                        filteredProviderEntries.map((entry, idx) => {
+                          const isSelected = doctorName === entry.providerName;
+                          return (
+                            <Pressable
+                              key={`${entry.clientId}-${entry.providerName}-${idx}`}
+                              onPress={() => {
+                                setDoctorName(entry.providerName);
+                                setDoctorDropdownOpen(false);
+                                setDoctorSearch("");
+                                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              }}
+                              style={({ pressed }) => [
+                                styles.dropdownItem,
+                                isSelected && styles.dropdownItemSelected,
+                                pressed && { opacity: 0.7 },
+                              ]}
+                            >
+                              <View style={styles.dropdownItemLeft}>
+                                <View style={[styles.dropdownAvatar, isSelected && { backgroundColor: Colors.light.tint }]}>
+                                  <Text style={[styles.dropdownAvatarText, isSelected && { color: "#FFF" }]}>
+                                    {entry.providerName.replace(/^Dr\.\s*/i, "").charAt(0)}
+                                  </Text>
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={[styles.dropdownItemName, isSelected && { color: Colors.light.tint }]}>
+                                    {cleanDoctorDisplay(entry.providerName)}{entry.accountNumber && !entry.providerName.includes(entry.accountNumber) ? ` ${formatAcctNum(entry.accountNumber)}` : ""}
+                                  </Text>
+                                  <Text style={styles.dropdownItemSub}>{entry.practiceName}</Text>
+                                  {entry.address ? <Text style={styles.dropdownItemAddr} numberOfLines={1}>{entry.address}</Text> : null}
+                                </View>
+                              </View>
+                              {isSelected && (
+                                <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                              )}
+                            </Pressable>
+                          );
+                        })
+                      )}
+                    </ScrollView>
+                  </>
+                ) : (
+                  <ScrollView style={styles.addNewPatientPanel} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    <Text style={styles.addNewPatientTitle}>New Doctor</Text>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorInput}
+                        onChangeText={setNewDoctorInput}
+                        placeholder="Doctor name..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoCapitalize="words"
+                        autoFocus
+                        testID="new-doctor-name-input"
+                      />
+                    </View>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="business-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorPractice}
+                        onChangeText={setNewDoctorPractice}
+                        placeholder="Practice name..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoCapitalize="words"
+                      />
+                    </View>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="location-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorAddress}
+                        onChangeText={setNewDoctorAddress}
+                        placeholder="Address..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoCapitalize="words"
+                      />
+                    </View>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="call-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorPhone}
+                        onChangeText={setNewDoctorPhone}
+                        placeholder="Phone number..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        keyboardType="phone-pad"
+                      />
+                    </View>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="mail-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newDoctorEmail}
+                        onChangeText={setNewDoctorEmail}
+                        placeholder="Email address..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        keyboardType="email-address"
+                        autoCapitalize="none"
+                      />
+                    </View>
+                    <View style={styles.addNewPatientActions}>
+                      <Pressable
+                        onPress={() => {
+                          setAddingNewDoctor(false);
+                          setNewDoctorInput("");
+                          setNewDoctorPractice("");
+                          setNewDoctorAddress("");
+                          setNewDoctorPhone("");
+                          setNewDoctorEmail("");
+                        }}
+                        style={({ pressed }) => [styles.addNewPatientCancelBtn, pressed && { opacity: 0.7 }]}
+                      >
+                        <Text style={styles.addNewPatientCancelText}>Cancel</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          if (!newDoctorInput.trim()) return;
+                          const drName = newDoctorInput.trim().startsWith("Dr.") ? newDoctorInput.trim() : `Dr. ${newDoctorInput.trim()}`;
+                          setDoctorName(drName);
+                          addClient({
+                            practiceName: newDoctorPractice.trim() || drName,
+                            leadDoctor: drName,
+                            phone: newDoctorPhone.trim(),
+                            email: newDoctorEmail.trim(),
+                            address: newDoctorAddress.trim(),
+                            tier: "Standard",
+                            discountRate: 0,
+                          });
+                          setDoctorDropdownOpen(false);
+                          setAddingNewDoctor(false);
+                          setNewDoctorInput("");
+                          setNewDoctorPractice("");
+                          setNewDoctorAddress("");
+                          setNewDoctorPhone("");
+                          setNewDoctorEmail("");
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
+                        testID="confirm-add-doctor-btn"
+                      >
+                        <Text style={styles.addNewPatientConfirmText}>Add</Text>
+                      </Pressable>
+                    </View>
+                  </ScrollView>
+                )}
+              </View>
+            )}
+          </View>
+
+          <View style={[styles.formGroup, { zIndex: 9 }]}>
+            <Text style={styles.formLabel}>Patient Name</Text>
+            <Pressable
+              onPress={() => {
+                setPatientDropdownOpen(!patientDropdownOpen);
+                setPatientSearch("");
+                setAddingNewPatient(false);
+                setNewPatientInput("");
+              }}
+              style={[styles.formInput, styles.dropdownTrigger]}
+              testID="patient-dropdown-trigger"
+            >
+              <Text style={[styles.dropdownTriggerText, !patientName && { color: Colors.light.textTertiary }]}>
+                {patientName || "Select Patient"}
+              </Text>
+              <Ionicons
+                name={patientDropdownOpen ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={Colors.light.textSecondary}
+              />
+            </Pressable>
+            {patientDropdownOpen && (
+              <View style={styles.dropdownPanel}>
+                {!addingNewPatient ? (
+                  <>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={patientSearch}
+                        onChangeText={setPatientSearch}
+                        placeholder="Search patients..."
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoFocus
+                      />
+                      {patientSearch.length > 0 && (
+                        <Pressable onPress={() => setPatientSearch("")}>
+                          <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                        </Pressable>
+                      )}
+                    </View>
+                    <Pressable
+                      onPress={() => {
+                        setAddingNewPatient(true);
+                        setNewPatientInput("");
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      }}
+                      style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
+                      testID="add-new-patient-btn"
+                    >
+                      <Ionicons name="person-add-outline" size={18} color={Colors.light.tint} />
+                      <Text style={styles.addNewPatientBtnText}>Add New Patient</Text>
+                    </Pressable>
+                    <ScrollView style={styles.dropdownList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                      {filteredPatients.length === 0 ? (
+                        <Text style={styles.dropdownEmpty}>No matching patients</Text>
+                      ) : (
+                        filteredPatients.map((name) => {
+                          const patientCases = cases.filter(
+                            (c) => (c.patientName || "").toLowerCase() === (name || "").toLowerCase()
+                          );
+                          return (
+                            <Pressable
+                              key={name}
+                              onPress={() => {
+                                setPatientName(name);
+                                setPatientDropdownOpen(false);
+                                setPatientSearch("");
+                                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              }}
+                              style={({ pressed }) => [
+                                styles.dropdownItem,
+                                patientName === name && styles.dropdownItemSelected,
+                                pressed && { opacity: 0.7 },
+                              ]}
+                            >
+                              <View style={styles.dropdownItemLeft}>
+                                <View style={[styles.dropdownAvatar, patientName === name && { backgroundColor: Colors.light.tint }]}>
+                                  <Text style={[styles.dropdownAvatarText, patientName === name && { color: "#FFF" }]}>
+                                    {name.charAt(0).toUpperCase()}
+                                  </Text>
+                                </View>
+                                <View>
+                                  <Text style={[styles.dropdownItemName, patientName === name && { color: Colors.light.tint }]}>
+                                    {name}
+                                  </Text>
+                                  <Text style={styles.dropdownItemSub}>
+                                    {patientCases.length} case{patientCases.length !== 1 ? "s" : ""} on file
+                                  </Text>
+                                </View>
+                              </View>
+                              {patientName === name && (
+                                <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                              )}
+                            </Pressable>
+                          );
+                        })
+                      )}
+                    </ScrollView>
+                  </>
+                ) : (
+                  <View style={styles.addNewPatientPanel}>
+                    <Text style={styles.addNewPatientTitle}>New Patient</Text>
+                    <View style={styles.dropdownSearchWrap}>
+                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newPatientFirst}
+                        onChangeText={setNewPatientFirst}
+                        placeholder="First name"
+                        placeholderTextColor={Colors.light.textTertiary}
+                        autoFocus
+                        testID="new-patient-first-input"
+                      />
+                    </View>
+                    <View style={[styles.dropdownSearchWrap, { marginTop: 8 }]}>
+                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newPatientMiddle}
+                        onChangeText={setNewPatientMiddle}
+                        placeholder="Middle name (optional)"
+                        placeholderTextColor={Colors.light.textTertiary}
+                      />
+                    </View>
+                    <View style={[styles.dropdownSearchWrap, { marginTop: 8 }]}>
+                      <Ionicons name="person-outline" size={16} color={Colors.light.textTertiary} />
+                      <TextInput
+                        style={styles.dropdownSearchInput}
+                        value={newPatientLast}
+                        onChangeText={setNewPatientLast}
+                        placeholder="Last name"
+                        placeholderTextColor={Colors.light.textTertiary}
+                        testID="new-patient-last-input"
+                      />
+                    </View>
+                    <View style={styles.addNewPatientActions}>
+                      <Pressable
+                        onPress={() => {
+                          setAddingNewPatient(false);
+                          setNewPatientFirst("");
+                          setNewPatientMiddle("");
+                          setNewPatientLast("");
+                          setNewPatientInput("");
+                        }}
+                        style={({ pressed }) => [styles.addNewPatientCancelBtn, pressed && { opacity: 0.7 }]}
+                      >
+                        <Text style={styles.addNewPatientCancelText}>Back</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          if (!newPatientFirst.trim() || !newPatientLast.trim()) return;
+                          const fullName = [newPatientFirst.trim(), newPatientMiddle.trim(), newPatientLast.trim()].filter(Boolean).join(" ");
+                          setPatientName(fullName);
+                          setPatientDropdownOpen(false);
+                          setAddingNewPatient(false);
+                          setNewPatientFirst("");
+                          setNewPatientMiddle("");
+                          setNewPatientLast("");
+                          setNewPatientInput("");
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
+                        testID="confirm-add-patient-btn"
+                      >
+                        <View pointerEvents="none">
+                          <Ionicons name="checkmark" size={18} color="#FFF" />
+                        </View>
+                        <Text style={styles.addNewPatientConfirmText}>Add</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.formLabel}>Case Type</Text>
+            <Pressable
+              onPress={() => setCaseTypeOpen(!caseTypeOpen)}
+              style={[styles.formInput, styles.dropdownTrigger]}
+            >
+              <Text style={[styles.dropdownTriggerText, !caseType && { color: Colors.light.textTertiary }]}>
+                {caseType || "Select case type"}
+              </Text>
+              <Ionicons
+                name={caseTypeOpen ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={Colors.light.textSecondary}
+              />
+            </Pressable>
+            {caseTypeOpen && (
+              <View style={styles.caseTypeDropdown}>
+                {["Restorative", "Removable", "Appliance", "Temporary", "Other"].map((type) => (
+                  <Pressable
+                    key={type}
+                    onPress={() => {
+                      setCaseType(type);
+                      setCaseTypeOpen(false);
+                      if (type === "Removable") {
+                        setMaterial("Acrylic");
+                        setRemovableSubtype("");
+                        setRemovableStage("");
+                      } else {
+                        setMaterial("Zirconia");
+                        setRemovableSubtype("");
+                        setRemovableSubtypeOpen(false);
+                        setRemovableStage("");
+                        setRemovableStageOpen(false);
+                      }
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => [
+                      styles.caseTypeItem,
+                      caseType === type && styles.caseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <Text style={[styles.caseTypeItemText, caseType === type && styles.caseTypeItemTextSelected]}>
+                      {type}
+                    </Text>
+                    {caseType === type && (
+                      <Ionicons name="checkmark-circle" size={18} color={Colors.light.tint} />
+                    )}
+                  </Pressable>
+                ))}
+              </View>
+            )}
+          </View>
+
+          {caseType === "Removable" && (
+            <View style={[styles.formGroup, { zIndex: 4 }]}>
+              <Text style={styles.formLabel}>Removable Type</Text>
+              <Pressable
+                onPress={() => setRemovableSubtypeOpen(!removableSubtypeOpen)}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !removableSubtype && { color: Colors.light.textTertiary }]}>
+                  {removableSubtype || "Select removable type"}
+                </Text>
+                <Ionicons
+                  name={removableSubtypeOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {removableSubtypeOpen && (
+                <View style={[styles.dropdownPanel, { maxHeight: 250 }]}>
+                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {["Full Denture", "Partial", "Nesbit", "Interim Partial", "Immediate Partial", "Immediate Denture"].map((sub) => (
+                      <Pressable
+                        key={sub}
+                        onPress={() => {
+                          setRemovableSubtype(sub);
+                          setRemovableSubtypeOpen(false);
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [
+                          styles.dropdownItem,
+                          removableSubtype === sub && styles.dropdownItemSelected,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Text style={[styles.dropdownItemName, removableSubtype === sub && { color: Colors.light.tint }]}>
+                          {sub}
+                        </Text>
+                        {removableSubtype === sub && (
+                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+          )}
+
+          {caseType === "Removable" && (
+            <View style={[styles.formGroup, { zIndex: 3 }]}>
+              <Text style={styles.formLabel}>Removable Stage</Text>
+              <Pressable
+                onPress={() => { setRemovableStageOpen(!removableStageOpen); setRemovableSubtypeOpen(false); }}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !removableStage && { color: Colors.light.textTertiary }]}>
+                  {removableStage || "Select stage"}
+                </Text>
+                <Ionicons
+                  name={removableStageOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {removableStageOpen && (
+                <View style={[styles.dropdownPanel, { maxHeight: 280 }]}>
+                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {["Custom Tray", "Rims and Plates", "Frame with Bite Rims", "Set Up Teeth in Wax", "Process", "Repair", "Adjust", "Reline", "Reset Teeth in Wax"].map((stage) => (
+                      <Pressable
+                        key={stage}
+                        onPress={() => {
+                          setRemovableStage(stage);
+                          setRemovableStageOpen(false);
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }}
+                        style={({ pressed }) => [
+                          styles.dropdownItem,
+                          removableStage === stage && styles.dropdownItemSelected,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Text style={[styles.dropdownItemName, removableStage === stage && { color: Colors.light.tint }]}>
+                          {stage}
+                        </Text>
+                        {removableStage === stage && (
+                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+          )}
+
+          <View style={styles.dueDateRow}>
+            <View style={styles.dueDateCol}>
+              <Text style={styles.formLabel}>Due Date</Text>
+              <Pressable
+                onPress={() => { setDueDateOpen(!dueDateOpen); setTimeDueOpen(false); }}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !dueDate && { color: Colors.light.textTertiary }]}>
+                  {dueDateDisplay || "Select date"}
+                </Text>
+                <Ionicons
+                  name={dueDateOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {dueDateOpen && (
+                <View style={styles.dueDateDropdown}>
+                  <Pressable style={styles.quickDateBtn} onPress={() => { setDueDateOneWeek(); }}>
+                    <Ionicons name="time-outline" size={16} color={Colors.light.tint} />
+                    <Text style={styles.quickDateText}>1 Week</Text>
+                    <Text style={styles.quickDateSub}>
+                      {(() => {
+                        const d = new Date(); d.setDate(d.getDate() + 7);
+                        const mn = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                        return `${mn[d.getMonth()]} ${d.getDate()}`;
+                      })()}
+                    </Text>
+                  </Pressable>
+                  <View style={styles.calendarContainer}>
+                    <View style={styles.calendarHeader}>
+                      <Pressable onPress={() => {
+                        if (calendarMonth === 0) { setCalendarMonth(11); setCalendarYear(calendarYear - 1); }
+                        else setCalendarMonth(calendarMonth - 1);
+                      }}>
+                        <Ionicons name="chevron-back" size={20} color={Colors.light.tint} />
+                      </Pressable>
+                      <Text style={styles.calendarMonthText}>{calendarMonthLabel}</Text>
+                      <Pressable onPress={() => {
+                        if (calendarMonth === 11) { setCalendarMonth(0); setCalendarYear(calendarYear + 1); }
+                        else setCalendarMonth(calendarMonth + 1);
+                      }}>
+                        <Ionicons name="chevron-forward" size={20} color={Colors.light.tint} />
+                      </Pressable>
+                    </View>
+                    <View style={styles.calendarWeekRow}>
+                      {["Su","Mo","Tu","We","Th","Fr","Sa"].map((d) => (
+                        <Text key={d} style={styles.calendarWeekDay}>{d}</Text>
+                      ))}
+                    </View>
+                    <View style={styles.calendarGrid}>
+                      {calendarDays.map((item) => (
+                        <Pressable
+                          key={item.key}
+                          style={[
+                            styles.calendarDayBtn,
+                            item.day === selectedCalendarDay && styles.calendarDaySelected,
+                            item.day === todayCalendarDay && item.day !== selectedCalendarDay && styles.calendarDayToday,
+                          ]}
+                          onPress={() => item.day > 0 && selectCalendarDay(item.day)}
+                          disabled={item.day === 0}
+                        >
+                          {item.day > 0 && (
+                            <Text style={[
+                              styles.calendarDayText,
+                              item.day === selectedCalendarDay && styles.calendarDayTextSelected,
+                              item.day === todayCalendarDay && item.day !== selectedCalendarDay && styles.calendarDayTextToday,
+                            ]}>
+                              {item.day}
+                            </Text>
+                          )}
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                </View>
+              )}
+            </View>
+
+            <View style={styles.timeDueCol}>
+              <Text style={styles.formLabel}>Time Due <Text style={styles.optionalLabel}>(optional)</Text></Text>
+              <Pressable
+                onPress={() => { setTimeDueOpen(!timeDueOpen); setDueDateOpen(false); }}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !timeDue && { color: Colors.light.textTertiary }]}>
+                  {timeDue || "Time"}
+                </Text>
+                <Ionicons
+                  name={timeDueOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {timeDueOpen && (
+                <View style={styles.timeDueDropdown}>
+                  <View style={styles.timePickerRow}>
+                    <View style={styles.timePickerCol}>
+                      <Text style={styles.timePickerLabel}>Hour</Text>
+                      <View style={styles.timeSpinnerRow}>
+                        <Pressable onPress={() => setTimeDueHour(timeDueHour <= 1 ? 12 : timeDueHour - 1)} style={styles.timeSpinBtn}>
+                          <Ionicons name="chevron-up" size={18} color={Colors.light.tint} />
+                        </Pressable>
+                        <Text style={styles.timeSpinValue}>{String(timeDueHour).padStart(2, "0")}</Text>
+                        <Pressable onPress={() => setTimeDueHour(timeDueHour >= 12 ? 1 : timeDueHour + 1)} style={styles.timeSpinBtn}>
+                          <Ionicons name="chevron-down" size={18} color={Colors.light.tint} />
+                        </Pressable>
+                      </View>
+                    </View>
+                    <Text style={styles.timeColon}>:</Text>
+                    <View style={styles.timePickerCol}>
+                      <Text style={styles.timePickerLabel}>Min</Text>
+                      <View style={styles.timeSpinnerRow}>
+                        <Pressable onPress={() => setTimeDueMinute(timeDueMinute <= 0 ? 55 : timeDueMinute - 5)} style={styles.timeSpinBtn}>
+                          <Ionicons name="chevron-up" size={18} color={Colors.light.tint} />
+                        </Pressable>
+                        <Text style={styles.timeSpinValue}>{String(timeDueMinute).padStart(2, "0")}</Text>
+                        <Pressable onPress={() => setTimeDueMinute(timeDueMinute >= 55 ? 0 : timeDueMinute + 5)} style={styles.timeSpinBtn}>
+                          <Ionicons name="chevron-down" size={18} color={Colors.light.tint} />
+                        </Pressable>
+                      </View>
+                    </View>
+                    <View style={styles.timePickerCol}>
+                      <Text style={styles.timePickerLabel}>Period</Text>
+                      <View style={styles.amPmToggle}>
+                        <Pressable
+                          style={[styles.amPmBtn, timeDuePeriod === "AM" && styles.amPmBtnActive]}
+                          onPress={() => setTimeDuePeriod("AM")}
+                        >
+                          <Text style={[styles.amPmText, timeDuePeriod === "AM" && styles.amPmTextActive]}>AM</Text>
+                        </Pressable>
+                        <Pressable
+                          style={[styles.amPmBtn, timeDuePeriod === "PM" && styles.amPmBtnActive]}
+                          onPress={() => setTimeDuePeriod("PM")}
+                        >
+                          <Text style={[styles.amPmText, timeDuePeriod === "PM" && styles.amPmTextActive]}>PM</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </View>
+                  <Pressable style={styles.timeApplyBtn} onPress={applyTimeDue}>
+                    <Text style={styles.timeApplyText}>Set Time</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.formLabel}>Tooth Indicator</Text>
+            <Pressable
+              onPress={() => setToothChartOpen(!toothChartOpen)}
+              style={[styles.formInput, styles.dropdownTrigger]}
+            >
+              <Text style={[styles.dropdownTriggerText, selectedTeeth.length === 0 && { color: Colors.light.textTertiary }]}>
+                {selectedTeeth.length > 0 ? toothIndices || "Select teeth" : "Select teeth"}
+              </Text>
+              <Ionicons
+                name={toothChartOpen ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={Colors.light.textSecondary}
+              />
+            </Pressable>
+            {toothChartOpen && (
+              <View style={styles.toothChartPanel}>
+                <View style={styles.toothChartHeader}>
+                  <Text style={styles.toothChartTitle}>American Dental Numbering</Text>
+                  {selectedTeeth.length > 0 && (
+                    <Pressable
+                      onPress={() => {
+                        setSelectedTeeth([]);
+                        setToothTypes({});
+                        setToothConnectors({});
+                        setToothIndices("");
+                      }}
+                      style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+                    >
+                      <Text style={styles.toothChartClear}>Clear</Text>
+                    </Pressable>
+                  )}
+                </View>
+
+                <View style={styles.toothChartLegend}>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: "#22C55E" }]} />
+                    <Text style={styles.legendText}>Normal</Text>
+                  </View>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: "#EAB308" }]} />
+                    <Text style={styles.legendText}>Pontic</Text>
+                  </View>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: "#EF4444" }]} />
+                    <Text style={styles.legendText}>Missing</Text>
+                  </View>
+                  <Text style={styles.legendHint}>Hold to set type</Text>
+                </View>
+
+                <View style={styles.archChartWrap}>
+                  {(() => {
+                    const IMG_W = 320;
+                    const IMG_H = 380;
+                    const TOOTH_SZ = 30;
+
+                    const toothPositions: { num: number; x: number; y: number }[] = [
+                      { num: 1, x: 26, y: 166 },
+                      { num: 2, x: 32, y: 132 },
+                      { num: 3, x: 42, y: 100 },
+                      { num: 4, x: 56, y: 72 },
+                      { num: 5, x: 74, y: 48 },
+                      { num: 6, x: 96, y: 28 },
+                      { num: 7, x: 122, y: 14 },
+                      { num: 8, x: 148, y: 8 },
+                      { num: 9, x: 174, y: 8 },
+                      { num: 10, x: 200, y: 14 },
+                      { num: 11, x: 226, y: 28 },
+                      { num: 12, x: 248, y: 48 },
+                      { num: 13, x: 266, y: 72 },
+                      { num: 14, x: 280, y: 100 },
+                      { num: 15, x: 290, y: 132 },
+                      { num: 16, x: 296, y: 166 },
+                      { num: 17, x: 296, y: 210 },
+                      { num: 18, x: 290, y: 244 },
+                      { num: 19, x: 280, y: 274 },
+                      { num: 20, x: 266, y: 300 },
+                      { num: 21, x: 248, y: 322 },
+                      { num: 22, x: 226, y: 340 },
+                      { num: 23, x: 200, y: 352 },
+                      { num: 24, x: 174, y: 360 },
+                      { num: 25, x: 148, y: 360 },
+                      { num: 26, x: 122, y: 352 },
+                      { num: 27, x: 96, y: 340 },
+                      { num: 28, x: 74, y: 322 },
+                      { num: 29, x: 56, y: 300 },
+                      { num: 30, x: 42, y: 274 },
+                      { num: 31, x: 32, y: 244 },
+                      { num: 32, x: 26, y: 210 },
+                    ];
+
+                    const normalColor = "#22C55E";
+                    const ponticColor = "#EAB308";
+                    const missingColor = "#EF4444";
+
+                    const upperAdj = [[1,2],[2,3],[3,4],[4,5],[5,6],[6,7],[7,8],[8,9],[9,10],[10,11],[11,12],[12,13],[13,14],[14,15],[15,16]];
+                    const lowerAdj = [[17,18],[18,19],[19,20],[20,21],[21,22],[22,23],[23,24],[24,25],[25,26],[26,27],[27,28],[28,29],[29,30],[30,31],[31,32]];
+                    const allAdj = [...upperAdj, ...lowerAdj];
+
+                    const posMap: Record<number, { x: number; y: number }> = {};
+                    toothPositions.forEach(p => { posMap[p.num] = { x: p.x, y: p.y }; });
+
+                    const connectorDots: { key: string; x: number; y: number; a: number; b: number }[] = [];
+                    allAdj.forEach(([a, b]) => {
+                      const pa = posMap[a];
+                      const pb = posMap[b];
+                      if (!pa || !pb) return;
+                      const mx = (pa.x + pb.x) / 2;
+                      const my = (pa.y + pb.y) / 2;
+                      const cx = IMG_W / 2;
+                      const cy = IMG_H / 2;
+                      const dx = mx - cx;
+                      const dy = my - cy;
+                      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                      const outOffset = 22;
+                      const ox = mx + (dx / dist) * outOffset;
+                      const oy = my + (dy / dist) * outOffset;
+                      const cKey = `${Math.min(a,b)}-${Math.max(a,b)}`;
+                      connectorDots.push({ key: cKey, x: ox, y: oy, a, b });
+                    });
+
+                    const DOT_SZ = 14;
+
+                    return (
+                      <View style={{ width: IMG_W, height: IMG_H, position: "relative" }}>
+                        <Image
+                          source={require("@/assets/images/tooth-chart.jpeg")}
+                          style={{ width: IMG_W, height: IMG_H, position: "absolute", top: 0, left: 0 }}
+                          contentFit="contain"
+                        />
+                        {connectorDots.map(({ key, x, y }) => {
+                          const isActive = !!toothConnectors[key];
+                          const HIT_SZ = 28;
+                          return (
+                            <Pressable
+                              key={`conn-${key}`}
+                              testID={`connector-${key}`}
+                              accessibilityLabel={`Connector ${key} ${isActive ? "connected" : "disconnected"}`}
+                              accessibilityRole="button"
+                              onPress={() => setToothConnectors(prev => ({ ...prev, [key]: !prev[key] }))}
+                              style={{
+                                position: "absolute",
+                                left: x - HIT_SZ / 2,
+                                top: y - HIT_SZ / 2,
+                                width: HIT_SZ,
+                                height: HIT_SZ,
+                                borderRadius: HIT_SZ / 2,
+                                justifyContent: "center" as const,
+                                alignItems: "center" as const,
+                                zIndex: 15,
+                              }}
+                            >
+                              <View style={{
+                                width: DOT_SZ,
+                                height: DOT_SZ,
+                                borderRadius: DOT_SZ / 2,
+                                backgroundColor: isActive ? Colors.light.tint : "#D1D5DB",
+                                borderWidth: isActive ? 0 : 1,
+                                borderColor: "#B0B7C3",
+                              }} />
+                            </Pressable>
+                          );
+                        })}
+                        {toothPositions.map(({ num, x, y }) => {
+                          const isSelected = selectedTeeth.includes(num);
+                          const tType = toothTypes[num] || "normal";
+                          let bgColor = "transparent";
+                          let borderCol = "transparent";
+                          let textColor = "transparent";
+                          if (isSelected) {
+                            if (tType === "normal") { bgColor = normalColor + "CC"; borderCol = normalColor; textColor = "#FFF"; }
+                            else if (tType === "bridge") { bgColor = ponticColor + "CC"; borderCol = ponticColor; textColor = "#FFF"; }
+                            else if (tType === "missing") { bgColor = "#FEE2E2CC"; borderCol = missingColor; textColor = missingColor; }
+                          }
+                          return (
+                            <Pressable
+                              key={num}
+                              onPress={() => handleToothTap(num)}
+                              onLongPress={() => handleToothLongPress(num)}
+                              delayLongPress={400}
+                              style={{
+                                position: "absolute",
+                                left: x - TOOTH_SZ / 2,
+                                top: y - TOOTH_SZ / 2,
+                                width: TOOTH_SZ,
+                                height: TOOTH_SZ,
+                                borderRadius: TOOTH_SZ / 2,
+                                backgroundColor: bgColor,
+                                borderWidth: isSelected ? 2 : 0,
+                                borderColor: borderCol,
+                                alignItems: "center" as const,
+                                justifyContent: "center" as const,
+                                zIndex: 10,
+                              }}
+                            >
+                              {isSelected && tType === "missing" ? (
+                                <View style={styles.toothMissingWrap}>
+                                  <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: missingColor }}>{num}</Text>
+                                  <View style={styles.toothXOverlay}>
+                                    <Ionicons name="close" size={12} color={missingColor} />
+                                  </View>
+                                </View>
+                              ) : isSelected ? (
+                                <Text style={{ fontSize: 11, fontFamily: "Inter_700Bold", color: textColor }}>{num}</Text>
+                              ) : null}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    );
+                  })()}
+                </View>
+
+                {selectedTeeth.length > 0 && (
+                  <View style={styles.toothChartSummary}>
+                    <View style={styles.toothSummaryRow}>
+                      <Ionicons name="checkmark-circle" size={16} color={Colors.light.tint} />
+                      <Text style={styles.toothChartSummaryText}>
+                        {toothIndices}
+                      </Text>
+                    </View>
+                    {showPrice && (
+                      <View style={styles.toothPricingRow}>
+                        <Text style={styles.toothPricingLabel}>
+                          {billableTeethCount} billable {billableTeethCount === 1 ? "tooth" : "teeth"} × ${MATERIAL_PRICES[material] || 250}/{material}
+                        </Text>
+                        <Text style={styles.toothPricingTotal}>${calculatedPrice.toLocaleString()}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+
+          <View style={[styles.formRow, { zIndex: 5 }]}>
+            <View style={[styles.formGroup, { flex: 1, zIndex: 5 }]}>
+              <Text style={styles.formLabel}>Shade</Text>
+              <Pressable
+                onPress={() => setShadeOpen(!shadeOpen)}
+                style={[styles.formInput, styles.dropdownTrigger]}
+              >
+                <Text style={[styles.dropdownTriggerText, !shade && { color: Colors.light.textTertiary }]}>
+                  {shade || "Select Shade"}
+                </Text>
+                <Ionicons
+                  name={shadeOpen ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.light.textSecondary}
+                />
+              </Pressable>
+              {shadeOpen && (
+                <View style={[styles.dropdownPanel, { maxHeight: 200 }]}>
+                  <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {SHADE_OPTIONS.map((s) => (
+                      <Pressable
+                        key={s}
+                        onPress={() => {
+                          setShade(s);
+                          setShadeOpen(false);
+                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if (s === "Custom") {
+                            setTimeout(() => {
+                              Alert.alert(
+                                "Custom Shade",
+                                "Would you like to take photos and videos now for custom shading?",
+                                [
+                                  { text: "No", style: "cancel" },
+                                  { text: "Yes", onPress: () => handleCustomShadeCapture() },
+                                ]
+                              );
+                            }, 300);
+                          }
+                        }}
+                        style={({ pressed }) => [
+                          styles.dropdownItem,
+                          shade === s && styles.dropdownItemSelected,
+                          pressed && { opacity: 0.7 },
+                        ]}
+                      >
+                        <Text style={[styles.dropdownItemName, shade === s && { color: Colors.light.tint }]}>
+                          {s}
+                        </Text>
+                        {shade === s && (
+                          <Ionicons name="checkmark-circle" size={20} color={Colors.light.tint} />
+                        )}
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+            <View style={[styles.formGroup, { flex: 1 }]}>
+              <Text style={styles.formLabel}>Material</Text>
+              <View style={styles.materialSelector}>
+                {(caseType === "Removable"
+                  ? ["Acrylic", "Flexible", "Cast Metal", "Other"]
+                  : ["Zirconia", "E.max", "PFM", "Gold", "Semi Precious", "Full Cast", "Diagnostic Wax Up", "Other"]
+                ).map((m) => (
+                  <Pressable
+                    key={m}
+                    onPress={() => setMaterial(m)}
+                    style={[
+                      styles.materialChip,
+                      material === m && styles.materialChipActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.materialText,
+                        material === m && styles.materialTextActive,
+                      ]}
+                    >
+                      {m}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          </View>
+
+          <Pressable
+            onPress={() => setIsRush(!isRush)}
+            style={[styles.rushToggle, isRush && styles.rushToggleActive]}
+          >
+            <Ionicons
+              name="flash"
+              size={18}
+              color={isRush ? "#EF4444" : Colors.light.textTertiary}
+            />
+            <Text
+              style={[styles.rushToggleText, isRush && { color: "#EF4444" }]}
+            >
+              Rush Order
+            </Text>
+            <View style={styles.rushToggleSwitch}>
+              <View
+                style={[
+                  styles.rushToggleDot,
+                  isRush && styles.rushToggleDotActive,
+                ]}
+              />
+            </View>
+          </Pressable>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.formLabel}>Notes</Text>
+            <TextInput
+              style={[styles.formInput, styles.formTextArea]}
+              value={notes}
+              onChangeText={setNotes}
+              placeholder="Additional instructions..."
+              placeholderTextColor={Colors.light.textTertiary}
+              multiline
+              numberOfLines={3}
+            />
+          </View>
+
+          {activityEntries.length > 0 && (
+            <View style={styles.activitySection}>
+              <View style={styles.activityHeader}>
+                <Ionicons name="time-outline" size={16} color={Colors.light.textSecondary} />
+                <Text style={styles.activityHeaderText}>Activity Log</Text>
+                <View style={styles.activityBadge}>
+                  <Text style={styles.activityBadgeText}>{activityEntries.length}</Text>
+                </View>
+              </View>
+              {[...activityEntries].sort((a, b) => b.timestamp - a.timestamp).map((entry) => {
+                const icon = getActivityIcon(entry.type);
+                return (
+                  <View key={entry.id} style={styles.activityRow}>
+                    <View style={[styles.activityIconWrap, { backgroundColor: icon.color + "18" }]}>
+                      <Ionicons name={icon.name as any} size={16} color={icon.color} />
+                    </View>
+                    <View style={styles.activityContent}>
+                      <Text style={styles.activityDesc}>{entry.description}</Text>
+                      <Text style={styles.activityTime}>{formatTimestamp(entry.timestamp)}</Text>
+                    </View>
+                    {entry.imageUri && (
+                      <Image source={{ uri: entry.imageUri }} style={styles.activityThumb} contentFit="cover" />
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </ScrollView>
+        {labelAndBarcodeModals}
+      </View>
+    );
+  }
+
+  if (Platform.OS === "web" && phase === "camera") {
+    return (
+      <View style={[styles.container, { paddingTop: 67 + 16, backgroundColor: Colors.light.backgroundSolid }]}>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 32 }}>
+          <View style={{ width: "100%", maxWidth: 420, alignItems: "center" }}>
+            <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: "rgba(37,99,235,0.1)", justifyContent: "center", alignItems: "center", marginBottom: 24 }}>
+              <Ionicons name="document-text-outline" size={40} color={Colors.light.tint} />
+            </View>
+            <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 8, textAlign: "center" }}>AI Intake</Text>
+            <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, textAlign: "center", marginBottom: 32, lineHeight: 20 }}>
+              Upload a prescription image or document and AI will automatically read and fill in the case details.
+            </Text>
+
+            <Pressable
+              ref={dropZoneRef as any}
+              onPress={handleWebUploadRx}
+              style={({ pressed }) => ({
+                width: "100%",
+                borderWidth: 2,
+                borderColor: webDragOver ? "#2563EB" : Colors.light.tint,
+                borderStyle: "dashed" as const,
+                borderRadius: 16,
+                paddingVertical: 36,
+                paddingHorizontal: 24,
+                alignItems: "center",
+                backgroundColor: webDragOver ? "rgba(37,99,235,0.15)" : pressed ? "rgba(37,99,235,0.08)" : "rgba(37,99,235,0.04)",
+                transform: webDragOver ? [{ scale: 1.02 }] : [],
+              })}
+              testID="upload-rx-btn"
+            >
+              <Ionicons name={webDragOver ? "arrow-down-circle" : "cloud-upload-outline"} size={36} color={webDragOver ? "#2563EB" : Colors.light.tint} />
+              <Text style={{ fontSize: 17, fontFamily: "Inter_700Bold", color: webDragOver ? "#2563EB" : Colors.light.tint, marginTop: 12 }}>
+                {webDragOver ? "Drop Files Here" : "Upload RX"}
+              </Text>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 6, textAlign: "center" }}>
+                {webDragOver ? "Release to upload your files" : "Drag & drop files here, or click to browse"}
+              </Text>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 8 }}>
+                Supports JPG, PNG, PDF, HEIC, TIFF, BMP, WebP
+              </Text>
+            </Pressable>
+
+            <View style={{ flexDirection: "row", alignItems: "center", marginTop: 24, gap: 16, width: "100%" }}>
+              <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textTertiary }}>OR</Text>
+              <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
+            </View>
+
+            <Pressable
+              onPress={handleManualEntry}
+              style={({ pressed }) => ({
+                width: "100%",
+                flexDirection: "row" as const,
+                alignItems: "center" as const,
+                justifyContent: "center" as const,
+                gap: 8,
+                paddingVertical: 14,
+                paddingHorizontal: 24,
+                borderRadius: 12,
+                backgroundColor: pressed ? Colors.light.surfaceSecondary : Colors.light.surface,
+                borderWidth: 1,
+                borderColor: Colors.light.border,
+                marginTop: 16,
+              })}
+              testID="manual-entry-btn"
+            >
+              <MaterialCommunityIcons name="text-box-outline" size={20} color={Colors.light.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Manual Entry</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={openBarcodeScanner}
+              style={({ pressed }) => ({
+                width: "100%",
+                flexDirection: "row" as const,
+                alignItems: "center" as const,
+                justifyContent: "center" as const,
+                gap: 8,
+                paddingVertical: 14,
+                paddingHorizontal: 24,
+                borderRadius: 12,
+                backgroundColor: pressed ? Colors.light.surfaceSecondary : Colors.light.surface,
+                borderWidth: 1,
+                borderColor: Colors.light.border,
+                marginTop: 10,
+              })}
+            >
+              <Ionicons name="barcode-outline" size={20} color={Colors.light.text} />
+              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Enter Barcode</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
+          <View style={{ flex: 1, backgroundColor: "#000" }}>
+            <View style={{ paddingTop: 67, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Enter Barcode</Text>
+              <Pressable onPress={() => setShowBarcodeScanner(false)}>
+                <Ionicons name="close" size={28} color="#FFF" />
+              </Pressable>
+            </View>
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+              <Ionicons name="barcode-outline" size={64} color="#666" />
+              <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Enter a barcode manually:</Text>
+              <TextInput
+                style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
+                placeholder="Enter barcode..."
+                placeholderTextColor="#666"
+                value={webBarcodeInput}
+                onChangeText={setWebBarcodeInput}
+                onSubmitEditing={() => {
+                  const val = webBarcodeInput.trim();
+                  if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
+                }}
+                testID="barcode-manual-input"
+                autoFocus
+              />
+              <Pressable
+                onPress={() => {
+                  const val = webBarcodeInput.trim();
+                  if (val) { setWebBarcodeInput(""); handleBarcodeScanned({ data: val }); }
+                }}
+                style={({ pressed }) => ({
+                  marginTop: 16, backgroundColor: Colors.light.tint, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 12,
+                  opacity: pressed ? 0.85 : 1,
+                })}
+                testID="barcode-submit-btn"
+              >
+                <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_600SemiBold" }}>Look Up Barcode</Text>
+              </Pressable>
+            </View>
+            <View style={{ padding: 20, paddingBottom: 34, alignItems: "center" }}>
+              <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter the barcode number from the case label</Text>
+            </View>
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
+  if (!permission) {
+    return (
+      <View style={[styles.container, styles.permissionContainer]}>
+        <Text style={styles.permissionText}>Loading camera...</Text>
+      </View>
+    );
+  }
+
+  if (!permission.granted && phase === "camera") {
+    return (
+      <View style={[styles.container, styles.permissionContainer]}>
+        <View style={styles.permissionContent}>
+          <View style={styles.permissionIconWrap}>
+            <Ionicons name="camera" size={48} color={Colors.light.tint} />
+          </View>
+          <Text style={styles.permissionTitle}>Camera Access Required</Text>
+          <Text style={styles.permissionDesc}>
+            This feature uses your camera to capture dental case photos.
+          </Text>
+          <Pressable
+            onPress={() => {
+              Alert.alert(
+                "Camera Access",
+                "This feature uses your camera to capture dental case photos.",
+                [{ text: "Continue", onPress: () => requestPermission() }]
+              );
+            }}
+            style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Ionicons name="camera" size={20} color="#FFF" />
+            <Text style={styles.permissionBtnText}>Enable Camera</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleManualEntry}
+            style={({ pressed }) => [styles.permissionSkipBtn, pressed && { opacity: 0.6 }]}
+            testID="manual-entry-btn"
+          >
+            <Text style={styles.permissionSkipText}>Enter manually instead</Text>
+          </Pressable>
+        </View>
+
+        <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
+          <View style={{ flex: 1, backgroundColor: "#000" }}>
+            <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
+              <Pressable onPress={() => setShowBarcodeScanner(false)}>
+                <Ionicons name="close" size={28} color="#FFF" />
+              </Pressable>
+            </View>
+            <CameraView
+              style={{ flex: 1 }}
+              facing="back"
+              autofocus="on"
+              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
+              onBarcodeScanned={barcodeScanned ? undefined : (e) => {
+                if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
+                handleBarcodeScanned(e);
+              }}
+              onLayout={(e) => {
+                const { width, height } = e.nativeEvent.layout;
+                setBarcodeCameraLayout({ width, height });
+              }}
+            >
+              <View style={{ flex: 1 }} pointerEvents="none">
+                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                  <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
+                    <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                    <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
+                  </View>
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                </View>
+                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
+                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
+                </View>
+              </View>
+            </CameraView>
+            <View style={{ padding: 20, paddingBottom: insets.bottom + 10, alignItems: "center" }}>
+              <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
+            </View>
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.cameraContainer}>
+        {phase === "camera" && permission?.granted && !cameraPaused && (
+          <CameraView
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            autofocus="on"
+            zoom={0}
+            onCameraReady={() => setCameraReady(true)}
+          />
+        )}
+        {phase === "camera" && cameraPaused && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0F172A", justifyContent: "center", alignItems: "center" }]}>
+            <ActivityIndicator size="large" color={Colors.light.tint} />
+            <Text style={{ color: "#FFF", fontFamily: "Inter_500Medium", fontSize: 14, marginTop: 12 }}>Selecting files...</Text>
+          </View>
+        )}
+
+        {phase === "scanning" && capturedUri && (
+          <>
+            <Image
+              source={{ uri: capturedUri }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+            />
+            <View style={styles.scanOverlay} />
+            <RNAnimated.View
+              style={[
+                styles.scanLine,
+                { transform: [{ translateY: scanTranslateY }] },
+              ]}
+            />
+          </>
+        )}
+
+        {phase === "scanning" && !capturedUri && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)", justifyContent: "center", alignItems: "center" }]}>
+            <RNAnimated.View
+              style={[
+                styles.scanLine,
+                { transform: [{ translateY: scanTranslateY }] },
+              ]}
+            />
+            <MaterialCommunityIcons
+              name="file-document-outline"
+              size={56}
+              color={Colors.light.tint}
+            />
+            <View style={styles.detectingBadge}>
+              <Text style={styles.detectingText}>DETECTING RX...</Text>
+            </View>
+          </View>
+        )}
+
+        {phase === "review" && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)" }]}>
+            <View style={styles.reviewContent}>
+              <Ionicons name="checkmark-circle" size={48} color={Colors.light.success} />
+              <Text style={styles.detectedViewText}>
+                {casePhotos.length} RX Page{casePhotos.length !== 1 ? "s" : ""} Captured
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewPhotoStrip}>
+                {casePhotos.map((uri, idx) => (
+                  <Image key={idx} source={{ uri }} style={styles.reviewThumb} contentFit="cover" />
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        )}
+
+        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+          <Text style={styles.scanTitle}>AI Intake</Text>
+          <Text style={styles.scanSubtitle}>
+            {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "review" ? "Add more pages or continue" : "RX recognized"}
+          </Text>
+        </View>
+
+        <View style={styles.viewfinderFrame}>
+          <View style={styles.cornerTL} />
+          <View style={styles.cornerTR} />
+          <View style={styles.cornerBL} />
+          <View style={styles.cornerBR} />
+        </View>
+      </View>
+
+      <View
+        style={[
+          styles.scanControls,
+          {
+            paddingBottom:
+              Platform.OS === "web" ? 84 + 20 : insets.bottom + 80,
+          },
+        ]}
+      >
+        {phase === "camera" && (
+          <View style={styles.cameraControlsWrap}>
+            <View style={styles.readyActions}>
+              <Pressable
+                onPress={handlePickImage}
+                style={({ pressed }) => [
+                  styles.secondaryBtn,
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <Ionicons name="images-outline" size={24} color="#FFF" />
+                <Text style={styles.secondaryBtnText}>Gallery</Text>
+              </Pressable>
+
+              <View style={styles.captureBtnWrap}>
+                <Pressable
+                  onPress={handleTakePhoto}
+                  style={({ pressed }) => [
+                    styles.captureBtn,
+                    pressed && { transform: [{ scale: 0.95 }] },
+                  ]}
+                  testID="capture-photo-btn"
+                >
+                  <View style={styles.captureBtnInner}>
+                    <View style={styles.captureBtnDot} />
+                  </View>
+                </Pressable>
+                <Text style={styles.captureBtnLabel}>RX</Text>
+              </View>
+
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 24, marginTop: 8 }}>
+              <Pressable
+                onPress={handleManualEntry}
+                style={({ pressed }) => [
+                  styles.manualEntryLink,
+                  pressed && { opacity: 0.7 },
+                  { marginTop: 0 },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="text-box-outline"
+                  size={16}
+                  color="rgba(255,255,255,0.6)"
+                />
+                <Text style={styles.manualEntryLinkText}>Manual Entry</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={handleAttachFiles}
+              style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="attach" size={22} color="#FFF" />
+              <Text style={styles.barcodeBtnText}>Attach Files</Text>
+            </Pressable>
+            <Pressable
+              onPress={openBarcodeScanner}
+              style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="barcode-outline" size={22} color="#FFF" />
+              <Text style={styles.barcodeBtnText}>Scan Barcode</Text>
+            </Pressable>
+          </View>
+        )}
+        {phase === "scanning" && (
+          <View style={styles.scanningIndicator}>
+            <Text style={styles.scanningText}>Analyzing RX...</Text>
+          </View>
+        )}
+        {phase === "review" && (
+          <View style={styles.detectedActions}>
+            <Pressable
+              onPress={() => {
+                setCasePhotos(prev => prev.slice(0, -1));
+                setCapturedUri(null);
+                setPhase("camera");
+                scanAnim.setValue(0);
+              }}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(239,68,68,0.2)", borderWidth: 1, borderColor: "rgba(239,68,68,0.5)" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons name="refresh" size={22} color="#EF4444" />
+              <Text style={[styles.actionBtnText, { color: "#EF4444" }]}>Retake</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleManualCrop}
+              disabled={isCropping}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
+                pressed && { opacity: 0.7 },
+                isCropping && { opacity: 0.5 },
+              ]}
+            >
+              {isCropping ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Ionicons name="crop" size={22} color="#FFF" />
+              )}
+              <Text style={styles.actionBtnText}>{isCropping ? "Cropping..." : "Crop Photo"}</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleAddMoreFromReview}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Ionicons name="camera" size={22} color="#FFF" />
+              <Text style={styles.actionBtnText}>Add Page</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSavePDF}
+              disabled={isSavingPdf || isAnalyzing}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                { backgroundColor: "rgba(139,92,246,0.25)", borderWidth: 1, borderColor: "rgba(139,92,246,0.6)" },
+                pressed && { opacity: 0.7 },
+                (isSavingPdf || isAnalyzing) && { opacity: 0.5 },
+              ]}
+            >
+              {isSavingPdf ? (
+                <ActivityIndicator size="small" color="#A78BFA" />
+              ) : (
+                <Ionicons name="document-text" size={22} color="#A78BFA" />
+              )}
+              <Text style={[styles.actionBtnText, { color: "#A78BFA" }]}>{isSavingPdf ? "Saving..." : "Save PDF"}</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleFinishedReview}
+              disabled={isAnalyzing}
+              style={({ pressed }) => [
+                styles.reviewActionBtn,
+                styles.actionBtnPrimary,
+                pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] },
+                isAnalyzing && { opacity: 0.6 },
+              ]}
+            >
+              {isAnalyzing ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Ionicons name="checkmark-circle" size={22} color="#FFF" />
+              )}
+              <Text style={styles.actionBtnText}>{isAnalyzing ? "Analyzing..." : "Finished"}</Text>
+            </Pressable>
+          </View>
+        )}
+        {isAnalyzing && (
+          <View style={{
+            position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center", zIndex: 100,
+          }}>
+            <View style={{
+              backgroundColor: "rgba(30,30,30,0.95)", borderRadius: 16, padding: 32,
+              alignItems: "center", gap: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.1)",
+            }}>
+              <ActivityIndicator size="large" color="#4F8EF7" />
+              <Text style={{ color: "#FFF", fontSize: 18, fontFamily: "Inter_600SemiBold" }}>Analyzing Prescription</Text>
+              <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>
+                AI is reading the document...
+              </Text>
+            </View>
+          </View>
+        )}
+      </View>
+
+      <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
+        <View style={{ flex: 1, backgroundColor: "#000" }}>
+          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
+            <Pressable onPress={() => setShowBarcodeScanner(false)}>
+              <Ionicons name="close" size={28} color="#FFF" />
+            </Pressable>
+          </View>
+          {Platform.OS !== "web" && permission?.granted ? (
+            <CameraView
+              style={{ flex: 1 }}
+              facing="back"
+              autofocus="on"
+              barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
+              onBarcodeScanned={barcodeScanned ? undefined : (e) => {
+                if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
+                handleBarcodeScanned(e);
+              }}
+              onLayout={(e) => {
+                const { width, height } = e.nativeEvent.layout;
+                setBarcodeCameraLayout({ width, height });
+              }}
+            >
+              <View style={{ flex: 1 }} pointerEvents="none">
+                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                  <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
+                    <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
+                    <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
+                    <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
+                  </View>
+                  <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+                </View>
+                <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
+                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
+                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
+                </View>
+              </View>
+            </CameraView>
+          ) : (
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
+              <Ionicons name="barcode-outline" size={64} color="#666" />
+              <Text style={{ color: "#999", marginTop: 16, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}>Barcode scanning requires a device camera</Text>
+              <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
+              <TextInput
+                style={{ borderWidth: 1, borderColor: "#555", borderRadius: 10, color: "#FFF", padding: 12, width: "80%", marginTop: 12, fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center" }}
+                placeholder="Enter barcode..."
+                placeholderTextColor="#666"
+                onSubmitEditing={(e) => {
+                  const val = e.nativeEvent.text.trim();
+                  if (val) handleBarcodeScanned({ data: val });
+                }}
+                autoFocus
+              />
+            </View>
+          )}
+          <View style={{ padding: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>
+            <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
+          </View>
+        </View>
+      </Modal>
+
+      {labelAndBarcodeModals}
+    </View>
+  );
+}
+
+const labelStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  container: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    width: "100%",
+    maxWidth: 400,
+    maxHeight: "85%",
+    overflow: "hidden",
+  },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 12,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  scroll: {
+    paddingHorizontal: 20,
+  },
+  labelCard: {
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: Colors.light.borderLight,
+    borderStyle: "dashed",
+    padding: 18,
+  },
+  labelTopBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  labName: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+    letterSpacing: 1.5,
+  },
+  rushTag: {
+    backgroundColor: Colors.light.warningLight,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  rushTagText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.warning,
+    letterSpacing: 0.5,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: Colors.light.borderLight,
+    marginVertical: 12,
+  },
+  labelRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    paddingVertical: 5,
+  },
+  labelKey: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+    width: 80,
+  },
+  labelValue: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+    flex: 1,
+    textAlign: "right",
+  },
+  notesSection: {
+    gap: 6,
+  },
+  notesText: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    lineHeight: 18,
+  },
+  labelFooter: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textTertiary,
+    textAlign: "center",
+  },
+  actions: {
+    flexDirection: "row",
+    gap: 12,
+    padding: 20,
+    paddingTop: 16,
+  },
+  printBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  printBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  doneBtn: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.light.surfaceSecondary,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  doneBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+});
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  cameraContainer: {
+    flex: 1,
+    position: "relative",
+  },
+  cameraHeaderOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    zIndex: 10,
+  },
+  scanTitle: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+    textShadowColor: "rgba(0,0,0,0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  scanSubtitle: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.7)",
+    marginTop: 4,
+    textShadowColor: "rgba(0,0,0,0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  viewfinderFrame: {
+    position: "absolute",
+    top: "25%",
+    left: 30,
+    right: 30,
+    aspectRatio: 3 / 4,
+    maxHeight: 360,
+    zIndex: 5,
+  },
+  scanOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.3)",
+  },
+  scanLine: {
+    position: "absolute",
+    left: 30,
+    right: 30,
+    height: 3,
+    backgroundColor: Colors.light.tint,
+    shadowColor: Colors.light.tint,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 10,
+    zIndex: 10,
+  },
+  detectingBadge: {
+    backgroundColor: Colors.light.tint,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginTop: 16,
+  },
+  detectingText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+    letterSpacing: 1,
+  },
+  detectedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+  },
+  reviewContent: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 16,
+    paddingHorizontal: 20,
+  },
+  reviewPhotoStrip: {
+    flexGrow: 0,
+    marginTop: 8,
+  },
+  reviewThumb: {
+    width: 90,
+    height: 90,
+    borderRadius: 12,
+    marginRight: 10,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  reviewActionBtn: {
+    flexGrow: 1,
+    flexBasis: "40%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 16,
+  },
+  detectedViewText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.success,
+  },
+  detectedSubText: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.7)",
+    textAlign: "center",
+  },
+  cornerTL: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: 24,
+    height: 24,
+    borderTopWidth: 3,
+    borderLeftWidth: 3,
+    borderColor: "rgba(255,255,255,0.5)",
+    borderTopLeftRadius: 6,
+  },
+  cornerTR: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    width: 24,
+    height: 24,
+    borderTopWidth: 3,
+    borderRightWidth: 3,
+    borderColor: "rgba(255,255,255,0.5)",
+    borderTopRightRadius: 6,
+  },
+  cornerBL: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    width: 24,
+    height: 24,
+    borderBottomWidth: 3,
+    borderLeftWidth: 3,
+    borderColor: "rgba(255,255,255,0.5)",
+    borderBottomLeftRadius: 6,
+  },
+  cornerBR: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    width: 24,
+    height: 24,
+    borderBottomWidth: 3,
+    borderRightWidth: 3,
+    borderColor: "rgba(255,255,255,0.5)",
+    borderBottomRightRadius: 6,
+  },
+  scanControls: {
+    alignItems: "center",
+    paddingVertical: 24,
+    backgroundColor: "rgba(0,0,0,0.85)",
+  },
+  readyActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 32,
+  },
+  secondaryBtn: {
+    alignItems: "center",
+    gap: 6,
+  },
+  secondaryBtnText: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.7)",
+  },
+  captureBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 4,
+    borderColor: "#FFF",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 4,
+  },
+  captureBtnInner: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 30,
+    backgroundColor: "#FFF",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  captureBtnDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: Colors.light.error,
+  },
+  scanningIndicator: {
+    alignItems: "center",
+    gap: 12,
+  },
+  scanningText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.6)",
+  },
+  detectedActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 20,
+  },
+  actionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 16,
+  },
+  actionBtnSecondary: {
+    width: 56,
+    backgroundColor: "rgba(255,255,255,0.15)",
+  },
+  actionBtnPrimary: {
+    flex: 1,
+    backgroundColor: Colors.light.tint,
+  },
+  actionBtnText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  permissionContainer: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  permissionContent: {
+    alignItems: "center",
+    paddingHorizontal: 40,
+    gap: 16,
+  },
+  permissionIconWrap: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  permissionTitle: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  permissionDesc: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: "rgba(255,255,255,0.5)",
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  permissionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    borderRadius: 16,
+    marginTop: 8,
+    width: "100%",
+  },
+  permissionBtnText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  permissionSkipBtn: {
+    paddingVertical: 12,
+  },
+  permissionSkipText: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.4)",
+    textDecorationLine: "underline" as const,
+  },
+  permissionText: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.5)",
+  },
+  formHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  backBtn: {
+    width: 40,
+    height: 40,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  formTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+  },
+  submitBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: Colors.light.tint,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  formScroll: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
+  capturedPreview: {
+    height: 160,
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 20,
+  },
+  previewImage: {
+    width: "100%",
+    height: "100%",
+  },
+  previewOverlay: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: 12,
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  previewText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.success,
+  },
+  detectedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: Colors.light.successLight,
+    padding: 14,
+    borderRadius: 14,
+    marginBottom: 20,
+  },
+  detectedText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.success,
+  },
+  formGroup: {
+    marginBottom: 18,
+  },
+  caseTypeDropdown: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    overflow: "hidden" as const,
+  },
+  caseTypeItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  caseTypeItemSelected: {
+    backgroundColor: Colors.light.tintLight,
+  },
+  caseTypeItemText: {
+    fontSize: 15,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  caseTypeItemTextSelected: {
+    color: Colors.light.tint,
+    fontFamily: "Inter_600SemiBold",
+  },
+  dueDateRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 18,
+  },
+  dueDateCol: {
+    flex: 1,
+  },
+  timeDueCol: {
+    width: 130,
+  },
+  optionalLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    textTransform: "none" as const,
+    letterSpacing: 0,
+  },
+  dueDateDropdown: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    overflow: "hidden" as const,
+  },
+  quickDateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  quickDateText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+    flex: 1,
+  },
+  quickDateSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+  },
+  calendarContainer: {
+    padding: 10,
+  },
+  calendarHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
+    marginBottom: 10,
+  },
+  calendarMonthText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  calendarWeekRow: {
+    flexDirection: "row",
+    marginBottom: 4,
+  },
+  calendarWeekDay: {
+    width: `${100 / 7}%` as unknown as number,
+    textAlign: "center" as const,
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textTertiary,
+    paddingVertical: 4,
+  },
+  calendarGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap" as const,
+  },
+  calendarDayBtn: {
+    width: `${100 / 7}%` as unknown as number,
+    aspectRatio: 1,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    borderRadius: 20,
+  },
+  calendarDaySelected: {
+    backgroundColor: Colors.light.tint,
+  },
+  calendarDayToday: {
+    borderWidth: 1,
+    borderColor: Colors.light.tint,
+  },
+  calendarDayText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  calendarDayTextSelected: {
+    color: "#FFF",
+    fontFamily: "Inter_700Bold",
+  },
+  calendarDayTextToday: {
+    color: Colors.light.tint,
+    fontFamily: "Inter_600SemiBold",
+  },
+  timeDueDropdown: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    padding: 10,
+  },
+  timePickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  timePickerCol: {
+    alignItems: "center" as const,
+  },
+  timePickerLabel: {
+    fontSize: 9,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textTertiary,
+    textTransform: "uppercase" as const,
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  timeSpinnerRow: {
+    alignItems: "center" as const,
+    gap: 2,
+  },
+  timeSpinBtn: {
+    padding: 2,
+  },
+  timeSpinValue: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    minWidth: 32,
+    textAlign: "center" as const,
+  },
+  timeColon: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    paddingTop: 16,
+  },
+  amPmToggle: {
+    borderRadius: 8,
+    overflow: "hidden" as const,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    marginTop: 2,
+  },
+  amPmBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  amPmBtnActive: {
+    backgroundColor: Colors.light.tint,
+  },
+  amPmText: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+    textAlign: "center" as const,
+  },
+  amPmTextActive: {
+    color: "#FFF",
+  },
+  timeApplyBtn: {
+    backgroundColor: Colors.light.tint,
+    borderRadius: 8,
+    paddingVertical: 8,
+    alignItems: "center" as const,
+    marginTop: 8,
+  },
+  timeApplyText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  formLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+    textTransform: "uppercase" as const,
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  formInput: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 15,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  dropdownTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  dropdownTriggerText: {
+    fontSize: 15,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  dropdownPanel: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    overflow: "hidden",
+  },
+  dropdownSearchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  dropdownSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+    paddingVertical: 0,
+  },
+  dropdownList: {
+    maxHeight: 200,
+  },
+  dropdownEmpty: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    textAlign: "center",
+    paddingVertical: 20,
+  },
+  dropdownItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  dropdownItemSelected: {
+    backgroundColor: Colors.light.tintLight,
+  },
+  dropdownItemLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  dropdownAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.light.surfaceSecondary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dropdownAvatarText: {
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.textSecondary,
+  },
+  dropdownItemName: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  dropdownItemSub: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 1,
+  },
+  dropdownItemAddr: {
+    fontSize: 10,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    marginTop: 1,
+  },
+  addNewPatientBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+    backgroundColor: Colors.light.tintLight,
+  },
+  addNewPatientBtnText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  addNewPatientPanel: {
+    padding: 12,
+    gap: 10,
+  },
+  addNewPatientTitle: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  addNewPatientActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    justifyContent: "flex-end",
+  },
+  addNewPatientCancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: Colors.light.surfaceSecondary,
+  },
+  addNewPatientCancelText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+  addNewPatientConfirmBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: Colors.light.tint,
+  },
+  addNewPatientConfirmText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  toothChartPanel: {
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 14,
+    marginTop: 6,
+    padding: 12,
+    gap: 8,
+  },
+  toothChartHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 2,
+  },
+  toothChartTitle: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  toothChartClear: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.error,
+  },
+  toothChartSectionLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textTertiary,
+    textTransform: "uppercase" as const,
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  archContainer: {
+    alignItems: "center" as const,
+    paddingVertical: 10,
+    backgroundColor: "#EFF4FB",
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    marginVertical: 4,
+  },
+  archSectionTitle: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+    letterSpacing: 2,
+    marginBottom: 4,
+    marginTop: 4,
+  },
+  archRow: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    marginVertical: 1,
+  },
+  archGap: {
+    width: "60%",
+    paddingVertical: 6,
+    alignItems: "center" as const,
+  },
+  archGapLine: {
+    width: "100%",
+    height: 1,
+    backgroundColor: Colors.light.border,
+  },
+  archToothBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: Colors.light.surface,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    borderWidth: 1.5,
+    borderColor: Colors.light.border,
+  },
+  archToothText: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.textSecondary,
+  },
+  toothRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 4,
+  },
+  toothBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: Colors.light.surfaceSecondary,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: Colors.light.borderLight,
+  },
+  toothBtnSelected: {
+    backgroundColor: "#22C55E",
+    borderColor: "#22C55E",
+  },
+  toothBtnBridge: {
+    backgroundColor: "#EAB308",
+    borderColor: "#EAB308",
+  },
+  toothBtnMissing: {
+    backgroundColor: "#FEE2E2",
+    borderColor: "#EF4444",
+  },
+  toothBtnText: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+  toothBtnTextSelected: {
+    color: "#FFF",
+  },
+  toothBtnTextBridge: {
+    color: "#FFF",
+  },
+  toothBtnTextMissing: {
+    color: Colors.light.error,
+    fontSize: 11,
+  },
+  toothMissingWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  toothXOverlay: {
+    position: "absolute",
+    top: -4,
+    left: -2,
+    right: -2,
+    bottom: -4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toothChartLegend: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+    marginBottom: 4,
+  },
+  legendItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  legendText: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  legendHint: {
+    fontSize: 9,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+    fontStyle: "italic" as const,
+    marginLeft: "auto",
+  },
+  toothChartDivider: {
+    height: 1,
+    backgroundColor: Colors.light.borderLight,
+    marginVertical: 4,
+  },
+  toothChartSummary: {
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: Colors.light.borderLight,
+    marginTop: 4,
+    gap: 6,
+  },
+  toothSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  toothChartSummaryText: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.tint,
+    flex: 1,
+  },
+  toothPricingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: Colors.light.tintLight,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  toothPricingLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  toothPricingTotal: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+  },
+  formTextArea: {
+    minHeight: 80,
+    textAlignVertical: "top" as const,
+  },
+  formRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  materialSelector: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  materialChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: Colors.light.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  materialChipActive: {
+    backgroundColor: Colors.light.tintLight,
+    borderColor: Colors.light.tint,
+  },
+  materialText: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+  materialTextActive: {
+    color: Colors.light.tint,
+  },
+  rushToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 16,
+    borderRadius: 14,
+    backgroundColor: Colors.light.surface,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    marginBottom: 18,
+  },
+  rushToggleActive: {
+    borderColor: "rgba(239,68,68,0.3)",
+    backgroundColor: "rgba(239,68,68,0.05)",
+  },
+  rushToggleText: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+  },
+  rushToggleSwitch: {
+    width: 46,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: Colors.light.surfaceSecondary,
+    padding: 3,
+    justifyContent: "center",
+  },
+  rushToggleDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: Colors.light.textTertiary,
+  },
+  rushToggleDotActive: {
+    alignSelf: "flex-end" as const,
+    backgroundColor: "#EF4444",
+  },
+  photoStripSection: {
+    marginBottom: 16,
+  },
+  photoStripHeader: {
+    marginBottom: 8,
+  },
+  photoStrip: {
+    flexDirection: "row",
+  },
+  photoThumbWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 12,
+    overflow: "hidden",
+    marginRight: 10,
+    position: "relative",
+  },
+  photoThumb: {
+    width: 80,
+    height: 80,
+  },
+  photoRemoveBtn: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    borderRadius: 10,
+  },
+  addPhotoThumb: {
+    width: 80,
+    height: 80,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: Colors.light.tint + "40",
+    borderStyle: "dashed" as const,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: Colors.light.tintLight,
+  },
+  addPhotoBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 20,
+  },
+  addMorePhotosBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.light.tintLight,
+    borderWidth: 1,
+    borderColor: Colors.light.tint + "30",
+  },
+  addMorePhotosBtnText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
+  },
+  activitySection: {
+    marginTop: 8,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: Colors.light.borderLight,
+  },
+  activityHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 14,
+  },
+  activityHeaderText: {
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.text,
+    flex: 1,
+  },
+  activityBadge: {
+    backgroundColor: Colors.light.tintLight,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  activityBadgeText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.tint,
+  },
+  activityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.light.borderLight,
+  },
+  activityIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  activityContent: {
+    flex: 1,
+    gap: 2,
+  },
+  activityDesc: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  activityTime: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textTertiary,
+  },
+  activityThumb: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+  },
+  cameraControlsWrap: {
+    alignItems: "center",
+    gap: 12,
+  },
+  captureBtnWrap: {
+    alignItems: "center",
+    position: "relative",
+  },
+  captureBtnLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.7)",
+    marginTop: 4,
+  },
+  photoBadge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: Colors.light.success,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  photoBadgeText: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: "#FFF",
+  },
+  manualEntryLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 6,
+  },
+  manualEntryLinkText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: "rgba(255,255,255,0.6)",
+  },
+  barcodeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#6366F1",
+    borderRadius: 14,
+    paddingVertical: 14,
+    marginTop: 8,
+  },
+  barcodeBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
+  archChartWrap: {
+    alignItems: "center" as const,
+    paddingVertical: 12,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    marginVertical: 4,
+    overflow: "hidden" as const,
+  },
+  adaChartContainer: {
+    paddingVertical: 8,
+  },
+  adaQuadrantLabels: {
+    flexDirection: "row" as const,
+    justifyContent: "space-around" as const,
+    marginBottom: 4,
+  },
+  adaQuadrantLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textTertiary,
+    letterSpacing: 0.5,
+    textTransform: "uppercase" as const,
+  },
+  adaRow: {
+    flexDirection: "row" as const,
+    justifyContent: "center" as const,
+    flexWrap: "wrap" as const,
+    gap: 3,
+    paddingHorizontal: 4,
+  },
+  adaToothBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    justifyContent: "center" as const,
+    alignItems: "center" as const,
+    backgroundColor: Colors.light.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  adaToothBtnMidline: {
+    marginRight: 8,
+  },
+  adaToothText: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  adaMidline: {
+    width: 1,
+    height: 32,
+    backgroundColor: Colors.light.textTertiary,
+    marginHorizontal: 2,
+  },
+  adaDividerRow: {
+    paddingVertical: 6,
+    alignItems: "center" as const,
+  },
+  adaDividerLine: {
+    height: 1,
+    width: "90%",
+    backgroundColor: Colors.light.borderLight,
+  },
+});

@@ -1,0 +1,425 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Terminal, 
+  Cpu, 
+  Zap, 
+  ShieldCheck, 
+  Package, 
+  Layout, 
+  Rocket, 
+  Database,
+  ArrowRight,
+  Plus,
+  Monitor,
+  Smartphone,
+  MessageSquare,
+  Bot,
+  Activity,
+  History,
+  Settings,
+  Shield,
+  Search,
+  CheckCircle2,
+  AlertCircle,
+  UserPlus,
+  UserCog,
+  ChevronLeft
+} from 'lucide-react';
+
+// --- CONFIGURATION ---
+const apiKey = ""; // API Key provided by environment
+const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+const App = () => {
+  // --- STATE ---
+  const [role, setRole] = useState('tech'); 
+  const [logs, setLogs] = useState([{ msg: "DriveSync Kernel v7.0.1 (LTS) initialized", type: "success" }]);
+  const [cases, setCases] = useState([
+    { id: '101', patient: 'A. Smith', doc: 'Dr. Miller', type: 'Crown', status: 'Ready' },
+    { id: '102', patient: 'B. Jones', doc: 'Dr. Sarah', type: 'Veneer', status: 'In Design' },
+    { id: '103', patient: 'L. Davis', doc: 'Dr. Chen', type: 'Implant', status: 'Scanning' },
+  ]);
+  const [revenue, setRevenue] = useState(15890.25);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiInput, setAiInput] = useState("");
+  const [view, setView] = useState('dashboard'); // 'dashboard' or 'intake'
+  const [adminSubView, setAdminSubView] = useState('main'); // 'main', 'add-client', 'edit-client'
+  const [isScanning, setIsScanning] = useState(false);
+  const [systemHealth, setSystemHealth] = useState('optimal');
+
+  const logEndRef = useRef(null);
+
+  // --- UTILITIES ---
+  const addLog = (msg, type = "info") => {
+    setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) }]);
+  };
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
+
+  // --- AI CO-PILOT INTEGRATION ---
+  const callCoPilot = async (prompt) => {
+    if (!prompt) return;
+    setIsAiLoading(true);
+    addLog(`Handshaking with Co-Pilot: "${prompt}"`, "ai");
+
+    try {
+      const response = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `You are the DriveSync OS Co-Pilot. The user command is: ${prompt}. Briefly respond as a high-level system architect. Use phrases like "Orchestrating services," "Validating nodes," or "Syncing local buffers." Limit to 2 sentences.` }] }]
+        })
+      });
+
+      if (!response.ok) throw new Error("Connection dropped");
+
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "Protocol executed.";
+      addLog(`[Co-Pilot] ${text}`, "success");
+      
+      const input = prompt.toLowerCase();
+      
+      if (input.includes("test") || input.includes("generate")) {
+        const count = 3;
+        for(let i=0; i<count; i++) {
+          setCases(prev => [{ id: Math.floor(Math.random()*900), patient: `Node_${Math.random().toString(36).substring(7)}`, doc: 'AI_Core', type: 'Restoration', status: 'Simulated' }, ...prev]);
+        }
+        setRevenue(r => r + (200 * count));
+        addLog(`Injected synthetic packets into production buffer.`, "alert");
+      }
+      
+      if (input.includes("health") || input.includes("check")) {
+        setSystemHealth('checking');
+        addLog("Initiating global node diagnostic...", "alert");
+        setTimeout(() => {
+          setSystemHealth('optimal');
+          addLog("All subsystems verified. Latency: 4ms.", "success");
+        }, 2000);
+      }
+    } catch (err) {
+      addLog("Node failure. Re-routing request...", "error");
+    } finally {
+      setIsAiLoading(false);
+      setAiInput("");
+    }
+  };
+
+  const handleNewCase = (e) => {
+    e.preventDefault();
+    const doc = e.target.doc.value;
+    const pat = e.target.pat.value;
+    setCases([{ id: Math.floor(Math.random()*1000), patient: pat, doc: doc, type: 'Crown', status: 'Queue' }, ...cases]);
+    setRevenue(r => r + 245);
+    addLog(`Intake: ${pat} synced to Station Alpha.`, "success");
+    setView('dashboard');
+  };
+
+  const handleRoleChange = (newRole) => {
+    setRole(newRole);
+    setAdminSubView('main');
+    addLog(`Role shifted to ${newRole.toUpperCase()}. View reset.`, "alert");
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F1F5F9] flex flex-col font-sans text-[#0F172A]">
+      {/* HEADER */}
+      <nav className="bg-white border-b border-slate-200 px-8 py-4 flex justify-between items-center sticky top-0 z-50 shadow-sm">
+        <div className="flex items-center gap-4">
+          <div className="bg-[#0F172A] p-2.5 rounded-xl text-white shadow-lg shadow-slate-200">
+            <Shield size={20} fill="currentColor" />
+          </div>
+          <div>
+            <h1 className="font-extrabold text-lg tracking-tight">DriveSync <span className="text-blue-600">v7.0</span></h1>
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mt-1">Enterprise Lab OS</p>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-4">
+          <div className="bg-slate-50 px-4 py-2 rounded-full flex items-center gap-3 border border-slate-100">
+             <div className={`w-2 h-2 rounded-full ${systemHealth === 'optimal' ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
+             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter">System Health: {systemHealth}</span>
+          </div>
+          <button className="bg-white border border-slate-200 p-2 rounded-xl text-slate-400 hover:text-blue-600 transition-colors">
+            <Settings size={18} />
+          </button>
+        </div>
+      </nav>
+
+      <div className="flex-1 max-w-7xl mx-auto w-full p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+        
+        {/* LEFT: CONTEXT NAV & LOGS */}
+        <div className="lg:col-span-3 space-y-6">
+          <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+            <div className="space-y-2">
+              <button 
+                onClick={() => handleRoleChange('tech')}
+                className={`w-full flex items-center gap-3 p-4 rounded-2xl transition-all ${role === 'tech' ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-100' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}
+              >
+                <Monitor size={18} /> <span className="text-sm">Lab Terminal</span>
+              </button>
+              <button 
+                onClick={() => handleRoleChange('admin')}
+                className={`w-full flex items-center gap-3 p-4 rounded-2xl transition-all ${role === 'admin' ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-100' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}
+              >
+                <ShieldCheck size={18} /> <span className="text-sm">Admin Hub</span>
+              </button>
+            </div>
+          </div>
+
+          {/* SYSTEM TERMINAL */}
+          <div className="bg-[#0F172A] rounded-3xl shadow-2xl overflow-hidden border border-slate-800 flex flex-col h-[450px]">
+            <div className="p-4 bg-slate-800/40 flex justify-between items-center border-b border-slate-800">
+              <span className="text-[10px] font-mono text-blue-400 uppercase tracking-widest font-bold flex items-center gap-2">
+                <Terminal size={12} /> Live_Kernel
+              </span>
+              <div className="flex gap-1.5">
+                <div className="w-2 h-2 rounded-full bg-red-500/20" />
+                <div className="w-2 h-2 rounded-full bg-amber-500/20" />
+                <div className="w-2 h-2 rounded-full bg-emerald-500/50" />
+              </div>
+            </div>
+            <div className="p-5 overflow-y-auto font-mono text-[10px] space-y-3 flex-1 custom-scrollbar">
+              {logs.map((log, i) => (
+                <div key={i} className={`flex gap-3 leading-relaxed ${
+                  log.type === 'error' ? 'text-red-400' : 
+                  log.type === 'success' ? 'text-emerald-400' : 
+                  log.type === 'alert' ? 'text-blue-300' : 
+                  log.type === 'ai' ? 'text-purple-300 italic' : 'text-slate-500'
+                }`}>
+                  <span className="opacity-20 shrink-0 select-none">{log.time}</span>
+                  <span>{log.msg}</span>
+                </div>
+              ))}
+              <div ref={logEndRef} />
+            </div>
+          </div>
+        </div>
+
+        {/* CENTER: DEVICE SIMULATOR */}
+        <div className="lg:col-span-5 flex justify-center items-start">
+          <div className="relative">
+            <div className="w-[370px] h-[780px] bg-slate-900 rounded-[3.5rem] p-3 shadow-2xl relative border-[6px] border-slate-800">
+              <div className="absolute top-8 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-900 rounded-full z-20" />
+              
+              <div className="w-full h-full bg-white rounded-[2.8rem] overflow-hidden relative flex flex-col">
+                <div className="flex-1 p-8 overflow-y-auto pt-16">
+                  {role === 'tech' ? (
+                    view === 'dashboard' ? (
+                      <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                        <div className="flex items-center justify-between mb-8">
+                          <h2 className="text-3xl font-black text-slate-900">Lab Alpha</h2>
+                          <div className="bg-slate-100 p-2.5 rounded-2xl text-slate-400"><Search size={20}/></div>
+                        </div>
+
+                        <div className="bg-blue-600 rounded-[2.5rem] p-8 text-white shadow-xl mb-8 relative overflow-hidden group">
+                           <div className="relative z-10">
+                              <p className="text-[11px] font-black uppercase tracking-[0.2em] opacity-60 mb-2">Production Queue</p>
+                              <h3 className="text-5xl font-black">{cases.length}</h3>
+                              <div className="mt-6 flex items-center gap-2">
+                                <Activity size={12} className="text-blue-200 animate-pulse" />
+                                <span className="text-[10px] font-bold text-blue-100 uppercase">Synchronized</span>
+                              </div>
+                           </div>
+                           <Cpu className="absolute -right-8 -bottom-8 opacity-10 group-hover:scale-110 transition-transform duration-1000" size={160} />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 mb-8">
+                          <button onClick={() => setView('intake')} className="bg-white border-2 border-slate-100 p-5 rounded-3xl flex flex-col items-center gap-3 hover:border-blue-500 transition-colors group">
+                            <Plus className="text-blue-600 group-hover:scale-110 transition-transform" />
+                            <span className="text-[10px] font-black uppercase text-slate-500">New Rx</span>
+                          </button>
+                          <button className="bg-slate-50 border-2 border-transparent p-5 rounded-3xl flex flex-col items-center gap-3 opacity-40">
+                            <Package className="text-slate-400" />
+                            <span className="text-[10px] font-black uppercase text-slate-400">Inventory</span>
+                          </button>
+                        </div>
+
+                        <div className="space-y-3">
+                           {cases.map((c, i) => (
+                             <div key={c.id} className="bg-white border border-slate-100 p-4 rounded-2xl shadow-sm flex items-center justify-between animate-in slide-in-from-right-4">
+                               <div className="flex items-center gap-4">
+                                 <div className={`w-1.5 h-1.5 rounded-full ${c.status === 'Ready' ? 'bg-emerald-500' : 'bg-blue-500 animate-pulse'}`} />
+                                 <div>
+                                    <p className="text-sm font-bold text-slate-800">{c.patient}</p>
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase">{c.doc} • {c.type}</p>
+                                 </div>
+                               </div>
+                             </div>
+                           ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="animate-in slide-in-from-right-8 duration-500">
+                        <button onClick={() => setView('dashboard')} className="text-slate-400 mb-6 flex items-center gap-2 text-xs font-bold uppercase">
+                          <ArrowRight className="rotate-180" size={14} /> Back
+                        </button>
+                        <h2 className="text-4xl font-black text-slate-900 mb-2">Intake</h2>
+                        <form onSubmit={handleNewCase} className="space-y-6">
+                           <input name="pat" placeholder="Patient Ref" required className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-sm font-bold focus:border-blue-600 focus:bg-white focus:outline-none transition-all" />
+                           <input name="doc" placeholder="Doctor" required className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-sm font-bold focus:border-blue-600 focus:bg-white focus:outline-none transition-all" />
+                           <button type="submit" className="w-full bg-blue-600 text-white font-black p-5 rounded-[1.8rem] shadow-xl shadow-blue-100 transition-transform active:scale-95">
+                             SYNC TO PRODUCTION
+                           </button>
+                        </form>
+                      </div>
+                    )
+                  ) : (
+                    <div className="animate-in fade-in duration-500">
+                      {adminSubView === 'main' ? (
+                        <>
+                          <h2 className="text-3xl font-black text-slate-900 mb-2">Master Hub</h2>
+                          <p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] mb-10">Admin Access Restricted</p>
+
+                          <div className="bg-[#0F172A] rounded-[2.5rem] p-8 text-white shadow-2xl mb-8">
+                             <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Total Billables</p>
+                             <h3 className="text-4xl font-black tracking-tight">${revenue.toLocaleString()}</h3>
+                          </div>
+
+                          <div className="space-y-4">
+                            <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest px-2">Client Management</p>
+                            
+                            <button 
+                              onClick={() => { setAdminSubView('add-client'); addLog("Navigating to Add Client portal.", "alert"); }}
+                              className="w-full bg-white border-2 border-slate-100 p-5 rounded-[2.2rem] flex items-center justify-between hover:border-blue-500 transition-all group"
+                            >
+                               <div className="flex items-center gap-4">
+                                  <div className="bg-blue-50 text-blue-600 p-3 rounded-2xl group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                                     <UserPlus size={22} />
+                                  </div>
+                                  <span className="text-sm font-bold text-slate-700">Add Client</span>
+                               </div>
+                               <ArrowRight size={18} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                            </button>
+
+                            <button 
+                              onClick={() => { setAdminSubView('edit-client'); addLog("Opening Client Directory.", "alert"); }}
+                              className="w-full bg-white border-2 border-slate-100 p-5 rounded-[2.2rem] flex items-center justify-between hover:border-blue-500 transition-all group"
+                            >
+                               <div className="flex items-center gap-4">
+                                  <div className="bg-slate-50 text-slate-400 p-3 rounded-2xl group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                                     <UserCog size={22} />
+                                  </div>
+                                  <span className="text-sm font-bold text-slate-700">Edit Client</span>
+                               </div>
+                               <ArrowRight size={18} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                            </button>
+                          </div>
+                        </>
+                      ) : adminSubView === 'add-client' ? (
+                        <div className="animate-in slide-in-from-right-8 duration-500">
+                           <button onClick={() => setAdminSubView('main')} className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase mb-8">
+                              <ChevronLeft size={16} /> Back to Hub
+                           </button>
+                           <h2 className="text-3xl font-black text-slate-900 mb-2">New Client</h2>
+                           <p className="text-sm text-slate-400 mb-8">Onboard a new dental practice.</p>
+                           
+                           <div className="space-y-4">
+                              <input placeholder="Practice Name" className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-sm font-bold focus:border-blue-600 focus:bg-white focus:outline-none transition-all" />
+                              <input placeholder="Lead Doctor" className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-sm font-bold focus:border-blue-600 focus:bg-white focus:outline-none transition-all" />
+                              <button onClick={() => { setAdminSubView('main'); addLog("New client record pushed to cloud db.", "success"); }} className="w-full bg-blue-600 text-white font-black p-5 rounded-[2rem] shadow-lg shadow-blue-100 mt-4">
+                                 CREATE CLIENT RECORD
+                              </button>
+                           </div>
+                        </div>
+                      ) : (
+                        <div className="animate-in slide-in-from-right-8 duration-500">
+                           <button onClick={() => setAdminSubView('main')} className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase mb-8">
+                              <ChevronLeft size={16} /> Back to Hub
+                           </button>
+                           <h2 className="text-3xl font-black text-slate-900 mb-2">Edit Clients</h2>
+                           <p className="text-sm text-slate-400 mb-8">Modify existing doctor permissions.</p>
+                           
+                           <div className="space-y-2">
+                              {['Dr. Miller (Elite Dental)', 'Dr. Sarah (City Smiles)', 'Dr. Chen (North Lab)'].map(doctor => (
+                                <div key={doctor} className="bg-white border border-slate-100 p-4 rounded-2xl flex items-center justify-between">
+                                   <span className="text-sm font-bold">{doctor}</span>
+                                   <button className="text-[10px] font-black bg-slate-100 px-3 py-1.5 rounded-xl uppercase">Edit</button>
+                                </div>
+                              ))}
+                           </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Bottom Bar */}
+                <div className="h-24 bg-white/80 backdrop-blur-xl border-t border-slate-50 flex justify-around items-center px-10">
+                   <div className={`p-3 rounded-2xl transition-all ${role === 'tech' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-300'}`}><Layout size={22} /></div>
+                   <div className="p-3 text-slate-300" onClick={() => addLog("System message encryption active.", "alert")}><MessageSquare size={22} /></div>
+                   <div className={`p-3 rounded-2xl transition-all ${role === 'admin' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-300'}`}><Database size={22} /></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT: CO-PILOT AI */}
+        <div className="lg:col-span-4 space-y-8">
+          <div className="bg-[#0F172A] p-10 rounded-[3rem] text-white shadow-2xl border border-slate-800 relative overflow-hidden group">
+            <div className="relative z-10">
+              <div className="flex items-center gap-4 mb-10">
+                <div className="bg-blue-500/20 w-14 h-14 rounded-2xl flex items-center justify-center border border-blue-500/30">
+                  <Bot size={28} className="text-blue-400" />
+                </div>
+                <div>
+                  <h2 className="font-black text-2xl tracking-tighter uppercase">Deep Sync</h2>
+                  <span className="text-[10px] font-black text-blue-500 tracking-[0.2em] uppercase">Co-Pilot Core v7.0</span>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="relative">
+                  <input 
+                    value={aiInput}
+                    onChange={(e) => setAiInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && callCoPilot(aiInput)}
+                    placeholder="Enter system command..."
+                    className="w-full bg-slate-900/50 border border-slate-800 rounded-2xl p-5 pr-14 text-sm font-medium text-white placeholder:text-slate-600 focus:outline-none focus:ring-4 focus:ring-blue-500/20 transition-all"
+                  />
+                  <button 
+                    onClick={() => callCoPilot(aiInput)}
+                    disabled={isAiLoading}
+                    className="absolute right-3.5 top-3.5 bg-blue-600 text-white p-2.5 rounded-xl transition-all disabled:opacity-50"
+                  >
+                    {isAiLoading ? <Activity size={18} className="animate-spin" /> : <ArrowRight size={18} />}
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => setAiInput("Run health check")} className="text-[10px] font-black bg-slate-800 text-slate-300 px-4 py-2.5 rounded-full border border-slate-700 transition-colors uppercase tracking-widest">"Health Check"</button>
+                  <button onClick={() => setAiInput("Generate cases")} className="text-[10px] font-black bg-slate-800 text-slate-300 px-4 py-2.5 rounded-full border border-slate-700 transition-colors uppercase tracking-widest">"Load Data"</button>
+                </div>
+              </div>
+            </div>
+            <div className="absolute top-0 right-0 w-64 h-64 bg-blue-600/5 rounded-full -mr-32 -mt-32 blur-3xl" />
+          </div>
+
+          <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm">
+             <div className="flex items-center gap-3 mb-8">
+                <div className="bg-emerald-50 text-emerald-600 p-2.5 rounded-xl">
+                   <CheckCircle2 size={18} />
+                </div>
+                <h4 className="font-black text-xs tracking-widest uppercase text-slate-900">Sync Monitor</h4>
+             </div>
+             
+             <div className="space-y-4">
+               <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Station Alpha</span>
+                  <span className="text-[10px] font-black text-emerald-600">CONNECTED</span>
+               </div>
+               <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Cloud Buffer</span>
+                  <span className="text-[10px] font-black text-emerald-600">ENCRYPTED</span>
+               </div>
+             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;

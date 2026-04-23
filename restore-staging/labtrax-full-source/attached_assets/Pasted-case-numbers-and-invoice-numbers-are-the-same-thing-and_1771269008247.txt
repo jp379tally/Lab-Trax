@@ -1,0 +1,18 @@
+case numbers and invoice numbers are the same thing and should display play at the top of each case and its summary
+
+
+Case numbers should populate in chronological order no matter what client it is assigned to so for example if a user is entering a case for client “A” the case will generate 26-1 but if another user is entering a case for client “B” the case will generate 26-2 And so on and so forth. Case numbers do not reset under any circumstances until the next calendar year.
+So on January 1st 2026 case and invoice numbers shall start with 26-1,26-2 etc.  And then on January 1st 2027 cases and invoice numbers shall start with 27-1, 27-2 etc
+When scanning in a new case the barcode reader should prompt the user to confirm the assignment of whatever number it detects
+
+When scanning a new case under the AI intake the AI should locate patient's name doctor's name shade restoration type any notes date in date due and auto populate this information into the case data screen.
+
+ When scanning a new case the user takes a picture and after the photo is captured please add an option to retake and keep the options of add photo and finished
+
+When statements are generated the admin of the provider portal shall be notified in the alerts that a statement was generated and they should be able to view that statement in their alerts as well as their e-mail.
+
+The provider admin should not have the option to send a courtesy text when viewing a case please remove this button
+
+Any user attempting to start a conversation should have a button in the chat that says start a conversation with a drop down box giving access to send a text or a picture ONLY to any group they Have been confirmed a member of.
+
+We're doing a batch scan after selecting finished scanning there are 5 intake locations available for selection please fix this and make it just one. Also the locations are not in any type of order the locations should be listed as intake, design ,scan ,mill, post mill, sintering furnace, model room ,porcelain ,quality check, complete, shipping ,on hold.  In that order.  Also please remove the arrows to the right of each location.
