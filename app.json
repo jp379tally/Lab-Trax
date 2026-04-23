@@ -41,7 +41,7 @@
       [
         "expo-router",
         {
-          "origin": "https://replit.com/"
+          "origin": "https://lab-trax.replit.app"
         }
       ],
       "expo-font",
