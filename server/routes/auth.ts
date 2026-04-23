@@ -43,7 +43,6 @@ function safeUser(user: any) {
     phoneContactName: user.phoneContactName,
     accountNumber: user.accountNumber,
     wantsUpdates: user.wantsUpdates,
-    workStatus: user.workStatus ?? "available",
   };
 }
 
@@ -120,7 +119,7 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
       )
     );
 
-  const organizationIds = [...new Set(memberships.map((membership) => membership.labId))];
+  const organizationIds = [...new Set(memberships.map((membership) => membership.organizationId))];
   const membershipOrganizations = organizationIds.length
     ? await db
         .select()
@@ -144,12 +143,12 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
     const activeMemberships = membershipsByUserId.get(user.id) ?? [];
     const primaryMembership =
       activeMemberships.find((membership) => {
-        const organization = organizationsById.get(membership.labId);
+        const organization = organizationsById.get(membership.organizationId);
         return organization?.type === "lab";
       }) ?? activeMemberships[0];
 
     const primaryOrganization = primaryMembership
-      ? organizationsById.get(primaryMembership.labId)
+      ? organizationsById.get(primaryMembership.organizationId)
       : null;
 
     return {
@@ -288,8 +287,8 @@ router.post(
         .where(eq(organizations.id, input.joinOrganizationId));
       if (org) {
         await db.insert(organizationJoinRequests).values({
-          labId: org.id,
-          userId: user.id,
+          organizationId: org.id,
+          requestedByUserId: user.id,
           requestedRole: input.role === "admin" ? "admin" : "user",
           message: `${user.username} would like to join ${org.displayName || org.name}.`,
           status: "pending",
@@ -473,7 +472,7 @@ router.get(
           (req as any).auth.userId
         ),
       });
-    const orgIds = memberships.map((m: any) => m.labId);
+    const orgIds = memberships.map((m: any) => m.organizationId);
     const orgs = orgIds.length
       ? await db
           .select()
@@ -490,8 +489,8 @@ router.get(
         id: m.id,
         role: m.role,
         status: m.status,
-        organizationId: m.labId,
-        organization: orgs.find((org) => org.id === m.labId) ?? null,
+        organizationId: m.organizationId,
+        organization: orgs.find((org) => org.id === m.organizationId) ?? null,
       })),
     });
   })
@@ -700,25 +699,6 @@ router.delete(
       details: { labName, membersRemoved: memberIds.length },
     });
     res.json({ success: true, membersRemoved: memberIds.length });
-  })
-);
-
-router.patch(
-  "/me/status",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const validStatuses = ["available", "break", "out_of_office"];
-    const { workStatus } = req.body;
-    if (!validStatuses.includes(workStatus)) {
-      throw new HttpError(400, "Invalid status. Must be one of: available, break, out_of_office.");
-    }
-    const userId = (req as any).auth.userId;
-    const [updated] = await db
-      .update(users)
-      .set({ workStatus })
-      .where(eq(users.id, userId))
-      .returning();
-    return ok(res, safeUser(updated));
   })
 );
 

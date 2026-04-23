@@ -9,15 +9,13 @@ import React, {
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
-import { getApiUrl, resilientFetch, getAccessToken } from "./query-client";
-import { Platform } from "react-native";
+import { getApiUrl, resilientFetch } from "./query-client";
 import {
   UserRole,
   LabCase,
   Notification,
   CaseStatus,
   ActivityEntry,
-  ActivityEntryType,
   Client,
   LabUser,
   Invoice,
@@ -51,9 +49,8 @@ interface AppContextValue {
   cases: LabCase[];
   addCase: (c: Omit<LabCase, "id" | "createdAt" | "updatedAt" | "routeHistory">) => LabCase;
   updateCaseStatus: (caseId: string, newStatus: CaseStatus, user?: string) => void;
-  addCasePhoto: (caseId: string, photoUri: string, user?: string) => Promise<void>;
+  addCasePhoto: (caseId: string, photoUri: string, user?: string) => void;
   addCaseNote: (caseId: string, note: string, user?: string) => void;
-  addCasePhotosWithNote: (caseId: string, photoUris: string[], note: string, user?: string) => Promise<void>;
   addTrackingNumber: (caseId: string, tracking: string) => void;
   addCaseItem: (caseId: string, caseType: CaseTypeValue, selectedTeeth: number[], toothTypes: Record<number, ToothType>, material: string, extras?: { subType?: string; gingivaShade?: string; customNotes?: string; applianceSubType?: string; nightGuardType?: string }) => void;
   notifications: Notification[];
@@ -65,7 +62,7 @@ interface AppContextValue {
   rushCaseCount: number;
   isLoading: boolean;
   clients: Client[];
-  addClient: (c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) => Client;
+  addClient: (c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) => void;
   updateClient: (id: string, c: Partial<Client>) => void;
   pricingTiers: PricingTier[];
   updateTierPricing: (tierId: string, prices: Record<string, number>) => void;
@@ -115,8 +112,6 @@ interface AppContextValue {
   customStationLabels: Record<string, string>;
   updateStationLabel: (stationId: CaseStatus, label: string) => void;
   userIsAffiliated: boolean;
-  activeLabAffiliationKey: string | null;
-  activeLabAffiliationName: string | null;
   leaveLab: () => Promise<{ success: boolean; error?: string }>;
   deleteLab: () => Promise<{ success: boolean; error?: string }>;
   isLabCreator: boolean;
@@ -126,9 +121,6 @@ interface AppContextValue {
   deletedClientInvoices: DeletedClientInvoice[];
   inactiveClients: Client[];
   refreshCases: () => Promise<void>;
-  fullRefreshCases: () => Promise<void>;
-  hardRefresh: () => Promise<void>;
-  updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -220,11 +212,6 @@ function buildDirectConversationId(usernameA?: string | null, usernameB?: string
   return `dm:${normalizedUsers.join("::")}`;
 }
 
-function isVideoUri(uri: string): boolean {
-  const lower = uri.toLowerCase();
-  return lower.includes(".mp4") || lower.includes(".mov") || lower.includes(".m4v") || lower.includes(".avi") || lower.includes(".webm") || lower.includes(".mkv");
-}
-
 function inferImageMimeType(imageUri: string) {
   const normalizedUri = imageUri.toLowerCase();
   if (normalizedUri.endsWith(".png")) return "image/png";
@@ -262,7 +249,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeLabAffiliationKey, setActiveLabAffiliationKey] = useState<string | null>(null);
   const [activeLabAffiliationName, setActiveLabAffiliationName] = useState<string | null>(null);
   const [hasActiveLabMembership, setHasActiveLabMembership] = useState(false);
-  const [membershipVersion, setMembershipVersion] = useState(0);
   const conversationsStorageKey = useMemo(
     () => (currentUserId ? `${CONVERSATIONS_KEY}:${currentUserId}` : CONVERSATIONS_KEY),
     [currentUserId]
@@ -414,114 +400,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function uploadMediaToServer(
-    fileBlob: Blob | null,
-    nativeUri: string | null,
-    filename: string,
-    mimeType: string
-  ): Promise<string | null> {
-    try {
-      const uploadUrl = new URL("/api/media/upload", getApiUrl()).toString();
-      const token = getAccessToken();
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      const formData = new FormData();
-      if (fileBlob) {
-        formData.append("file", fileBlob, filename);
-      } else if (nativeUri) {
-        formData.append("file", {
-          uri: nativeUri,
-          type: mimeType,
-          name: filename,
-        } as any);
-      } else {
-        return null;
-      }
-
-      const globalFetch = globalThis.fetch;
-      const response = await globalFetch(uploadUrl, {
-        method: "POST",
-        headers,
-        body: formData,
-      });
-
-      if (!response.ok) return null;
-      const data = await response.json();
-      return data?.url || null;
-    } catch {
-      return null;
-    }
-  }
-
   async function normalizeSharedImageUri(imageUri?: string | null) {
     if (!imageUri?.trim()) {
       return undefined;
     }
 
     const normalizedUri = imageUri.trim();
-
     if (
+      normalizedUri.startsWith("data:") ||
       normalizedUri.startsWith("http://") ||
       normalizedUri.startsWith("https://")
     ) {
       return normalizedUri;
     }
 
-    if (normalizedUri.startsWith("blob:") && Platform.OS === "web") {
+    if (normalizedUri.startsWith("blob:") && typeof fetch === "function") {
       try {
-        const blobResponse = await globalThis.fetch(normalizedUri);
-        const blob = await blobResponse.blob();
-        const ext = blob.type.split("/")[1] || "jpg";
-        const filename = `media-${Date.now()}.${ext}`;
-        const uploaded = await uploadMediaToServer(blob, null, filename, blob.type || "image/jpeg");
-        if (uploaded) return uploaded;
-      } catch {}
-      return normalizedUri;
-    }
-
-    if (normalizedUri.startsWith("data:") && Platform.OS === "web") {
-      try {
-        const dataFetch = await globalThis.fetch(normalizedUri);
-        const blob = await dataFetch.blob();
-        const ext = blob.type.split("/")[1] || "jpg";
-        const filename = `media-${Date.now()}.${ext}`;
-        const uploaded = await uploadMediaToServer(blob, null, filename, blob.type || "image/jpeg");
-        if (uploaded) return uploaded;
-      } catch {}
-      return normalizedUri;
-    }
-
-    if (Platform.OS !== "web") {
-      const localUri = normalizedUri.startsWith("file://")
-        ? normalizedUri
-        : `file://${normalizedUri}`;
-      const uriLower = normalizedUri.toLowerCase();
-      const isVideo =
-        uriLower.endsWith(".mp4") ||
-        uriLower.endsWith(".mov") ||
-        uriLower.endsWith(".m4v") ||
-        uriLower.endsWith(".avi");
-      const mimeType = isVideo
-        ? uriLower.endsWith(".mov") ? "video/quicktime" : "video/mp4"
-        : inferImageMimeType(normalizedUri);
-      const extMatch = normalizedUri.match(/\.([a-zA-Z0-9]+)(\?|$)/);
-      const ext = extMatch ? extMatch[1] : isVideo ? "mp4" : "jpg";
-      const filename = `media-${Date.now()}.${ext}`;
-      const uploaded = await uploadMediaToServer(null, localUri, filename, mimeType);
-      if (uploaded) return uploaded;
-      if (!isVideo) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(normalizedUri, {
-            encoding: "base64" as any,
-          });
-          return `data:${inferImageMimeType(normalizedUri)};base64,${base64}`;
-        } catch {}
+        const response = await fetch(normalizedUri);
+        const blob = await response.blob();
+        return await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error("Could not read blob image."));
+          reader.onloadend = () => {
+            if (typeof reader.result === "string") {
+              resolve(reader.result);
+            } else {
+              reject(new Error("Could not convert blob image."));
+            }
+          };
+          reader.readAsDataURL(blob);
+        });
+      } catch {
+        return normalizedUri;
       }
-      return normalizedUri;
     }
 
-    return normalizedUri;
+    try {
+      const base64 = await FileSystem.readAsStringAsync(normalizedUri, {
+        encoding: "base64" as any,
+      });
+      return `data:${inferImageMimeType(normalizedUri)};base64,${base64}`;
+    } catch {
+      return normalizedUri;
+    }
   }
 
   async function fetchChatStateFromServer() {
@@ -627,10 +548,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     syncActiveLabAffiliationState().catch(() => {
-      // Network/server errors — do NOT clear existing membership state.
-      // Clearing on a transient error would delete all lab cases from the
-      // device. The interval will retry and restore correct state once the
-      // server is reachable again.
+      if (cancelled) {
+        return;
+      }
+      setHasActiveLabMembership(false);
+      setActiveLabAffiliationKey(null);
+      setActiveLabAffiliationName(null);
     });
 
     return () => {
@@ -640,14 +563,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     currentUserId,
     currentUserProfile?.email,
     currentUserProfile?.role,
-    currentUserProfile?.practiceName,
-    membershipVersion,
   ]);
-
-  // Note: automatic lab-case cleanup on affiliation key change was removed.
-  // Clearing cases on a transient null (server restart / network error)
-  // was causing ALL lab cases to be permanently wiped from the device.
-  // Case removal on an explicit "Leave Lab" is handled inside leaveLab().
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
     if (status === "approved" || status === "accepted") {
@@ -810,32 +726,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
-    if (!activeLabAffiliationKey || !currentUserId) return;
-    setAllCases((prev) => {
-      let changed = false;
-      const updated = prev.map((c) => {
-        if (
-          c.ownerId === currentUserId &&
-          typeof c.affiliationKey === "string" &&
-          c.affiliationKey.startsWith("private:")
-        ) {
-          changed = true;
-          return {
-            ...c,
-            affiliationKey: activeLabAffiliationKey,
-            affiliationName: activeLabAffiliationName ?? c.affiliationName,
-            updatedAt: Date.now(),
-          };
-        }
-        return c;
-      });
-      if (!changed) return prev;
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
-      return updated;
-    });
-  }, [activeLabAffiliationKey, currentUserId]);
-
-  useEffect(() => {
     if (!currentUserId || !currentUser) {
       setConversations([]);
       setChatMessages([]);
@@ -870,47 +760,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log("Could not refresh cases:", e);
     } finally {
       fetchingRef.current = false;
-    }
-  }
-
-  async function fullRefreshCases() {
-    if (!currentUserId || visibleCaseAffiliationScope.length === 0) {
-      return;
-    }
-    try {
-      const serverCases = await fetchCasesFromServer(visibleCaseAffiliationScope, currentUserId);
-      setAllCases(serverCases);
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(serverCases));
-      prevCasesRef.current = serverCases;
-    } catch (e) {
-      console.log("Could not full-refresh cases:", e);
-    }
-  }
-
-  async function hardRefresh() {
-    await Promise.all([
-      fullRefreshCases(),
-      refreshCollaborationState(),
-      refreshUsers(),
-    ]);
-  }
-
-  async function updateWorkStatus(
-    status: "available" | "break" | "out_of_office"
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const response = await resilientFetch("/api/auth/me/status", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workStatus: status }),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        return { success: false, error: payload?.message || "Failed to update status." };
-      }
-      return { success: true };
-    } catch {
-      return { success: false, error: "Network error updating status." };
     }
   }
 
@@ -1198,12 +1047,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const toothCount = c.toothMap?.length || toothStr.split(",").filter(Boolean).length || 1;
       const perUnitPrice = MATERIAL_PRICES[materialStr] ?? 250;
       const totalPrice = c.price || (toothCount * perUnitPrice);
-      const subtypeMatch = c.notes?.match(/^\[([^\]]+)\]/);
-      const subtypeLabel = subtypeMatch ? ` - ${subtypeMatch[1]}` : "";
       lineItems.push({
         qty: toothCount,
         item: materialStr,
-        description: `${c.caseType || "Restorative"}${subtypeLabel} - ${toothStr || "N/A"}`,
+        description: `${c.caseType || "Restorative"} - ${toothStr || "N/A"}`,
         rate: perUnitPrice,
         amount: totalPrice,
       });
@@ -1333,9 +1180,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const statusLabel = status === "INTAKE" ? "received by the lab" : "completed";
       const message = `LabTrax: Hello Dr. ${providerUser.doctorName || providerUser.username}, your case ${caseInfo.caseNumber} for patient ${caseInfo.patientName} has been ${statusLabel}. Thank you for choosing LabTrax.`;
 
-      const host = process.env.EXPO_PUBLIC_DOMAIN;
-      if (!host) return;
-      const apiUrl = `https://${host}`;
+      const apiUrl = getApiUrl();
 
       await fetch(new URL("/api/send-case-update-text", apiUrl).toString(), {
         method: "POST",
@@ -1352,35 +1197,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch {}
   }
 
-  async function addCasePhoto(caseId: string, photoUri: string, user?: string) {
-    const sharedPhotoUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
-    const now = Date.now();
-    const isVid = isVideoUri(sharedPhotoUri);
-    const photoEntry: ActivityEntry = {
-      id: generateId(),
-      type: isVid ? "video" : "photo",
-      timestamp: now,
-      description: isVid ? "Video added to case" : "Photo added to case",
-      imageUri: sharedPhotoUri,
-      user: user || undefined,
-    };
-    setCases((prevCases) => {
-      const updated = prevCases.map((c) => {
-        if (c.id === caseId) {
-          const updatedCase = {
-            ...c,
-            updatedAt: now,
-            photos: [...(c.photos || []), sharedPhotoUri],
-            activityLog: [...(c.activityLog || []), photoEntry],
-          };
-          void syncCaseToServer(updatedCase);
-          return updatedCase;
-        }
-        return c;
+  function addCasePhoto(caseId: string, photoUri: string, user?: string) {
+    void (async () => {
+      const sharedPhotoUri = (await normalizeSharedImageUri(photoUri)) || photoUri;
+      const now = Date.now();
+      const photoEntry: ActivityEntry = {
+        id: generateId(),
+        type: "photo",
+        timestamp: now,
+        description: "Photo added to case",
+        imageUri: sharedPhotoUri,
+        user: user || undefined,
+      };
+      setCases((prevCases) => {
+        const updated = prevCases.map((c) => {
+          if (c.id === caseId) {
+            const updatedCase = {
+              ...c,
+              updatedAt: now,
+              photos: [...(c.photos || []), sharedPhotoUri],
+              activityLog: [...(c.activityLog || []), photoEntry],
+            };
+            void syncCaseToServer(updatedCase);
+            return updatedCase;
+          }
+          return c;
+        });
+        AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
+        return updated;
       });
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
-      return updated;
-    });
+    })();
   }
 
   function addCaseNote(caseId: string, note: string, user?: string) {
@@ -1400,57 +1246,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
             updatedAt: now,
             notes: c.notes ? `${c.notes}\n${note}` : note,
             activityLog: [...(c.activityLog || []), noteEntry],
-          };
-          void syncCaseToServer(updatedCase);
-          return updatedCase;
-        }
-        return c;
-      });
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
-      return updated;
-    });
-  }
-
-  async function addCasePhotosWithNote(caseId: string, photoUris: string[], note: string, user?: string) {
-    const now = Date.now();
-    const normalizedUris = await Promise.all(
-      photoUris.map(async (uri) => (await normalizeSharedImageUri(uri)) || uri)
-    );
-
-    const photoEntries: ActivityEntry[] = normalizedUris.map((uri, i) => {
-      const isVid = isVideoUri(uri);
-      return {
-        id: generateId(),
-        type: (isVid ? "video" : "photo") as ActivityEntryType,
-        timestamp: now + i,
-        description: isVid ? "Video added to case" : "Photo added to case",
-        imageUri: uri,
-        user: user || undefined,
-      };
-    });
-
-    const noteEntry: ActivityEntry | null = note.trim()
-      ? {
-          id: generateId(),
-          type: "note" as const,
-          timestamp: now,
-          description: note.trim(),
-          user: user || undefined,
-        }
-      : null;
-
-    setCases((prevCases) => {
-      const updated = prevCases.map((c) => {
-        if (c.id === caseId) {
-          const updatedCase = {
-            ...c,
-            updatedAt: now,
-            photos: [...(c.photos || []), ...normalizedUris],
-            activityLog: [
-              ...(c.activityLog || []),
-              ...photoEntries,
-              ...(noteEntry ? [noteEntry] : []),
-            ],
           };
           void syncCaseToServer(updatedCase);
           return updatedCase;
@@ -1852,13 +1647,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
   }
 
-  function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">): Client {
+  function addClient(c: Omit<Client, "id" | "clientNumber" | "createdAt" | "accountNumber">) {
     const maxNum = clients.reduce((max, cl) => Math.max(max, cl.clientNumber || 0), 0);
     const newClient: Client = { ...c, id: generateId(), clientNumber: maxNum + 1, accountNumber: "DS-" + Date.now().toString().slice(-6), createdAt: Date.now() };
     const updated = [newClient, ...clients];
     setClients(updated);
     AsyncStorage.setItem(CLIENTS_KEY, JSON.stringify(updated));
-    return newClient;
   }
 
   function updateClient(id: string, c: Partial<Client>) {
@@ -2016,19 +1810,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     const trimmedContent = content.trim();
-    if (!trimmedContent && !imageUri) {
-      return;
-    }
-
-    const isLabChannel = conversationId.startsWith("lab:");
     const targetConversation =
       conversations.find((conversation) => conversation.id === conversationId) || null;
-    const targetUsername = isLabChannel ? null : targetConversation?.clientName?.trim();
-    const resolvedConversationId = isLabChannel
-      ? conversationId
-      : buildDirectConversationId(currentUser, targetUsername) || conversationId;
+    const targetUsername = targetConversation?.clientName?.trim();
+    const resolvedConversationId =
+      buildDirectConversationId(currentUser, targetUsername) || conversationId;
 
-    if (!isLabChannel && !targetUsername) {
+    if (!targetUsername || (!trimmedContent && !imageUri)) {
       return;
     }
 
@@ -2054,7 +1842,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         targetConversation || {
           id: resolvedConversationId,
           clientId: resolvedConversationId,
-          clientName: targetUsername ?? "",
+          clientName: targetUsername,
           lastMessage: imageUri ? "Photo" : trimmedContent,
           lastMessageTime: timestamp,
           unreadCount: 0,
@@ -2078,15 +1866,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const sharedImageUri = imageUri
           ? await normalizeSharedImageUri(imageUri)
           : undefined;
-        const isLabChannel = resolvedConversationId.startsWith("lab:");
         const response = await resilientFetch("/api/legacy/chat/send", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             conversationId: resolvedConversationId,
-            ...(isLabChannel
-              ? { labChannelId: resolvedConversationId }
-              : { targetUsername }),
+            targetUsername,
             content: trimmedContent,
             imageUri: sharedImageUri,
           }),
@@ -2305,10 +2090,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await refreshUsers();
       await refreshCollaborationState();
 
-      if (accept) {
-        setMembershipVersion((v) => v + 1);
-      }
-
       addNotification({
         title: accept ? "Lab Invitation Accepted" : "Lab Invitation Declined",
         message: accept
@@ -2342,7 +2123,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!currentUserId) return { success: false, error: "Not logged in" };
     try {
       const activeLabMembership = await findCurrentLabMembership();
-      const departingLabKey = activeLabAffiliationKey;
 
       if (activeLabMembership?.id) {
         const response = await resilientFetch(
@@ -2381,21 +2161,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!profileResponse.ok) {
           return { success: false, error: await readApiError(profileResponse) };
         }
-      }
-
-      setHasActiveLabMembership(false);
-      setActiveLabAffiliationKey(null);
-      setActiveLabAffiliationName(null);
-      setMembershipVersion((v) => v + 1);
-
-      if (departingLabKey) {
-        setAllCases((prev) => {
-          const filtered = prev.filter(
-            (c) => !resolveCaseAffiliationKeys(c).includes(departingLabKey)
-          );
-          AsyncStorage.setItem(CASES_KEY, JSON.stringify(filtered));
-          return filtered;
-        });
       }
 
       await refreshUsers();
@@ -2620,7 +2385,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateCaseStatus,
       addCasePhoto,
       addCaseNote,
-      addCasePhotosWithNote,
       addTrackingNumber,
       addCaseItem,
       notifications,
@@ -2682,8 +2446,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       customStationLabels,
       updateStationLabel,
       userIsAffiliated,
-      activeLabAffiliationKey,
-      activeLabAffiliationName,
       leaveLab,
       deleteLab,
       isLabCreator,
@@ -2693,9 +2455,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       deletedClientInvoices,
       inactiveClients: clients.filter(c => c.status === "inactive"),
       refreshCases,
-      fullRefreshCases,
-      hardRefresh,
-      updateWorkStatus,
     }),
     [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers],
   );

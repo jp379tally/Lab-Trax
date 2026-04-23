@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import {
   StyleSheet,
   View,
@@ -23,6 +23,7 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import * as LocalAuthentication from "expo-local-authentication";
 import { router } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
@@ -39,15 +40,75 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
+import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase } from "@/lib/data";
 import { LabFileDropZone } from "@/components/LabFileDropZone";
-import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
-import { apiRequest, getApiUrl, getAccessToken } from "@/lib/query-client";
+import { apiRequest, getAccessToken, getApiUrl, resilientFetch } from "@/lib/query-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 
 function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
+}
+
+function getBackupDownloadFilename(contentDisposition?: string | null) {
+  const match = contentDisposition?.match(/filename="?([^";]+)"?/i);
+  return match?.[1] || `labtrax-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+}
+
+type RestoreImportMode = "merge" | "replace";
+
+type RestoreImportFile = {
+  name: string;
+  size?: number | null;
+  mimeType?: string | null;
+  uri?: string;
+  file?: any;
+};
+
+type RestoreImportSummary = {
+  mode: RestoreImportMode;
+  message: string;
+  counts: { table: string; count: number }[];
+};
+
+function formatFileSize(bytes?: number | null) {
+  if (!bytes || bytes <= 0) {
+    return "Size unavailable";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function extractRestoreCountEntries(payload: any) {
+  const candidates = [
+    payload?.counts,
+    payload?.restoredCounts,
+    payload?.restored,
+    payload?.data?.counts,
+    payload?.data?.restoredCounts,
+    payload?.data?.restored,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      continue;
+    }
+
+    const entries = Object.entries(candidate)
+      .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))
+      .map(([table, count]) => ({ table, count }));
+
+    if (entries.length > 0) {
+      return entries;
+    }
+  }
+
+  return [] as { table: string; count: number }[];
 }
 
 function deriveDisplayInitials(input?: {
@@ -310,7 +371,7 @@ const drawerStyles = StyleSheet.create({
 });
 
 function TechDashboard() {
-  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, hardRefresh, clients, addCasePhoto } = useApp();
+  const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, clients, addCasePhoto } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
   const { colors: themeColors, isDark: isDarkMode } = useTheme();
@@ -328,7 +389,6 @@ function TechDashboard() {
   const [batchLocationSelect, setBatchLocationSelect] = useState(false);
   const [batchManualInput, setBatchManualInput] = useState("");
   const [confirmJoinReq, setConfirmJoinReq] = useState<{ requestId: string; username: string; accept: boolean } | null>(null);
-  const [isProcessingJoinReq, setIsProcessingJoinReq] = useState(false);
   const lastBatchScanRef = useRef<string>("");
   const [camPermission, requestCamPermission] = useCameraPermissions();
   const dashboardFocused = useIsFocused();
@@ -569,7 +629,7 @@ function TechDashboard() {
 
   return (
     <>
-    <View style={[styles.container, { backgroundColor: themeColors.backgroundSolid }]}>
+    <View style={[styles.container, { backgroundColor: Colors.light.backgroundSolid }]}>
       <View style={[styles.topBar, { position: "absolute", top: Platform.OS === "web" ? 67 : insets.top, left: 0, right: 0, zIndex: 100, backgroundColor: "transparent" }]}>
         <Pressable
           onPress={() => setDrawerOpen(true)}
@@ -583,7 +643,7 @@ function TechDashboard() {
             <Pressable
               onPress={async () => {
                 setRefreshing(true);
-                await hardRefresh();
+                await refreshCases();
                 setRefreshing(false);
               }}
               style={({ pressed }) => [{ padding: 6, borderRadius: 8, backgroundColor: pressed ? "rgba(0,0,0,0.05)" : "transparent" }]}
@@ -611,7 +671,7 @@ function TechDashboard() {
             refreshing={refreshing}
             onRefresh={async () => {
               setRefreshing(true);
-              await hardRefresh();
+              await refreshCases();
               setRefreshing(false);
             }}
           />
@@ -655,7 +715,7 @@ function TechDashboard() {
         )}
         <Text style={[styles.avatarName, { color: themeColors.textSecondary }]}>{(currentUserData?.role === "admin" || role === "admin") ? "Administrator" : "User"}</Text>
         {currentUserData?.practiceName ? (
-          <Text style={{ fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.light.tint, marginTop: 2 }}>{currentUserData.practiceName}</Text>
+          <Text style={{ fontFamily: "Inter_500Medium", fontSize: 13, color: Colors.light.primary, marginTop: 2 }}>{currentUserData.practiceName}</Text>
         ) : null}
         <View style={styles.statusDot}>
           <View style={styles.liveDot} />
@@ -806,6 +866,44 @@ function TechDashboard() {
         </View>
       </View>
 
+      <LinearGradient
+        colors={["#2563EB", "#1D4ED8"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.heroCard}
+      >
+        <Text style={styles.heroLabel}>LAB STATUS</Text>
+        <Text style={styles.heroCount}>{activeCaseCount} Active Cases</Text>
+        <Text style={styles.heroSub}>
+          {rushCaseCount} Rush{rushCaseCount !== 1 ? "es" : ""} Pending
+        </Text>
+        <View style={styles.heroStats}>
+          <Pressable
+            style={[styles.heroStat, activeFilter === "intake" && styles.heroStatActive]}
+            onPress={() => setActiveFilter(activeFilter === "intake" ? null : "intake")}
+          >
+            <Text style={styles.heroStatNum}>{intakeCases.length}</Text>
+            <Text style={styles.heroStatLabel}>Intake</Text>
+          </Pressable>
+          <View style={[styles.heroStatDivider]} />
+          <Pressable
+            style={[styles.heroStat, activeFilter === "progress" && styles.heroStatActive]}
+            onPress={() => setActiveFilter(activeFilter === "progress" ? null : "progress")}
+          >
+            <Text style={styles.heroStatNum}>{inProgressCases.length}</Text>
+            <Text style={styles.heroStatLabel}>In Progress</Text>
+          </Pressable>
+          <View style={[styles.heroStatDivider]} />
+          <Pressable
+            style={[styles.heroStat, activeFilter === "shipped" && styles.heroStatActive]}
+            onPress={() => setActiveFilter(activeFilter === "shipped" ? null : "shipped")}
+          >
+            <Text style={styles.heroStatNum}>{shippedCases.length}</Text>
+            <Text style={styles.heroStatLabel}>Completed</Text>
+          </Pressable>
+        </View>
+      </LinearGradient>
+
       <LabFileDropZone
         cases={cases}
         clients={clients}
@@ -815,8 +913,8 @@ function TechDashboard() {
         isFocused={dashboardFocused}
       />
 
-      {isLabAdmin && pendingJoinRequests.length > 0 && (
-        <View style={invStyles.joinRequestSection}>
+      {pendingJoinRequests.length > 0 && (
+        <View style={styles.joinRequestSection}>
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Connection Requests</Text>
             <View style={[styles.dueTodayBadge, { backgroundColor: "#EF4444" }]}>
@@ -829,29 +927,29 @@ function TechDashboard() {
             const displayName = reqUser?.doctorName ? `Dr. ${reqUser.doctorName}` : req.requestingUsername;
             const practiceName = reqUser?.practiceName;
             return (
-              <View key={req.id} style={invStyles.joinReqCard}>
-                <View style={[invStyles.joinReqIconWrap, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
+              <View key={req.id} style={styles.joinReqCard}>
+                <View style={[styles.joinReqIconWrap, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
                   <Ionicons name={isProvider ? "medical" : "person-add"} size={22} color={isProvider ? "#2563EB" : "#D97706"} />
                 </View>
-                <View style={invStyles.joinReqContent}>
-                  <Text style={invStyles.joinReqTitle}>{isProvider ? "Provider Connection Request" : "Join Request"}</Text>
-                  <Text style={invStyles.joinReqName}>{displayName}</Text>
-                  {practiceName ? <Text style={invStyles.joinReqPractice}>{practiceName}</Text> : null}
-                  <Text style={invStyles.joinReqMsg}>{req.message}</Text>
-                  <View style={invStyles.joinReqBtns}>
+                <View style={styles.joinReqContent}>
+                  <Text style={styles.joinReqTitle}>{isProvider ? "Provider Connection Request" : "Join Request"}</Text>
+                  <Text style={styles.joinReqName}>{displayName}</Text>
+                  {practiceName ? <Text style={styles.joinReqPractice}>{practiceName}</Text> : null}
+                  <Text style={styles.joinReqMsg}>{req.message}</Text>
+                  <View style={styles.joinReqBtns}>
                     <Pressable
-                      style={({ pressed }) => [invStyles.joinReqAcceptBtn, pressed && { opacity: 0.8 }]}
+                      style={({ pressed }) => [styles.joinReqAcceptBtn, pressed && { opacity: 0.8 }]}
                       onPress={() => setConfirmJoinReq({ requestId: req.id, username: displayName, accept: true })}
                     >
                       <Ionicons name="checkmark" size={16} color="#FFF" />
-                      <Text style={invStyles.joinReqAcceptText}>Accept</Text>
+                      <Text style={styles.joinReqAcceptText}>Accept</Text>
                     </Pressable>
                     <Pressable
-                      style={({ pressed }) => [invStyles.joinReqDeclineBtn, pressed && { opacity: 0.8 }]}
+                      style={({ pressed }) => [styles.joinReqDeclineBtn, pressed && { opacity: 0.8 }]}
                       onPress={() => setConfirmJoinReq({ requestId: req.id, username: displayName, accept: false })}
                     >
                       <Ionicons name="close" size={16} color="#EF4444" />
-                      <Text style={invStyles.joinReqDeclineText}>Decline</Text>
+                      <Text style={styles.joinReqDeclineText}>Decline</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -1351,125 +1449,99 @@ function TechDashboard() {
     </Modal>
 
     <Modal transparent visible={!!confirmJoinReq} animationType="fade" onRequestClose={() => setConfirmJoinReq(null)}>
-      <View style={invStyles.joinReqOverlay}>
-        <View style={invStyles.joinReqConfirmCard}>
-          <View style={[invStyles.joinReqConfirmIconWrap, { backgroundColor: confirmJoinReq?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
+      <View style={styles.joinReqOverlay}>
+        <View style={styles.joinReqConfirmCard}>
+          <View style={[styles.joinReqConfirmIconWrap, { backgroundColor: confirmJoinReq?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
             <Ionicons
               name={confirmJoinReq?.accept ? "person-add" : "close-circle"}
               size={32}
               color={confirmJoinReq?.accept ? "#16A34A" : "#EF4444"}
             />
           </View>
-          <Text style={invStyles.joinReqConfirmTitle}>
+          <Text style={styles.joinReqConfirmTitle}>
             {confirmJoinReq?.accept ? "Accept Request" : "Decline Request?"}
           </Text>
-          <Text style={invStyles.joinReqConfirmDesc}>
+          <Text style={styles.joinReqConfirmDesc}>
             {confirmJoinReq?.accept
               ? `Would you like ${confirmJoinReq?.username} to join as a User or Admin?`
               : `${confirmJoinReq?.username}'s request to join will be declined. They will be notified.`}
           </Text>
           {confirmJoinReq?.accept ? (
-            <View style={invStyles.joinReqConfirmBtns}>
+            <View style={styles.joinReqConfirmBtns}>
               <Pressable
-                disabled={isProcessingJoinReq}
-                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [styles.joinReqConfirmYesBtn, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinReq || isProcessingJoinReq) return;
-                  setIsProcessingJoinReq(true);
-                  try {
-                    const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "user");
-                    if (!result.success) {
-                      Alert.alert("Unable to Update", result.error || "Something went wrong.");
-                      return;
-                    }
-                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    setConfirmJoinReq(null);
-                  } finally {
-                    setIsProcessingJoinReq(false);
+                  if (!confirmJoinReq) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "user");
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
                   }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setConfirmJoinReq(null);
                 }}
               >
-                <Text style={invStyles.joinReqConfirmYesText}>Accept as User</Text>
+                <Text style={styles.joinReqConfirmYesText}>Accept as User</Text>
               </Pressable>
               <Pressable
-                disabled={isProcessingJoinReq}
-                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#7C3AED" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#7C3AED" }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinReq || isProcessingJoinReq) return;
-                  setIsProcessingJoinReq(true);
-                  try {
-                    const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "admin");
-                    if (!result.success) {
-                      Alert.alert("Unable to Update", result.error || "Something went wrong.");
-                      return;
-                    }
-                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    setConfirmJoinReq(null);
-                  } finally {
-                    setIsProcessingJoinReq(false);
+                  if (!confirmJoinReq) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, true, "admin");
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
                   }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setConfirmJoinReq(null);
                 }}
               >
-                <Text style={invStyles.joinReqConfirmYesText}>Accept as Admin</Text>
+                <Text style={styles.joinReqConfirmYesText}>Accept as Admin</Text>
               </Pressable>
               <Pressable
-                disabled={isProcessingJoinReq}
-                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinReq || isProcessingJoinReq) return;
-                  setIsProcessingJoinReq(true);
-                  try {
-                    const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
-                    if (!result.success) {
-                      Alert.alert("Unable to Update", result.error || "Something went wrong.");
-                      return;
-                    }
-                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                    setConfirmJoinReq(null);
-                  } finally {
-                    setIsProcessingJoinReq(false);
+                  if (!confirmJoinReq) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
                   }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                  setConfirmJoinReq(null);
                 }}
               >
-                <Text style={invStyles.joinReqConfirmYesText}>Decline</Text>
+                <Text style={styles.joinReqConfirmYesText}>Decline</Text>
               </Pressable>
               <Pressable
-                disabled={isProcessingJoinReq}
-                style={({ pressed }) => [invStyles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
-                onPress={() => { if (!isProcessingJoinReq) setConfirmJoinReq(null); }}
+                style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
+                onPress={() => setConfirmJoinReq(null)}
               >
-                <Text style={invStyles.joinReqConfirmNoText}>Cancel</Text>
+                <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
               </Pressable>
             </View>
           ) : (
-            <View style={invStyles.joinReqConfirmBtns}>
+            <View style={styles.joinReqConfirmBtns}>
               <Pressable
-                disabled={isProcessingJoinReq}
-                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, pressed && { opacity: 0.85 }]}
                 onPress={async () => {
-                  if (!confirmJoinReq || isProcessingJoinReq) return;
-                  setIsProcessingJoinReq(true);
-                  try {
-                    const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
-                    if (!result.success) {
-                      Alert.alert("Unable to Update", result.error || "Something went wrong.");
-                      return;
-                    }
-                    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                    setConfirmJoinReq(null);
-                  } finally {
-                    setIsProcessingJoinReq(false);
+                  if (!confirmJoinReq) return;
+                  const result = await respondToGroupJoinRequest(confirmJoinReq.requestId, false);
+                  if (!result.success) {
+                    Alert.alert("Unable to Update", result.error || "Something went wrong.");
+                    return;
                   }
+                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                  setConfirmJoinReq(null);
                 }}
               >
-                <Text style={invStyles.joinReqConfirmYesText}>Decline</Text>
+                <Text style={styles.joinReqConfirmYesText}>Decline</Text>
               </Pressable>
               <Pressable
-                disabled={isProcessingJoinReq}
-                style={({ pressed }) => [invStyles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
-                onPress={() => { if (!isProcessingJoinReq) setConfirmJoinReq(null); }}
+                style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
+                onPress={() => setConfirmJoinReq(null)}
               >
-                <Text style={invStyles.joinReqConfirmNoText}>Cancel</Text>
+                <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
               </Pressable>
             </View>
           )}
@@ -1655,16 +1727,11 @@ type AdminView =
   | "payment-processing"
   | "edit-locations"
   | "integrations"
+  | "restore-data"
   | "client-stats"
   | "delete-cases"
   | "inactive-clients"
-  | "deleted-invoices"
-  | "edit-invoice"
-  | "ar-aging"
-  | "pl-report"
-  | "sales-by-item"
-  | "receive-payment"
-  | "backup";
+  | "deleted-invoices";
 
 function AdminDashboard() {
   const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite } = useApp();
@@ -1687,36 +1754,6 @@ function AdminDashboard() {
   const [newClientTier, setNewClientTier] = useState<string>("Standard");
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
-  const [editInvLineItems, setEditInvLineItems] = useState<InvoiceLineItem[]>([]);
-  const [editInvPatientName, setEditInvPatientName] = useState("");
-  const [editInvBillTo, setEditInvBillTo] = useState("");
-  const [editInvCaseType, setEditInvCaseType] = useState("");
-  const [editInvTeeth, setEditInvTeeth] = useState("");
-  const [editInvShade, setEditInvShade] = useState("");
-  const [editInvCaseNotes, setEditInvCaseNotes] = useState("");
-  const [editInvCreditsText, setEditInvCreditsText] = useState("0");
-  const [editInvClientId, setEditInvClientId] = useState("");
-  const [editInvClientName, setEditInvClientName] = useState("");
-  const [editInvBillToSearch, setEditInvBillToSearch] = useState("");
-  const [editInvShowProviderDrop, setEditInvShowProviderDrop] = useState(false);
-  const [editInvItemDropdownIdx, setEditInvItemDropdownIdx] = useState<number | null>(null);
-  const [editInvNumber, setEditInvNumber] = useState("");
-  const [editInvIssuedAtStr, setEditInvIssuedAtStr] = useState("");
-  const [editInvDueAtStr, setEditInvDueAtStr] = useState("");
-  const [editInvCreditNote, setEditInvCreditNote] = useState("");
-  const [editInvCaseTypeOpen, setEditInvCaseTypeOpen] = useState(false);
-  const [editInvSelectedPractice, setEditInvSelectedPractice] = useState<import("@/lib/data").Client | null>(null);
-  const [editInvSubProvider, setEditInvSubProvider] = useState("");
-  const [editInvSubProviderOpen, setEditInvSubProviderOpen] = useState(false);
-  const [sendPhoneTo, setSendPhoneTo] = useState("");
-  const [rpClientId, setRpClientId] = useState<string | null>(null);
-  const [rpMethod, setRpMethod] = useState("Check");
-  const [rpAmountText, setRpAmountText] = useState("");
-  const [rpRef, setRpRef] = useState("");
-  const [rpSelectedInvIds, setRpSelectedInvIds] = useState<string[]>([]);
-  const [plPeriod, setPlPeriod] = useState<"mtd" | "qtd" | "ytd" | "custom">("ytd");
-  const [plCustomStart, setPlCustomStart] = useState("");
-  const [plCustomEnd, setPlCustomEnd] = useState("");
 
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
@@ -1747,7 +1784,6 @@ function AdminDashboard() {
   }[] | null>(null);
 
   const [invoiceFilter, setInvoiceFilter] = useState<"open" | "pastdue" | "all">("open");
-  const [expandedInvoiceProviders, setExpandedInvoiceProviders] = useState<Record<string, boolean>>({});
   const [statementFilter, setStatementFilter] = useState<"open" | "pastdue" | "all">("open");
   const [statementViewClient, setStatementViewClient] = useState<Client | null>(null);
   const [sendEmailTo, setSendEmailTo] = useState("");
@@ -1825,7 +1861,6 @@ function AdminDashboard() {
   const [editInvQty, setEditInvQty] = useState("");
 
   const [labUserSearchQuery, setLabUserSearchQuery] = useState("");
-  const [selectedLabGroup, setSelectedLabGroup] = useState<string | null>(null);
 
   const [iteroEmail, setIteroEmail] = useState("");
   const [iteroPassword, setIteroPassword] = useState("");
@@ -1834,10 +1869,13 @@ function AdminDashboard() {
   const [iteroSaving, setIteroSaving] = useState(false);
   const [iteroImporting, setIteroImporting] = useState(false);
   const [iteroImportResults, setIteroImportResults] = useState<{ doctor: string; teeth: string; shade: string; material: string; notes: string }[]>([]);
-  const [isBackingUp, setIsBackingUp] = useState(false);
-  const [lastBackupTime, setLastBackupTime] = useState<string | null>(null);
-  const [isOneDriving, setIsOneDriving] = useState(false);
-  const [oneDriveResult, setOneDriveResult] = useState<{ fileName: string; webUrl: string; size: number; folder: string } | null>(null);
+  const [backupDownloading, setBackupDownloading] = useState(false);
+  const [backupUploading, setBackupUploading] = useState(false);
+  const [restoreArchive, setRestoreArchive] = useState<RestoreImportFile | null>(null);
+  const [restoreMode, setRestoreMode] = useState<RestoreImportMode>("merge");
+  const [restoreConfirmation, setRestoreConfirmation] = useState("");
+  const [restoreSubmitting, setRestoreSubmitting] = useState(false);
+  const [restoreSummary, setRestoreSummary] = useState<RestoreImportSummary | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -1854,7 +1892,7 @@ function AdminDashboard() {
   }, []);
 
   const labPortalUsers = registeredUsers.filter(
-    (u) => (u.userType === "lab" || !u.userType) && (u as any).userType !== "master_admin",
+    (u) => (u.userType === "lab" || !u.userType) && u.userType !== "master_admin",
   );
 
   function resetClientForm() {
@@ -1970,6 +2008,265 @@ function AdminDashboard() {
     }
   }
 
+  async function handleDownloadLabBackup() {
+    if (backupDownloading) {
+      return;
+    }
+
+    setBackupDownloading(true);
+    try {
+      if (Platform.OS === "web") {
+        const response = await apiRequest("GET", "/api/admin/backup");
+        const blob = await response.blob();
+        const filename = getBackupDownloadFilename(response.headers.get("content-disposition"));
+        const objectUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(objectUrl);
+        Alert.alert("Backup Downloaded", `${filename} has started downloading.`);
+      } else {
+        await apiRequest("GET", "/api/auth/me");
+        const accessToken = getAccessToken();
+        if (!accessToken) {
+          throw new Error("Your session needs to be refreshed before downloading a backup.");
+        }
+
+        const FileSystem = await import("expo-file-system");
+        const filename = `labtrax-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+        const directory = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+        if (!directory) {
+          throw new Error("No writable storage directory is available on this device.");
+        }
+        const destinationUri = `${directory}${filename}`;
+        const backupUrl = new URL("/api/admin/backup", getApiUrl()).toString();
+        const downloadResult = await FileSystem.downloadAsync(backupUrl, destinationUri, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+
+        const isAvailable = await Sharing.isAvailableAsync();
+        if (isAvailable) {
+          await Sharing.shareAsync(downloadResult.uri, {
+            mimeType: "application/zip",
+            dialogTitle: "Share LabTrax Backup",
+            UTI: "public.zip-archive",
+          });
+        } else {
+          Alert.alert("Backup Saved", `Backup downloaded to ${downloadResult.uri}.`);
+        }
+      }
+
+      if (Platform.OS !== "web") {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (error) {
+      console.log("Backup download error:", error);
+      Alert.alert(
+        "Backup Failed",
+        error instanceof Error ? error.message : "We couldn't create the backup download. Please try again.",
+      );
+    } finally {
+      setBackupDownloading(false);
+    }
+  }
+
+  async function handleBackupToOneDrive() {
+    if (backupUploading) {
+      return;
+    }
+
+    setBackupUploading(true);
+    try {
+      const response = await apiRequest("POST", "/api/admin/backup/onedrive");
+      const data = await response.json();
+      const successMessage = data?.fileName
+        ? `${data.fileName} was uploaded to ${data.folder || "OneDrive"}.`
+        : "Your LabTrax backup was uploaded to OneDrive.";
+
+      if (Platform.OS !== "web") {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+
+      if (data?.webUrl) {
+        Alert.alert("Backup Uploaded", successMessage, [
+          { text: "Done", style: "cancel" },
+          {
+            text: "Open OneDrive",
+            onPress: () => {
+              Linking.openURL(data.webUrl).catch(() => {
+                Alert.alert("Unable to Open", "The OneDrive link could not be opened on this device.");
+              });
+            },
+          },
+        ]);
+      } else {
+        Alert.alert("Backup Uploaded", successMessage);
+      }
+    } catch (error) {
+      console.log("OneDrive backup error:", error);
+      Alert.alert(
+        "Upload Failed",
+        error instanceof Error ? error.message : "We couldn't send the backup to OneDrive. Please try again.",
+      );
+    } finally {
+      setBackupUploading(false);
+    }
+  }
+
+  async function handleSelectRestoreArchive() {
+    try {
+      if (Platform.OS === "web") {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".zip,application/zip,application/x-zip-compressed,application/octet-stream";
+        input.onchange = (event: any) => {
+          const file = event.target?.files?.[0];
+          if (!file) {
+            return;
+          }
+
+          setRestoreArchive({
+            name: file.name,
+            size: file.size,
+            mimeType: file.type || "application/zip",
+            file,
+          });
+          setRestoreSummary(null);
+        };
+        input.click();
+        return;
+      }
+
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+        type: [
+          "application/zip",
+          "application/x-zip-compressed",
+          "application/octet-stream",
+        ],
+      });
+
+      if (result.canceled || !result.assets?.length) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      setRestoreArchive({
+        name: asset.name,
+        size: asset.size,
+        mimeType: asset.mimeType || "application/zip",
+        uri: asset.uri,
+      });
+      setRestoreSummary(null);
+    } catch (error) {
+      console.log("Restore archive selection error:", error);
+      Alert.alert(
+        "Selection Failed",
+        "We couldn't open a backup ZIP from this device. Please try again.",
+      );
+    }
+  }
+
+  async function handleSubmitRestoreImport() {
+    if (restoreSubmitting) {
+      return;
+    }
+
+    if (!restoreArchive) {
+      Alert.alert("Backup Required", "Choose a LabTrax backup ZIP before running a restore.");
+      return;
+    }
+
+    if (restoreConfirmation.trim().toUpperCase() !== "RESTORE") {
+      Alert.alert("Confirmation Required", 'Type "RESTORE" exactly to unlock the restore action.');
+      return;
+    }
+
+    setRestoreSubmitting(true);
+    setRestoreSummary(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("confirmation", "RESTORE");
+      formData.append("mode", restoreMode);
+
+      if (restoreArchive.file) {
+        formData.append("file", restoreArchive.file, restoreArchive.name);
+      } else if (restoreArchive.uri) {
+        formData.append("file", {
+          uri: restoreArchive.uri,
+          name: restoreArchive.name,
+          type: restoreArchive.mimeType || "application/zip",
+        } as any);
+      } else {
+        throw new Error("No restore archive is attached.");
+      }
+
+      const response = await resilientFetch("/api/admin/restore", {
+        method: "POST",
+        body: formData,
+      });
+
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json")
+        ? await response.json()
+        : { message: await response.text() };
+
+      if (!response.ok) {
+        throw new Error(
+          payload?.error ||
+          payload?.message ||
+          `${response.status}: Restore failed.`,
+        );
+      }
+
+      const counts = extractRestoreCountEntries(payload);
+      const summaryMessage =
+        payload?.message ||
+        payload?.summary ||
+        (counts.length > 0
+          ? "Restore completed and table counts were returned."
+          : "Restore completed.");
+
+      setRestoreSummary({
+        mode: restoreMode,
+        message: summaryMessage,
+        counts,
+      });
+      setRestoreConfirmation("");
+
+      if (Platform.OS !== "web") {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+
+      Alert.alert(
+        "Restore Completed",
+        counts.length > 0
+          ? `${summaryMessage}\n\n${counts
+              .slice(0, 6)
+              .map((entry) => `${entry.table}: ${entry.count}`)
+              .join("\n")}`
+          : summaryMessage,
+      );
+    } catch (error) {
+      console.log("Restore import error:", error);
+      Alert.alert(
+        "Restore Failed",
+        error instanceof Error
+          ? error.message
+          : "We couldn't restore that backup. Please try again.",
+      );
+    } finally {
+      setRestoreSubmitting(false);
+    }
+  }
+
   function handleAddClient() {
     if (!newClientName.trim() || !newClientDoctor.trim()) {
       Alert.alert("Required", "Practice name and main provider are required.");
@@ -2067,17 +2364,16 @@ function AdminDashboard() {
     }, 0);
 
     const menuItems: { icon: string; iconSet: "ion" | "mci" | "feather"; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
-      { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Providers", sub: `${clients.length} practices · Add, Edit, Price List`, view: "client-hub" },
+      { icon: "business", iconSet: "ion", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${clients.length} practices · Add, Edit, Price List`, view: "client-hub" },
       { icon: "wallet", iconSet: "ion", color: "#10B981", bg: "#D1FAE5", title: "Financial", sub: "Invoices, Statements, Sales & more", view: "financial-hub" as AdminView },
       { icon: "layers", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Edit Tier Pricing", sub: `${pricingTiers.length} pricing tiers`, view: "edit-tier-pricing" as AdminView },
       { icon: "airplane", iconSet: "ion", color: "#6366F1", bg: "#E0E7FF", title: "Shipping Accounts", sub: "Manage carrier connections", view: "shipping" as AdminView },
       { icon: "location", iconSet: "ion", color: "#0D9488", bg: "#CCFBF1", title: "Edit Locations", sub: `${STATIONS.length} workflow stations`, view: "edit-locations" as AdminView },
       { icon: "person-add", iconSet: "ion", color: "#7C3AED", bg: "#F3E8FF", title: "Lab Users", sub: `${labPortalUsers.length} lab members`, view: "lab-users" as AdminView },
-      { icon: "cloud-upload", iconSet: "ion", color: "#2563EB", bg: "#DBEAFE", title: "Integrations", sub: "iTero · Scanner connections", view: "integrations" as AdminView },
+      { icon: "cloud-upload", iconSet: "ion", color: "#2563EB", bg: "#DBEAFE", title: "Integrations", sub: "Backups | Restore | iTero | Scanner connections", view: "integrations" as AdminView },
       { icon: "trash", iconSet: "ion", color: "#EF4444", bg: "#FEE2E2", title: "Delete Case", sub: "Remove an active case", view: "delete-cases" as AdminView },
-      { icon: "person-remove", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Inactive Providers", sub: `${inactiveClients.length} inactive accounts`, view: "inactive-clients" as AdminView },
+      { icon: "person-remove", iconSet: "ion", color: "#F59E0B", bg: "#FEF3C7", title: "Inactive Clients", sub: `${inactiveClients.length} inactive accounts`, view: "inactive-clients" as AdminView },
       { icon: "document-attach", iconSet: "ion", color: "#DC2626", bg: "#FEE2E2", title: "Deleted Client Invoices", sub: `${deletedClientInvoices.length} archived invoices`, view: "deleted-invoices" as AdminView },
-      { icon: "cloud-download", iconSet: "ion", color: "#059669", bg: "#D1FAE5", title: "Backup Data", sub: "Export all data to ZIP archive", view: "backup" as AdminView },
     ];
 
     return (
@@ -2151,8 +2447,8 @@ function AdminDashboard() {
     }, 0);
     const activeClientCount = clients.filter(c => c.status !== "inactive").length;
     const clientMenuItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
-      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Providers", sub: `${activeClientCount} practices · ${formatCurrency(totalOpenBalance)} open`, view: "clients" },
-      { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Provider", sub: "Onboard a new provider", view: "add-client" },
+      { icon: "business", color: "#0EA5E9", bg: "#E0F2FE", title: "Clients", sub: `${activeClientCount} practices · ${formatCurrency(totalOpenBalance)} open`, view: "clients" },
+      { icon: "person-add", color: Colors.light.tint, bg: Colors.light.tintLight, title: "Add Client", sub: "Onboard a new practice", view: "add-client" },
     ];
     return (
       <ScrollView
@@ -2163,7 +2459,7 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Providers")}
+        {renderBackHeader("Clients")}
         <View style={adm.menuSection}>
           {clientMenuItems.map((item) => (
             <Pressable
@@ -2234,9 +2530,9 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Add Provider", "client-hub")}
+        {renderBackHeader("Add Client", "client-hub")}
         <View style={adm.formArea}>
-          <Text style={adm.formDesc}>Onboard a new provider / dental practice.</Text>
+          <Text style={adm.formDesc}>Onboard a new dental practice.</Text>
 
           <View style={adm.field}>
             <Text style={adm.fieldLabel}>Practice Name</Text>
@@ -2358,7 +2654,7 @@ function AdminDashboard() {
       }
 
       function handleSelectTierInEdit(tierName: string) {
-        setEditingClient((prev) => prev ? { ...prev, tier: tierName } : prev);
+        setEditingClient({ ...editingClient, tier: tierName });
         const tier = pricingTiers.find(t => t.name === tierName);
         if (tier) {
           const newPrices: Record<string, string> = {};
@@ -2367,20 +2663,6 @@ function AdminDashboard() {
           });
           setPriceList(newPrices);
         }
-      }
-
-      function getAllPCFromEdit(ec: Client): ProviderContact[] {
-        const paddedAdditional = ec.additionalProviders && ec.additionalProviders.length >= 5
-          ? ec.additionalProviders
-          : [...(ec.additionalProviders || []), ...Array(5 - (ec.additionalProviders?.length || 0)).fill("")];
-        const allNames = [ec.leadDoctor, ...paddedAdditional];
-        const existing = ec.providerContacts || [];
-        return allNames.map((n, i) => ({
-          name: existing[i]?.name || n || "",
-          email: existing[i]?.email || "",
-          phone: existing[i]?.phone || "",
-          address: existing[i]?.address || "",
-        }));
       }
 
       return (
@@ -2392,7 +2674,7 @@ function AdminDashboard() {
           }}
           showsVerticalScrollIndicator={false}
         >
-          {renderBackHeader("Edit Provider", selectedClient ? "client-detail" : "client-hub")}
+          {renderBackHeader("Edit Client", selectedClient ? "client-detail" : "client-hub")}
           <View style={adm.formArea}>
             <View style={adm.field}>
               <Text style={adm.fieldLabel}>Practice Name</Text>
@@ -2403,104 +2685,43 @@ function AdminDashboard() {
               <TextInput style={adm.input} value={editingClient.accountNumber || ""} onChangeText={(v) => setEditingClient({ ...editingClient, accountNumber: v })} placeholder="e.g. DS-066707" placeholderTextColor={Colors.light.textTertiary} autoCapitalize="characters" />
             </View>
             <View style={adm.field}>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <Text style={adm.fieldLabel}>Providers</Text>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>Each gets their own statement</Text>
-              </View>
-              {[editingClient.leadDoctor, ...(editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
+              <Text style={adm.fieldLabel}>Main Provider</Text>
+              <TextInput style={adm.input} value={editingClient.leadDoctor} onChangeText={(v) => setEditingClient({ ...editingClient, leadDoctor: v })} />
+            </View>
+            <View style={adm.field}>
+              <Text style={adm.fieldLabel}>Additional Providers</Text>
+              {(editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
                 ? editingClient.additionalProviders
-                : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")])
-              ].map((_, providerIdx) => {
-                const isLead = providerIdx === 0;
-                const paddedAdditional = editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
-                  ? editingClient.additionalProviders
-                  : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")];
-                const provName = isLead ? editingClient.leadDoctor : (paddedAdditional[providerIdx - 1] || "");
-                const pc = (editingClient.providerContacts || [])[providerIdx] || { name: provName };
-                const isPopulated = isLead || provName.trim().length > 0;
-                return (
-                  <View key={providerIdx} style={{ backgroundColor: isLead ? "#F0F9FF" : "#F9FAFB", borderRadius: 12, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: isLead ? "#BAE6FD" : Colors.light.border }}>
-                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: isLead ? "#0284C7" : Colors.light.textSecondary, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{isLead ? "Main Provider" : `Provider ${providerIdx + 1}`}</Text>
-                    <TextInput
-                      style={[adm.input, { marginBottom: isPopulated ? 8 : 0 }]}
-                      value={provName}
-                      onChangeText={(v) => {
-                        if (isLead) {
-                          const newContacts = getAllPCFromEdit(editingClient);
-                          newContacts[0] = { ...newContacts[0], name: v };
-                          setEditingClient({ ...editingClient, leadDoctor: v, providerContacts: newContacts });
-                        } else {
-                          const current = editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
-                            ? [...editingClient.additionalProviders]
-                            : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")];
-                          current[providerIdx - 1] = v;
-                          const updated = { ...editingClient, additionalProviders: current };
-                          const newContacts = getAllPCFromEdit(updated);
-                          newContacts[providerIdx] = { ...newContacts[providerIdx], name: v };
-                          setEditingClient({ ...updated, providerContacts: newContacts });
-                        }
-                      }}
-                      placeholder={isLead ? "Dr. Name" : `Provider ${providerIdx + 1} name`}
-                      placeholderTextColor={Colors.light.textTertiary}
-                    />
-                    {isPopulated && (
-                      <>
-                        <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
-                          <TextInput
-                            style={[adm.input, { flex: 1 }]}
-                            value={pc.email || ""}
-                            onChangeText={(v) => {
-                              const newContacts = getAllPCFromEdit(editingClient);
-                              newContacts[providerIdx] = { ...newContacts[providerIdx], email: v };
-                              setEditingClient({ ...editingClient, providerContacts: newContacts });
-                            }}
-                            placeholder="Email"
-                            keyboardType="email-address"
-                            autoCapitalize="none"
-                            placeholderTextColor={Colors.light.textTertiary}
-                          />
-                          <TextInput
-                            style={[adm.input, { flex: 1 }]}
-                            value={pc.phone || ""}
-                            onChangeText={(v) => {
-                              const newContacts = getAllPCFromEdit(editingClient);
-                              newContacts[providerIdx] = { ...newContacts[providerIdx], phone: v };
-                              setEditingClient({ ...editingClient, providerContacts: newContacts });
-                            }}
-                            placeholder="Phone"
-                            keyboardType="phone-pad"
-                            placeholderTextColor={Colors.light.textTertiary}
-                          />
-                        </View>
-                        <TextInput
-                          style={adm.input}
-                          value={pc.address || ""}
-                          onChangeText={(v) => {
-                            const newContacts = getAllPCFromEdit(editingClient);
-                            newContacts[providerIdx] = { ...newContacts[providerIdx], address: v };
-                            setEditingClient({ ...editingClient, providerContacts: newContacts });
-                          }}
-                          placeholder="Address (optional)"
-                          placeholderTextColor={Colors.light.textTertiary}
-                        />
-                      </>
-                    )}
-                  </View>
-                );
-              })}
+                : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")]
+              ).map((prov: string, idx: number) => (
+                <TextInput
+                  key={idx}
+                  style={[adm.input, { marginBottom: idx < 4 ? 8 : 0 }]}
+                  value={prov}
+                  onChangeText={(v) => {
+                    const current = editingClient.additionalProviders && editingClient.additionalProviders.length >= 5
+                      ? [...editingClient.additionalProviders]
+                      : [...(editingClient.additionalProviders || []), ...Array(5 - (editingClient.additionalProviders?.length || 0)).fill("")];
+                    current[idx] = v;
+                    setEditingClient({ ...editingClient, additionalProviders: current });
+                  }}
+                  placeholder={`Provider ${idx + 2}`}
+                  placeholderTextColor={Colors.light.textTertiary}
+                />
+              ))}
             </View>
             <View style={adm.fieldRow}>
               <View style={[adm.field, { flex: 1 }]}>
-                <Text style={adm.fieldLabel}>Practice Phone</Text>
+                <Text style={adm.fieldLabel}>Phone</Text>
                 <TextInput style={adm.input} value={editingClient.phone} onChangeText={(v) => setEditingClient({ ...editingClient, phone: v })} keyboardType="phone-pad" />
               </View>
               <View style={[adm.field, { flex: 1 }]}>
-                <Text style={adm.fieldLabel}>Practice Email</Text>
+                <Text style={adm.fieldLabel}>Email</Text>
                 <TextInput style={adm.input} value={editingClient.email} onChangeText={(v) => setEditingClient({ ...editingClient, email: v })} keyboardType="email-address" autoCapitalize="none" />
               </View>
             </View>
             <View style={adm.field}>
-              <Text style={adm.fieldLabel}>Practice Address</Text>
+              <Text style={adm.fieldLabel}>Address</Text>
               <TextInput style={adm.input} value={editingClient.address} onChangeText={(v) => setEditingClient({ ...editingClient, address: v })} placeholder="Address" placeholderTextColor={Colors.light.textTertiary} />
             </View>
             <View style={adm.field}>
@@ -2528,7 +2749,7 @@ function AdminDashboard() {
                 </View>
                 <View>
                   <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>Edit Pricing</Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>Customize service prices for this provider</Text>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.subText }}>Customize service prices for this client</Text>
                 </View>
               </View>
               <Ionicons name={showEditClientPricing ? "chevron-up" : "chevron-down"} size={18} color={Colors.light.subText} />
@@ -2673,9 +2894,9 @@ function AdminDashboard() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        {renderBackHeader("Edit Provider", "client-hub")}
+        {renderBackHeader("Edit Client", "client-hub")}
         <View style={adm.listArea}>
-          <Text style={adm.formDesc}>Select a provider to edit.</Text>
+          <Text style={adm.formDesc}>Select a client to edit.</Text>
           {clients.filter(c => c.status !== "inactive").map((c) => (
             <Pressable key={c.id} style={({ pressed }) => [adm.listItem, pressed && { opacity: 0.7 }]} onPress={() => {
               setEditingClient({ ...c });
@@ -3058,44 +3279,7 @@ function AdminDashboard() {
           <Pressable onPress={() => { setSelectedInvoice(null); setAdminView("invoices-hub"); }} style={{ marginRight: 12 }}>
             <Ionicons name="arrow-back" size={24} color="#333" />
           </Pressable>
-          <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#333", flex: 1 }}>Invoice Detail</Text>
-          <Pressable
-            onPress={() => {
-              setEditInvLineItems(inv.lineItems.map(li => ({ ...li })));
-              setEditInvPatientName(inv.patientName || "");
-              setEditInvBillTo(inv.billTo || "");
-              setEditInvCaseType(inv.caseType || "");
-              setEditInvTeeth(inv.teeth || "");
-              setEditInvShade(inv.shade || "");
-              setEditInvCaseNotes(inv.caseNotes || "");
-              setEditInvCreditsText(String(inv.credits || 0));
-              setEditInvClientId(inv.clientId || "");
-              setEditInvClientName(inv.clientName || "");
-              setEditInvBillToSearch(inv.billTo || "");
-              setEditInvShowProviderDrop(false);
-              setEditInvNumber(inv.invoiceNumber || "");
-              setEditInvIssuedAtStr(new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
-              setEditInvDueAtStr(new Date(inv.dueAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
-              setEditInvCreditNote(inv.creditNote || "");
-              setEditInvCaseTypeOpen(false);
-              setEditInvSelectedPractice(null);
-              setEditInvSubProvider("");
-              setEditInvSubProviderOpen(false);
-              setAdminView("edit-invoice");
-            }}
-            style={({ pressed }) => ({
-              flexDirection: "row" as const,
-              alignItems: "center" as const,
-              backgroundColor: pressed ? "#1D4ED8" : "#2563EB",
-              borderRadius: 8,
-              paddingVertical: 8,
-              paddingHorizontal: 14,
-              gap: 6,
-            })}
-          >
-            <Ionicons name="create-outline" size={16} color="#fff" />
-            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff" }}>Edit</Text>
-          </Pressable>
+          <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#333" }}>Invoice Detail</Text>
         </View>
 
         <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 4, borderWidth: 1, borderColor: "#333", overflow: "hidden" }}>
@@ -3255,14 +3439,9 @@ function AdminDashboard() {
                 <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Total</Text>
                 <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(lineTotal)}</Text>
               </View>
-              <View style={{ borderBottomWidth: 1, borderBottomColor: "#ccc", paddingVertical: 6, paddingHorizontal: 10 }}>
-                <View style={{ flexDirection: "row" }}>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Credits</Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(inv.credits)}</Text>
-                </View>
-                {!!inv.creditNote && (
-                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 2 }}>{inv.creditNote}</Text>
-                )}
+              <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#ccc", paddingVertical: 6, paddingHorizontal: 10 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Credits</Text>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#333", minWidth: 70, textAlign: "right" }}>{formatCurrency(inv.credits)}</Text>
               </View>
               <View style={{ flexDirection: "row", paddingVertical: 6, paddingHorizontal: 10 }}>
                 <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#333", width: 60 }}>Total</Text>
@@ -3284,551 +3463,7 @@ function AdminDashboard() {
             </View>
           )}
         </View>
-
       </ScrollView>
-    );
-  }
-
-  function renderEditInvoice() {
-    if (!selectedInvoice) return renderInvoiceDetail();
-    const inv = selectedInvoice;
-    const credits = parseFloat(editInvCreditsText) || 0;
-    const lineTotal = editInvLineItems.reduce((s, li) => s + li.amount, 0);
-    const balanceDue = lineTotal - credits;
-
-    function updateLineItem(idx: number, field: keyof InvoiceLineItem, rawVal: string) {
-      setEditInvLineItems(prev => {
-        const next = prev.map((li, i) => {
-          if (i !== idx) return li;
-          const updated = { ...li };
-          if (field === "qty" || field === "rate") {
-            const num = parseFloat(rawVal) || 0;
-            (updated as any)[field] = num;
-            updated.amount = (field === "qty" ? num : updated.qty) * (field === "rate" ? num : updated.rate);
-          } else {
-            (updated as any)[field] = rawVal;
-          }
-          return updated;
-        });
-        return next;
-      });
-    }
-
-    function addLineItem() {
-      setEditInvLineItems(prev => [...prev, { qty: 1, item: "", description: "", rate: 0, amount: 0 }]);
-    }
-
-    function removeLineItem(idx: number) {
-      setEditInvLineItems(prev => prev.filter((_, i) => i !== idx));
-    }
-
-    const allItemSuggestions: { item: string; description: string; rate: number }[] = (() => {
-      const map = new Map<string, { description: string; rate: number }>();
-      for (const inv of invoices) {
-        for (const li of (inv.lineItems || [])) {
-          const key = (li.item || "").trim();
-          if (!key || map.has(key)) continue;
-          map.set(key, { description: li.description || "", rate: li.rate || 0 });
-        }
-      }
-      return Array.from(map.entries()).map(([item, vals]) => ({ item, ...vals }));
-    })();
-
-    function selectItemSuggestion(idx: number, suggestion: { item: string; description: string; rate: number }) {
-      setEditInvLineItems(prev => prev.map((li, i) => {
-        if (i !== idx) return li;
-        const qty = li.qty || 1;
-        return { ...li, item: suggestion.item, description: suggestion.description, rate: suggestion.rate, amount: qty * suggestion.rate };
-      }));
-      setEditInvItemDropdownIdx(null);
-    }
-
-    const providerSearchResults = editInvBillToSearch.trim().length > 0
-      ? clients.filter(c => {
-          const q = editInvBillToSearch.toLowerCase();
-          return (c.practiceName || "").toLowerCase().includes(q)
-            || (c.leadDoctor || "").toLowerCase().includes(q)
-            || (c.additionalProviders || []).some(p => p.toLowerCase().includes(q));
-        }).slice(0, 8)
-      : [];
-
-    function parseDateStr(s: string): number | null {
-      const parts = s.trim().split("/");
-      if (parts.length !== 3) return null;
-      const [m, d, y] = parts.map(Number);
-      if (!m || !d || !y || y < 1900 || y > 2100) return null;
-      const dt = new Date(y, m - 1, d);
-      return isNaN(dt.getTime()) ? null : dt.getTime();
-    }
-
-    function handleSave() {
-      const newLineItems = editInvLineItems.filter(li => li.item.trim() || li.description.trim() || li.amount > 0);
-      const newAmount = newLineItems.reduce((s, li) => s + li.amount, 0) - credits;
-      const resolvedBillTo = editInvBillTo || editInvBillToSearch;
-      const parsedIssuedAt = parseDateStr(editInvIssuedAtStr);
-      const parsedDueAt = parseDateStr(editInvDueAtStr);
-      const updates: Partial<Invoice> = {
-        lineItems: newLineItems,
-        amount: newAmount,
-        patientName: editInvPatientName,
-        billTo: resolvedBillTo,
-        clientId: editInvClientId || inv.clientId,
-        clientName: editInvClientName || inv.clientName,
-        caseType: editInvCaseType,
-        teeth: editInvTeeth,
-        shade: editInvShade,
-        caseNotes: editInvCaseNotes,
-        credits,
-        creditNote: editInvCreditNote,
-        invoiceNumber: editInvNumber.trim() || inv.invoiceNumber,
-        issuedAt: parsedIssuedAt ?? inv.issuedAt,
-        dueAt: parsedDueAt ?? inv.dueAt,
-      };
-      updateInvoice(inv.id, updates);
-      setSelectedInvoice({ ...inv, ...updates });
-      setAdminView("invoice-detail");
-    }
-
-    const inputBase = {
-      fontFamily: "Inter_400Regular" as const,
-      fontSize: 12,
-      color: "#111",
-      borderWidth: 1,
-      borderColor: "#93C5FD",
-      borderRadius: 4,
-      paddingVertical: 4,
-      paddingHorizontal: 6,
-      backgroundColor: "#EFF6FF",
-    };
-
-    return (
-      <KeyboardAwareScrollViewCompat
-        style={{ flex: 1, backgroundColor: "#F0F4F8" }}
-        contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 24 : 200,
-        }}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        bottomOffset={24}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, marginBottom: 16 }}>
-          <Pressable onPress={() => setAdminView("invoice-detail")} style={{ marginRight: 12, padding: 4 }}>
-            <Ionicons name="close" size={24} color="#374151" />
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 20, fontFamily: "Inter_700Bold", color: "#111827" }}>Edit Invoice</Text>
-            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 1 }}>#{formatInvNum(inv.invoiceNumber)}</Text>
-          </View>
-        </View>
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
-          <View style={{ backgroundColor: "#1E3A5F", paddingVertical: 10, paddingHorizontal: 14 }}>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5 }}>INVOICE INFO</Text>
-          </View>
-
-          <View style={{ padding: 14, gap: 10 }}>
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Invoice #</Text>
-                <TextInput
-                  style={inputBase}
-                  value={editInvNumber}
-                  onChangeText={setEditInvNumber}
-                  placeholder="e.g. INV-2026-001"
-                  placeholderTextColor="#9CA3AF"
-                  autoCapitalize="characters"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Invoice Date</Text>
-                <TextInput
-                  style={inputBase}
-                  value={editInvIssuedAtStr}
-                  onChangeText={setEditInvIssuedAtStr}
-                  placeholder="MM/DD/YYYY"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="numbers-and-punctuation"
-                />
-              </View>
-            </View>
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Due Date</Text>
-                <TextInput
-                  style={inputBase}
-                  value={editInvDueAtStr}
-                  onChangeText={setEditInvDueAtStr}
-                  placeholder="MM/DD/YYYY"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="numbers-and-punctuation"
-                />
-              </View>
-              <View style={{ flex: 1 }} />
-            </View>
-
-            <View>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Bill To / Group or Practice</Text>
-              <View style={{ position: "relative" as const }}>
-                <View style={{ flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: editInvShowProviderDrop ? "#2563EB" : "#93C5FD", borderRadius: 4, backgroundColor: "#EFF6FF", overflow: "hidden" }}>
-                  <TextInput
-                    style={[inputBase, { flex: 1, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", margin: 0 }]}
-                    value={editInvBillToSearch}
-                    onChangeText={(t) => {
-                      setEditInvBillToSearch(t);
-                      setEditInvBillTo(t);
-                      setEditInvShowProviderDrop(true);
-                      setEditInvSelectedPractice(null);
-                      setEditInvSubProvider("");
-                      setEditInvSubProviderOpen(false);
-                      if (!t.trim()) { setEditInvClientId(""); setEditInvClientName(""); }
-                    }}
-                    onFocus={() => setEditInvShowProviderDrop(true)}
-                    placeholder="Type to search group or practice..."
-                    placeholderTextColor="#9CA3AF"
-                    returnKeyType="done"
-                    onSubmitEditing={() => setEditInvShowProviderDrop(false)}
-                  />
-                  {editInvClientId ? (
-                    <Ionicons name="checkmark-circle" size={16} color="#059669" style={{ marginRight: 8 }} />
-                  ) : (
-                    <Ionicons name="search" size={14} color="#6B7280" style={{ marginRight: 8 }} />
-                  )}
-                </View>
-                {editInvClientId && (
-                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#059669", marginTop: 2 }}>
-                    Practice: {editInvClientName}
-                  </Text>
-                )}
-                {editInvShowProviderDrop && (providerSearchResults.length > 0 || (editInvBillToSearch.trim().length > 0 && providerSearchResults.length === 0)) && (
-                  <View style={{ position: "absolute" as const, top: "100%" as any, left: 0, right: 0, zIndex: 999, backgroundColor: "#fff", borderRadius: 8, borderWidth: 1, borderColor: "#E5E7EB", shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 8, marginTop: 2 }}>
-                    {providerSearchResults.map((c, i) => (
-                      <Pressable
-                        key={c.id}
-                        onPress={() => {
-                          const display = c.practiceName || c.leadDoctor;
-                          setEditInvBillToSearch(display);
-                          setEditInvClientId(c.id);
-                          setEditInvClientName(display);
-                          setEditInvShowProviderDrop(false);
-                          setEditInvSelectedPractice(c);
-                          setEditInvSubProvider("");
-                          setEditInvSubProviderOpen(true);
-                          const provList = [c.leadDoctor, ...(c.additionalProviders || [])].filter(Boolean);
-                          if (provList.length === 1) {
-                            setEditInvBillTo(provList[0]);
-                            setEditInvSubProvider(provList[0]);
-                            setEditInvSubProviderOpen(false);
-                          } else {
-                            setEditInvBillTo(display);
-                          }
-                        }}
-                        style={({ pressed }) => ({ flexDirection: "row" as const, alignItems: "center" as const, padding: 10, borderBottomWidth: i < providerSearchResults.length - 1 ? 1 : 0, borderBottomColor: "#F3F4F6", backgroundColor: pressed ? "#EFF6FF" : "#fff", borderRadius: i === 0 ? 8 : 0 })}
-                      >
-                        <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: "#DBEAFE", alignItems: "center", justifyContent: "center", marginRight: 10 }}>
-                          <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#1D4ED8" }}>{(c.practiceName || c.leadDoctor || "?")[0].toUpperCase()}</Text>
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{c.practiceName || c.leadDoctor}</Text>
-                          {c.practiceName && c.leadDoctor && c.practiceName !== c.leadDoctor && (
-                            <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{c.leadDoctor}{(c.additionalProviders || []).length > 0 ? ` + ${(c.additionalProviders || []).length} more` : ""}</Text>
-                          )}
-                        </View>
-                        <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
-                      </Pressable>
-                    ))}
-                    {editInvBillToSearch.trim().length > 0 && providerSearchResults.length === 0 && (
-                      <Pressable
-                        onPress={() => {
-                          const name = editInvBillToSearch.trim();
-                          const newClient = addClient({ practiceName: name, leadDoctor: name, phone: "", email: "", address: "" });
-                          if (newClient) {
-                            setEditInvBillTo(name);
-                            setEditInvBillToSearch(name);
-                            setEditInvClientId(newClient.id);
-                            setEditInvClientName(name);
-                            setEditInvSubProvider(name);
-                          }
-                          setEditInvShowProviderDrop(false);
-                        }}
-                        style={({ pressed }) => ({ flexDirection: "row" as const, alignItems: "center" as const, padding: 10, backgroundColor: pressed ? "#FEF9C3" : "#FFFBEB", borderRadius: 8, gap: 8 })}
-                      >
-                        <Ionicons name="person-add-outline" size={16} color="#D97706" />
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>Add "{editInvBillToSearch.trim()}" as new provider</Text>
-                          <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#B45309", marginTop: 1 }}>Creates a new provider record</Text>
-                        </View>
-                        <Ionicons name="add-circle" size={18} color="#D97706" />
-                      </Pressable>
-                    )}
-                  </View>
-                )}
-              </View>
-
-              {editInvSelectedPractice && editInvSubProviderOpen && (() => {
-                const provList = [editInvSelectedPractice.leadDoctor, ...(editInvSelectedPractice.additionalProviders || [])].filter(Boolean);
-                return (
-                  <View style={{ marginTop: 8 }}>
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Select Specific Provider</Text>
-                    <View style={{ backgroundColor: "#fff", borderRadius: 8, borderWidth: 1, borderColor: "#93C5FD", overflow: "hidden" }}>
-                      {provList.map((prov, i) => (
-                        <Pressable
-                          key={i}
-                          onPress={() => {
-                            setEditInvBillTo(prov);
-                            setEditInvSubProvider(prov);
-                            setEditInvSubProviderOpen(false);
-                          }}
-                          style={({ pressed }) => ({ flexDirection: "row" as const, alignItems: "center" as const, padding: 10, borderBottomWidth: i < provList.length - 1 ? 1 : 0, borderBottomColor: "#EFF6FF", backgroundColor: editInvSubProvider === prov ? "#DBEAFE" : pressed ? "#EFF6FF" : "#fff" })}
-                        >
-                          <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: editInvSubProvider === prov ? "#2563EB" : "#EFF6FF", alignItems: "center", justifyContent: "center", marginRight: 10 }}>
-                            <Ionicons name="person" size={14} color={editInvSubProvider === prov ? "#fff" : "#2563EB"} />
-                          </View>
-                          <Text style={{ fontSize: 12, fontFamily: editInvSubProvider === prov ? "Inter_700Bold" : "Inter_500Medium", color: editInvSubProvider === prov ? "#1D4ED8" : "#111827", flex: 1 }}>{prov}</Text>
-                          {editInvSubProvider === prov && <Ionicons name="checkmark-circle" size={16} color="#2563EB" />}
-                        </Pressable>
-                      ))}
-                    </View>
-                    <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 3 }}>
-                      Billing: {editInvBillTo || editInvBillToSearch}
-                    </Text>
-                  </View>
-                );
-              })()}
-            </View>
-
-            <View>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Patient Name</Text>
-              <TextInput
-                style={inputBase}
-                value={editInvPatientName}
-                onChangeText={setEditInvPatientName}
-                placeholder="Patient name"
-                placeholderTextColor="#9CA3AF"
-              />
-            </View>
-
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <View style={{ flex: 2, zIndex: 50 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Case Type</Text>
-                <View style={{ position: "relative" as const }}>
-                  <TextInput
-                    style={[inputBase, { borderColor: editInvCaseTypeOpen ? "#2563EB" : "#93C5FD" }]}
-                    value={editInvCaseType}
-                    onChangeText={(t) => { setEditInvCaseType(t); setEditInvCaseTypeOpen(true); }}
-                    onFocus={() => setEditInvCaseTypeOpen(true)}
-                    onBlur={() => setTimeout(() => setEditInvCaseTypeOpen(false), 160)}
-                    placeholder="Select or type..."
-                    placeholderTextColor="#9CA3AF"
-                    returnKeyType="done"
-                  />
-                  {editInvCaseTypeOpen && (
-                    <View style={{ position: "absolute" as const, top: "100%" as any, left: 0, right: 0, zIndex: 999, backgroundColor: "#fff", borderRadius: 6, borderWidth: 1, borderColor: "#3B82F6", borderTopWidth: 0, shadowColor: "#000", shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.1, shadowRadius: 6, elevation: 8 }}>
-                      {["Restorative", "Removable", "Appliance", "Temporary", "Other"]
-                        .filter(ct => !editInvCaseType.trim() || ct.toLowerCase().includes(editInvCaseType.toLowerCase()))
-                        .map((ct, i, arr) => (
-                          <Pressable
-                            key={ct}
-                            onPress={() => { setEditInvCaseType(ct); setEditInvCaseTypeOpen(false); }}
-                            style={({ pressed }) => ({ padding: 9, borderTopWidth: i > 0 ? 1 : 0, borderTopColor: "#F3F4F6", backgroundColor: pressed ? "#EFF6FF" : "#fff", borderRadius: i === arr.length - 1 ? 6 : 0 })}
-                          >
-                            <Text style={{ fontSize: 12, fontFamily: editInvCaseType === ct ? "Inter_700Bold" : "Inter_500Medium", color: editInvCaseType === ct ? "#2563EB" : "#111827" }}>{ct}</Text>
-                          </Pressable>
-                        ))
-                      }
-                    </View>
-                  )}
-                </View>
-              </View>
-              <View style={{ flex: 1.5 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Teeth</Text>
-                <TextInput
-                  style={inputBase}
-                  value={editInvTeeth}
-                  onChangeText={setEditInvTeeth}
-                  placeholder="#3, #14"
-                  placeholderTextColor="#9CA3AF"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Shade</Text>
-                <TextInput
-                  style={inputBase}
-                  value={editInvShade}
-                  onChangeText={setEditInvShade}
-                  placeholder="A2"
-                  placeholderTextColor="#9CA3AF"
-                />
-              </View>
-            </View>
-
-            <View>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Case Notes / Memo</Text>
-              <TextInput
-                style={[inputBase, { minHeight: 56, textAlignVertical: "top" }]}
-                value={editInvCaseNotes}
-                onChangeText={setEditInvCaseNotes}
-                placeholder="Additional notes..."
-                placeholderTextColor="#9CA3AF"
-                multiline
-              />
-            </View>
-          </View>
-        </View>
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
-          <View style={{ backgroundColor: "#1E3A5F", paddingVertical: 10, paddingHorizontal: 14, flexDirection: "row", alignItems: "center" }}>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5, flex: 1 }}>LINE ITEMS</Text>
-            <Pressable
-              onPress={addLineItem}
-              style={({ pressed }) => ({ backgroundColor: pressed ? "#60A5FA" : "#3B82F6", paddingVertical: 5, paddingHorizontal: 10, borderRadius: 6, flexDirection: "row", alignItems: "center", gap: 4 })}
-            >
-              <Ionicons name="add" size={14} color="#fff" />
-              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Add Item</Text>
-            </Pressable>
-          </View>
-
-          <View style={{ flexDirection: "row", backgroundColor: "#F1F5F9", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", paddingVertical: 8, paddingHorizontal: 10 }}>
-            <Text style={{ width: 32, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569" }}>Qty</Text>
-            <Text style={{ width: 80, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", paddingLeft: 4 }}>Item</Text>
-            <Text style={{ flex: 1, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", paddingLeft: 4 }}>Description</Text>
-            <Text style={{ width: 54, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "right" }}>Rate</Text>
-            <Text style={{ width: 60, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "right" }}>Amount</Text>
-            <View style={{ width: 24 }} />
-          </View>
-
-          {editInvLineItems.map((li, idx) => {
-            const itemSearch = (li.item || "").toLowerCase().trim();
-            const filteredSuggestions = editInvItemDropdownIdx === idx
-              ? (itemSearch.length > 0
-                  ? allItemSuggestions.filter(s => s.item.toLowerCase().includes(itemSearch) && s.item.toLowerCase() !== itemSearch)
-                  : allItemSuggestions
-                ).slice(0, 8)
-              : [];
-            return (
-              <View key={idx}>
-                <View style={{ flexDirection: "row", alignItems: "center", paddingVertical: 6, paddingHorizontal: 10, borderBottomWidth: filteredSuggestions.length > 0 ? 0 : 1, borderBottomColor: "#F1F5F9", backgroundColor: idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
-                  <TextInput
-                    style={[inputBase, { width: 32, textAlign: "center", paddingHorizontal: 2 }]}
-                    value={String(li.qty)}
-                    onChangeText={(v) => updateLineItem(idx, "qty", v)}
-                    keyboardType="decimal-pad"
-                    onFocus={() => setEditInvItemDropdownIdx(null)}
-                  />
-                  <TextInput
-                    style={[inputBase, { width: 80, marginLeft: 4, borderColor: editInvItemDropdownIdx === idx ? "#3B82F6" : "#93C5FD" }]}
-                    value={li.item}
-                    onChangeText={(v) => { updateLineItem(idx, "item", v); setEditInvItemDropdownIdx(idx); }}
-                    onFocus={() => setEditInvItemDropdownIdx(idx)}
-                    onBlur={() => setTimeout(() => setEditInvItemDropdownIdx(null), 180)}
-                    placeholder="Item"
-                    placeholderTextColor="#9CA3AF"
-                  />
-                  <TextInput
-                    style={[inputBase, { flex: 1, marginLeft: 4 }]}
-                    value={li.description}
-                    onChangeText={(v) => updateLineItem(idx, "description", v)}
-                    placeholder="Description"
-                    placeholderTextColor="#9CA3AF"
-                    onFocus={() => setEditInvItemDropdownIdx(null)}
-                  />
-                  <TextInput
-                    style={[inputBase, { width: 54, marginLeft: 4, textAlign: "right" }]}
-                    value={String(li.rate)}
-                    onChangeText={(v) => updateLineItem(idx, "rate", v)}
-                    keyboardType="decimal-pad"
-                    onFocus={() => setEditInvItemDropdownIdx(null)}
-                  />
-                  <View style={{ width: 60, marginLeft: 4, alignItems: "flex-end" }}>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{formatCurrency(li.amount)}</Text>
-                  </View>
-                  <Pressable onPress={() => removeLineItem(idx)} style={{ width: 24, alignItems: "center" }}>
-                    <Ionicons name="trash-outline" size={15} color="#EF4444" />
-                  </Pressable>
-                </View>
-                {filteredSuggestions.length > 0 && (
-                  <View style={{ marginHorizontal: 10, backgroundColor: "#fff", borderWidth: 1, borderColor: "#3B82F6", borderTopWidth: 0, borderBottomLeftRadius: 6, borderBottomRightRadius: 6, zIndex: 100, elevation: 10 }}>
-                    {filteredSuggestions.map((s, si) => (
-                      <Pressable
-                        key={si}
-                        onPress={() => selectItemSuggestion(idx, s)}
-                        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 8, paddingHorizontal: 10, backgroundColor: pressed ? "#EFF6FF" : si % 2 === 0 ? "#F8FAFF" : "#fff", borderTopWidth: si > 0 ? 1 : 0, borderTopColor: "#E5E7EB" })}
-                      >
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#1E3A5F" }}>{s.item}</Text>
-                          {s.description ? <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 1 }}>{s.description}</Text> : null}
-                        </View>
-                        <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#059669", marginLeft: 8 }}>{formatCurrency(s.rate)}</Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                )}
-              </View>
-            );
-          })}
-
-          {editInvLineItems.length === 0 && (
-            <View style={{ paddingVertical: 20, alignItems: "center" }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#9CA3AF" }}>No line items. Tap Add Item to begin.</Text>
-            </View>
-          )}
-        </View>
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 16 }}>
-          <View style={{ backgroundColor: "#1E3A5F", paddingVertical: 10, paddingHorizontal: 14 }}>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5 }}>TOTALS</Text>
-          </View>
-          <View style={{ padding: 14, gap: 8 }}>
-            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#374151" }}>Subtotal</Text>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#111827" }}>{formatCurrency(lineTotal)}</Text>
-            </View>
-            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#374151" }}>Credits / Payments Applied</Text>
-              <TextInput
-                style={[inputBase, { width: 80, textAlign: "right" }]}
-                value={editInvCreditsText}
-                onChangeText={setEditInvCreditsText}
-                keyboardType="decimal-pad"
-                placeholder="0.00"
-                placeholderTextColor="#9CA3AF"
-              />
-            </View>
-            <View>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Credit / Payment Note (reason)</Text>
-              <TextInput
-                style={[inputBase, { minHeight: 44, textAlignVertical: "top" }]}
-                value={editInvCreditNote}
-                onChangeText={setEditInvCreditNote}
-                placeholder="e.g. Insurance payment received, courtesy adjustment..."
-                placeholderTextColor="#9CA3AF"
-                multiline
-              />
-            </View>
-            <View style={{ height: 1, backgroundColor: "#E5E7EB" }} />
-            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#111827" }}>Balance Due</Text>
-              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: balanceDue > 0 ? "#DC2626" : "#059669" }}>{formatCurrency(balanceDue)}</Text>
-            </View>
-          </View>
-        </View>
-
-        <View style={{ flexDirection: "row", marginHorizontal: 16, gap: 10, marginBottom: 24 }}>
-          <Pressable
-            onPress={() => setAdminView("invoice-detail")}
-            style={({ pressed }) => ({ flex: 1, borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, backgroundColor: pressed ? "#F9FAFB" : "#fff" })}
-          >
-            <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#374151" }}>Cancel</Text>
-          </Pressable>
-          <Pressable
-            onPress={handleSave}
-            style={({ pressed }) => ({ flex: 2, backgroundColor: pressed ? "#1D4ED8" : "#2563EB", borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8 })}
-          >
-            <Ionicons name="checkmark-circle" size={18} color="#fff" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>Save & Close</Text>
-          </Pressable>
-        </View>
-      </KeyboardAwareScrollViewCompat>
     );
   }
 
@@ -4010,69 +3645,32 @@ function AdminDashboard() {
             const clientsWithOpen = clients.filter(c => allOpenInvoices.some(inv => inv.clientName === c.practiceName));
 
             function generatePreviewForClients(selectedClients: typeof clients) {
-              const results: Array<{ clientName: string; email: string; address: string; leadDoctor: string; invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; qty: number; rate: number; amount: number }[] }[]; totalDue: number }> = [];
-
-              for (const c of selectedClients) {
+              return selectedClients.map((c) => {
                 const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
                 clientInvs.sort((a, b) => a.issuedAt - b.issuedAt);
-
-                const mapInv = (inv: typeof allOpenInvoices[0]) => ({
-                  invoiceNumber: inv.invoiceNumber,
-                  amount: inv.amount,
-                  issuedAt: inv.issuedAt,
-                  dueAt: inv.dueAt,
-                  patientName: inv.patientName,
-                  lineItems: (inv.lineItems || []).map(li => ({
-                    item: li.item,
-                    description: li.description,
-                    qty: li.qty,
-                    rate: li.rate,
-                    amount: li.amount,
+                const clientTotal = clientInvs.reduce((s, inv) => s + inv.amount, 0);
+                return {
+                  clientName: c.practiceName,
+                  email: c.email || "",
+                  address: c.address || "",
+                  leadDoctor: c.leadDoctor || "",
+                  invoices: clientInvs.map(inv => ({
+                    invoiceNumber: inv.invoiceNumber,
+                    amount: inv.amount,
+                    issuedAt: inv.issuedAt,
+                    dueAt: inv.dueAt,
+                    patientName: inv.patientName,
+                    lineItems: (inv.lineItems || []).map(li => ({
+                      item: li.item,
+                      description: li.description,
+                      qty: li.qty,
+                      rate: li.rate,
+                      amount: li.amount,
+                    })),
                   })),
-                });
-
-                const allProviderNames = [c.leadDoctor, ...(c.additionalProviders || []).filter(p => p.trim())];
-
-                if (allProviderNames.length <= 1) {
-                  if (clientInvs.length === 0) continue;
-                  const pc = (c.providerContacts || [])[0];
-                  results.push({
-                    clientName: c.practiceName,
-                    email: pc?.email || c.email || "",
-                    address: pc?.address || c.address || "",
-                    leadDoctor: c.leadDoctor || "",
-                    invoices: clientInvs.map(mapInv),
-                    totalDue: clientInvs.reduce((s, inv) => s + inv.amount, 0),
-                  });
-                  continue;
-                }
-
-                for (let provIdx = 0; provIdx < allProviderNames.length; provIdx++) {
-                  const provName = allProviderNames[provIdx];
-                  if (!provName.trim()) continue;
-
-                  const provInvs = clientInvs.filter(inv => {
-                    const invCaseIds = (inv as any).caseIds as string[] | undefined;
-                    if (!invCaseIds || invCaseIds.length === 0) return provIdx === 0;
-                    const invCases = cases.filter(cs => invCaseIds.includes(cs.id));
-                    if (invCases.length === 0) return provIdx === 0;
-                    return invCases.some(cs => cs.doctorName === provName);
-                  });
-
-                  if (provInvs.length === 0) continue;
-                  const pc = (c.providerContacts || [])[provIdx];
-                  results.push({
-                    clientName: c.practiceName,
-                    email: pc?.email || c.email || "",
-                    address: pc?.address || c.address || "",
-                    leadDoctor: provName,
-                    invoices: provInvs.map(mapInv),
-                    totalDue: provInvs.reduce((s, inv) => s + inv.amount, 0),
-                  });
-                }
-              }
-
-              return results;
+                  totalDue: clientTotal,
+                };
+              }).filter(p => p.invoices.length > 0);
             }
 
             return (
@@ -4109,12 +3707,12 @@ function AdminDashboard() {
                   <View>
                     <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>Generate All Statements</Text>
                     <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", marginTop: 2 }}>
-                      {clientsWithOpen.length} provider{clientsWithOpen.length !== 1 ? "s" : ""} · {allOpenInvoices.length} invoice{allOpenInvoices.length !== 1 ? "s" : ""} · {formatCurrency(totalOpenAmount)}
+                      {clientsWithOpen.length} client{clientsWithOpen.length !== 1 ? "s" : ""} · {allOpenInvoices.length} invoice{allOpenInvoices.length !== 1 ? "s" : ""} · {formatCurrency(totalOpenAmount)}
                     </Text>
                   </View>
                 </Pressable>
 
-                <Text style={[adm.formDesc, { marginBottom: 12 }]}>Or select a provider to generate their statement:</Text>
+                <Text style={[adm.formDesc, { marginBottom: 12 }]}>Or select a client to generate their statement:</Text>
 
                 {clientsWithOpen.map((c) => {
                   const clientOpenInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
@@ -4145,7 +3743,7 @@ function AdminDashboard() {
                 {clientsWithOpen.length === 0 && (
                   <View style={{ alignItems: "center", paddingVertical: 40 }}>
                     <Ionicons name="document-text-outline" size={48} color={Colors.light.textTertiary} />
-                    <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 12, textAlign: "center" }}>No providers with open invoices</Text>
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_500Medium", color: Colors.light.subText, marginTop: 12, textAlign: "center" }}>No clients with open invoices</Text>
                   </View>
                 )}
               </>
@@ -4157,30 +3755,19 @@ function AdminDashboard() {
   }
 
   function renderFinancialHub() {
-    const now = new Date();
-    const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
     const openInvCount = invoices.filter(i => i.status === "open").length;
     const overdueInvCount = invoices.filter(i => i.status === "overdue").length;
     const totalOpenAmt = invoices
       .filter(i => i.status === "open" || i.status === "overdue")
-      .reduce((s, inv) => s + inv.amount, 0);
-    const collectedYTD = invoices
-      .filter(i => i.status === "paid" && i.issuedAt >= yearStart)
-      .reduce((s, inv) => s + inv.amount, 0);
-    const overdueAmt = invoices
-      .filter(i => i.status === "overdue")
       .reduce((s, inv) => s + inv.amount, 0);
     const lowStockCount = inventory.filter(i => i.quantity <= i.minQuantity).length;
 
     const financialItems: { icon: string; color: string; bg: string; title: string; sub: string; view: AdminView }[] = [
       { icon: "document-text", color: Colors.light.warning, bg: Colors.light.warningLight, title: "Invoices", sub: `${openInvCount} open · ${overdueInvCount} overdue`, view: "invoices-hub" as AdminView },
       { icon: "receipt-outline", color: "#06B6D4", bg: "#CFFAFE", title: "Statements", sub: "View & send billing statements", view: "statements-hub" as AdminView },
-      { icon: "cash-outline", color: "#059669", bg: "#D1FAE5", title: "Receive Payment", sub: "Record payments from clients", view: "receive-payment" as AdminView },
-      { icon: "trending-up", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales Report", sub: "Revenue & analytics", view: "sales" as AdminView },
-      { icon: "stats-chart", color: "#0EA5E9", bg: "#E0F2FE", title: "P&L Report", sub: "Profit & loss by period", view: "pl-report" as AdminView },
-      { icon: "time-outline", color: "#F59E0B", bg: "#FEF3C7", title: "A/R Aging", sub: "Outstanding by age bucket", view: "ar-aging" as AdminView },
-      { icon: "pricetag-outline", color: "#8B5CF6", bg: "#F3E8FF", title: "Sales by Item", sub: "Revenue by product/service", view: "sales-by-item" as AdminView },
+      { icon: "trending-up", color: Colors.light.error, bg: Colors.light.errorLight, title: "Sales", sub: "Revenue & analytics", view: "sales" },
       { icon: "cube", color: "#10B981", bg: "#D1FAE5", title: "Inventory", sub: `${inventory.length} items · ${lowStockCount} low stock`, view: "inventory" as AdminView },
+      { icon: "card", color: "#7C3AED", bg: "#F3E8FF", title: "Payment Processing", sub: "Process payments & refunds", view: "payment-processing" as AdminView },
     ];
 
     return (
@@ -4195,25 +3782,19 @@ function AdminDashboard() {
         {renderBackHeader("Financial")}
 
         <LinearGradient
-          colors={["#1E3A5F", "#1D4ED8"]}
+          colors={["#065F46", "#047857"]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={{ marginHorizontal: 16, borderRadius: 16, padding: 20, marginBottom: 12 }}
+          style={[styles.heroCard, { marginHorizontal: 20, marginBottom: 20 }]}
         >
-          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.65)", letterSpacing: 1, marginBottom: 4 }}>ACCOUNTS RECEIVABLE</Text>
-          <Text style={{ fontSize: 34, fontFamily: "Inter_700Bold", color: "#fff", marginBottom: 12 }}>{formatCurrency(totalOpenAmt)}</Text>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <View style={{ flex: 1, backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 10, padding: 10 }}>
-              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>Open</Text>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff", marginTop: 2 }}>{openInvCount}</Text>
+          <Text style={[styles.heroLabel, { opacity: 0.6 }]}>TOTAL OPEN BALANCE</Text>
+          <Text style={styles.heroCount}>{formatCurrency(totalOpenAmt)}</Text>
+          <View style={adm.heroBadgeRow}>
+            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,255,255,0.15)" }]}>
+              <Text style={adm.heroBadgeText}>{openInvCount} Open</Text>
             </View>
-            <View style={{ flex: 1, backgroundColor: "rgba(239,68,68,0.25)", borderRadius: 10, padding: 10 }}>
-              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>Overdue</Text>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#FCA5A5", marginTop: 2 }}>{formatCurrency(overdueAmt)}</Text>
-            </View>
-            <View style={{ flex: 1, backgroundColor: "rgba(16,185,129,0.25)", borderRadius: 10, padding: 10 }}>
-              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>Collected YTD</Text>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#6EE7B7", marginTop: 2 }}>{formatCurrency(collectedYTD)}</Text>
+            <View style={[adm.heroBadge, { backgroundColor: "rgba(255,255,255,0.15)" }]}>
+              <Text style={adm.heroBadgeText}>{overdueInvCount} Overdue</Text>
             </View>
           </View>
         </LinearGradient>
@@ -4340,17 +3921,10 @@ function AdminDashboard() {
     };
     const filterLabel = invoiceFilter === "open" ? "Open Invoices" : invoiceFilter === "pastdue" ? "Past Due Invoices" : "All Invoices";
     const filteredInvoices = invoiceFilter === "open"
-      ? invoices.filter(i => i.status === "open" || i.status === "overdue")
+      ? invoices.filter(i => i.status === "open")
       : invoiceFilter === "pastdue"
         ? invoices.filter(i => i.status === "overdue")
         : invoices;
-
-    const providerNames = [...new Set(filteredInvoices.map(i => i.clientName || "Unknown"))].sort();
-    const providerGroups = providerNames.map(name => ({
-      name,
-      invoices: filteredInvoices.filter(i => (i.clientName || "Unknown") === name).sort((a, b) => b.issuedAt - a.issuedAt),
-    }));
-
     return (
       <ScrollView
         style={styles.container}
@@ -4363,118 +3937,34 @@ function AdminDashboard() {
           </Pressable>
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text, flex: 1 }}>{filterLabel}</Text>
           <View style={{ backgroundColor: Colors.light.tintLight, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 4 }}>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>{providerGroups.length} providers</Text>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>{filteredInvoices.length}</Text>
           </View>
         </View>
-
         <View style={adm.listArea}>
-          {providerGroups.length === 0 ? (
+          {filteredInvoices.length === 0 ? (
             <View style={{ alignItems: "center", paddingVertical: 40 }}>
               <Ionicons name="document-text-outline" size={48} color={Colors.light.textTertiary} />
               <Text style={{ fontSize: 16, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginTop: 12 }}>No {filterLabel.toLowerCase()} found</Text>
             </View>
           ) : (
-            providerGroups.map(({ name, invoices: groupInvs }) => {
-              const isExpanded = !!expandedInvoiceProviders[name];
-              const groupTotal = groupInvs.reduce((s, i) => s + i.amount, 0);
-              const hasOverdue = groupInvs.some(i => i.status === "overdue");
-              const headerColor = hasOverdue ? Colors.light.error : Colors.light.tint;
+            filteredInvoices.map((inv) => {
+              const sc = getStatusColor(inv.status);
               return (
-                <View key={name} style={{ marginBottom: 10, borderRadius: 14, borderWidth: 1, borderColor: isExpanded ? headerColor + "40" : Colors.light.border, overflow: "hidden", backgroundColor: "#fff" }}>
-                  <Pressable
-                    onPress={() => setExpandedInvoiceProviders(prev => ({ ...prev, [name]: !prev[name] }))}
-                    style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 16, backgroundColor: pressed ? Colors.light.tintLight : "#fff", gap: 12 })}
-                  >
-                    <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: headerColor + "18", alignItems: "center", justifyContent: "center" }}>
-                      <Ionicons name="business-outline" size={18} color={headerColor} />
+                <Pressable key={inv.id} style={({ pressed }) => [adm.invoiceCard, pressed && { opacity: 0.7 }]} onPress={() => { setSelectedInvoice(inv); setAdminView("invoice-detail"); }}>
+                  <View style={adm.invoiceCardTop}>
+                    <View>
+                      <Text style={adm.invoiceNumber}>{formatInvNum(inv.invoiceNumber)}</Text>
+                      <Text style={adm.invoiceClient}>{inv.clientName}</Text>
                     </View>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }} numberOfLines={1}>{name}</Text>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 }}>
-                        <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
-                          {groupInvs.length} invoice{groupInvs.length !== 1 ? "s" : ""}
-                        </Text>
-                        {hasOverdue && (
-                          <View style={{ backgroundColor: Colors.light.error + "18", borderRadius: 6, paddingHorizontal: 6, paddingVertical: 1 }}>
-                            <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.error }}>OVERDUE</Text>
-                          </View>
-                        )}
-                      </View>
+                    <Text style={adm.invoiceAmount}>{formatCurrency(inv.amount)}</Text>
+                  </View>
+                  <View style={adm.invoiceCardBottom}>
+                    <Text style={adm.invoiceDate}>Due {new Date(inv.dueAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</Text>
+                    <View style={[adm.invoiceStatus, { backgroundColor: sc + "18" }]}>
+                      <Text style={[adm.invoiceStatusText, { color: sc }]}>{inv.status.toUpperCase()}</Text>
                     </View>
-                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: hasOverdue ? Colors.light.error : Colors.light.text, marginRight: 4 }}>
-                      {formatCurrency(groupTotal)}
-                    </Text>
-                    <Ionicons
-                      name={isExpanded ? "chevron-down" : "chevron-forward"}
-                      size={20}
-                      color={Colors.light.textTertiary}
-                    />
-                  </Pressable>
-
-                  {isExpanded && (
-                    <View style={{ borderTopWidth: 1, borderTopColor: Colors.light.border }}>
-                      {groupInvs.map((inv, invIdx) => {
-                        const sc = getStatusColor(inv.status);
-                        const isOverdue = inv.status === "overdue" || (inv.dueAt < Date.now() && inv.status !== "paid");
-                        return (
-                          <Pressable
-                            key={inv.id}
-                            onPress={() => { setSelectedInvoice(inv); setAdminView("invoice-detail"); }}
-                            style={({ pressed }) => ({
-                              paddingVertical: 12,
-                              paddingHorizontal: 16,
-                              backgroundColor: pressed ? Colors.light.tintLight : invIdx % 2 === 0 ? "#FAFBFC" : "#fff",
-                              borderBottomWidth: invIdx < groupInvs.length - 1 ? 1 : 0,
-                              borderBottomColor: Colors.light.border,
-                              flexDirection: "row",
-                              alignItems: "flex-start",
-                              gap: 10,
-                            })}
-                          >
-                            <View style={{ width: 36, height: 36, borderRadius: 8, backgroundColor: sc + "18", alignItems: "center", justifyContent: "center", marginTop: 2 }}>
-                              <Ionicons name="document-text-outline" size={16} color={sc} />
-                            </View>
-                            <View style={{ flex: 1, minWidth: 0 }}>
-                              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 3 }}>
-                                <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text }}>{formatInvNum(inv.invoiceNumber)}</Text>
-                                <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: isOverdue ? Colors.light.error : Colors.light.text }}>{formatCurrency(inv.amount)}</Text>
-                              </View>
-                              {inv.patientName ? (
-                                <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary, marginBottom: 2 }}>
-                                  Patient: {inv.patientName}
-                                </Text>
-                              ) : null}
-                              {inv.caseType ? (
-                                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginBottom: 2 }}>
-                                  {inv.caseType}{inv.teeth ? ` · Teeth: ${inv.teeth}` : ""}{inv.shade ? ` · Shade: ${inv.shade}` : ""}
-                                </Text>
-                              ) : null}
-                              {(inv.lineItems || []).length > 0 && (
-                                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 2 }}>
-                                  {(inv.lineItems || []).map(li => `${li.item || li.description}${li.qty !== 1 ? ` ×${li.qty}` : ""}`).join(" · ")}
-                                </Text>
-                              )}
-                              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
-                                <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary }}>
-                                    Issued {new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                                  </Text>
-                                  <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: isOverdue ? Colors.light.error : Colors.light.textTertiary }}>
-                                    Due {new Date(inv.dueAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                                  </Text>
-                                </View>
-                                <View style={{ backgroundColor: sc + "18", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 }}>
-                                  <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: sc, textTransform: "uppercase" }}>{inv.status}</Text>
-                                </View>
-                              </View>
-                            </View>
-                            <Ionicons name="chevron-forward" size={16} color={Colors.light.textTertiary} style={{ marginTop: 10 }} />
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  )}
-                </View>
+                  </View>
+                </Pressable>
               );
             })
           )}
@@ -4484,7 +3974,6 @@ function AdminDashboard() {
   }
 
   function renderSendInvoice() {
-    const client = sendInvoiceTarget ? clients.find(c => c.practiceName === sendInvoiceTarget.clientName) : null;
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
@@ -4500,72 +3989,64 @@ function AdminDashboard() {
               <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>{sendInvoiceTarget.clientName} · {formatCurrency(sendInvoiceTarget.amount)}</Text>
             </View>
           )}
-
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address(es)</Text>
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address</Text>
           <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendEmailTo} onChangeText={setSendEmailTo} placeholder="Enter email address" keyboardType="email-address" autoCapitalize="none" />
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Separate multiple addresses with a ; — invoice sent as PDF attachment</Text>
-
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Phone Number(s) — Text PDF</Text>
-          <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendPhoneTo} onChangeText={setSendPhoneTo} placeholder="Enter phone number" keyboardType="phone-pad" />
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Separate multiple numbers with a ; — PDF shared via messaging app</Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Please separate each email address with a ;</Text>
 
           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Subject</Text>
           <TextInput style={[adm.input, { marginBottom: 16 }]} value={sendEmailSubject} onChangeText={setSendEmailSubject} placeholder="Email subject" />
 
           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Message</Text>
-          <TextInput style={[adm.input, { height: 140, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Message body" multiline numberOfLines={6} />
+          <TextInput style={[adm.input, { height: 160, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Email message" multiline numberOfLines={8} />
+
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4, marginBottom: 16 }}>The invoice will be attached as a PDF</Text>
 
           <Pressable
-            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1, marginTop: 16 })}
-            onPress={async () => {
-              if (!sendEmailTo.trim() && !sendPhoneTo.trim()) { Alert.alert("Required", "Please enter an email address or phone number."); return; }
+            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address."); return; }
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
               const emails = sendEmailTo.split(";").map(e => e.trim()).filter(e => e.length > 0);
-              const phones = sendPhoneTo.split(";").map(p => p.trim()).filter(p => p.length > 0);
+              emails.forEach(email => {
+                sendStatementEmail(sendInvoiceTarget?.clientName || "", email, sendEmailSubject, sendEmailMessage);
+              });
+              addNotification({ title: "Invoice Sent", message: `Invoice ${sendInvoiceTarget ? formatInvNum(sendInvoiceTarget.invoiceNumber) : ""} emailed to ${emails.join(", ")}`, type: "update" });
 
-              if (emails.length > 0) {
-                emails.forEach(email => {
-                  sendStatementEmail(sendInvoiceTarget?.clientName || "", email, sendEmailSubject, sendEmailMessage);
-                });
-                addNotification({ title: "Invoice Emailed", message: `Invoice ${sendInvoiceTarget ? formatInvNum(sendInvoiceTarget.invoiceNumber) : ""} sent to ${emails.join(", ")}`, type: "update" });
-              }
-
-              if (phones.length > 0) {
-                const smsBody = encodeURIComponent(sendEmailMessage);
-                const smsUrl = Platform.OS === "ios" ? `sms:${phones.join(",")}&body=${smsBody}` : `sms:${phones.join(",")}?body=${smsBody}`;
-                Linking.openURL(smsUrl).catch(() => Alert.alert("Unable to Open", "Could not open the messaging app."));
-                addNotification({ title: "Invoice Texted", message: `Invoice PDF shared to ${phones.join(", ")}`, type: "update" });
-              }
-
+              const client = sendInvoiceTarget ? clients.find(c => c.practiceName === sendInvoiceTarget.clientName) : null;
               const onFileEmail = client?.email || "";
-              const enteredEmails = emails.join("; ");
-              const emailChanged = onFileEmail.toLowerCase().trim() !== enteredEmails.toLowerCase().trim() && enteredEmails.length > 0;
-              const onFilePhone = client?.phone || "";
-              const enteredPhones = phones.join("; ");
-              const phoneChanged = onFilePhone.trim() !== enteredPhones.trim() && enteredPhones.length > 0;
+              const allEnteredEmails = emails.join("; ");
+              const emailChanged = onFileEmail.toLowerCase().trim() !== allEnteredEmails.toLowerCase().trim() && allEnteredEmails.length > 0;
 
-              const updates: Record<string, string> = {};
-              const savePrompts: string[] = [];
-              if (emailChanged && client) { updates.email = enteredEmails; savePrompts.push(`email (${enteredEmails})`); }
-              if (phoneChanged && client) { updates.phone = enteredPhones; savePrompts.push(`phone (${enteredPhones})`); }
-
-              if (savePrompts.length > 0 && client) {
+              if (emailChanged && client) {
                 Alert.alert(
-                  "Save to Provider?",
-                  `The ${savePrompts.join(" and ")} entered ${savePrompts.length > 1 ? "are" : "is"} not on file for ${client.practiceName}. Would you like to save ${savePrompts.length > 1 ? "them" : "it"} to the provider record?`,
+                  "Save Email Address?",
+                  `The email address you entered (${allEnteredEmails}) is different from what's on file for ${client.practiceName}. Would you like to save this as the default email for future invoices and statements?`,
                   [
-                    { text: "Yes, Save", onPress: () => { updateClient(client.id, updates); setAdminView("invoices-hub"); } },
-                    { text: "No, Just Send", onPress: () => setAdminView("invoices-hub") },
+                    {
+                      text: "Yes, Save",
+                      onPress: () => {
+                        updateClient(client.id, { email: allEnteredEmails });
+                        Alert.alert("Invoice Sent & Email Saved", `Invoice emailed to ${emails.length} recipient${emails.length > 1 ? "s" : ""}. Email address updated for ${client.practiceName}.`);
+                        setAdminView("invoices-hub");
+                      },
+                    },
+                    {
+                      text: "No, Just Send",
+                      onPress: () => {
+                        Alert.alert("Invoice Sent", `Invoice emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
+                        setAdminView("invoices-hub");
+                      },
+                    },
                   ]
                 );
               } else {
+                Alert.alert("Invoice Sent", `Invoice emailed successfully to ${emails.length} recipient${emails.length > 1 ? "s" : ""}.`);
                 setAdminView("invoices-hub");
               }
             }}
           >
             <Ionicons name="send" size={18} color="#FFF" />
-            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Invoice</Text>
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Send Email</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -4584,22 +4065,32 @@ function AdminDashboard() {
         const inv = selected[0];
         setSendInvoiceTarget(inv);
         const client = clients.find(c => c.practiceName === inv.clientName);
-        setSendEmailTo(client?.email || "");
-        setSendPhoneTo(client?.phone || "");
-        setSendEmailSubject(`Invoice ${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}`);
-        setSendEmailMessage(`Dear ${inv.clientName},\n\nPlease find attached invoice ${formatInvNum(inv.invoiceNumber)} for ${formatCurrency(inv.amount)}.\n\nDue Date: ${new Date(inv.dueAt).toLocaleDateString()}\n\n${statementDefaultMessage}`);
-        setAdminView("send-invoice");
+        if (sendInvoiceMode === "email") {
+          setSendEmailTo(client?.email || "");
+          setSendEmailSubject(`Invoice ${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}`);
+          setSendEmailMessage(`Dear ${inv.clientName},\n\nPlease find attached invoice ${formatInvNum(inv.invoiceNumber)} for ${formatCurrency(inv.amount)}.\n\nDue Date: ${new Date(inv.dueAt).toLocaleDateString()}\n\n${statementDefaultMessage}`);
+          setAdminView("send-invoice");
+        } else {
+          setSendTextTo(client?.phone || "");
+          setSendTextMessage(`${statementDefaultMessage}\n\nInvoice ${formatInvNum(inv.invoiceNumber)}\nAmount: ${formatCurrency(inv.amount)}\nDue: ${new Date(inv.dueAt).toLocaleDateString()}\n\nPlease see the attached invoice PDF for details.`);
+          setAdminView("text-invoice");
+        }
       } else {
         const totalAmt = selected.reduce((s, inv) => s + inv.amount, 0);
         const invSummary = selected.map(inv => `${formatInvNum(inv.invoiceNumber)} - ${inv.clientName}: ${formatCurrency(inv.amount)}`).join("\n");
         const clientNames = [...new Set(selected.map(inv => inv.clientName))];
         const firstClient = clients.find(c => c.practiceName === clientNames[0]);
         setSendInvoiceTarget(selected[0]);
-        setSendEmailTo(firstClient?.email || "");
-        setSendPhoneTo(firstClient?.phone || "");
-        setSendEmailSubject(`Invoices - ${selected.length} invoices totaling ${formatCurrency(totalAmt)}`);
-        setSendEmailMessage(`Dear Client,\n\nPlease find the following invoices attached:\n\n${invSummary}\n\nTotal: ${formatCurrency(totalAmt)}\n\n${statementDefaultMessage}`);
-        setAdminView("send-invoice");
+        if (sendInvoiceMode === "email") {
+          setSendEmailTo(firstClient?.email || "");
+          setSendEmailSubject(`Invoices - ${selected.length} invoices totaling ${formatCurrency(totalAmt)}`);
+          setSendEmailMessage(`Dear Client,\n\nPlease find the following invoices attached:\n\n${invSummary}\n\nTotal: ${formatCurrency(totalAmt)}\n\n${statementDefaultMessage}`);
+          setAdminView("send-invoice");
+        } else {
+          setSendTextTo(firstClient?.phone || "");
+          setSendTextMessage(`${statementDefaultMessage}\n\nInvoices:\n${invSummary}\n\nTotal: ${formatCurrency(totalAmt)}\n\nPlease see the attached invoice PDFs for details.`);
+          setAdminView("text-invoice");
+        }
       }
     }
 
@@ -4616,9 +4107,22 @@ function AdminDashboard() {
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Invoice</Text>
         </View>
         <View style={adm.listArea}>
-          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 12, padding: 12, marginBottom: 16, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: Colors.light.border }}>
-            <Ionicons name="information-circle" size={18} color={Colors.light.tint} />
-            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, flex: 1 }}>Email and text options are available on the next screen. Invoices are sent as PDF.</Text>
+          <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 12 }}>How would you like to send?</Text>
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 20 }}>
+            <Pressable
+              onPress={() => setSendInvoiceMode("email")}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: sendInvoiceMode === "email" ? Colors.light.tint : Colors.light.surface, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, borderWidth: 1, borderColor: sendInvoiceMode === "email" ? Colors.light.tint : Colors.light.border, opacity: pressed ? 0.85 : 1 })}
+            >
+              <Ionicons name="mail" size={18} color={sendInvoiceMode === "email" ? "#fff" : Colors.light.text} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: sendInvoiceMode === "email" ? "#fff" : Colors.light.text }}>Email</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setSendInvoiceMode("text")}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: sendInvoiceMode === "text" ? Colors.light.tint : Colors.light.surface, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, borderWidth: 1, borderColor: sendInvoiceMode === "text" ? Colors.light.tint : Colors.light.border, opacity: pressed ? 0.85 : 1 })}
+            >
+              <Ionicons name="chatbubble-ellipses" size={18} color={sendInvoiceMode === "text" ? "#fff" : Colors.light.text} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: sendInvoiceMode === "text" ? "#fff" : Colors.light.text }}>Text</Text>
+            </Pressable>
           </View>
 
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -4895,8 +4399,8 @@ function AdminDashboard() {
     const filterLabel = statementFilter === "open" ? "Open Statements" : statementFilter === "pastdue" ? "Past Due Statements" : "All Statements";
     const activeClients = clients.filter(c => c.status !== "inactive");
     const filteredClients = activeClients.filter(c => {
-      const cInvs = invoices.filter(inv => inv.clientName === c.practiceName || inv.clientId === c.id);
-      if (statementFilter === "open") return cInvs.some(inv => inv.status === "open" || inv.status === "overdue");
+      const cInvs = invoices.filter(inv => inv.clientName === c.practiceName);
+      if (statementFilter === "open") return cInvs.some(inv => inv.status === "open");
       if (statementFilter === "pastdue") return cInvs.some(inv => inv.status === "overdue");
       return cInvs.length > 0;
     });
@@ -4920,10 +4424,10 @@ function AdminDashboard() {
           ) : (
             filteredClients.map(c => {
               const cInvs = statementFilter === "open"
-                ? invoices.filter(inv => (inv.clientName === c.practiceName || inv.clientId === c.id) && (inv.status === "open" || inv.status === "overdue"))
+                ? invoices.filter(inv => inv.clientName === c.practiceName && inv.status === "open")
                 : statementFilter === "pastdue"
-                  ? invoices.filter(inv => (inv.clientName === c.practiceName || inv.clientId === c.id) && inv.status === "overdue")
-                  : invoices.filter(inv => inv.clientName === c.practiceName || inv.clientId === c.id);
+                  ? invoices.filter(inv => inv.clientName === c.practiceName && inv.status === "overdue")
+                  : invoices.filter(inv => inv.clientName === c.practiceName);
               const total = cInvs.reduce((s, inv) => s + inv.amount, 0);
               return (
                 <Pressable key={c.id} style={({ pressed }) => [adm.statementCard, pressed && { opacity: 0.7 }]} onPress={() => { setStatementViewClient(c); setAdminView("statement-detail-view"); }}>
@@ -4950,12 +4454,11 @@ function AdminDashboard() {
     const client = statementViewClient;
     if (!client) return renderViewStatements();
     const cInvs = statementFilter === "open"
-      ? invoices.filter(inv => (inv.clientName === client.practiceName || inv.clientId === client.id) && (inv.status === "open" || inv.status === "overdue"))
+      ? invoices.filter(inv => inv.clientName === client.practiceName && inv.status === "open")
       : statementFilter === "pastdue"
-        ? invoices.filter(inv => (inv.clientName === client.practiceName || inv.clientId === client.id) && inv.status === "overdue")
-        : invoices.filter(inv => inv.clientName === client.practiceName || inv.clientId === client.id);
-    const sortedCInvs = [...cInvs].sort((a, b) => a.issuedAt - b.issuedAt);
-    const totalDue = sortedCInvs.reduce((s, inv) => s + inv.amount, 0);
+        ? invoices.filter(inv => inv.clientName === client.practiceName && inv.status === "overdue")
+        : invoices.filter(inv => inv.clientName === client.practiceName);
+    const totalDue = cInvs.reduce((s, inv) => s + inv.amount, 0);
     const today = new Date();
     const dateStr = today.toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" });
     let runningBalance = 0;
@@ -4972,16 +4475,15 @@ function AdminDashboard() {
               onPress={() => {
                 setSendStatementTarget(client);
                 setSendEmailTo(client.email || "");
-                setSendPhoneTo(client.phone || "");
                 setSendEmailSubject(`Billing Statement - ${client.practiceName}`);
-                const invDetails = sortedCInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
+                const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
                 setSendEmailMessage(`Dear ${client.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(totalDue)}\n\n${statementDefaultMessage}`);
                 setAdminView("send-statement");
               }}
               style={({ pressed }) => ({ backgroundColor: "#16A34A", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, flexDirection: "row" as const, alignItems: "center" as const, gap: 4, opacity: pressed ? 0.8 : 1 })}
             >
-              <Ionicons name="send" size={16} color="#fff" />
-              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Send</Text>
+              <Ionicons name="mail" size={16} color="#fff" />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#fff" }}>Email</Text>
             </Pressable>
           </View>
         </View>
@@ -5033,7 +4535,7 @@ function AdminDashboard() {
                 <Text style={{ flex: 1, fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff", textAlign: "right" }}>Amount</Text>
                 <Text style={{ flex: 1.2, fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#fff", textAlign: "right" }}>Balance</Text>
               </View>
-              {sortedCInvs.map((inv, idx) => {
+              {cInvs.map((inv, idx) => {
                 runningBalance += inv.amount;
                 const invDate = new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" });
                 return (
@@ -5043,7 +4545,7 @@ function AdminDashboard() {
                       <View style={{ flex: 3 }}>
                         <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#333" }}>INV #{inv.invoiceNumber}. PO #{inv.patientName}.</Text>
                         <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#555" }}>Orig. Amount {formatCurrency(inv.amount)}</Text>
-                        {(inv.lineItems || []).map((li, liIdx) => (
+                        {inv.lineItems.map((li, liIdx) => (
                           <Text key={liIdx} style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#666", marginTop: 1 }}>
                             --- {li.item}{li.description ? ` - ${li.description}` : ""}, {formatCurrency(li.amount)}
                           </Text>
@@ -5086,10 +4588,24 @@ function AdminDashboard() {
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Statement</Text>
         </View>
         <View style={adm.listArea}>
-          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 12, padding: 12, marginBottom: 16, flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: Colors.light.border }}>
-            <Ionicons name="information-circle" size={18} color={Colors.light.tint} />
-            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, flex: 1 }}>Email and text options are available on the next screen. Statements are sent as PDF.</Text>
+          <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 12 }}>How would you like to send?</Text>
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 20 }}>
+            <Pressable
+              onPress={() => setSendStatementMode("email")}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: sendStatementMode === "email" ? Colors.light.tint : Colors.light.surface, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, borderWidth: 1, borderColor: sendStatementMode === "email" ? Colors.light.tint : Colors.light.border, opacity: pressed ? 0.85 : 1 })}
+            >
+              <Ionicons name="mail" size={18} color={sendStatementMode === "email" ? "#fff" : Colors.light.text} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: sendStatementMode === "email" ? "#fff" : Colors.light.text }}>Email</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setSendStatementMode("text")}
+              style={({ pressed }) => ({ flex: 1, backgroundColor: sendStatementMode === "text" ? Colors.light.tint : Colors.light.surface, borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, borderWidth: 1, borderColor: sendStatementMode === "text" ? Colors.light.tint : Colors.light.border, opacity: pressed ? 0.85 : 1 })}
+            >
+              <Ionicons name="chatbubble-ellipses" size={18} color={sendStatementMode === "text" ? "#fff" : Colors.light.text} />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: sendStatementMode === "text" ? "#fff" : Colors.light.text }}>Text</Text>
+            </Pressable>
           </View>
+
           <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 10 }}>Select a client</Text>
           {clientsWithOpenInvs.length === 0 && (
             <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", paddingVertical: 20 }}>No clients with open invoices.</Text>
@@ -5103,12 +4619,18 @@ function AdminDashboard() {
                 style={({ pressed }) => ({ backgroundColor: pressed ? Colors.light.tintLight : Colors.light.surface, borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: Colors.light.border, flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const })}
                 onPress={() => {
                   setSendStatementTarget(c);
-                  setSendEmailTo(c.email || "");
-                  setSendPhoneTo(c.phone || "");
-                  setSendEmailSubject(`Billing Statement - ${c.practiceName}`);
-                  const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
-                  setSendEmailMessage(`Dear ${c.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(total)}\n\n${statementDefaultMessage}`);
-                  setAdminView("send-statement");
+                  if (sendStatementMode === "email") {
+                    setSendEmailTo(c.email || "");
+                    setSendEmailSubject(`Billing Statement - ${c.practiceName}`);
+                    const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
+                    setSendEmailMessage(`Dear ${c.practiceName},\n\nPlease find attached your billing statement.\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(total)}\n\n${statementDefaultMessage}`);
+                    setAdminView("send-statement");
+                  } else {
+                    setSendTextTo(c.phone || "");
+                    const invDetails = cInvs.map(inv => `  ${formatInvNum(inv.invoiceNumber)}: ${formatCurrency(inv.amount)}`).join("\n");
+                    setSendTextMessage(`${statementDefaultMessage}\n\nBilling Statement for ${c.practiceName}\n\nOpen Invoices:\n${invDetails}\n\nTotal Due: ${formatCurrency(total)}\n\nPlease see the attached statement PDF for details.`);
+                    setAdminView("text-statement");
+                  }
                 }}
               >
                 <View style={{ flex: 1 }}>
@@ -5224,7 +4746,6 @@ function AdminDashboard() {
   }
 
   function renderSendStatement() {
-    const client = sendStatementTarget;
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
@@ -5234,88 +4755,62 @@ function AdminDashboard() {
           <Text style={{ fontSize: 22, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Send Statement</Text>
         </View>
         <View style={adm.listArea}>
-          {client && (
+          {sendStatementTarget && (
             <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: Colors.light.border }}>
-              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 4 }}>{client.practiceName}</Text>
-              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Billing Statement — PDF</Text>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text, marginBottom: 4 }}>{sendStatementTarget.practiceName}</Text>
+              <Text style={{ fontSize: 14, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>Billing Statement</Text>
             </View>
           )}
 
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address(es)</Text>
+          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Email Address</Text>
           <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendEmailTo} onChangeText={setSendEmailTo} placeholder="Enter email address" keyboardType="email-address" autoCapitalize="none" />
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Separate multiple addresses with a ; — statement sent as PDF attachment</Text>
-
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Phone Number(s) — Text PDF</Text>
-          <TextInput style={[adm.input, { marginBottom: 4 }]} value={sendPhoneTo} onChangeText={setSendPhoneTo} placeholder="Enter phone number" keyboardType="phone-pad" />
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Separate multiple numbers with a ; — PDF shared via messaging app</Text>
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginBottom: 16 }}>Please separate each email address with a ;</Text>
 
           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Subject</Text>
           <TextInput style={[adm.input, { marginBottom: 16 }]} value={sendEmailSubject} onChangeText={setSendEmailSubject} placeholder="Email subject" />
 
           <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, marginBottom: 6 }}>Message</Text>
-          <TextInput style={[adm.input, { height: 140, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Message body" multiline numberOfLines={6} />
+          <TextInput style={[adm.input, { height: 160, textAlignVertical: "top" }]} value={sendEmailMessage} onChangeText={setSendEmailMessage} placeholder="Email message" multiline numberOfLines={8} />
 
-          <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
-            <Pressable
-              style={({ pressed }) => ({ flex: 1, backgroundColor: Colors.light.tint, borderRadius: 14, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
-              onPress={() => {
-                if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address to preview."); return; }
-                if (client) {
-                  const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
-                  const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
-                  setEmailPreviewStmtData([{
-                    clientName: client.practiceName,
-                    email: client.email || "",
-                    address: client.address || "",
-                    leadDoctor: client.leadDoctor || "",
-                    invoices: sortedInvs.map(inv => ({
-                      invoiceNumber: inv.invoiceNumber,
-                      amount: inv.amount,
-                      issuedAt: inv.issuedAt,
-                      dueAt: inv.dueAt,
-                      patientName: inv.patientName,
-                      lineItems: (inv.lineItems || []).map(li => ({ item: li.item, description: li.description, qty: li.qty, rate: li.rate, amount: li.amount })),
+          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 4, marginBottom: 16 }}>The statement will be attached as a PDF</Text>
+
+          <Pressable
+            style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
+            onPress={() => {
+              if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address."); return; }
+              const client = sendStatementTarget;
+              if (client) {
+                const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
+                setEmailPreviewStmtData([{
+                  clientName: client.practiceName,
+                  email: client.email || "",
+                  address: client.address || "",
+                  leadDoctor: client.leadDoctor || "",
+                  invoices: sortedInvs.map(inv => ({
+                    invoiceNumber: inv.invoiceNumber,
+                    amount: inv.amount,
+                    issuedAt: inv.issuedAt,
+                    dueAt: inv.dueAt,
+                    patientName: inv.patientName,
+                    lineItems: (inv.lineItems || []).map(li => ({
+                      item: li.item,
+                      description: li.description,
+                      qty: li.qty,
+                      rate: li.rate,
+                      amount: li.amount,
                     })),
-                    totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0),
-                  }]);
-                }
-                setEmailPreviewBackView("send-statement");
-                setAdminView("email-statement-preview");
-              }}
-            >
-              <Ionicons name="eye" size={18} color="#FFF" />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Preview Email</Text>
-            </Pressable>
-
-            {sendPhoneTo.trim().length > 0 && (
-              <Pressable
-                style={({ pressed }) => ({ flex: 1, backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8, opacity: pressed ? 0.85 : 1 })}
-                onPress={async () => {
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  const phones = sendPhoneTo.split(";").map(p => p.trim()).filter(p => p.length > 0);
-                  if (client) {
-                    const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
-                    const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
-                    const stmtData = [{ clientName: client.practiceName, email: client.email || "", address: client.address || "", leadDoctor: client.leadDoctor || "", invoices: sortedInvs.map(inv => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, issuedAt: inv.issuedAt, dueAt: inv.dueAt, patientName: inv.patientName, lineItems: (inv.lineItems || []).map(li => ({ item: li.item, description: li.description, qty: li.qty, rate: li.rate, amount: li.amount })) })), totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0) }];
-                    await generateStatementPdfAndShare(stmtData, sendEmailMessage);
-                  }
-                  addNotification({ title: "Statement Texted", message: `Statement PDF shared for ${client?.practiceName || "client"}`, type: "update" });
-                  const onFilePhone = client?.phone || "";
-                  const enteredPhones = phones.join("; ");
-                  const phoneChanged = onFilePhone.trim() !== enteredPhones.trim() && enteredPhones.length > 0;
-                  if (phoneChanged && client) {
-                    Alert.alert("Save Phone Number?", `${enteredPhones} is not on file for ${client.practiceName}. Would you like to save it?`, [
-                      { text: "Yes, Save", onPress: () => { updateClient(client.id, { phone: enteredPhones }); setAdminView("statements-hub"); } },
-                      { text: "No", onPress: () => setAdminView("statements-hub") },
-                    ]);
-                  } else { setAdminView("statements-hub"); }
-                }}
-              >
-                <Ionicons name="chatbubble-ellipses" size={18} color="#FFF" />
-                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Text PDF</Text>
-              </Pressable>
-            )}
-          </View>
+                  })),
+                  totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0),
+                }]);
+              }
+              setEmailPreviewBackView("send-statement");
+              setAdminView("email-statement-preview");
+            }}
+          >
+            <Ionicons name="eye" size={18} color="#FFF" />
+            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Preview & Send</Text>
+          </Pressable>
         </View>
       </ScrollView>
     );
@@ -7195,502 +6690,6 @@ function AdminDashboard() {
     );
   }
 
-  function renderARAgingReport() {
-    const today = Date.now();
-    const MS_DAY = 86400000;
-    const unpaid = invoices.filter(i => i.status === "open" || i.status === "overdue" || i.status === "sent");
-
-    const clientMap: Record<string, { name: string; buckets: [number, number, number, number] }> = {};
-    unpaid.forEach(inv => {
-      const daysLate = Math.floor((today - inv.dueAt) / MS_DAY);
-      if (!clientMap[inv.clientId]) clientMap[inv.clientId] = { name: inv.clientName || inv.billTo || "Unknown", buckets: [0, 0, 0, 0] };
-      const b = clientMap[inv.clientId].buckets;
-      if (daysLate <= 30) b[0] += inv.amount;
-      else if (daysLate <= 60) b[1] += inv.amount;
-      else if (daysLate <= 90) b[2] += inv.amount;
-      else b[3] += inv.amount;
-    });
-
-    const rows = Object.values(clientMap).sort((a, b) => (b.buckets[3] + b.buckets[2]) - (a.buckets[3] + a.buckets[2]));
-    const totals: [number, number, number, number] = [0, 0, 0, 0];
-    rows.forEach(r => r.buckets.forEach((v, i) => (totals[i] += v)));
-    const grandTotal = totals.reduce((s, v) => s + v, 0);
-    const bucketHeaders = ["Current\n(0–30)", "31–60\nDays", "61–90\nDays", "90+\nDays"];
-    const bucketColors = ["#059669", "#D97706", "#EF4444", "#7C2D12"];
-
-    const colW = [0, 52, 52, 52, 52];
-
-    return (
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 24 : 120 }}
-        showsVerticalScrollIndicator={false}
-      >
-        {renderBackHeader("A/R Aging Summary", "financial-hub")}
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
-          <LinearGradient colors={["#1E3A5F", "#1D4ED8"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ padding: 16 }}>
-            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.65)", letterSpacing: 1 }}>TOTAL OUTSTANDING</Text>
-            <Text style={{ fontSize: 32, fontFamily: "Inter_700Bold", color: "#fff", marginTop: 4 }}>{formatCurrency(grandTotal)}</Text>
-            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", marginTop: 4 }}>{rows.length} client{rows.length !== 1 ? "s" : ""} with open balances</Text>
-          </LinearGradient>
-
-          <View style={{ flexDirection: "row", paddingHorizontal: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9", backgroundColor: "#F8FAFC" }}>
-            <Text style={{ flex: 1, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569" }}>CLIENT</Text>
-            {bucketHeaders.map((h, i) => (
-              <Text key={i} style={{ width: colW[i + 1] as number, fontSize: 10, fontFamily: "Inter_700Bold", color: bucketColors[i], textAlign: "right" }}>{h}</Text>
-            ))}
-            <Text style={{ width: 60, fontSize: 10, fontFamily: "Inter_700Bold", color: "#1E293B", textAlign: "right" }}>TOTAL</Text>
-          </View>
-
-          {rows.length === 0 && (
-            <View style={{ padding: 32, alignItems: "center" }}>
-              <Ionicons name="checkmark-circle" size={40} color="#10B981" />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#065F46", marginTop: 8 }}>All Caught Up!</Text>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#6B7280", marginTop: 4 }}>No outstanding balances.</Text>
-            </View>
-          )}
-
-          {rows.map((row, idx) => {
-            const rowTotal = row.buckets.reduce((s, v) => s + v, 0);
-            return (
-              <View key={idx} style={{ flexDirection: "row", paddingHorizontal: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#F1F5F9", backgroundColor: idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
-                <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_500Medium", color: "#111827" }} numberOfLines={1}>{row.name}</Text>
-                {row.buckets.map((v, i) => (
-                  <Text key={i} style={{ width: colW[i + 1] as number, fontSize: 11, fontFamily: v > 0 ? "Inter_600SemiBold" : "Inter_400Regular", color: v > 0 ? bucketColors[i] : "#D1D5DB", textAlign: "right" }}>{v > 0 ? formatCurrency(v) : "–"}</Text>
-                ))}
-                <Text style={{ width: 60, fontSize: 12, fontFamily: "Inter_700Bold", color: "#111827", textAlign: "right" }}>{formatCurrency(rowTotal)}</Text>
-              </View>
-            );
-          })}
-
-          <View style={{ flexDirection: "row", paddingHorizontal: 10, paddingVertical: 12, backgroundColor: "#1E3A5F" }}>
-            <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff" }}>TOTAL</Text>
-            {totals.map((v, i) => (
-              <Text key={i} style={{ width: colW[i + 1] as number, fontSize: 11, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "right" }}>{v > 0 ? formatCurrency(v) : "–"}</Text>
-            ))}
-            <Text style={{ width: 60, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "right" }}>{formatCurrency(grandTotal)}</Text>
-          </View>
-        </View>
-
-        <View style={{ marginHorizontal: 16, flexDirection: "row", gap: 8, marginBottom: 16 }}>
-          {bucketHeaders.map((h, i) => (
-            <View key={i} style={{ flex: 1, backgroundColor: "#fff", borderRadius: 10, padding: 10, borderWidth: 1, borderColor: "#E5E7EB", alignItems: "center" }}>
-              <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: bucketColors[i], textAlign: "center" }}>{h.replace("\n", " ")}</Text>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: totals[i] > 0 ? bucketColors[i] : "#9CA3AF", marginTop: 4 }}>{totals[i] > 0 ? formatCurrency(totals[i]) : "–"}</Text>
-            </View>
-          ))}
-        </View>
-      </ScrollView>
-    );
-  }
-
-  function renderPLReport() {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    const q = Math.floor(now.getMonth() / 3);
-    const qtdStart = new Date(now.getFullYear(), q * 3, 1).getTime();
-    const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
-
-    let pStart = yearStart;
-    let pEnd = Date.now();
-    let pLabel = "Year to Date";
-    if (plPeriod === "mtd") { pStart = monthStart; pLabel = "Month to Date"; }
-    else if (plPeriod === "qtd") { pStart = qtdStart; pLabel = "Quarter to Date"; }
-    else if (plPeriod === "custom") {
-      pLabel = "Custom Range";
-      if (plCustomStart) { const p = new Date(plCustomStart); if (!isNaN(p.getTime())) pStart = p.getTime(); }
-      if (plCustomEnd) { const p = new Date(plCustomEnd); if (!isNaN(p.getTime())) pEnd = p.getTime() + 86400000; }
-    }
-
-    const periodInvoices = invoices.filter(i => i.issuedAt >= pStart && i.issuedAt <= pEnd);
-    const totalBilled = periodInvoices.reduce((s, i) => s + i.amount, 0);
-    const collected = periodInvoices.filter(i => i.status === "paid").reduce((s, i) => s + i.amount, 0);
-    const outstanding = periodInvoices.filter(i => i.status !== "paid").reduce((s, i) => s + i.amount, 0);
-    const creditsMemo = periodInvoices.reduce((s, i) => s + (i.credits || 0), 0);
-
-    const monthlyMap: Record<string, { billed: number; collected: number }> = {};
-    periodInvoices.forEach(inv => {
-      const d = new Date(inv.issuedAt);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      if (!monthlyMap[key]) monthlyMap[key] = { billed: 0, collected: 0 };
-      monthlyMap[key].billed += inv.amount;
-      if (inv.status === "paid") monthlyMap[key].collected += inv.amount;
-    });
-    const months = Object.keys(monthlyMap).sort();
-    const maxBilled = Math.max(...months.map(m => monthlyMap[m].billed), 1);
-
-    const pills: { label: string; val: "mtd" | "qtd" | "ytd" | "custom" }[] = [
-      { label: "MTD", val: "mtd" }, { label: "QTD", val: "qtd" }, { label: "YTD", val: "ytd" }, { label: "Custom", val: "custom" },
-    ];
-
-    return (
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 24 : 120 }}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {renderBackHeader("Profit & Loss", "financial-hub")}
-
-        <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 6 }}>
-          {pills.map(p => (
-            <Pressable key={p.val} onPress={() => setPlPeriod(p.val)}
-              style={{ flex: 1, paddingVertical: 8, borderRadius: 8, backgroundColor: plPeriod === p.val ? "#1D4ED8" : "#fff", borderWidth: 1, borderColor: plPeriod === p.val ? "#1D4ED8" : "#E5E7EB", alignItems: "center" }}>
-              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: plPeriod === p.val ? "#fff" : "#6B7280" }}>{p.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-
-        {plPeriod === "custom" && (
-          <View style={{ flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 8 }}>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#6B7280", marginBottom: 4 }}>Start Date</Text>
-              <TextInput style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 8, padding: 8, fontSize: 13, fontFamily: "Inter_400Regular", backgroundColor: "#fff" }} value={plCustomStart} onChangeText={setPlCustomStart} placeholder="YYYY-MM-DD" placeholderTextColor="#9CA3AF" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#6B7280", marginBottom: 4 }}>End Date</Text>
-              <TextInput style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 8, padding: 8, fontSize: 13, fontFamily: "Inter_400Regular", backgroundColor: "#fff" }} value={plCustomEnd} onChangeText={setPlCustomEnd} placeholder="YYYY-MM-DD" placeholderTextColor="#9CA3AF" />
-            </View>
-          </View>
-        )}
-
-        <LinearGradient colors={["#1E3A5F", "#1D4ED8"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ marginHorizontal: 16, borderRadius: 14, padding: 18, marginBottom: 12 }}>
-          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.6)", letterSpacing: 1 }}>{pLabel.toUpperCase()}</Text>
-          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.5)", marginTop: 2, marginBottom: 10 }}>{periodInvoices.length} invoice{periodInvoices.length !== 1 ? "s" : ""}</Text>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <View style={{ flex: 1, backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 10, padding: 10 }}>
-              <Text style={{ fontSize: 9, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>TOTAL BILLED</Text>
-              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#fff", marginTop: 4 }}>{formatCurrency(totalBilled)}</Text>
-            </View>
-            <View style={{ flex: 1, backgroundColor: "rgba(16,185,129,0.3)", borderRadius: 10, padding: 10 }}>
-              <Text style={{ fontSize: 9, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>COLLECTED</Text>
-              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#6EE7B7", marginTop: 4 }}>{formatCurrency(collected)}</Text>
-            </View>
-            <View style={{ flex: 1, backgroundColor: "rgba(239,68,68,0.25)", borderRadius: 10, padding: 10 }}>
-              <Text style={{ fontSize: 9, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.65)" }}>OUTSTANDING</Text>
-              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FCA5A5", marginTop: 4 }}>{formatCurrency(outstanding)}</Text>
-            </View>
-          </View>
-        </LinearGradient>
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
-          <View style={{ backgroundColor: "#F8FAFC", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", padding: 14 }}>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#1E293B" }}>INCOME</Text>
-          </View>
-          <View style={{ padding: 14, gap: 0 }}>
-            {[
-              { label: "Total Revenue (Billed)", val: totalBilled, color: "#111827" },
-              { label: "Credits / Memos Applied", val: -creditsMemo, color: "#D97706" },
-              { label: "Net Revenue", val: totalBilled - creditsMemo, color: "#059669", bold: true },
-            ].map((row, i) => (
-              <View key={i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: i < 2 ? 1 : 0, borderBottomColor: "#F1F5F9" }}>
-                <Text style={{ fontSize: 13, fontFamily: row.bold ? "Inter_700Bold" : "Inter_400Regular", color: "#374151" }}>{row.label}</Text>
-                <Text style={{ fontSize: 13, fontFamily: row.bold ? "Inter_700Bold" : "Inter_500Medium", color: row.color }}>{formatCurrency(Math.abs(row.val))}{row.val < 0 ? " CR" : ""}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
-          <View style={{ backgroundColor: "#F8FAFC", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", padding: 14 }}>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#1E293B" }}>COLLECTIONS</Text>
-          </View>
-          <View style={{ padding: 14, gap: 0 }}>
-            {[
-              { label: "Collected (Paid Invoices)", val: collected, color: "#059669" },
-              { label: "Outstanding A/R", val: outstanding, color: "#DC2626" },
-              { label: "Collection Rate", val: totalBilled > 0 ? ((collected / totalBilled) * 100).toFixed(1) + "%" : "0%", isText: true, color: "#1D4ED8" },
-            ].map((row, i) => (
-              <View key={i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: i < 2 ? 1 : 0, borderBottomColor: "#F1F5F9" }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#374151" }}>{row.label}</Text>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: row.color }}>{(row as any).isText ? (row.val as string) : formatCurrency(row.val as number)}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {months.length > 0 && (
-          <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 16 }}>
-            <View style={{ backgroundColor: "#F8FAFC", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", padding: 14 }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#1E293B" }}>MONTHLY BREAKDOWN</Text>
-            </View>
-            {months.map((mo, i) => {
-              const d = monthlyMap[mo];
-              const barW = (d.billed / maxBilled) * 100;
-              const colW2 = (d.collected / maxBilled) * 100;
-              const [yr, mn] = mo.split("-");
-              const label = new Date(Number(yr), Number(mn) - 1, 1).toLocaleString("default", { month: "short", year: "2-digit" });
-              return (
-                <View key={mo} style={{ paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: i < months.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9" }}>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#374151" }}>{label}</Text>
-                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#111827" }}>{formatCurrency(d.billed)}</Text>
-                  </View>
-                  <View style={{ height: 6, backgroundColor: "#F1F5F9", borderRadius: 3, marginBottom: 2 }}>
-                    <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${barW}%` as any, backgroundColor: "#BFDBFE", borderRadius: 3 }} />
-                    <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${colW2}%` as any, backgroundColor: "#1D4ED8", borderRadius: 3 }} />
-                  </View>
-                  <Text style={{ fontSize: 10, fontFamily: "Inter_400Regular", color: "#6B7280" }}>Collected: {formatCurrency(d.collected)}</Text>
-                </View>
-              );
-            })}
-          </View>
-        )}
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#FEF3C7", borderRadius: 14, padding: 14, borderWidth: 1, borderColor: "#FDE68A", marginBottom: 16, flexDirection: "row", gap: 10, alignItems: "center" }}>
-          <Ionicons name="construct-outline" size={20} color="#D97706" />
-          <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", color: "#92400E" }}>Expense tracking is coming soon. Once available, your full P&amp;L with COGS and net profit will appear here.</Text>
-        </View>
-      </ScrollView>
-    );
-  }
-
-  function renderSalesByItem() {
-    const itemMap: Record<string, { count: number; total: number }> = {};
-    invoices.forEach(inv => {
-      inv.lineItems.forEach(li => {
-        const key = li.item.trim() || li.description.trim() || "Unlabeled";
-        if (!itemMap[key]) itemMap[key] = { count: 0, total: 0 };
-        itemMap[key].count += li.qty;
-        itemMap[key].total += li.amount;
-      });
-    });
-
-    const rows = Object.entries(itemMap)
-      .map(([item, data]) => ({ item, ...data }))
-      .sort((a, b) => b.total - a.total);
-
-    const grandTotal = rows.reduce((s, r) => s + r.total, 0);
-    const grandCount = rows.reduce((s, r) => s + r.count, 0);
-
-    return (
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 24 : 120 }}
-        showsVerticalScrollIndicator={false}
-      >
-        {renderBackHeader("Sales by Item", "financial-hub")}
-
-        <LinearGradient colors={["#1E3A5F", "#1D4ED8"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ marginHorizontal: 16, borderRadius: 14, padding: 18, marginBottom: 12 }}>
-          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.6)", letterSpacing: 1 }}>ALL TIME</Text>
-          <Text style={{ fontSize: 32, fontFamily: "Inter_700Bold", color: "#fff", marginTop: 4 }}>{formatCurrency(grandTotal)}</Text>
-          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.55)", marginTop: 4 }}>{rows.length} product/service types · {grandCount} units</Text>
-        </LinearGradient>
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 16 }}>
-          <View style={{ flexDirection: "row", backgroundColor: "#F8FAFC", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", paddingHorizontal: 14, paddingVertical: 10 }}>
-            <Text style={{ flex: 1, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569" }}>ITEM / SERVICE</Text>
-            <Text style={{ width: 50, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "center" }}>QTY</Text>
-            <Text style={{ width: 80, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "right" }}>AMOUNT</Text>
-            <Text style={{ width: 44, fontSize: 10, fontFamily: "Inter_700Bold", color: "#475569", textAlign: "right" }}>%</Text>
-          </View>
-
-          {rows.length === 0 && (
-            <View style={{ padding: 32, alignItems: "center" }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "#9CA3AF" }}>No invoice line items yet.</Text>
-            </View>
-          )}
-
-          {rows.map((row, idx) => {
-            const pct = grandTotal > 0 ? (row.total / grandTotal) * 100 : 0;
-            return (
-              <View key={idx} style={{ borderBottomWidth: idx < rows.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9" }}>
-                <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 10, backgroundColor: idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#111827" }} numberOfLines={1}>{row.item}</Text>
-                  </View>
-                  <Text style={{ width: 50, fontSize: 12, fontFamily: "Inter_500Medium", color: "#374151", textAlign: "center" }}>{row.count % 1 === 0 ? row.count : row.count.toFixed(1)}</Text>
-                  <Text style={{ width: 80, fontSize: 13, fontFamily: "Inter_700Bold", color: "#111827", textAlign: "right" }}>{formatCurrency(row.total)}</Text>
-                  <Text style={{ width: 44, fontSize: 11, fontFamily: "Inter_500Medium", color: "#6B7280", textAlign: "right" }}>{pct.toFixed(1)}%</Text>
-                </View>
-                <View style={{ marginHorizontal: 14, height: 3, backgroundColor: "#F1F5F9", borderRadius: 2, marginBottom: 2 }}>
-                  <View style={{ width: `${pct}%` as any, height: "100%" as any, backgroundColor: "#1D4ED8", borderRadius: 2 }} />
-                </View>
-              </View>
-            );
-          })}
-
-          <View style={{ flexDirection: "row", backgroundColor: "#1E3A5F", paddingHorizontal: 14, paddingVertical: 12 }}>
-            <Text style={{ flex: 1, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff" }}>TOTAL</Text>
-            <Text style={{ width: 50, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "center" }}>{grandCount % 1 === 0 ? grandCount : grandCount.toFixed(1)}</Text>
-            <Text style={{ width: 80, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "right" }}>{formatCurrency(grandTotal)}</Text>
-            <Text style={{ width: 44, fontSize: 12, fontFamily: "Inter_700Bold", color: "#fff", textAlign: "right" }}>100%</Text>
-          </View>
-        </View>
-      </ScrollView>
-    );
-  }
-
-  function renderReceivePayment() {
-    const clientsWithOpen = clients.filter(c =>
-      invoices.some(i => i.clientId === c.id && (i.status === "open" || i.status === "overdue" || i.status === "sent"))
-    );
-    const rpClient = rpClientId ? clients.find(c => c.id === rpClientId) : null;
-    const openForClient = rpClientId
-      ? invoices.filter(i => i.clientId === rpClientId && (i.status === "open" || i.status === "overdue" || i.status === "sent"))
-      : [];
-    const selectedTotal = openForClient
-      .filter(i => rpSelectedInvIds.includes(i.id))
-      .reduce((s, i) => s + i.amount, 0);
-    const paymentAmt = parseFloat(rpAmountText) || 0;
-    const methods = ["Check", "ACH", "Credit Card", "Cash", "Wire Transfer", "Zelle"];
-
-    function toggleInv(id: string) {
-      setRpSelectedInvIds(prev => {
-        const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
-        const newTotal = openForClient.filter(i => next.includes(i.id)).reduce((s, i) => s + i.amount, 0);
-        setRpAmountText(newTotal.toFixed(2));
-        return next;
-      });
-    }
-
-    function handleSavePayment() {
-      if (rpSelectedInvIds.length === 0) { Alert.alert("No Invoices", "Select at least one invoice to apply this payment to."); return; }
-      if (paymentAmt <= 0) { Alert.alert("Invalid Amount", "Enter a valid payment amount."); return; }
-      let remaining = paymentAmt;
-      rpSelectedInvIds.forEach(id => {
-        const inv = invoices.find(i => i.id === id);
-        if (!inv) return;
-        if (remaining <= 0) return;
-        const applied = Math.min(remaining, inv.amount);
-        remaining -= applied;
-        const newStatus: "paid" | "open" = applied >= inv.amount ? "paid" : "open";
-        updateInvoice(id, { status: newStatus, credits: (inv.credits || 0) + applied });
-      });
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Payment Recorded", `${formatCurrency(paymentAmt)} applied to ${rpSelectedInvIds.length} invoice(s).`);
-      setRpClientId(null);
-      setRpSelectedInvIds([]);
-      setRpAmountText("");
-      setRpRef("");
-      setRpMethod("Check");
-      setAdminView("financial-hub");
-    }
-
-    return (
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 24 : 120 }}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {renderBackHeader("Receive Payment", "financial-hub")}
-
-        <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
-          <View style={{ backgroundColor: "#1E3A5F", padding: 14 }}>
-            <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5 }}>SELECT CLIENT</Text>
-          </View>
-          {clientsWithOpen.length === 0 && (
-            <View style={{ padding: 24, alignItems: "center" }}>
-              <Ionicons name="checkmark-circle" size={36} color="#10B981" />
-              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#065F46", marginTop: 8 }}>No outstanding balances</Text>
-            </View>
-          )}
-          {clientsWithOpen.map((client, idx) => {
-            const openAmt = invoices.filter(i => i.clientId === client.id && (i.status === "open" || i.status === "overdue" || i.status === "sent")).reduce((s, i) => s + i.amount, 0);
-            const selected = rpClientId === client.id;
-            return (
-              <Pressable key={client.id} onPress={() => { setRpClientId(selected ? null : client.id); setRpSelectedInvIds([]); setRpAmountText(""); }}
-                style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: idx < clientsWithOpen.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9", backgroundColor: selected ? "#EFF6FF" : idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
-                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: selected ? "#1D4ED8" : "#F1F5F9", alignItems: "center", justifyContent: "center", marginRight: 12 }}>
-                  {selected ? <Ionicons name="checkmark" size={18} color="#fff" /> : <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#6B7280" }}>{(client.practiceName || client.doctorName || "?")[0].toUpperCase()}</Text>}
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: selected ? "#1D4ED8" : "#111827" }}>{client.practiceName || client.doctorName}</Text>
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{invoices.filter(i => i.clientId === client.id && i.status !== "paid").length} open invoice(s)</Text>
-                </View>
-                <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#DC2626" }}>{formatCurrency(openAmt)}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        {rpClientId && openForClient.length > 0 && (
-          <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
-            <View style={{ backgroundColor: "#1E3A5F", padding: 14, flexDirection: "row", alignItems: "center" }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5, flex: 1 }}>OUTSTANDING INVOICES</Text>
-              <Pressable onPress={() => {
-                const allIds = openForClient.map(i => i.id);
-                const allSelected = allIds.every(id => rpSelectedInvIds.includes(id));
-                if (allSelected) { setRpSelectedInvIds([]); setRpAmountText("0.00"); }
-                else { setRpSelectedInvIds(allIds); setRpAmountText(openForClient.reduce((s, i) => s + i.amount, 0).toFixed(2)); }
-              }}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#93C5FD" }}>
-                  {openForClient.every(i => rpSelectedInvIds.includes(i.id)) ? "Deselect All" : "Select All"}
-                </Text>
-              </Pressable>
-            </View>
-            {openForClient.map((inv, idx) => {
-              const checked = rpSelectedInvIds.includes(inv.id);
-              const daysLate = Math.max(0, Math.floor((Date.now() - inv.dueAt) / 86400000));
-              return (
-                <Pressable key={inv.id} onPress={() => toggleInv(inv.id)}
-                  style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: idx < openForClient.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9", backgroundColor: checked ? "#EFF6FF" : "transparent" }}>
-                  <View style={{ width: 22, height: 22, borderRadius: 4, borderWidth: 2, borderColor: checked ? "#1D4ED8" : "#D1D5DB", backgroundColor: checked ? "#1D4ED8" : "#fff", alignItems: "center", justifyContent: "center", marginRight: 12 }}>
-                    {checked && <Ionicons name="checkmark" size={14} color="#fff" />}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#111827" }}>#{formatInvNum(inv.invoiceNumber)}</Text>
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{inv.patientName || "No patient"} · Due {new Date(inv.dueAt).toLocaleDateString()}</Text>
-                    {daysLate > 0 && <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "#DC2626" }}>{daysLate} day{daysLate !== 1 ? "s" : ""} overdue</Text>}
-                  </View>
-                  <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#111827" }}>{formatCurrency(inv.amount)}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
-
-        {rpClientId && (
-          <View style={{ marginHorizontal: 16, backgroundColor: "#fff", borderRadius: 14, borderWidth: 1, borderColor: "#E5E7EB", overflow: "hidden", marginBottom: 12 }}>
-            <View style={{ backgroundColor: "#1E3A5F", padding: 14 }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", letterSpacing: 0.5 }}>PAYMENT DETAILS</Text>
-            </View>
-            <View style={{ padding: 14, gap: 12 }}>
-              <View>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 6 }}>Payment Method</Text>
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                  {methods.map(m => (
-                    <Pressable key={m} onPress={() => setRpMethod(m)}
-                      style={{ paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: rpMethod === m ? "#1D4ED8" : "#D1D5DB", backgroundColor: rpMethod === m ? "#EFF6FF" : "#fff" }}>
-                      <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: rpMethod === m ? "#1D4ED8" : "#6B7280" }}>{m}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-              </View>
-              <View>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Reference / Check #</Text>
-                <TextInput style={{ borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 8, padding: 10, fontSize: 13, fontFamily: "Inter_400Regular", backgroundColor: "#F9FAFB" }} value={rpRef} onChangeText={setRpRef} placeholder="Optional" placeholderTextColor="#9CA3AF" />
-              </View>
-              <View>
-                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#6B7280", marginBottom: 4 }}>Amount Received</Text>
-                <TextInput style={{ borderWidth: 2, borderColor: "#1D4ED8", borderRadius: 8, padding: 10, fontSize: 18, fontFamily: "Inter_700Bold", color: "#111827", backgroundColor: "#EFF6FF" }} value={rpAmountText} onChangeText={setRpAmountText} keyboardType="decimal-pad" placeholder="0.00" placeholderTextColor="#9CA3AF" />
-                {rpSelectedInvIds.length > 0 && Math.abs(paymentAmt - selectedTotal) > 0.01 && (
-                  <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#D97706", marginTop: 4 }}>Selected total: {formatCurrency(selectedTotal)}</Text>
-                )}
-              </View>
-            </View>
-          </View>
-        )}
-
-        {rpClientId && (
-          <View style={{ flexDirection: "row", marginHorizontal: 16, gap: 10, marginBottom: 24 }}>
-            <Pressable onPress={() => { setRpClientId(null); setRpSelectedInvIds([]); setRpAmountText(""); setRpRef(""); }}
-              style={({ pressed }) => ({ flex: 1, borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, backgroundColor: pressed ? "#F9FAFB" : "#fff" })}>
-              <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#374151" }}>Clear</Text>
-            </Pressable>
-            <Pressable onPress={handleSavePayment}
-              style={({ pressed }) => ({ flex: 2, backgroundColor: pressed ? "#1D4ED8" : "#2563EB", borderRadius: 12, paddingVertical: 14, alignItems: "center" as const, flexDirection: "row" as const, justifyContent: "center" as const, gap: 8 })}>
-              <Ionicons name="checkmark-circle" size={18} color="#fff" />
-              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>Save Payment</Text>
-            </Pressable>
-          </View>
-        )}
-      </ScrollView>
-    );
-  }
-
   function renderLabUsers() {
     const filteredLabUsers = labUserSearchQuery.trim()
       ? labPortalUsers.filter(u => u.username.toLowerCase().includes(labUserSearchQuery.toLowerCase()) || (u.email && u.email.toLowerCase().includes(labUserSearchQuery.toLowerCase())))
@@ -7699,7 +6698,7 @@ function AdminDashboard() {
     function handleAddUserToGroup(username: string, groupId: string) {
       const user = registeredUsers.find(u => u.username === username);
       const role = user?.role || "user";
-      console.warn("[TODO] addUserToGroup not implemented:", groupId, username, role);
+      addUserToGroup(groupId, username, role as "admin" | "user");
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert("Added", `${username} has been added to the lab.`);
       setSelectedLabGroup(null);
@@ -7909,6 +6908,243 @@ function AdminDashboard() {
     Alert.alert("Case Created", `Case ${caseNumber} created for ${rx.doctor || "Unknown Provider"}.`);
   }
 
+  function renderRestoreData() {
+    const restoreReady =
+      !!restoreArchive &&
+      restoreConfirmation.trim().toUpperCase() === "RESTORE" &&
+      !restoreSubmitting;
+
+    return (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
+          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {renderBackHeader("Import LabTrax Data", "integrations")}
+
+        <View style={{ marginHorizontal: 20, marginBottom: 16 }}>
+          <LinearGradient
+            colors={restoreMode === "replace" ? ["#7F1D1D", "#DC2626"] : ["#78350F", "#F59E0B"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ borderRadius: 16, padding: 20, marginBottom: 20 }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.15)", justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name={restoreMode === "replace" ? "warning" : "archive"} size={24} color="#FFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Restore From Backup ZIP</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.72)", marginTop: 2 }}>
+                  {restoreMode === "replace" ? "Replace mode can overwrite live records" : "Merge mode is the safer default for production data"}
+                </Text>
+              </View>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.85)", lineHeight: 18 }}>
+              Use a LabTrax backup ZIP to restore cases, invoices, payments, organizations, and related records. Always create a fresh backup first, especially before using replace mode.
+            </Text>
+          </LinearGradient>
+
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, padding: 16, marginBottom: 16 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: "#DBEAFE", justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name="document-attach" size={16} color="#2563EB" />
+              </View>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>1. Choose Backup ZIP</Text>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, lineHeight: 18, marginBottom: 14 }}>
+              Select a full LabTrax backup ZIP exported from the admin backup tools. This screen never picks a database automatically.
+            </Text>
+
+            <Pressable
+              onPress={handleSelectRestoreArchive}
+              style={({ pressed }) => ({
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                backgroundColor: "#EFF6FF",
+                borderRadius: 12,
+                paddingVertical: 13,
+                borderWidth: 1,
+                borderColor: "#BFDBFE",
+                opacity: pressed ? 0.75 : 1,
+              })}
+            >
+              <Ionicons name="folder-open-outline" size={18} color="#1D4ED8" />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#1D4ED8" }}>
+                {restoreArchive ? "Choose Different Backup ZIP" : "Choose Backup ZIP"}
+              </Text>
+            </Pressable>
+
+            {restoreArchive ? (
+              <View style={{ marginTop: 14, backgroundColor: "#F8FAFC", borderRadius: 12, padding: 14, borderWidth: 1, borderColor: Colors.light.border }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <Ionicons name="checkmark-circle" size={18} color={Colors.light.success} />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text, flex: 1 }}>{restoreArchive.name}</Text>
+                </View>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary }}>
+                  {formatFileSize(restoreArchive.size)}{restoreArchive.mimeType ? ` · ${restoreArchive.mimeType}` : ""}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, padding: 16, marginBottom: 16 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: "#FEF3C7", justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name="git-merge-outline" size={16} color="#D97706" />
+              </View>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>2. Choose Restore Mode</Text>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, lineHeight: 18, marginBottom: 14 }}>
+              Merge is safer and should be your default. Replace is only for deliberate rebuilds where wiping conflicting records is expected.
+            </Text>
+
+            <View style={{ flexDirection: Platform.OS === "web" ? "row" : "column", gap: 10 }}>
+              <Pressable
+                onPress={() => setRestoreMode("merge")}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  backgroundColor: restoreMode === "merge" ? "#ECFDF5" : "#FFFFFF",
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: restoreMode === "merge" ? "#86EFAC" : Colors.light.border,
+                  padding: 14,
+                  opacity: pressed ? 0.8 : 1,
+                })}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <Ionicons name="checkmark-circle" size={18} color="#16A34A" />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Merge</Text>
+                  <View style={{ backgroundColor: "#DCFCE7", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 }}>
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#15803D" }}>Recommended</Text>
+                  </View>
+                </View>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, lineHeight: 18 }}>
+                  Imports records from the backup while skipping conflicts. Best when protecting an active lab environment.
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => setRestoreMode("replace")}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  backgroundColor: restoreMode === "replace" ? "#FEF2F2" : "#FFFFFF",
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: restoreMode === "replace" ? "#FCA5A5" : Colors.light.border,
+                  padding: 14,
+                  opacity: pressed ? 0.8 : 1,
+                })}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <Ionicons name="warning" size={18} color="#DC2626" />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Replace</Text>
+                </View>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, lineHeight: 18 }}>
+                  Clears conflicting records before restoring from the ZIP. Only use when you intentionally want the backup to overwrite current data.
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, padding: 16, marginBottom: 16 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: "#FEE2E2", justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name="shield-checkmark" size={16} color="#DC2626" />
+              </View>
+              <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>3. Confirm Restore</Text>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, lineHeight: 18, marginBottom: 12 }}>
+              To prevent accidental restores, type RESTORE exactly. This is especially important if you are about to run replace mode on a live lab.
+            </Text>
+
+            <TextInput
+              style={[adm.input, { backgroundColor: "#F8FAFC", marginBottom: 12 }]}
+              value={restoreConfirmation}
+              onChangeText={setRestoreConfirmation}
+              placeholder='Type RESTORE to continue'
+              placeholderTextColor={Colors.light.textTertiary}
+              autoCapitalize="characters"
+              autoCorrect={false}
+            />
+
+            <View style={{ backgroundColor: restoreMode === "replace" ? "#FEF2F2" : "#FFFBEB", borderRadius: 12, padding: 12, marginBottom: 14 }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: restoreMode === "replace" ? "#B91C1C" : "#B45309", marginBottom: 4 }}>
+                {restoreMode === "replace" ? "Replace Warning" : "Merge Guidance"}
+              </Text>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: restoreMode === "replace" ? "#991B1B" : "#92400E", lineHeight: 18 }}>
+                {restoreMode === "replace"
+                  ? "Replace mode may remove or overwrite current records before the backup is restored. Make sure you have a fresh backup of the current environment first."
+                  : "Merge mode is designed to preserve the current environment by skipping conflicts rather than wiping records."}
+              </Text>
+            </View>
+
+            <Pressable
+              onPress={handleSubmitRestoreImport}
+              disabled={!restoreReady}
+              style={({ pressed }) => ({
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                backgroundColor: restoreMode === "replace" ? "#DC2626" : "#D97706",
+                borderRadius: 12,
+                paddingVertical: 14,
+                opacity: pressed || !restoreReady ? 0.6 : 1,
+              })}
+            >
+              {restoreSubmitting ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Ionicons name={restoreMode === "replace" ? "warning-outline" : "refresh-circle-outline"} size={18} color="#FFF" />
+              )}
+              <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#FFF" }}>
+                {restoreMode === "replace" ? "Run Replace Restore" : "Run Merge Restore"}
+              </Text>
+            </Pressable>
+          </View>
+
+          {restoreSummary ? (
+            <View style={{ backgroundColor: Colors.light.surface, borderRadius: 14, borderWidth: 1, borderColor: Colors.light.border, padding: 16 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: "#DCFCE7", justifyContent: "center", alignItems: "center" }}>
+                  <Ionicons name="receipt" size={16} color="#16A34A" />
+                </View>
+                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: Colors.light.text }}>Latest Restore Result</Text>
+              </View>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: Colors.light.subText, lineHeight: 18, marginBottom: 12 }}>
+                {restoreSummary.message}
+              </Text>
+              <View style={{ backgroundColor: "#F8FAFC", borderRadius: 12, padding: 12, marginBottom: restoreSummary.counts.length > 0 ? 12 : 0 }}>
+                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Mode Used
+                </Text>
+                <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: Colors.light.text, marginTop: 4 }}>
+                  {restoreSummary.mode === "replace" ? "Replace" : "Merge"}
+                </Text>
+              </View>
+              {restoreSummary.counts.length > 0 ? (
+                <View style={{ gap: 8 }}>
+                  {restoreSummary.counts.map((entry) => (
+                    <View key={entry.table} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#F8FAFC", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12 }}>
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text, flex: 1 }}>{entry.table}</Text>
+                      <Text style={{ fontSize: 13, fontFamily: "Inter_700Bold", color: Colors.light.tint }}>{entry.count}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+      </ScrollView>
+    );
+  }
+
   function renderIntegrations() {
     return (
       <ScrollView
@@ -7922,6 +7158,109 @@ function AdminDashboard() {
         {renderBackHeader("Integrations")}
 
         <View style={{ marginHorizontal: 20, marginBottom: 16 }}>
+          <LinearGradient
+            colors={["#0F172A", "#1D4ED8"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ borderRadius: 16, padding: 20, marginBottom: 20 }}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.15)", justifyContent: "center", alignItems: "center" }}>
+                <Ionicons name="shield-checkmark" size={24} color="#FFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>LabTrax Data Backup</Text>
+                <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.7)", marginTop: 2 }}>Cases, invoices, payments, users, and audit history</Text>
+              </View>
+              <View style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.15)" }}>
+                <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.85)" }}>
+                  ADMIN
+                </Text>
+              </View>
+            </View>
+            <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)", lineHeight: 18, marginBottom: 16 }}>
+              Create a full LabTrax backup before updates so your lab environment keeps the same cases, invoices, payments, and member records across web and mobile.
+            </Text>
+            <View style={{ flexDirection: Platform.OS === "web" ? "row" : "column", gap: 10 }}>
+              <Pressable
+                onPress={handleDownloadLabBackup}
+                disabled={backupDownloading || backupUploading}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  backgroundColor: "#FFFFFF",
+                  borderRadius: 12,
+                  paddingVertical: 13,
+                  opacity: pressed || backupDownloading || backupUploading ? 0.7 : 1,
+                })}
+              >
+                {backupDownloading ? (
+                  <ActivityIndicator size="small" color="#1D4ED8" />
+                ) : (
+                  <Ionicons name="download" size={18} color="#1D4ED8" />
+                )}
+                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#1D4ED8" }}>
+                  {Platform.OS === "web" ? "Download Full Backup" : "Download & Share Backup"}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={handleBackupToOneDrive}
+                disabled={backupDownloading || backupUploading}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  backgroundColor: "rgba(255,255,255,0.14)",
+                  borderRadius: 12,
+                  paddingVertical: 13,
+                  borderWidth: 1,
+                  borderColor: "rgba(255,255,255,0.22)",
+                  opacity: pressed || backupDownloading || backupUploading ? 0.7 : 1,
+                })}
+              >
+                {backupUploading ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Ionicons name="cloud-upload-outline" size={18} color="#FFF" />
+                )}
+                <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
+                  Send to OneDrive
+                </Text>
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={() => setAdminView("restore-data")}
+              style={({ pressed }) => ({
+                marginTop: 12,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                backgroundColor: "rgba(255,255,255,0.10)",
+                borderRadius: 12,
+                paddingVertical: 12,
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.18)",
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <Ionicons name="refresh-circle-outline" size={18} color="#FFF" />
+              <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
+                Open Restore / Import Screen
+              </Text>
+            </Pressable>
+            <View style={{ marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.14)" }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.75)", lineHeight: 18 }}>
+                Backups create exports only. Restore/import lives on its own protected screen and requires typing RESTORE before it can run.
+              </Text>
+            </View>
+          </LinearGradient>
+
           <LinearGradient
             colors={["#1E3A8A", "#2563EB"]}
             start={{ x: 0, y: 0 }}
@@ -8316,249 +7655,10 @@ function AdminDashboard() {
     );
   }
 
-  function renderBackup() {
-    async function handleDownloadBackup() {
-      if (isBackingUp) return;
-      setIsBackingUp(true);
-      try {
-        const token = getAccessToken();
-        const apiBase = getApiUrl();
-        const backupUrl = new URL("/api/admin/backup", apiBase).toString();
-
-        if (Platform.OS === "web") {
-          const resp = await fetch(backupUrl, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-          });
-          if (!resp.ok) throw new Error(`Server error ${resp.status}`);
-          const blob = await resp.blob();
-          const dateStr = new Date().toISOString().split("T")[0];
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `labtrax-backup-${dateStr}.zip`;
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-          setLastBackupTime(new Date().toLocaleString());
-        } else {
-          const FileSystem = await import("expo-file-system");
-          const dateStr = new Date().toISOString().split("T")[0];
-          const destPath = `${FileSystem.documentDirectory}labtrax-backup-${dateStr}.zip`;
-
-          const dlRes = await FileSystem.downloadAsync(backupUrl, destPath, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-          });
-          if (dlRes.status !== 200) throw new Error(`Server returned ${dlRes.status}`);
-
-          const isAvail = await Sharing.isAvailableAsync();
-          if (isAvail) {
-            await Sharing.shareAsync(dlRes.uri, {
-              mimeType: "application/zip",
-              dialogTitle: "Save LabTrax Backup",
-              UTI: "public.zip-archive",
-            });
-            setLastBackupTime(new Date().toLocaleString());
-          } else {
-            Alert.alert("Backup Saved", `Backup saved to:\n${dlRes.uri}`);
-            setLastBackupTime(new Date().toLocaleString());
-          }
-        }
-      } catch (e: any) {
-        console.error("Backup error:", e?.message);
-        Alert.alert("Backup Failed", e?.message || "Something went wrong. Please try again.");
-      }
-      setIsBackingUp(false);
-    }
-
-    async function handleOneDriveBackup() {
-      if (isOneDriving || isBackingUp) return;
-      setIsOneDriving(true);
-      setOneDriveResult(null);
-      try {
-        const token = getAccessToken();
-        const apiBase = getApiUrl();
-        const url = new URL("/api/admin/backup/onedrive", apiBase).toString();
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.success) throw new Error(data.error || "Upload failed.");
-        setOneDriveResult(data);
-        Alert.alert(
-          "Saved to OneDrive ✓",
-          `"${data.fileName}" saved to your OneDrive folder "${data.folder}".\n\nSize: ${(data.size / 1024).toFixed(0)} KB`,
-          [
-            { text: "Open in OneDrive", onPress: () => data.webUrl && Linking.openURL(data.webUrl) },
-            { text: "OK", style: "cancel" },
-          ]
-        );
-      } catch (e: any) {
-        console.error("OneDrive backup error:", e?.message);
-        Alert.alert("OneDrive Upload Failed", e?.message || "Could not upload to OneDrive. Please try again.");
-      }
-      setIsOneDriving(false);
-    }
-
-    const included = [
-      { icon: "people-outline", label: "All user accounts", sub: `${users.length} registered users` },
-      { icon: "folder-open-outline", label: "All case records", sub: `${cases.length} cases with full data` },
-      { icon: "images-outline", label: "Case photos & attachments", sub: "All uploaded media files" },
-      { icon: "pricetag-outline", label: "Clients & pricing", sub: `${clients.length} providers with pricing` },
-      { icon: "receipt-outline", label: "Invoices & payments", sub: `${invoices.length} financial records` },
-    ];
-
-    return (
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={{
-          paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16,
-          paddingBottom: Platform.OS === "web" ? 84 + 16 : 100,
-        }}
-        showsVerticalScrollIndicator={false}
-      >
-        {renderBackHeader("Backup Data")}
-
-        <View style={{ paddingHorizontal: 20 }}>
-          <LinearGradient
-            colors={["#064E3B", "#065F46"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={{ borderRadius: 20, padding: 22, marginBottom: 20 }}
-          >
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
-              <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.15)", alignItems: "center", justifyContent: "center", marginRight: 14 }}>
-                <Ionicons name="cloud-download" size={24} color="#fff" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#fff" }}>Data Backup</Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.65)", marginTop: 2 }}>Export a complete ZIP archive to a local server or thumb drive</Text>
-              </View>
-            </View>
-            {lastBackupTime && (
-              <View style={{ backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginTop: 4 }}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.8)" }}>
-                  Last backup: {lastBackupTime}
-                </Text>
-              </View>
-            )}
-          </LinearGradient>
-
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, letterSpacing: 0.5, marginBottom: 10 }}>
-            WHAT'S INCLUDED
-          </Text>
-          <View style={{ backgroundColor: "#fff", borderRadius: 16, borderWidth: 1, borderColor: Colors.light.border, marginBottom: 24, overflow: "hidden" }}>
-            {included.map((item, idx) => (
-              <View key={idx} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderBottomWidth: idx < included.length - 1 ? 1 : 0, borderBottomColor: Colors.light.borderLight }}>
-                <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: "#D1FAE5", alignItems: "center", justifyContent: "center", marginRight: 14 }}>
-                  <Ionicons name={item.icon as any} size={18} color="#059669" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>{item.label}</Text>
-                  <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>{item.sub}</Text>
-                </View>
-                <Ionicons name="checkmark-circle" size={18} color="#059669" />
-              </View>
-            ))}
-          </View>
-
-          <View style={{ backgroundColor: "#FEF3C7", borderRadius: 14, padding: 14, marginBottom: 24, flexDirection: "row", alignItems: "flex-start", borderWidth: 1, borderColor: "#FDE68A" }}>
-            <Ionicons name="information-circle-outline" size={18} color="#D97706" style={{ marginRight: 10, marginTop: 1 }} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>Security Note</Text>
-              <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#A16207", marginTop: 3, lineHeight: 18 }}>
-                Passwords are never included in backups. Store your backup file securely — it contains patient and financial data subject to HIPAA regulations.
-              </Text>
-            </View>
-          </View>
-
-          <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.textTertiary, letterSpacing: 0.5, marginBottom: 10 }}>
-            SAVE BACKUP TO
-          </Text>
-
-          <Pressable
-            onPress={handleDownloadBackup}
-            disabled={isBackingUp || isOneDriving}
-            style={({ pressed }) => [{
-              backgroundColor: (isBackingUp || isOneDriving) ? "#A7F3D0" : "#059669",
-              borderRadius: 14,
-              paddingVertical: 16,
-              alignItems: "center",
-              justifyContent: "center",
-              flexDirection: "row",
-              gap: 10,
-              opacity: pressed ? 0.85 : 1,
-              marginBottom: 12,
-            }]}
-          >
-            {isBackingUp
-              ? <ActivityIndicator color="#fff" size="small" />
-              : <Ionicons name="download-outline" size={22} color="#fff" />}
-            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>
-              {isBackingUp ? "Generating…" : "Local / Thumb Drive"}
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={handleOneDriveBackup}
-            disabled={isOneDriving || isBackingUp}
-            style={({ pressed }) => [{
-              backgroundColor: (isOneDriving || isBackingUp) ? "#BFDBFE" : "#0078D4",
-              borderRadius: 14,
-              paddingVertical: 16,
-              alignItems: "center",
-              justifyContent: "center",
-              flexDirection: "row",
-              gap: 10,
-              opacity: pressed ? 0.85 : 1,
-              marginBottom: 8,
-            }]}
-          >
-            {isOneDriving
-              ? <ActivityIndicator color="#fff" size="small" />
-              : <Ionicons name="cloud-upload-outline" size={22} color="#fff" />}
-            <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#fff" }}>
-              {isOneDriving ? "Uploading to OneDrive…" : "Save to OneDrive"}
-            </Text>
-          </Pressable>
-
-          {oneDriveResult && (
-            <Pressable
-              onPress={() => oneDriveResult.webUrl && Linking.openURL(oneDriveResult.webUrl)}
-              style={({ pressed }) => [{ backgroundColor: "#EFF6FF", borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: "#BFDBFE", flexDirection: "row", alignItems: "center", gap: 10, opacity: pressed ? 0.8 : 1 }]}
-            >
-              <Ionicons name="checkmark-circle" size={20} color="#0078D4" />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#1D4ED8" }}>Saved to OneDrive</Text>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#3B82F6", marginTop: 2 }}>{oneDriveResult.folder} / {oneDriveResult.fileName}</Text>
-              </View>
-              <Ionicons name="open-outline" size={16} color="#3B82F6" />
-            </Pressable>
-          )}
-
-          {Platform.OS !== "web" && (
-            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", marginTop: 8 }}>
-              Local backup opens the share sheet · OneDrive saves directly to your account
-            </Text>
-          )}
-          {Platform.OS === "web" && (
-            <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", marginTop: 8 }}>
-              Local downloads to your computer · OneDrive saves to your Microsoft account
-            </Text>
-          )}
-        </View>
-      </ScrollView>
-    );
-  }
-
   switch (adminView) {
     case "delete-cases": return renderDeleteCases();
     case "inactive-clients": return renderInactiveClients();
     case "deleted-invoices": return renderDeletedInvoices();
-    case "backup": return renderBackup();
     case "financial-hub": return renderFinancialHub();
     case "client-hub": return renderClientHub();
     case "clients": return renderClients();
@@ -8578,11 +7678,6 @@ function AdminDashboard() {
     case "text-invoice": return renderTextInvoice();
     case "pick-invoice-to-send": return renderPickInvoiceToSend();
     case "invoice-detail": return renderInvoiceDetail();
-    case "edit-invoice": return renderEditInvoice();
-    case "ar-aging": return renderARAgingReport();
-    case "pl-report": return renderPLReport();
-    case "sales-by-item": return renderSalesByItem();
-    case "receive-payment": return renderReceivePayment();
     case "statements": return renderStatements();
     case "statements-hub": return renderStatementsHub();
     case "view-statements": return renderViewStatements();
@@ -8599,12 +7694,13 @@ function AdminDashboard() {
     case "edit-locations": return renderEditLocations();
     case "lab-users": return renderLabUsers();
     case "integrations": return renderIntegrations();
+    case "restore-data": return renderRestoreData();
     default: return renderHub();
   }
 }
 
 function ProviderDashboard() {
-  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated, fetchLabDirectory, refreshCases, hardRefresh } = useApp();
+  const { cases, role, adminUnlocked, users, addUser, updateUser, removeUser, customStationLabels, sendGroupJoinRequest, groupJoinRequests, invoices, updateInvoice, addNotification, userIsAffiliated, fetchLabDirectory, refreshCases } = useApp();
   const { currentUser, registeredUsers, logout, profilePicUri, setProfilePicUri, changePassword } = useAuth();
   const insets = useSafeAreaInsets();
   type ProviderLabDirectoryEntry = {
@@ -8636,7 +7732,7 @@ function ProviderDashboard() {
   const [payProcessing, setPayProcessing] = useState(false);
   const [paidInvoiceIds, setPaidInvoiceIds] = useState<string[]>([]);
   const [paymentReceiptEmail, setPaymentReceiptEmail] = useState("");
-  const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
+  const [viewingInvoice, setViewingInvoice] = useState<typeof invoices[0] | null>(null);
   const [prefOcclusion, setPrefOcclusion] = useState("");
   const [prefPontic, setPrefPontic] = useState("");
   const [prefContact, setPrefContact] = useState("");
@@ -8769,7 +7865,7 @@ function ProviderDashboard() {
               refreshing={refreshing}
               onRefresh={async () => {
                 setRefreshing(true);
-                await hardRefresh();
+                await refreshCases();
                 setRefreshing(false);
               }}
             />
@@ -8797,7 +7893,7 @@ function ProviderDashboard() {
               <Pressable
                 onPress={async () => {
                   setRefreshing(true);
-                  await hardRefresh();
+                  await refreshCases();
                   setRefreshing(false);
                 }}
               >
@@ -9811,9 +8907,9 @@ function ProviderDashboard() {
                     const totalPaid = paidInvs.reduce((s, i) => s + i.amount, 0);
                     addNotification({
                       type: "alert",
-                      title: "Payment Received",
                       message: `Payment received: $${totalPaid.toFixed(2)} for ${paidInvs.length} invoice${paidInvs.length !== 1 ? "s" : ""} from ${currentUser || "Provider"}`,
                       caseId: "",
+                      timestamp: now,
                     });
                     setPaidInvoiceIds([...selectedInvoiceIds]);
                     setPayProcessing(false);
@@ -9941,16 +9037,16 @@ function ProviderDashboard() {
                 <View style={{
                   marginTop: 8, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 8,
                   backgroundColor: viewingInvoice.status === "paid" ? Colors.light.successLight
-                    : (viewingInvoice.status === "overdue" || viewingInvoice.dueAt < Date.now()) ? Colors.light.errorLight
+                    : (viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid")) ? Colors.light.errorLight
                     : Colors.light.warningLight,
                 }}>
                   <Text style={{
                     fontSize: 13, fontFamily: "Inter_700Bold", textTransform: "uppercase",
                     color: viewingInvoice.status === "paid" ? Colors.light.success
-                      : (viewingInvoice.status === "overdue" || viewingInvoice.dueAt < Date.now()) ? Colors.light.error
+                      : (viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid")) ? Colors.light.error
                       : Colors.light.warning,
                   }}>
-                    {viewingInvoice.status === "overdue" || viewingInvoice.dueAt < Date.now() ? "Overdue" : viewingInvoice.status}
+                    {viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid") ? "Overdue" : viewingInvoice.status}
                   </Text>
                 </View>
               </View>
@@ -10079,7 +9175,7 @@ const provStyles = StyleSheet.create({
 type MasterView = "hub" | "all-users" | "lab-portal" | "provider-portal";
 
 function MasterAdminDashboard() {
-  const { cases, clients, users, invoices, hardRefresh } = useApp();
+  const { cases, clients, users, invoices, refreshCases } = useApp();
   const { currentUser, registeredUsers, logout } = useAuth();
   const insets = useSafeAreaInsets();
 
@@ -10092,7 +9188,7 @@ function MasterAdminDashboard() {
 
   async function handleRefresh() {
     setRefreshing(true);
-    await hardRefresh();
+    await refreshCases();
     setRefreshing(false);
   }
 
@@ -10887,40 +9983,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: Colors.light.tintLight,
   },
-  aiChatCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: Colors.light.surface,
-    borderRadius: 16,
-    padding: 14,
-    marginHorizontal: 20,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: Colors.light.border,
-    gap: 12,
-  },
-  aiChatIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: Colors.light.tintLight,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  aiChatInfo: {
-    flex: 1,
-  },
-  aiChatTitle: {
-    fontSize: 15,
-    fontFamily: "Inter_600SemiBold",
-    color: Colors.light.text,
-  },
-  aiChatSub: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-    color: Colors.light.textSecondary,
-    marginTop: 2,
-  },
 });
 
 const adm = StyleSheet.create({
@@ -11425,17 +10487,6 @@ const adm = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     color: Colors.light.text,
   },
-  textInput: {
-    height: 44,
-    backgroundColor: Colors.light.surfaceSecondary,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.light.border,
-    paddingHorizontal: 12,
-    fontFamily: "Inter_400Regular",
-    fontSize: 14,
-    color: Colors.light.text,
-  },
 });
 
 const invStyles = StyleSheet.create({
@@ -11641,3 +10692,4 @@ const invStyles = StyleSheet.create({
     color: Colors.light.text,
   },
 });
+

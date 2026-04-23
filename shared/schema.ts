@@ -43,7 +43,6 @@ export const users = pgTable("users", {
   accountNumber: text("account_number"),
   wantsUpdates: boolean("wants_updates").default(false),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-  workStatus: text("work_status").default("available"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -77,12 +76,12 @@ export const organizations = pgTable("organizations", {
 });
 
 export const organizationMemberships = pgTable(
-  "lab_memberships",
+  "organization_memberships",
   {
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    labId: varchar("lab_id")
+    organizationId: varchar("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     userId: varchar("user_id")
@@ -103,24 +102,24 @@ export const organizationMemberships = pgTable(
   },
   (table) => ({
     uniqueMemberPerOrg: uniqueIndex("memberships_org_user_unique").on(
-      table.labId,
+      table.organizationId,
       table.userId
     ),
-    orgIdx: index("memberships_org_idx").on(table.labId),
+    orgIdx: index("memberships_org_idx").on(table.organizationId),
     userIdx: index("memberships_user_idx").on(table.userId),
   })
 );
 
 export const organizationJoinRequests = pgTable(
-  "join_requests",
+  "organization_join_requests",
   {
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    labId: varchar("lab_id")
+    organizationId: varchar("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    userId: varchar("user_id")
+    requestedByUserId: varchar("requested_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     requestedRole: text("requested_role").notNull(),
@@ -133,31 +132,27 @@ export const organizationJoinRequests = pgTable(
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
-  },
-  (table) => ({
-    pendingUnique: uniqueIndex("join_requests_pending_unique")
-      .on(table.labId, table.userId)
-      .where(sql`status = 'pending'`),
-  })
+  }
 );
 
 export const organizationInvites = pgTable(
-  "lab_invites",
+  "organization_invites",
   {
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
-    labId: varchar("lab_id")
+    organizationId: varchar("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    email: text("email"),
+    email: text("email").notNull(),
     phone: text("phone"),
-    roleToAssign: text("role_to_assign"),
-    token: text("token"),
+    roleToAssign: text("role_to_assign").notNull(),
+    token: text("token").notNull(),
     status: text("status").default("pending").notNull(),
     invitedByUserId: varchar("invited_by_user_id")
+      .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
-    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedByUserId: varchar("accepted_by_user_id").references(
       () => users.id,
       { onDelete: "set null" }
@@ -167,7 +162,7 @@ export const organizationInvites = pgTable(
     updatedAt: updatedAt(),
   },
   (table) => ({
-    tokenUnique: uniqueIndex("lab_invites_token_unique").on(
+    tokenUnique: uniqueIndex("organization_invites_token_unique").on(
       table.token
     ),
   })
@@ -532,7 +527,7 @@ export const organizationMembershipsRelations = relations(
   organizationMemberships,
   ({ one }) => ({
     organization: one(organizations, {
-      fields: [organizationMemberships.labId],
+      fields: [organizationMemberships.organizationId],
       references: [organizations.id],
     }),
     user: one(users, {
@@ -541,21 +536,6 @@ export const organizationMembershipsRelations = relations(
     }),
   })
 );
-
-export const notifications = pgTable("notifications", {
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  userId: varchar("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  type: text("type").notNull(),
-  title: text("title").notNull(),
-  body: text("body").notNull(),
-  dataJson: jsonb("data_json"),
-  readAt: timestamp("read_at", { withTimezone: true }),
-  createdAt: createdAt(),
-});
 
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,

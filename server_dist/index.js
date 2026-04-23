@@ -1,136 +1,22 @@
 var __defProp = Object.defineProperty;
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined")
+    return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
 // server/index.ts
-import express2 from "express";
-
-// server/routes.ts
 import express from "express";
-import { createServer } from "node:http";
-import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import archiver from "archiver";
-
-// server/lib/onedrive.ts
-var cachedSettings = null;
-var cacheExpiresAt = 0;
-async function getOneDriveAccessToken() {
-  const now = Date.now();
-  if (cachedSettings && cacheExpiresAt > now + 6e4) {
-    return cachedSettings.settings?.access_token || cachedSettings.settings?.oauth?.credentials?.access_token;
-  }
-  const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
-  if (!hostname)
-    throw new Error("OneDrive connector not available in this environment.");
-  const xReplitToken = process.env.REPL_IDENTITY ? "repl " + process.env.REPL_IDENTITY : process.env.WEB_REPL_RENEWAL ? "depl " + process.env.WEB_REPL_RENEWAL : null;
-  if (!xReplitToken)
-    throw new Error("Replit identity token not found.");
-  const resp = await fetch(
-    `https://${hostname}/api/v2/connection?include_secrets=true&connector_names=onedrive`,
-    { headers: { Accept: "application/json", "X-Replit-Token": xReplitToken } }
-  );
-  if (!resp.ok)
-    throw new Error(`Connector fetch failed: ${resp.status}`);
-  const data = await resp.json();
-  cachedSettings = data.items?.[0];
-  if (!cachedSettings)
-    throw new Error("OneDrive connection not found. Please reconnect.");
-  const expiresAt = cachedSettings.settings?.expires_at;
-  cacheExpiresAt = expiresAt ? new Date(expiresAt).getTime() : now + 35e5;
-  const token = cachedSettings.settings?.access_token || cachedSettings.settings?.oauth?.credentials?.access_token;
-  if (!token)
-    throw new Error("OneDrive access token not available.");
-  return token;
-}
-async function graphRequest(path3, options = {}, token) {
-  const accessToken = token || await getOneDriveAccessToken();
-  return fetch(`https://graph.microsoft.com/v1.0${path3}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      ...options.headers || {}
-    }
-  });
-}
-async function uploadToOneDrive(fileBuffer, fileName, folderPath = "LabTrax Backups") {
-  const token = await getOneDriveAccessToken();
-  const uploadPath = `/${folderPath}/${fileName}`;
-  const CHUNK_SIZE = 5 * 1024 * 1024;
-  if (fileBuffer.length <= 4 * 1024 * 1024) {
-    const resp = await graphRequest(
-      `/me/drive/root:${encodeURIComponent(uploadPath).replace(/%2F/g, "/")}:/content`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: fileBuffer
-      },
-      token
-    );
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`OneDrive upload failed: ${err}`);
-    }
-    const item = await resp.json();
-    return { webUrl: item.webUrl || "", name: item.name, size: item.size };
-  }
-  const sessionResp = await graphRequest(
-    `/me/drive/root:${encodeURIComponent(uploadPath).replace(/%2F/g, "/")}:/createUploadSession`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        item: {
-          "@microsoft.graph.conflictBehavior": "rename",
-          name: fileName
-        }
-      })
-    },
-    token
-  );
-  if (!sessionResp.ok) {
-    const err = await sessionResp.text();
-    throw new Error(`Could not create OneDrive upload session: ${err}`);
-  }
-  const session = await sessionResp.json();
-  const uploadUrl = session.uploadUrl;
-  if (!uploadUrl)
-    throw new Error("No upload URL returned from OneDrive.");
-  let offset = 0;
-  let lastResponse = null;
-  while (offset < fileBuffer.length) {
-    const chunk = fileBuffer.slice(offset, offset + CHUNK_SIZE);
-    const end = offset + chunk.length - 1;
-    const chunkResp = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Length": String(chunk.length),
-        "Content-Range": `bytes ${offset}-${end}/${fileBuffer.length}`,
-        "Content-Type": "application/octet-stream"
-      },
-      body: chunk
-    });
-    if (!chunkResp.ok && chunkResp.status !== 202) {
-      const err = await chunkResp.text();
-      throw new Error(`OneDrive chunk upload failed at offset ${offset}: ${err}`);
-    }
-    lastResponse = await chunkResp.json().catch(() => ({}));
-    offset += chunk.length;
-  }
-  return {
-    webUrl: lastResponse?.webUrl || "",
-    name: lastResponse?.name || fileName,
-    size: lastResponse?.size || fileBuffer.length
-  };
-}
 
 // server/routes.ts
-import multer from "multer";
-import OpenAI, { toFile } from "openai";
+import { createServer } from "node:http";
+import OpenAI from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 
@@ -153,7 +39,6 @@ __export(schema_exports, {
   invoiceLineItems: () => invoiceLineItems,
   invoices: () => invoices,
   labCases: () => labCases,
-  notifications: () => notifications,
   organizationConnections: () => organizationConnections,
   organizationInvites: () => organizationInvites,
   organizationJoinRequests: () => organizationJoinRequests,
@@ -203,7 +88,6 @@ var users = pgTable("users", {
   accountNumber: text("account_number"),
   wantsUpdates: boolean("wants_updates").default(false),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-  workStatus: text("work_status").default("available"),
   createdAt: timestamp("created_at").defaultNow()
 });
 var labCases = pgTable("lab_cases", {
@@ -232,10 +116,10 @@ var organizations = pgTable("organizations", {
   updatedAt: updatedAt()
 });
 var organizationMemberships = pgTable(
-  "lab_memberships",
+  "organization_memberships",
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    labId: varchar("lab_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
     userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     role: text("role").notNull(),
     status: text("status").default("active").notNull(),
@@ -252,19 +136,19 @@ var organizationMemberships = pgTable(
   },
   (table) => ({
     uniqueMemberPerOrg: uniqueIndex("memberships_org_user_unique").on(
-      table.labId,
+      table.organizationId,
       table.userId
     ),
-    orgIdx: index("memberships_org_idx").on(table.labId),
+    orgIdx: index("memberships_org_idx").on(table.organizationId),
     userIdx: index("memberships_user_idx").on(table.userId)
   })
 );
 var organizationJoinRequests = pgTable(
-  "join_requests",
+  "organization_join_requests",
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    labId: varchar("lab_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-    userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    requestedByUserId: varchar("requested_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     requestedRole: text("requested_role").notNull(),
     message: text("message"),
     status: text("status").default("pending").notNull(),
@@ -275,23 +159,20 @@ var organizationJoinRequests = pgTable(
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt()
-  },
-  (table) => ({
-    pendingUnique: uniqueIndex("join_requests_pending_unique").on(table.labId, table.userId).where(sql`status = 'pending'`)
-  })
+  }
 );
 var organizationInvites = pgTable(
-  "lab_invites",
+  "organization_invites",
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    labId: varchar("lab_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-    email: text("email"),
+    organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
     phone: text("phone"),
-    roleToAssign: text("role_to_assign"),
-    token: text("token"),
+    roleToAssign: text("role_to_assign").notNull(),
+    token: text("token").notNull(),
     status: text("status").default("pending").notNull(),
-    invitedByUserId: varchar("invited_by_user_id").references(() => users.id, { onDelete: "restrict" }),
-    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    invitedByUserId: varchar("invited_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedByUserId: varchar("accepted_by_user_id").references(
       () => users.id,
       { onDelete: "set null" }
@@ -301,7 +182,7 @@ var organizationInvites = pgTable(
     updatedAt: updatedAt()
   },
   (table) => ({
-    tokenUnique: uniqueIndex("lab_invites_token_unique").on(
+    tokenUnique: uniqueIndex("organization_invites_token_unique").on(
       table.token
     )
   })
@@ -550,7 +431,7 @@ var organizationMembershipsRelations = relations(
   organizationMemberships,
   ({ one }) => ({
     organization: one(organizations, {
-      fields: [organizationMemberships.labId],
+      fields: [organizationMemberships.organizationId],
       references: [organizations.id]
     }),
     user: one(users, {
@@ -559,16 +440,6 @@ var organizationMembershipsRelations = relations(
     })
   })
 );
-var notifications = pgTable("notifications", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  type: text("type").notNull(),
-  title: text("title").notNull(),
-  body: text("body").notNull(),
-  dataJson: jsonb("data_json"),
-  readAt: timestamp("read_at", { withTimezone: true }),
-  createdAt: createdAt()
-});
 var insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true
@@ -619,7 +490,7 @@ var pool = new pg.Pool({ connectionString });
 var db = drizzle(pool, { schema: { ...schema_exports, ...chat_exports } });
 
 // server/routes.ts
-import { eq as eq7, and as and7, inArray as inArray4 } from "drizzle-orm";
+import { eq as eq7, inArray as inArray4 } from "drizzle-orm";
 
 // server/lib/crypto.ts
 import bcrypt from "bcryptjs";
@@ -638,15 +509,15 @@ function sha256(input) {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
-// server/middleware/auth.ts
-import { and, eq, isNull, gt } from "drizzle-orm";
+// server/routes/auth.ts
+import crypto2 from "node:crypto";
+import { Router } from "express";
+import { and as and2, eq as eq2, gt as gt2, inArray, isNull as isNull2 } from "drizzle-orm";
+import { z } from "zod";
 
 // server/lib/auth.ts
 import jwt from "jsonwebtoken";
 var JWT_SECRET = process.env.JWT_SECRET || "labtrax-jwt-secret-change-in-production";
-if (!process.env.JWT_SECRET) {
-  console.warn("[SECURITY] JWT_SECRET env var is not set. Using insecure default \u2014 set JWT_SECRET before deploying to production.");
-}
 var ACCESS_TOKEN_TTL = "15m";
 var REFRESH_TOKEN_TTL = "7d";
 function signAccessToken(userId, sessionId) {
@@ -660,18 +531,10 @@ function signRefreshToken(userId, sessionId) {
   });
 }
 function verifyAccessToken(token) {
-  const payload = jwt.verify(token, JWT_SECRET);
-  if (payload.type !== "access") {
-    throw new Error("Invalid token type: expected access token");
-  }
-  return payload;
+  return jwt.verify(token, JWT_SECRET);
 }
 function verifyRefreshToken(token) {
-  const payload = jwt.verify(token, JWT_SECRET);
-  if (payload.type !== "refresh") {
-    throw new Error("Invalid token type: expected refresh token");
-  }
-  return payload;
+  return jwt.verify(token, JWT_SECRET);
 }
 function extractBearerToken(req) {
   const header = req.headers.authorization;
@@ -700,7 +563,15 @@ function ok(res, data, status = 200) {
   return res.status(status).json({ ok: true, data });
 }
 
+// server/middleware/async-handler.ts
+function asyncHandler(fn) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+
 // server/middleware/auth.ts
+import { and, eq, isNull, gt } from "drizzle-orm";
 async function requireAuth(req, _res, next) {
   const token = extractBearerToken(req);
   if (!token) {
@@ -731,31 +602,6 @@ async function requireAuth(req, _res, next) {
   } catch {
     return next(new HttpError(401, "Invalid access token."));
   }
-}
-function optionalAuth(req, _res, next) {
-  const token = extractBearerToken(req);
-  if (!token) {
-    return next();
-  }
-  try {
-    const payload = verifyAccessToken(token);
-    req.auth = { userId: payload.sub, sessionId: payload.sid };
-  } catch {
-  }
-  return next();
-}
-
-// server/routes/auth.ts
-import crypto2 from "node:crypto";
-import { Router } from "express";
-import { and as and2, eq as eq2, gt as gt2, inArray, isNull as isNull2 } from "drizzle-orm";
-import { z } from "zod";
-
-// server/middleware/async-handler.ts
-function asyncHandler(fn) {
-  return (req, res, next) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
 }
 
 // server/lib/audit.ts
@@ -798,84 +644,8 @@ function safeUser(user) {
     practicePhone: user.practicePhone,
     phoneContactName: user.phoneContactName,
     accountNumber: user.accountNumber,
-    wantsUpdates: user.wantsUpdates,
-    workStatus: user.workStatus ?? "available"
+    wantsUpdates: user.wantsUpdates
   };
-}
-function mapMembershipRoleToUserRole(role) {
-  return role === "owner" || role === "admin" ? "admin" : "user";
-}
-function buildOrganizationAddress(organization) {
-  const address = [
-    organization?.addressLine1,
-    organization?.addressLine2,
-    organization?.city,
-    organization?.state,
-    organization?.zip
-  ].filter(Boolean).join(", ");
-  return address || null;
-}
-function deriveInitialsFromUsername(username) {
-  const normalizedUsername = username?.trim() || "";
-  if (!normalizedUsername) {
-    return "LT";
-  }
-  const tokenizedParts = normalizedUsername.replace(/([a-z])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).map((part) => part.trim()).filter(Boolean);
-  if (tokenizedParts.length >= 2) {
-    return (tokenizedParts[0][0] + tokenizedParts[tokenizedParts.length - 1][0]).toUpperCase();
-  }
-  const lettersOnly = normalizedUsername.replace(/[^A-Za-z0-9]/g, "");
-  if (lettersOnly.length >= 2) {
-    return (lettersOnly[0] + lettersOnly[1]).toUpperCase();
-  }
-  return lettersOnly[0]?.toUpperCase() || "LT";
-}
-function deriveUserInitials(input) {
-  const firstInitial = input.firstName?.trim()?.[0];
-  const lastInitial = input.lastName?.trim()?.[0];
-  if (firstInitial && lastInitial) {
-    return `${firstInitial}${lastInitial}`.toUpperCase();
-  }
-  return deriveInitialsFromUsername(input.username);
-}
-async function hydrateUsersWithActiveMemberships(rawUsers) {
-  if (rawUsers.length === 0) {
-    return [];
-  }
-  const userIds = rawUsers.map((user) => user.id);
-  const memberships = await db.select().from(organizationMemberships).where(
-    and2(
-      inArray(organizationMemberships.userId, userIds),
-      eq2(organizationMemberships.status, "active")
-    )
-  );
-  const organizationIds = [...new Set(memberships.map((membership) => membership.labId))];
-  const membershipOrganizations = organizationIds.length ? await db.select().from(organizations).where(inArray(organizations.id, organizationIds)) : [];
-  const organizationsById = new Map(
-    membershipOrganizations.map((organization) => [organization.id, organization])
-  );
-  const membershipsByUserId = /* @__PURE__ */ new Map();
-  for (const membership of memberships) {
-    const existingMemberships = membershipsByUserId.get(membership.userId) ?? [];
-    existingMemberships.push(membership);
-    membershipsByUserId.set(membership.userId, existingMemberships);
-  }
-  return rawUsers.map((user) => {
-    const base = safeUser(user);
-    const activeMemberships = membershipsByUserId.get(user.id) ?? [];
-    const primaryMembership = activeMemberships.find((membership) => {
-      const organization = organizationsById.get(membership.labId);
-      return organization?.type === "lab";
-    }) ?? activeMemberships[0];
-    const primaryOrganization = primaryMembership ? organizationsById.get(primaryMembership.labId) : null;
-    return {
-      ...base,
-      practiceName: primaryOrganization?.displayName || primaryOrganization?.name || null,
-      practiceAddress: base.practiceAddress || buildOrganizationAddress(primaryOrganization),
-      practicePhone: base.practicePhone || primaryOrganization?.phone || null,
-      role: primaryMembership ? mapMembershipRoleToUserRole(primaryMembership.role) : base.role
-    };
-  });
 }
 var registerSchema = z.object({
   username: z.string().min(1),
@@ -893,17 +663,12 @@ var registerSchema = z.object({
   practicePhone: z.string().optional(),
   phoneContactName: z.string().optional(),
   accountNumber: z.string().optional(),
-  wantsUpdates: z.boolean().optional(),
-  joinOrganizationId: z.string().optional(),
-  createOrganization: z.boolean().optional()
+  wantsUpdates: z.boolean().optional()
 });
 router.post(
   "/register",
   asyncHandler(async (req, res) => {
     const input = registerSchema.parse(req.body);
-    const shouldCreateOrganization = !!input.createOrganization && !!input.practiceName?.trim() && (input.userType === "lab" || input.userType === "provider");
-    const normalizedUserRole = shouldCreateOrganization ? "admin" : input.role || "user";
-    const normalizedPracticeName = shouldCreateOrganization ? input.practiceName?.trim() || null : null;
     const existing = await db.query.users.findFirst({
       where: eq2(users.username, input.username.trim())
     });
@@ -920,11 +685,7 @@ router.post(
           "An account with this email already exists."
         );
     }
-    const initials = deriveUserInitials({
-      firstName: input.firstName,
-      lastName: input.lastName,
-      username: input.username
-    });
+    const initials = input.firstName && input.lastName ? (input.firstName[0] + input.lastName[0]).toUpperCase() : input.username.slice(0, 2).toUpperCase();
     const hashed = await hashPassword(input.password);
     const [user] = await db.insert(users).values({
       username: input.username.trim(),
@@ -935,15 +696,15 @@ router.post(
       lastName: input.lastName || null,
       initials,
       userType: input.userType || "lab",
+      role: input.role || "user",
       licenseNumber: input.licenseNumber || null,
+      practiceName: input.practiceName || null,
       doctorName: input.doctorName || null,
       practiceAddress: input.practiceAddress || null,
       practicePhone: input.practicePhone || null,
       phoneContactName: input.phoneContactName || null,
       accountNumber: input.accountNumber || null,
-      wantsUpdates: input.wantsUpdates || false,
-      role: normalizedUserRole,
-      practiceName: normalizedPracticeName
+      wantsUpdates: input.wantsUpdates || false
     }).returning();
     const sessionId = crypto2.randomUUID();
     const rawRefreshToken = signRefreshToken(user.id, sessionId);
@@ -965,54 +726,11 @@ router.post(
       entityType: "user",
       entityId: user.id
     });
-    let responseMessage = "Account created.";
-    let pendingJoinRequest = false;
-    let organizationInfo = null;
-    if (input.joinOrganizationId) {
-      const [org] = await db.select().from(organizations).where(eq2(organizations.id, input.joinOrganizationId));
-      if (org) {
-        await db.insert(organizationJoinRequests).values({
-          labId: org.id,
-          userId: user.id,
-          requestedRole: input.role === "admin" ? "admin" : "user",
-          message: `${user.username} would like to join ${org.displayName || org.name}.`,
-          status: "pending"
-        });
-        organizationInfo = { id: org.id, name: org.displayName || org.name };
-        pendingJoinRequest = true;
-        responseMessage = `Your request to join ${org.displayName || org.name} has been sent to the lab admin.`;
-      }
-    } else if (shouldCreateOrganization) {
-      const orgType = input.userType === "provider" ? "provider" : "lab";
-      const [org] = await db.insert(organizations).values({
-        type: orgType,
-        name: input.practiceName.trim(),
-        displayName: input.practiceName.trim(),
-        addressLine1: input.practiceAddress || null,
-        phone: input.practicePhone || null,
-        billingEmail: input.email || null,
-        createdByUserId: user.id
-      }).returning();
-      await db.insert(organizationMemberships).values({
-        organizationId: org.id,
-        userId: user.id,
-        role: "owner",
-        status: "active",
-        approvedByUserId: user.id,
-        joinedAt: /* @__PURE__ */ new Date()
-      });
-      organizationInfo = { id: org.id, name: org.displayName || org.name };
-      responseMessage = `${org.displayName || org.name} created and linked to your account.`;
-    }
-    const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
     return res.json({
       success: true,
       accessToken,
       refreshToken: rawRefreshToken,
-      user: hydratedUser || safeUser(user),
-      message: responseMessage,
-      pendingJoinRequest,
-      organization: organizationInfo
+      user: safeUser(user)
     });
   })
 );
@@ -1072,12 +790,11 @@ router.post(
       entityType: "session",
       entityId: sessionId
     });
-    const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
     return res.json({
       success: true,
       accessToken,
       refreshToken: rawRefreshToken,
-      user: hydratedUser || safeUser(user)
+      user: safeUser(user)
     });
   })
 );
@@ -1127,18 +844,17 @@ router.get(
         req.auth.userId
       )
     });
-    const orgIds = memberships.map((m) => m.labId);
+    const orgIds = memberships.map((m) => m.organizationId);
     const orgs = orgIds.length ? await db.select().from(organizations).where(inArray(organizations.id, orgIds)) : [];
-    const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
     return res.json({
       success: true,
-      user: hydratedUser || safeUser(user),
+      user: safeUser(user),
       memberships: memberships.map((m) => ({
         id: m.id,
         role: m.role,
         status: m.status,
-        organizationId: m.labId,
-        organization: orgs.find((org) => org.id === m.labId) ?? null
+        organizationId: m.organizationId,
+        organization: orgs.find((org) => org.id === m.organizationId) ?? null
       }))
     });
   })
@@ -1147,9 +863,8 @@ router.get(
   "/users",
   asyncHandler(async (_req, res) => {
     const allUsers = await db.select().from(users);
-    const hydratedUsers = await hydrateUsersWithActiveMemberships(allUsers);
     res.json({
-      users: hydratedUsers
+      users: allUsers.map((u) => safeUser(u))
     });
   })
 );
@@ -1194,13 +909,6 @@ router.put(
       updates.lastName = lastName;
     if (role !== void 0 && (role === "admin" || role === "user"))
       updates.role = role;
-    if (firstName !== void 0 || lastName !== void 0) {
-      updates.initials = deriveUserInitials({
-        firstName: firstName !== void 0 ? firstName : user.firstName,
-        lastName: lastName !== void 0 ? lastName : user.lastName,
-        username: user.username
-      });
-    }
     const [updated] = await db.update(users).set(updates).where(eq2(users.id, id)).returning();
     await writeAuditLog({
       req,
@@ -1219,10 +927,6 @@ router.put(
   requireAuth,
   asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const authUserId = req.auth.userId;
-    if (authUserId !== id) {
-      throw new HttpError(403, "You can only change your own password.");
-    }
     const { currentPassword, newPassword } = req.body;
     const user = await db.query.users.findFirst({
       where: eq2(users.id, id)
@@ -1274,84 +978,11 @@ router.delete(
     res.json({ success: true });
   })
 );
-async function findLabCreatorId(labName) {
-  const org = await db.query.organizations.findFirst({
-    where: eq2(organizations.name, labName)
-  });
-  if (org?.createdByUserId)
-    return org.createdByUserId;
-  const labAdmins = await db.select().from(users).where(eq2(users.role, "admin"));
-  const matching = labAdmins.filter((u) => u.practiceName?.toLowerCase().trim() === labName.toLowerCase().trim()).sort((a, b) => {
-    const aT = a.createdAt ? new Date(a.createdAt).getTime() : Infinity;
-    const bT = b.createdAt ? new Date(b.createdAt).getTime() : Infinity;
-    return aT - bT;
-  });
-  return matching.length > 0 ? matching[0].id : null;
-}
-router.get(
-  "/lab-creator",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const user = req.user;
-    if (!user.practiceName) {
-      return res.json({ isLabCreator: false });
-    }
-    const creatorId = await findLabCreatorId(user.practiceName);
-    res.json({ isLabCreator: creatorId === user.id });
-  })
-);
-router.delete(
-  "/delete-lab",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const user = req.user;
-    if (!user.practiceName) {
-      throw new HttpError(400, "You are not associated with any lab.");
-    }
-    const labName = user.practiceName;
-    const creatorId = await findLabCreatorId(labName);
-    if (!creatorId || creatorId !== user.id) {
-      throw new HttpError(403, "Only the admin who created this lab can delete it.");
-    }
-    const labNameLower = labName.toLowerCase().trim();
-    const allLabUsers = await db.select().from(users);
-    const labMembers = allLabUsers.filter(
-      (u) => u.practiceName?.toLowerCase().trim() === labNameLower
-    );
-    const memberIds = labMembers.map((m) => m.id);
-    if (memberIds.length > 0) {
-      await db.update(users).set({ practiceName: null }).where(inArray(users.id, memberIds));
-    }
-    await writeAuditLog({
-      req,
-      userId: user.id,
-      action: "lab_deleted",
-      entityType: "organization",
-      entityId: labNameLower,
-      details: { labName, membersRemoved: memberIds.length }
-    });
-    res.json({ success: true, membersRemoved: memberIds.length });
-  })
-);
-router.patch(
-  "/me/status",
-  requireAuth,
-  asyncHandler(async (req, res) => {
-    const validStatuses = ["available", "break", "out_of_office"];
-    const { workStatus } = req.body;
-    if (!validStatuses.includes(workStatus)) {
-      throw new HttpError(400, "Invalid status. Must be one of: available, break, out_of_office.");
-    }
-    const userId = req.auth.userId;
-    const [updated] = await db.update(users).set({ workStatus }).where(eq2(users.id, userId)).returning();
-    return ok(res, safeUser(updated));
-  })
-);
 var auth_default = router;
 
 // server/routes/organizations.ts
 import { Router as Router2 } from "express";
-import { and as and4, eq as eq4, inArray as inArray2, ne } from "drizzle-orm";
+import { and as and4, eq as eq4, inArray as inArray2 } from "drizzle-orm";
 import { z as z2 } from "zod";
 
 // server/lib/rbac.ts
@@ -1360,7 +991,7 @@ async function getActiveMembership(userId, organizationId) {
   const membership = await db.query.organizationMemberships.findFirst({
     where: and3(
       eq3(organizationMemberships.userId, userId),
-      eq3(organizationMemberships.labId, organizationId),
+      eq3(organizationMemberships.organizationId, organizationId),
       eq3(organizationMemberships.status, "active")
     )
   });
@@ -1398,138 +1029,6 @@ var createOrgSchema = z2.object({
   state: z2.string().optional(),
   zip: z2.string().optional()
 });
-function mapMembershipRoleToUserRole2(role) {
-  return role === "owner" || role === "admin" ? "admin" : "user";
-}
-function getOrganizationDisplayName(organization) {
-  return organization.displayName || organization.name;
-}
-function getOrganizationAddress(organization) {
-  const address = [
-    organization.addressLine1,
-    organization.addressLine2,
-    organization.city,
-    organization.state,
-    organization.zip
-  ].filter(Boolean).join(", ");
-  return address || null;
-}
-async function repairLabCaseAffiliations(labId) {
-  const [org, activeMembers] = await Promise.all([
-    db.query.organizations.findFirst({ where: eq4(organizations.id, labId) }),
-    db.select({ userId: organizationMemberships.userId }).from(organizationMemberships).where(
-      and4(
-        eq4(organizationMemberships.labId, labId),
-        eq4(organizationMemberships.status, "active")
-      )
-    )
-  ]);
-  if (!org || activeMembers.length === 0)
-    return;
-  const memberUserIds = activeMembers.map((m) => m.userId);
-  const caseRows = await db.select().from(labCases).where(inArray2(labCases.ownerId, memberUserIds));
-  if (caseRows.length === 0)
-    return;
-  const orgAffiliationKey = `org:${labId}`;
-  const orgAffiliationName = org.displayName || org.name || null;
-  const repairPromises = [];
-  for (const row of caseRows) {
-    if (!row.caseData)
-      continue;
-    let caseData;
-    try {
-      caseData = JSON.parse(row.caseData);
-    } catch {
-      continue;
-    }
-    const existingKey = caseData.affiliationKey;
-    const needsRepair = !existingKey || existingKey.startsWith("private:") || !existingKey.startsWith("org:") && !existingKey.startsWith("lab:");
-    if (!needsRepair)
-      continue;
-    const repairedData = {
-      ...caseData,
-      affiliationKey: orgAffiliationKey,
-      affiliationName: orgAffiliationName
-    };
-    repairPromises.push(
-      db.insert(labCases).values({
-        id: row.id,
-        ownerId: row.ownerId,
-        caseData: JSON.stringify(repairedData),
-        updatedAt: /* @__PURE__ */ new Date()
-      }).onConflictDoUpdate({
-        target: labCases.id,
-        set: {
-          caseData: JSON.stringify(repairedData),
-          updatedAt: /* @__PURE__ */ new Date()
-        }
-      })
-    );
-  }
-  if (repairPromises.length > 0) {
-    await Promise.all(repairPromises);
-  }
-}
-async function syncUserToOrganization(userId, organizationId, membershipRole) {
-  const organization = await db.query.organizations.findFirst({
-    where: eq4(organizations.id, organizationId)
-  });
-  if (!organization) {
-    return null;
-  }
-  await db.update(users).set({
-    practiceName: getOrganizationDisplayName(organization),
-    practiceAddress: getOrganizationAddress(organization),
-    practicePhone: organization.phone || null,
-    role: mapMembershipRoleToUserRole2(membershipRole)
-  }).where(eq4(users.id, userId));
-  return organization;
-}
-async function syncUsersToOrganization(organizationId, organization) {
-  const resolvedOrganization = organization || await db.query.organizations.findFirst({
-    where: eq4(organizations.id, organizationId)
-  });
-  if (!resolvedOrganization) {
-    return;
-  }
-  const memberships = await db.query.organizationMemberships.findMany({
-    where: and4(
-      eq4(organizationMemberships.labId, organizationId),
-      eq4(organizationMemberships.status, "active")
-    )
-  });
-  for (const membership of memberships) {
-    await db.update(users).set({
-      practiceName: getOrganizationDisplayName(resolvedOrganization),
-      practiceAddress: getOrganizationAddress(resolvedOrganization),
-      practicePhone: resolvedOrganization.phone || null,
-      role: mapMembershipRoleToUserRole2(membership.role)
-    }).where(eq4(users.id, membership.userId));
-  }
-}
-async function syncUserFromActiveMemberships(userId) {
-  const memberships = await db.query.organizationMemberships.findMany({
-    where: and4(
-      eq4(organizationMemberships.userId, userId),
-      eq4(organizationMemberships.status, "active")
-    )
-  });
-  if (memberships.length === 0) {
-    await db.update(users).set({
-      practiceName: null,
-      practiceAddress: null,
-      practicePhone: null,
-      role: "user"
-    }).where(eq4(users.id, userId));
-    return;
-  }
-  const primaryMembership = memberships[0];
-  await syncUserToOrganization(
-    userId,
-    primaryMembership.labId,
-    primaryMembership.role
-  );
-}
 router2.post(
   "/",
   asyncHandler(async (req, res) => {
@@ -1539,18 +1038,13 @@ router2.post(
       createdByUserId: req.auth.userId
     }).returning();
     await db.insert(organizationMemberships).values({
-      labId: organization.id,
+      organizationId: organization.id,
       userId: req.auth.userId,
       role: "owner",
       status: "active",
       approvedByUserId: req.auth.userId,
       joinedAt: /* @__PURE__ */ new Date()
     });
-    await syncUserToOrganization(
-      req.auth.userId,
-      organization.id,
-      "owner"
-    );
     await writeAuditLog({
       req,
       organizationId: organization.id,
@@ -1571,45 +1065,9 @@ router2.get(
         req.auth.userId
       )
     });
-    const orgIds = memberships.filter((m) => m.status === "active").map((m) => m.labId);
+    const orgIds = memberships.filter((m) => m.status === "active").map((m) => m.organizationId);
     const orgs = orgIds.length ? await db.select().from(organizations).where(inArray2(organizations.id, orgIds)) : [];
     return ok(res, orgs);
-  })
-);
-router2.get(
-  "/invites/pending-for-me",
-  asyncHandler(async (req, res) => {
-    const currentEmail = req.user.email?.toLowerCase?.().trim?.();
-    if (!currentEmail) {
-      return ok(res, []);
-    }
-    const invites = await db.query.organizationInvites.findMany({
-      where: and4(
-        eq4(organizationInvites.email, currentEmail),
-        eq4(organizationInvites.status, "pending")
-      )
-    });
-    const organizationIds = [...new Set(invites.map((invite) => invite.labId))];
-    const inviterIds = [...new Set(invites.map((invite) => invite.invitedByUserId))];
-    const inviteOrganizations = organizationIds.length ? await db.select().from(organizations).where(inArray2(organizations.id, organizationIds)) : [];
-    const inviters = inviterIds.length ? await db.select().from(users).where(inArray2(users.id, inviterIds)) : [];
-    const organizationsById = new Map(
-      inviteOrganizations.map((organization) => [organization.id, organization])
-    );
-    const invitersById = new Map(inviters.map((inviter) => [inviter.id, inviter]));
-    return ok(
-      res,
-      invites.map((invite) => ({
-        ...invite,
-        organizationId: invite.labId,
-        organization: organizationsById.get(invite.labId) ?? null,
-        invitedByUser: invitersById.get(invite.invitedByUserId) ? {
-          id: invitersById.get(invite.invitedByUserId).id,
-          username: invitersById.get(invite.invitedByUserId).username,
-          email: invitersById.get(invite.invitedByUserId).email
-        } : null
-      }))
-    );
   })
 );
 router2.get(
@@ -1643,7 +1101,6 @@ router2.patch(
     if (!existing)
       throw new HttpError(404, "Organization not found.");
     const [updated] = await db.update(organizations).set(input).where(eq4(organizations.id, organizationId)).returning();
-    await syncUsersToOrganization(organizationId, updated);
     await writeAuditLog({
       req,
       organizationId,
@@ -1666,7 +1123,7 @@ router2.get(
     );
     const memberships = await db.query.organizationMemberships.findMany({
       where: eq4(
-        organizationMemberships.labId,
+        organizationMemberships.organizationId,
         organizationId
       )
     });
@@ -1706,18 +1163,8 @@ router2.post(
       ADMIN_ROLES
     );
     const input = inviteSchema.parse(req.body);
-    const existingInvite = await db.query.organizationInvites.findFirst({
-      where: and4(
-        eq4(organizationInvites.labId, organizationId),
-        eq4(organizationInvites.email, input.email.toLowerCase()),
-        eq4(organizationInvites.status, "pending")
-      )
-    });
-    if (existingInvite) {
-      throw new HttpError(409, "A pending invite already exists for that email address.");
-    }
     const [invite] = await db.insert(organizationInvites).values({
-      labId: organizationId,
+      organizationId,
       email: input.email.toLowerCase(),
       phone: input.phone ?? null,
       roleToAssign: input.roleToAssign,
@@ -1748,39 +1195,9 @@ router2.get(
       ADMIN_ROLES
     );
     const invites = await db.query.organizationInvites.findMany({
-      where: eq4(organizationInvites.labId, organizationId)
+      where: eq4(organizationInvites.organizationId, organizationId)
     });
-    return ok(res, invites.map((inv) => ({ ...inv, organizationId: inv.labId })));
-  })
-);
-router2.post(
-  "/invites/:inviteId/decline",
-  asyncHandler(async (req, res) => {
-    const invite = await db.query.organizationInvites.findFirst({
-      where: and4(
-        eq4(organizationInvites.id, req.params.inviteId),
-        eq4(organizationInvites.status, "pending")
-      )
-    });
-    if (!invite) {
-      throw new HttpError(404, "Invite not found or already handled.");
-    }
-    const currentEmail = req.user.email?.toLowerCase?.().trim?.();
-    if (!currentEmail || !invite.email || invite.email.toLowerCase() !== currentEmail) {
-      throw new HttpError(403, "This invite does not belong to your account.");
-    }
-    const [updatedInvite] = await db.update(organizationInvites).set({
-      status: "declined"
-    }).where(eq4(organizationInvites.id, invite.id)).returning();
-    await writeAuditLog({
-      req,
-      labId: invite.labId,
-      action: "organization_invite_declined",
-      entityType: "organization_invite",
-      entityId: invite.id,
-      afterJson: updatedInvite
-    });
-    return ok(res, updatedInvite);
+    return ok(res, invites);
   })
 );
 router2.post(
@@ -1794,31 +1211,24 @@ router2.post(
     });
     if (!invite)
       throw new HttpError(404, "Invite not found or already used.");
-    if (!invite.roleToAssign || !invite.email)
-      throw new HttpError(410, "Invite is invalid or incomplete.");
-    if (invite.expiresAt && /* @__PURE__ */ new Date() > invite.expiresAt)
+    if (/* @__PURE__ */ new Date() > invite.expiresAt)
       throw new HttpError(410, "Invite has expired.");
     const userId = req.auth.userId;
-    const currentEmail = req.user.email?.toLowerCase?.().trim?.();
-    if (!currentEmail || invite.email.toLowerCase() !== currentEmail) {
-      throw new HttpError(403, "This invite does not belong to your account.");
-    }
-    const assignedRole = invite.roleToAssign;
     await db.insert(organizationMemberships).values({
-      labId: invite.labId,
+      organizationId: invite.organizationId,
       userId,
-      role: assignedRole,
+      role: invite.roleToAssign,
       status: "active",
       invitedByUserId: invite.invitedByUserId,
       approvedByUserId: invite.invitedByUserId,
       joinedAt: /* @__PURE__ */ new Date()
     }).onConflictDoUpdate({
       target: [
-        organizationMemberships.labId,
+        organizationMemberships.organizationId,
         organizationMemberships.userId
       ],
       set: {
-        role: assignedRole,
+        role: invite.roleToAssign,
         status: "active",
         invitedByUserId: invite.invitedByUserId,
         joinedAt: /* @__PURE__ */ new Date()
@@ -1829,10 +1239,9 @@ router2.post(
       acceptedByUserId: userId,
       acceptedAt: /* @__PURE__ */ new Date()
     }).where(eq4(organizationInvites.id, invite.id));
-    await syncUserToOrganization(userId, invite.labId, assignedRole);
     await writeAuditLog({
       req,
-      labId: invite.labId,
+      organizationId: invite.organizationId,
       action: "organization_invite_accepted",
       entityType: "organization_invite",
       entityId: invite.id
@@ -1851,7 +1260,7 @@ router2.post(
     const input = joinRequestSchema.parse(req.body);
     const alreadyMember = await db.query.organizationMemberships.findFirst({
       where: and4(
-        eq4(organizationMemberships.labId, organizationId),
+        eq4(organizationMemberships.organizationId, organizationId),
         eq4(
           organizationMemberships.userId,
           req.auth.userId
@@ -1863,22 +1272,9 @@ router2.post(
         409,
         "You already have a membership record for this organization."
       );
-    const existingPendingRequest = await db.query.organizationJoinRequests.findFirst({
-      where: and4(
-        eq4(organizationJoinRequests.labId, organizationId),
-        eq4(
-          organizationJoinRequests.userId,
-          req.auth.userId
-        ),
-        eq4(organizationJoinRequests.status, "pending")
-      )
-    });
-    if (existingPendingRequest) {
-      throw new HttpError(409, "You already have a pending join request.");
-    }
     const [request] = await db.insert(organizationJoinRequests).values({
-      labId: organizationId,
-      userId: req.auth.userId,
+      organizationId,
+      requestedByUserId: req.auth.userId,
       requestedRole: input.requestedRole,
       message: input.message ?? null
     }).returning();
@@ -1894,32 +1290,6 @@ router2.post(
   })
 );
 router2.get(
-  "/join-requests/mine/pending",
-  asyncHandler(async (req, res) => {
-    const currentUserId = req.auth.userId;
-    const requests = await db.query.organizationJoinRequests.findMany({
-      where: and4(
-        eq4(organizationJoinRequests.userId, currentUserId),
-        eq4(organizationJoinRequests.status, "pending")
-      )
-    });
-    const organizationIds = [...new Set(requests.map((request) => request.labId))];
-    const requestOrganizations = organizationIds.length ? await db.select().from(organizations).where(inArray2(organizations.id, organizationIds)) : [];
-    const organizationsById = new Map(
-      requestOrganizations.map((organization) => [organization.id, organization])
-    );
-    return ok(
-      res,
-      requests.map((request) => ({
-        ...request,
-        organizationId: request.labId,
-        requestedByUserId: request.userId,
-        organization: organizationsById.get(request.labId) ?? null
-      }))
-    );
-  })
-);
-router2.get(
   "/:organizationId/join-requests",
   asyncHandler(async (req, res) => {
     const organizationId = req.params.organizationId;
@@ -1929,16 +1299,12 @@ router2.get(
       ADMIN_ROLES
     );
     const requests = await db.query.organizationJoinRequests.findMany({
-      where: and4(
-        eq4(organizationJoinRequests.labId, organizationId),
-        eq4(organizationJoinRequests.status, "pending")
+      where: eq4(
+        organizationJoinRequests.organizationId,
+        organizationId
       )
     });
-    return ok(res, requests.map((r) => ({
-      ...r,
-      organizationId: r.labId,
-      requestedByUserId: r.userId
-    })));
+    return ok(res, requests);
   })
 );
 router2.post(
@@ -1954,35 +1320,20 @@ router2.post(
       throw new HttpError(404, "Join request not found.");
     await requireAnyRole(
       req.auth.userId,
-      request.labId,
+      request.organizationId,
       ADMIN_ROLES
     );
-    if (request.status === "approved") {
-      const existingMembership = await db.query.organizationMemberships.findFirst({
-        where: and4(
-          eq4(organizationMemberships.labId, request.labId),
-          eq4(organizationMemberships.userId, request.userId)
-        )
-      });
-      return ok(res, { membership: existingMembership ?? null, request });
-    }
-    if (request.status !== "pending") {
-      throw new HttpError(
-        409,
-        `Cannot approve a request that is already ${request.status}.`
-      );
-    }
     const roleToAssign = req.body.role || request.requestedRole;
     const [membership] = await db.insert(organizationMemberships).values({
-      labId: request.labId,
-      userId: request.userId,
+      organizationId: request.organizationId,
+      userId: request.requestedByUserId,
       role: roleToAssign,
       status: "active",
       approvedByUserId: req.auth.userId,
       joinedAt: /* @__PURE__ */ new Date()
     }).onConflictDoUpdate({
       target: [
-        organizationMemberships.labId,
+        organizationMemberships.organizationId,
         organizationMemberships.userId
       ],
       set: {
@@ -1992,68 +1343,20 @@ router2.post(
         joinedAt: /* @__PURE__ */ new Date()
       }
     }).returning();
-    await db.delete(organizationJoinRequests).where(
-      and4(
-        eq4(organizationJoinRequests.labId, request.labId),
-        eq4(organizationJoinRequests.userId, request.userId),
-        eq4(organizationJoinRequests.status, "approved"),
-        ne(organizationJoinRequests.id, request.id)
-      )
-    );
     const [updatedRequest] = await db.update(organizationJoinRequests).set({
       status: "approved",
       reviewedByUserId: req.auth.userId,
       reviewedAt: /* @__PURE__ */ new Date()
     }).where(eq4(organizationJoinRequests.id, request.id)).returning();
-    await syncUserToOrganization(
-      request.userId,
-      request.labId,
-      roleToAssign
-    );
-    repairLabCaseAffiliations(request.labId).catch(() => {
-    });
     await writeAuditLog({
       req,
-      labId: request.labId,
+      organizationId: request.organizationId,
       action: "organization_join_approved",
       entityType: "organization_join_request",
       entityId: request.id,
       afterJson: updatedRequest
     });
     return ok(res, { membership, request: updatedRequest });
-  })
-);
-router2.delete(
-  "/join-requests/:joinRequestId",
-  asyncHandler(async (req, res) => {
-    const request = await db.query.organizationJoinRequests.findFirst({
-      where: eq4(
-        organizationJoinRequests.id,
-        req.params.joinRequestId
-      )
-    });
-    if (!request)
-      throw new HttpError(404, "Join request not found.");
-    if (request.userId !== req.auth.userId) {
-      throw new HttpError(403, "You can only cancel your own join request.");
-    }
-    if (request.status !== "pending") {
-      throw new HttpError(409, "Only pending join requests can be cancelled.");
-    }
-    const [updated] = await db.update(organizationJoinRequests).set({
-      status: "cancelled",
-      reviewedByUserId: req.auth.userId,
-      reviewedAt: /* @__PURE__ */ new Date()
-    }).where(eq4(organizationJoinRequests.id, request.id)).returning();
-    await writeAuditLog({
-      req,
-      labId: request.labId,
-      action: "organization_join_cancelled",
-      entityType: "organization_join_request",
-      entityId: request.id,
-      afterJson: updated
-    });
-    return ok(res, updated);
   })
 );
 router2.post(
@@ -2069,18 +1372,9 @@ router2.post(
       throw new HttpError(404, "Join request not found.");
     await requireAnyRole(
       req.auth.userId,
-      request.labId,
+      request.organizationId,
       ADMIN_ROLES
     );
-    if (request.status === "rejected") {
-      return ok(res, request);
-    }
-    if (request.status !== "pending") {
-      throw new HttpError(
-        409,
-        `Cannot reject a request that is already ${request.status}.`
-      );
-    }
     const [updated] = await db.update(organizationJoinRequests).set({
       status: "rejected",
       reviewedByUserId: req.auth.userId,
@@ -2088,7 +1382,7 @@ router2.post(
     }).where(eq4(organizationJoinRequests.id, request.id)).returning();
     await writeAuditLog({
       req,
-      labId: request.labId,
+      organizationId: request.organizationId,
       action: "organization_join_rejected",
       entityType: "organization_join_request",
       entityId: request.id,
@@ -2122,7 +1416,7 @@ router2.post(
       labOrganizationId: input.labOrganizationId,
       providerOrganizationId: input.providerOrganizationId,
       requestedByOrgId: isLabMember ? input.labOrganizationId : input.providerOrganizationId,
-      userId: req.auth.userId
+      requestedByUserId: req.auth.userId
     }).onConflictDoNothing().returning();
     return ok(
       res,
@@ -2181,13 +1475,13 @@ router2.patch(
       throw new HttpError(404, "Membership not found.");
     await requireAnyRole(
       req.auth.userId,
-      membership.labId,
+      membership.organizationId,
       ADMIN_ROLES
     );
     const [updated] = await db.update(organizationMemberships).set(input).where(eq4(organizationMemberships.id, membership.id)).returning();
     await writeAuditLog({
       req,
-      labId: membership.labId,
+      organizationId: membership.organizationId,
       action: "membership_updated",
       entityType: "organization_membership",
       entityId: membership.id,
@@ -2212,15 +1506,14 @@ router2.delete(
     if (!isOwnMembership) {
       await requireAnyRole(
         req.auth.userId,
-        membership.labId,
+        membership.organizationId,
         ADMIN_ROLES
       );
     }
     await db.delete(organizationMemberships).where(eq4(organizationMemberships.id, membership.id));
-    await syncUserFromActiveMemberships(membership.userId);
     await writeAuditLog({
       req,
-      labId: membership.labId,
+      organizationId: membership.organizationId,
       action: "membership_removed",
       entityType: "organization_membership",
       entityId: membership.id,
@@ -2357,7 +1650,7 @@ router3.get(
         organizationMemberships.userId,
         req.auth.userId
       )
-    })).map((m) => m.labId);
+    })).map((m) => m.organizationId);
     const rows = membershipOrgIds.length ? await db.query.cases.findMany({
       where: or(
         inArray3(cases.labOrganizationId, membershipOrgIds),
@@ -2854,7 +2147,7 @@ router4.get(
         req.auth.userId
       )
     });
-    const orgIds = memberships.filter((m) => m.status === "active").map((m) => m.labId);
+    const orgIds = memberships.filter((m) => m.status === "active").map((m) => m.organizationId);
     const rows = orgIds.length ? await db.query.invoices.findMany({
       where: or2(
         ...orgIds.flatMap((orgId) => [
@@ -3037,285 +2330,52 @@ router4.get(
 var invoices_default = router4;
 
 // server/routes.ts
+var openai = new OpenAI({
+  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
+  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL
+});
 var verificationCodes = /* @__PURE__ */ new Map();
 var passwordResetTokens = /* @__PURE__ */ new Map();
-var DEMO_SEED_USERS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
-var cachedOpenAIClient;
-function getOpenAIClient() {
-  if (cachedOpenAIClient !== void 0) {
-    return cachedOpenAIClient;
-  }
-  const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
-  if (!apiKey) {
-    cachedOpenAIClient = null;
-    return null;
-  }
-  const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
-  cachedOpenAIClient = new OpenAI({
-    apiKey,
-    ...baseURL ? { baseURL } : {}
-  });
-  return cachedOpenAIClient;
-}
 function generateCode() {
   return Math.floor(1e5 + Math.random() * 9e5).toString();
 }
 function generateResetToken() {
-  return randomBytes(32).toString("hex");
-}
-function normalizeLegacyCaseAffiliationName(name) {
-  return name?.trim().toLowerCase() || "";
-}
-function buildLegacyPrivateAffiliationKey(userId) {
-  return userId ? `private:${userId}` : null;
-}
-function buildLegacyOrganizationAffiliationKey(organizationId) {
-  return organizationId ? `org:${organizationId}` : null;
-}
-function buildLegacyLabAffiliationKey(name) {
-  const normalizedName = normalizeLegacyCaseAffiliationName(name);
-  return normalizedName ? `lab:${normalizedName}` : null;
-}
-function resolveLegacyCaseAffiliationKeys(labCase) {
-  const keys = /* @__PURE__ */ new Set();
-  if (typeof labCase?.affiliationKey === "string" && labCase.affiliationKey.trim()) {
-    keys.add(labCase.affiliationKey.trim());
-  }
-  const legacyLabAffiliationKey = buildLegacyLabAffiliationKey(
-    typeof labCase?.affiliationName === "string" ? labCase.affiliationName : null
-  );
-  if (legacyLabAffiliationKey) {
-    keys.add(legacyLabAffiliationKey);
-  }
-  if (keys.size === 0) {
-    const privateAffiliationKey = buildLegacyPrivateAffiliationKey(
-      typeof labCase?.ownerId === "string" ? labCase.ownerId : null
-    );
-    if (privateAffiliationKey) {
-      keys.add(privateAffiliationKey);
-    }
-  }
-  return Array.from(keys);
-}
-var legacyChatStorePath = path.join(
-  process.cwd(),
-  "server",
-  ".data",
-  "legacy-chat.json"
-);
-function normalizeUsernameKey(username) {
-  return username?.trim().toLowerCase() || "";
-}
-function buildDirectConversationId(usernameA, usernameB) {
-  const normalizedUsers = [usernameA, usernameB].map((value) => normalizeUsernameKey(value)).filter(Boolean).sort();
-  if (normalizedUsers.length < 2) {
-    return null;
-  }
-  return `dm:${normalizedUsers.join("::")}`;
-}
-async function readLegacyChatStore() {
-  try {
-    const raw = await readFile(legacyChatStorePath, "utf8");
-    const parsed = JSON.parse(raw);
-    return {
-      threads: Array.isArray(parsed?.threads) ? parsed.threads : [],
-      messages: Array.isArray(parsed?.messages) ? parsed.messages : []
-    };
-  } catch {
-    return { threads: [], messages: [] };
-  }
-}
-async function writeLegacyChatStore(store) {
-  await mkdir(path.dirname(legacyChatStorePath), { recursive: true });
-  await writeFile(legacyChatStorePath, JSON.stringify(store, null, 2), "utf8");
+  return __require("crypto").randomBytes(32).toString("hex");
 }
 var DEFAULT_USERS = [
-  { username: "labadmin_demo", password: "LabTraxDemo#2026", userType: "lab", role: "admin", email: "labadmin_demo@labtrax.local", accountNumber: "LAB-001" },
-  { username: "labtech_demo", password: "LabTraxDemo#2026", userType: "lab", role: "user", email: "labtech_demo@labtrax.local", accountNumber: "LAB-002" },
-  { username: "master_demo", password: "LabTraxDemo#2026", userType: "master_admin", role: "admin", email: "master_demo@labtrax.local", accountNumber: "MA-001" }
+  { username: "admin", password: "123", userType: "lab", role: "user" },
+  { username: "tech", password: "tech123", userType: "lab", role: "user" },
+  { username: "JPPhillips", password: "Master1!", email: "john.phillips3@yahoo.com", phone: "850-363-3336", userType: "master_admin", role: "admin", accountNumber: "MA-001" }
 ];
 async function seedDefaultUsers() {
-  if (!DEMO_SEED_USERS_ENABLED) {
-    return;
-  }
-  const existingUsers = await db.select().from(users);
-  const existingUsernames = new Set(existingUsers.map((user) => user.username.toLowerCase()));
   for (const def of DEFAULT_USERS) {
-    if (existingUsernames.has(def.username.toLowerCase())) {
-      continue;
+    const allUsers = await db.select().from(users);
+    const existing = allUsers.find((u) => u.username.toLowerCase() === def.username.toLowerCase());
+    if (!existing) {
+      const hashed = await hashPassword(def.password);
+      await db.insert(users).values({
+        username: def.username,
+        password: hashed,
+        email: def.email || null,
+        phone: def.phone || null,
+        userType: def.userType,
+        role: def.role,
+        accountNumber: def.accountNumber || null,
+        initials: def.username.slice(0, 2).toUpperCase()
+      });
+      console.log(`[SEED] Created default user: ${def.username}`);
     }
-    const hashed = await hashPassword(def.password);
-    await db.insert(users).values({
-      username: def.username,
-      password: hashed,
-      email: def.email || null,
-      phone: def.phone || null,
-      userType: def.userType,
-      role: def.role,
-      accountNumber: def.accountNumber || null,
-      initials: def.username.slice(0, 2).toUpperCase()
-    });
-    existingUsernames.add(def.username.toLowerCase());
-    console.log(`[SEED] Created demo user: ${def.username}`);
   }
 }
-var casMediaDir = path.resolve(process.cwd(), "uploads", "case-media");
-var caseMediaStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    fs.mkdirSync(casMediaDir, { recursive: true });
-    cb(null, casMediaDir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname || "") || ".bin";
-    const safeBase = path.basename(file.originalname || "media", ext).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "media";
-    cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}-${safeBase}${ext}`);
-  }
-});
-var caseMediaUpload = multer({
-  storage: caseMediaStorage,
-  limits: { fileSize: 200 * 1024 * 1024 }
-});
 async function registerRoutes(app2) {
   await seedDefaultUsers();
-  fs.mkdirSync(casMediaDir, { recursive: true });
-  app2.use("/uploads/case-media", express.static(casMediaDir));
-  app2.post("/api/media/upload", requireAuth, caseMediaUpload.single("file"), (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ error: "No file uploaded" });
-      }
-      const forwardedHost = req.header("x-forwarded-host");
-      const host = forwardedHost || req.get("host") || "localhost";
-      const forwardedProto = req.header("x-forwarded-proto");
-      const protocol = forwardedProto ? forwardedProto.split(",")[0].trim() : req.protocol || "https";
-      const url = `${protocol}://${host}/uploads/case-media/${req.file.filename}`;
-      return res.json({ url, filename: req.file.filename, size: req.file.size });
-    } catch (error) {
-      console.error("Media upload error:", error?.message || error);
-      return res.status(500).json({ error: "Upload failed" });
-    }
-  });
-  async function getRepairableLabDirectoryData() {
-    const allUsers = await db.select().from(users);
-    const labAdmins = allUsers.filter(
-      (user) => user.userType === "lab" && user.role === "admin" && !!user.practiceName?.trim()
-    );
-    const labOrganizations = await db.select().from(organizations).where(eq7(organizations.type, "lab"));
-    const allLabMemberships = labOrganizations.length ? await db.select().from(organizationMemberships).where(
-      inArray4(
-        organizationMemberships.labId,
-        labOrganizations.map((organization) => organization.id)
-      )
-    ) : [];
-    const activeMemberships = labOrganizations.length ? await db.select().from(organizationMemberships).where(
-      and7(
-        inArray4(
-          organizationMemberships.labId,
-          labOrganizations.map((organization) => organization.id)
-        ),
-        eq7(organizationMemberships.status, "active")
-      )
-    ) : [];
-    const activeLabMemberIds = new Set(
-      activeMemberships.map((membership) => membership.userId)
-    );
-    const anyLabMemberIds = new Set(
-      allLabMemberships.map((membership) => membership.userId)
-    );
-    for (const adminUser of labAdmins) {
-      if (!adminUser.id || activeLabMemberIds.has(adminUser.id) || anyLabMemberIds.has(adminUser.id)) {
-        continue;
-      }
-      const normalizedPracticeName = adminUser.practiceName.trim().toLowerCase();
-      let organization = labOrganizations.find(
-        (entry) => entry.createdByUserId === adminUser.id && (entry.displayName || entry.name).toLowerCase().trim() === normalizedPracticeName
-      ) || labOrganizations.find(
-        (entry) => (entry.displayName || entry.name).toLowerCase().trim() === normalizedPracticeName
-      );
-      if (!organization) {
-        const [createdOrganization] = await db.insert(organizations).values({
-          type: "lab",
-          name: adminUser.practiceName.trim(),
-          displayName: adminUser.practiceName.trim(),
-          billingEmail: adminUser.email || null,
-          phone: adminUser.practicePhone || adminUser.phone || null,
-          addressLine1: adminUser.practiceAddress || null,
-          createdByUserId: adminUser.id
-        }).returning();
-        organization = createdOrganization;
-        labOrganizations.push(createdOrganization);
-      }
-      const hasActiveMembership = activeMemberships.some(
-        (membership) => membership.labId === organization.id && membership.userId === adminUser.id && membership.status === "active"
-      );
-      if (!hasActiveMembership) {
-        const [createdMembership] = await db.insert(organizationMemberships).values({
-          labId: organization.id,
-          userId: adminUser.id,
-          role: "owner",
-          status: "active",
-          approvedByUserId: adminUser.id,
-          joinedAt: /* @__PURE__ */ new Date()
-        }).returning();
-        activeMemberships.push(createdMembership);
-      }
-      activeLabMemberIds.add(adminUser.id);
-    }
-    return {
-      allUsers,
-      labOrganizations,
-      activeMemberships
-    };
-  }
   app2.get("/api/health", (_req, res) => {
     res.status(200).json({ ok: true, timestamp: (/* @__PURE__ */ new Date()).toISOString() });
-  });
-  app2.get("/api/labs/groups", async (_req, res) => {
-    try {
-      const { allUsers, labOrganizations, activeMemberships } = await getRepairableLabDirectoryData();
-      const memberUserIds = [
-        ...new Set(activeMemberships.map((membership) => membership.userId))
-      ];
-      const memberUsers = allUsers.filter((user) => memberUserIds.includes(user.id));
-      const userMap = new Map(memberUsers.map((u) => [u.id, u]));
-      const groups = labOrganizations.map((organization) => {
-        const organizationMembershipsForGroup = activeMemberships.filter(
-          (membership) => membership.labId === organization.id
-        );
-        const adminMembership = organizationMembershipsForGroup.find(
-          (membership) => membership.role === "owner" || membership.role === "admin"
-        );
-        const createdByUser = organization.createdByUserId ? userMap.get(organization.createdByUserId) : void 0;
-        const adminUser = adminMembership ? userMap.get(adminMembership.userId) : createdByUser;
-        if (!adminUser?.username) {
-          return null;
-        }
-        return {
-          organizationId: organization.id,
-          practiceName: organization.displayName || organization.name,
-          username: adminUser.username,
-          practiceAddress: [
-            organization.addressLine1,
-            organization.city,
-            organization.state,
-            organization.zip
-          ].filter(Boolean).join(", "),
-          memberCount: organizationMembershipsForGroup.length
-        };
-      }).filter(Boolean);
-      res.json({ groups });
-    } catch (error) {
-      console.error("List lab groups error:", error?.message || error);
-      res.status(500).json({ error: "Failed to fetch lab groups" });
-    }
   });
   app2.use("/api/auth", auth_default);
   app2.use("/api/organizations", organizations_default);
   app2.use("/api/cases", cases_default);
   app2.use("/api/invoices", invoices_default);
-  app2.post("/api/audit-log", (_req, res) => {
-    res.json({ ok: true });
-  });
   app2.post("/api/check-username", async (req, res) => {
     const { username } = req.body;
     if (!username || typeof username !== "string") {
@@ -3325,53 +2385,20 @@ async function registerRoutes(app2) {
     const existing = allUsers.find((u) => u.username.toLowerCase() === username.trim().toLowerCase());
     res.json({ available: !existing });
   });
-  app2.post("/api/legacy/cases", requireAuth, async (req, res) => {
+  app2.post("/api/legacy/cases", async (req, res) => {
     try {
       const { id, ownerId, caseData } = req.body;
       if (!id || !ownerId || !caseData) {
         return res.status(400).json({ error: "id, ownerId, and caseData are required" });
       }
-      const [existingCaseRow] = await db.select().from(labCases).where(eq7(labCases.id, id));
-      let normalizedCaseData;
-      try {
-        normalizedCaseData = typeof caseData === "string" ? JSON.parse(caseData) : caseData;
-      } catch {
-        normalizedCaseData = null;
-      }
-      if (!normalizedCaseData || typeof normalizedCaseData !== "object") {
-        normalizedCaseData = { id, ownerId };
-      }
-      if (!normalizedCaseData.id) {
-        normalizedCaseData.id = id;
-      }
-      if (!normalizedCaseData.ownerId) {
-        normalizedCaseData.ownerId = ownerId;
-      }
-      if (existingCaseRow?.caseData) {
-        try {
-          const existingCaseData = JSON.parse(existingCaseRow.caseData);
-          if (!normalizedCaseData.affiliationKey && existingCaseData?.affiliationKey) {
-            normalizedCaseData.affiliationKey = existingCaseData.affiliationKey;
-          }
-          if ((normalizedCaseData.affiliationName === void 0 || normalizedCaseData.affiliationName === null || normalizedCaseData.affiliationName === "") && existingCaseData?.affiliationName) {
-            normalizedCaseData.affiliationName = existingCaseData.affiliationName;
-          }
-        } catch {
-        }
-      }
-      const serializedCaseData = JSON.stringify(normalizedCaseData);
       await db.insert(labCases).values({
         id,
-        ownerId: normalizedCaseData.ownerId || ownerId,
-        caseData: serializedCaseData,
+        ownerId,
+        caseData: typeof caseData === "string" ? caseData : JSON.stringify(caseData),
         updatedAt: /* @__PURE__ */ new Date()
       }).onConflictDoUpdate({
         target: labCases.id,
-        set: {
-          ownerId: normalizedCaseData.ownerId || ownerId,
-          caseData: serializedCaseData,
-          updatedAt: /* @__PURE__ */ new Date()
-        }
+        set: { ownerId, caseData: typeof caseData === "string" ? caseData : JSON.stringify(caseData), updatedAt: /* @__PURE__ */ new Date() }
       });
       res.json({ success: true });
     } catch (error) {
@@ -3379,121 +2406,8 @@ async function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to save case" });
     }
   });
-  app2.get("/api/legacy/cases", requireAuth, async (req, res) => {
+  app2.get("/api/legacy/cases", async (req, res) => {
     try {
-      const scopeKeysParam = typeof req.query.scopeKeys === "string" ? req.query.scopeKeys : "";
-      const viewerUserId = typeof req.query.viewerUserId === "string" ? req.query.viewerUserId : "";
-      if (scopeKeysParam) {
-        const requestedScopeKeys = new Set(
-          scopeKeysParam.split(",").map((value) => value.trim()).filter(Boolean)
-        );
-        if (!viewerUserId || requestedScopeKeys.size === 0) {
-          return res.json({ cases: [] });
-        }
-        const rows2 = await db.select().from(labCases);
-        const parsedRows = rows2.map((row) => {
-          try {
-            const parsedCase = JSON.parse(row.caseData);
-            if (!parsedCase || typeof parsedCase !== "object") {
-              return null;
-            }
-            return {
-              row,
-              caseData: {
-                ...parsedCase,
-                ownerId: typeof parsedCase.ownerId === "string" ? parsedCase.ownerId : row.ownerId
-              }
-            };
-          } catch {
-            return null;
-          }
-        }).filter(Boolean);
-        const ownerIds2 = [
-          ...new Set(
-            parsedRows.map((entry) => entry.caseData.ownerId).filter((value) => !!value)
-          )
-        ];
-        const activeMembershipRows = ownerIds2.length ? await db.select().from(organizationMemberships).where(
-          and7(
-            inArray4(organizationMemberships.userId, ownerIds2),
-            eq7(organizationMemberships.status, "active")
-          )
-        ) : [];
-        const organizationIds = [
-          ...new Set(
-            activeMembershipRows.map((membership) => membership.labId).filter(Boolean)
-          )
-        ];
-        const organizationRows = organizationIds.length ? await db.select().from(organizations).where(inArray4(organizations.id, organizationIds)) : [];
-        const membershipsByUserId = /* @__PURE__ */ new Map();
-        for (const membership of activeMembershipRows) {
-          const currentMemberships = membershipsByUserId.get(membership.userId) ?? [];
-          currentMemberships.push(membership);
-          membershipsByUserId.set(membership.userId, currentMemberships);
-        }
-        const organizationsById = new Map(
-          organizationRows.map((organization) => [organization.id, organization])
-        );
-        const repairedRows = /* @__PURE__ */ new Map();
-        const visibleCases = parsedRows.map(({ row, caseData }) => {
-          const ownerUserId = typeof caseData.ownerId === "string" ? caseData.ownerId : row.ownerId;
-          if (!ownerUserId) {
-            return null;
-          }
-          let resolvedCase = { ...caseData, ownerId: ownerUserId };
-          const affiliationKeyIsPrivate = typeof resolvedCase.affiliationKey === "string" && resolvedCase.affiliationKey.startsWith("private:");
-          const hasExplicitLabAffiliation = !!resolvedCase.affiliationName || !!resolvedCase.affiliationKey && !affiliationKeyIsPrivate;
-          if (!hasExplicitLabAffiliation) {
-            const ownerMemberships = membershipsByUserId.get(ownerUserId) ?? [];
-            for (const membership of ownerMemberships) {
-              const organization = organizationsById.get(membership.labId);
-              if (!organization || organization.type !== "lab") {
-                continue;
-              }
-              const organizationAffiliationKey = buildLegacyOrganizationAffiliationKey(membership.labId);
-              const legacyLabAffiliationKey = buildLegacyLabAffiliationKey(
-                organization.displayName || organization.name || null
-              );
-              if (!requestedScopeKeys.has(organizationAffiliationKey || "") && !(legacyLabAffiliationKey && requestedScopeKeys.has(legacyLabAffiliationKey))) {
-                continue;
-              }
-              resolvedCase = {
-                ...resolvedCase,
-                affiliationKey: organizationAffiliationKey,
-                affiliationName: organization.displayName || organization.name || null
-              };
-              repairedRows.set(row.id, {
-                ownerId: ownerUserId,
-                caseData: JSON.stringify(resolvedCase)
-              });
-              break;
-            }
-          }
-          const caseAffiliationKeys = resolveLegacyCaseAffiliationKeys(resolvedCase);
-          const isVisible = caseAffiliationKeys.some(
-            (key) => requestedScopeKeys.has(key)
-          );
-          return isVisible ? resolvedCase : null;
-        }).filter(Boolean).sort(
-          (a, b) => (Number(b.updatedAt) || Number(b.createdAt) || 0) - (Number(a.updatedAt) || Number(a.createdAt) || 0)
-        );
-        for (const [caseId, repaired] of repairedRows.entries()) {
-          await db.insert(labCases).values({
-            id: caseId,
-            ownerId: repaired.ownerId,
-            caseData: repaired.caseData,
-            updatedAt: /* @__PURE__ */ new Date()
-          }).onConflictDoUpdate({
-            target: labCases.id,
-            set: {
-              ownerId: repaired.ownerId,
-              caseData: repaired.caseData,
-              updatedAt: /* @__PURE__ */ new Date()
-            }
-          });
-        }
-        return res.json({ cases: visibleCases });
-      }
       const ownerIdsParam = req.query.ownerIds;
       if (!ownerIdsParam) {
         return res.json({ cases: [] });
@@ -3515,239 +2429,14 @@ async function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to fetch cases" });
     }
   });
-  app2.delete("/api/legacy/cases/:caseId", requireAuth, async (req, res) => {
+  app2.delete("/api/legacy/cases/:caseId", async (req, res) => {
     try {
-      const caseId = req.params.caseId;
+      const { caseId } = req.params;
       await db.delete(labCases).where(eq7(labCases.id, caseId));
       res.json({ success: true });
     } catch (error) {
       console.error("Legacy delete case error:", error?.message || error);
       res.status(500).json({ error: "Failed to delete case" });
-    }
-  });
-  app2.get("/api/legacy/chat", requireAuth, async (req, res) => {
-    try {
-      const currentUserId = req.auth?.userId;
-      const currentUsername = req.user?.username;
-      const normalizedCurrentUsername = normalizeUsernameKey(currentUsername);
-      if (!normalizedCurrentUsername) {
-        return res.json({ conversations: [], messages: [] });
-      }
-      const store = await readLegacyChatStore();
-      const dmThreads = store.threads.filter(
-        (thread) => thread.participants.some(
-          (participant) => normalizeUsernameKey(participant) === normalizedCurrentUsername
-        )
-      );
-      const activeLabMemberships = currentUserId ? await db.query.organizationMemberships.findMany({
-        where: and7(
-          eq7(organizationMemberships.userId, currentUserId),
-          eq7(organizationMemberships.status, "active")
-        ),
-        with: { organization: true }
-      }) : [];
-      const labChannelThreads = [];
-      const labChannelMeta = /* @__PURE__ */ new Map();
-      for (const membership of activeLabMemberships) {
-        const channelId = `lab:${membership.labId}`;
-        const orgRecord = await db.query.organizations.findFirst({
-          where: eq7(organizations.id, membership.labId)
-        });
-        const orgName = orgRecord?.displayName || orgRecord?.name || "Lab";
-        labChannelMeta.set(channelId, `${orgName} Channel`);
-        const existing = store.threads.find((t) => t.id === channelId);
-        if (existing) {
-          if (!dmThreads.find((t) => t.id === channelId)) {
-            labChannelThreads.push(existing);
-          }
-        } else {
-          labChannelThreads.push({
-            id: channelId,
-            participants: [currentUsername],
-            createdAt: Date.now(),
-            updatedAt: Date.now()
-          });
-        }
-      }
-      const relevantThreads = [...dmThreads, ...labChannelThreads];
-      const relevantConversationIds = new Set(relevantThreads.map((thread) => thread.id));
-      const relevantMessages = store.messages.filter(
-        (message) => relevantConversationIds.has(message.conversationId)
-      );
-      const conversations2 = relevantThreads.map((thread) => {
-        const isLabChannel = thread.id.startsWith("lab:");
-        const channelName = isLabChannel ? labChannelMeta.get(thread.id) || "Lab Channel" : thread.participants.find(
-          (participant) => normalizeUsernameKey(participant) !== normalizedCurrentUsername
-        ) || "Unknown User";
-        const threadMessages = relevantMessages.filter((message) => message.conversationId === thread.id).sort((a, b) => a.timestamp - b.timestamp);
-        const lastMessage = threadMessages[threadMessages.length - 1];
-        const unreadCount = threadMessages.filter(
-          (message) => normalizeUsernameKey(message.senderUsername) !== normalizedCurrentUsername && !message.readBy.includes(normalizedCurrentUsername)
-        ).length;
-        return {
-          id: thread.id,
-          clientId: thread.id,
-          clientName: channelName,
-          isLabChannel,
-          lastMessage: lastMessage ? lastMessage.imageUri ? "Photo" : lastMessage.content : "",
-          lastMessageTime: lastMessage?.timestamp || thread.updatedAt || thread.createdAt,
-          unreadCount
-        };
-      }).sort((a, b) => {
-        if (a.isLabChannel && !b.isLabChannel)
-          return -1;
-        if (!a.isLabChannel && b.isLabChannel)
-          return 1;
-        return b.lastMessageTime - a.lastMessageTime;
-      });
-      const messages2 = relevantMessages.map((message) => ({
-        id: message.id,
-        conversationId: message.conversationId,
-        senderId: message.senderUsername,
-        senderType: normalizeUsernameKey(message.senderUsername) === normalizedCurrentUsername ? "lab" : "office",
-        content: message.content,
-        imageUri: message.imageUri,
-        timestamp: message.timestamp,
-        read: message.readBy.includes(normalizedCurrentUsername)
-      })).sort((a, b) => a.timestamp - b.timestamp);
-      res.json({ conversations: conversations2, messages: messages2 });
-    } catch (error) {
-      console.error("Legacy get chat error:", error?.message || error);
-      res.status(500).json({ error: "Failed to fetch messages" });
-    }
-  });
-  app2.post("/api/legacy/chat/send", requireAuth, async (req, res) => {
-    try {
-      const currentUserId = req.auth?.userId;
-      const currentUsername = req.user?.username;
-      const normalizedCurrentUsername = normalizeUsernameKey(currentUsername);
-      const labChannelId = typeof req.body?.labChannelId === "string" ? req.body.labChannelId.trim() : "";
-      const targetUsername = typeof req.body?.targetUsername === "string" ? req.body.targetUsername.trim() : "";
-      const content = typeof req.body?.content === "string" ? req.body.content.trim() : "";
-      const imageUri = typeof req.body?.imageUri === "string" ? req.body.imageUri.trim() : void 0;
-      if (!normalizedCurrentUsername) {
-        return res.status(401).json({ error: "Not authenticated." });
-      }
-      if (!content && !imageUri) {
-        return res.status(400).json({ error: "A message or image is required." });
-      }
-      const store = await readLegacyChatStore();
-      const now = Date.now();
-      if (labChannelId && labChannelId.startsWith("lab:")) {
-        const orgId = labChannelId.replace(/^lab:/, "");
-        const membership = currentUserId ? await db.query.organizationMemberships.findFirst({
-          where: and7(
-            eq7(organizationMemberships.userId, currentUserId),
-            eq7(organizationMemberships.labId, orgId),
-            eq7(organizationMemberships.status, "active")
-          )
-        }) : null;
-        if (!membership) {
-          return res.status(403).json({ error: "You are not a member of this lab." });
-        }
-        const allOrgMembers = await db.query.organizationMemberships.findMany({
-          where: and7(
-            eq7(organizationMemberships.labId, orgId),
-            eq7(organizationMemberships.status, "active")
-          )
-        });
-        const memberIds = allOrgMembers.map((m) => m.userId);
-        const memberUsers = memberIds.length > 0 ? await db.select().from(users).where(inArray4(users.id, memberIds)) : [];
-        const participants2 = memberUsers.map((u) => u.username);
-        const existingThread2 = store.threads.find((t) => t.id === labChannelId);
-        if (existingThread2) {
-          existingThread2.participants = participants2;
-          existingThread2.updatedAt = now;
-        } else {
-          store.threads.push({ id: labChannelId, participants: participants2, createdAt: now, updatedAt: now });
-        }
-        const message2 = {
-          id: randomBytes(16).toString("hex"),
-          conversationId: labChannelId,
-          senderUsername: currentUsername,
-          content,
-          ...imageUri ? { imageUri } : {},
-          timestamp: now,
-          readBy: [normalizedCurrentUsername]
-        };
-        store.messages.push(message2);
-        await writeLegacyChatStore(store);
-        return res.json({ success: true, conversationId: labChannelId, messageId: message2.id });
-      }
-      if (!targetUsername) {
-        return res.status(400).json({ error: "A target user or lab channel is required." });
-      }
-      if (normalizeUsernameKey(targetUsername) === normalizedCurrentUsername) {
-        return res.status(400).json({ error: "You cannot message yourself." });
-      }
-      const allUsers = await db.select().from(users);
-      const targetUser = allUsers.find(
-        (user) => normalizeUsernameKey(user.username) === normalizeUsernameKey(targetUsername)
-      );
-      if (!targetUser?.username) {
-        return res.status(404).json({ error: "Target user not found." });
-      }
-      const conversationId = buildDirectConversationId(currentUsername, targetUser.username) || buildDirectConversationId(currentUsername, targetUsername);
-      if (!conversationId) {
-        return res.status(400).json({ error: "Could not create a conversation." });
-      }
-      const existingThread = store.threads.find((thread) => thread.id === conversationId);
-      const participants = [currentUsername, targetUser.username].filter(
-        (value, index2, values) => values.indexOf(value) === index2
-      );
-      if (existingThread) {
-        existingThread.participants = participants;
-        existingThread.updatedAt = now;
-      } else {
-        store.threads.push({ id: conversationId, participants, createdAt: now, updatedAt: now });
-      }
-      const message = {
-        id: randomBytes(16).toString("hex"),
-        conversationId,
-        senderUsername: currentUsername,
-        content,
-        ...imageUri ? { imageUri } : {},
-        timestamp: now,
-        readBy: [normalizedCurrentUsername]
-      };
-      store.messages.push(message);
-      await writeLegacyChatStore(store);
-      res.json({ success: true, conversationId, messageId: message.id });
-    } catch (error) {
-      console.error("Legacy send chat error:", error?.message || error);
-      res.status(500).json({ error: "Failed to send message" });
-    }
-  });
-  app2.post("/api/legacy/chat/read", requireAuth, async (req, res) => {
-    try {
-      const currentUsername = req.user?.username;
-      const normalizedCurrentUsername = normalizeUsernameKey(currentUsername);
-      const conversationId = typeof req.body?.conversationId === "string" ? req.body.conversationId.trim() : "";
-      if (!normalizedCurrentUsername || !conversationId) {
-        return res.status(400).json({ error: "A conversation id is required." });
-      }
-      const store = await readLegacyChatStore();
-      const thread = store.threads.find((entry) => entry.id === conversationId);
-      const isParticipant = thread?.participants.some(
-        (participant) => normalizeUsernameKey(participant) === normalizedCurrentUsername
-      );
-      if (!thread || !isParticipant) {
-        return res.status(404).json({ error: "Conversation not found." });
-      }
-      let changed = false;
-      for (const message of store.messages) {
-        if (message.conversationId === conversationId && normalizeUsernameKey(message.senderUsername) !== normalizedCurrentUsername && !message.readBy.includes(normalizedCurrentUsername)) {
-          message.readBy.push(normalizedCurrentUsername);
-          changed = true;
-        }
-      }
-      if (changed) {
-        await writeLegacyChatStore(store);
-      }
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Legacy read chat error:", error?.message || error);
-      res.status(500).json({ error: "Failed to update message read status" });
     }
   });
   app2.post("/api/send-phone-code", async (req, res) => {
@@ -3784,7 +2473,7 @@ async function registerRoutes(app2) {
         return res.status(500).json({ error: "Failed to send verification code. Please try again." });
       }
     } else {
-      console.log(`[SMS VERIFICATION] Twilio not configured. Dev mode only \u2014 code masked for security.`);
+      console.log(`[SMS VERIFICATION] Twilio not configured. Code for ${phone}: ${code}`);
     }
     const isDev = process.env.NODE_ENV === "development";
     res.json({ success: true, message: "Verification code sent via SMS.", ...isDev && (!twilioSid || !twilioToken || !twilioFrom) ? { demoCode: code } : {} });
@@ -3849,7 +2538,7 @@ async function registerRoutes(app2) {
         return res.status(500).json({ error: "Failed to send verification code." });
       }
     } else {
-      console.log(`[EMAIL VERIFICATION] SMTP not configured. Dev mode only \u2014 code masked for security.`);
+      console.log(`[EMAIL VERIFICATION] SMTP not configured. Code for ${email}: ${code}`);
     }
     const isDev = process.env.NODE_ENV === "development";
     res.json({ success: true, message: "Verification code sent.", ...isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoCode: code } : {} });
@@ -3910,7 +2599,7 @@ async function registerRoutes(app2) {
             </div></div>`
         });
       } else {
-        console.log(`[EMAIL] SMTP not configured. Reset link generated for ${user.email} \u2014 token masked for security.`);
+        console.log(`[EMAIL] SMTP not configured. Reset link for ${user.email}: ${resetLink}`);
       }
       const isDev = process.env.NODE_ENV === "development";
       res.json({ success: true, message: "If an account with that email exists, a password reset link has been sent.", ...isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoResetLink: resetLink } : {} });
@@ -3951,7 +2640,7 @@ async function registerRoutes(app2) {
             </div></div>`
         });
       } else {
-        console.log(`[EMAIL] SMTP not configured. Username reminder generated for ${user.email} \u2014 masked for security.`);
+        console.log(`[EMAIL] SMTP not configured. Username for ${user.email}: ${user.username}`);
       }
       res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
     } catch (error) {
@@ -3978,7 +2667,7 @@ async function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to reset password." });
     }
   });
-  app2.post("/api/send-case-update-text", requireAuth, async (req, res) => {
+  app2.post("/api/send-case-update-text", async (req, res) => {
     const { providerPhone, caseNumber, patientName, status, message } = req.body;
     if (!providerPhone || !caseNumber)
       return res.status(400).json({ error: "Provider phone and case number required" });
@@ -4004,121 +2693,8 @@ async function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to send text" });
     }
   });
-  app2.post("/api/analyze-prescription", optionalAuth, async (req, res) => {
+  app2.post("/api/crop-document", async (req, res) => {
     try {
-      let fixNameOrder2 = function(name) {
-        if (!name || typeof name !== "string")
-          return name;
-        const commaIdx = name.indexOf(",");
-        if (commaIdx === -1)
-          return name;
-        const prefix = name.match(/^(Dr\.|Dr|Mr\.|Mrs\.|Ms\.|Prof\.)\s*/i)?.[0] || "";
-        const nameWithoutPrefix = name.slice(prefix.length);
-        const commaIdxInner = nameWithoutPrefix.indexOf(",");
-        if (commaIdxInner === -1)
-          return name;
-        const last = nameWithoutPrefix.slice(0, commaIdxInner).trim();
-        const first = nameWithoutPrefix.slice(commaIdxInner + 1).trim();
-        return `${prefix}${first} ${last}`.trim();
-      };
-      var fixNameOrder = fixNameOrder2;
-      const openai = getOpenAIClient();
-      if (!openai)
-        return res.status(503).json({ success: false, error: "AI integrations are not configured." });
-      const { imageBase64, additionalImages } = req.body;
-      if (!imageBase64)
-        return res.status(400).json({ success: false, error: "No image provided" });
-      console.log("AI analyze-prescription: received, primary image length:", imageBase64.length, "additional pages:", Array.isArray(additionalImages) ? additionalImages.length : 0);
-      const isHEIC = imageBase64.includes("data:image/heic") || imageBase64.includes("data:image/heif");
-      if (isHEIC)
-        return res.status(400).json({ success: false, error: "HEIC format is not supported. Please convert to JPEG or PNG first." });
-      const imageContents = [];
-      let primaryUrl = imageBase64;
-      if (!primaryUrl.startsWith("data:")) {
-        primaryUrl = `data:image/jpeg;base64,${primaryUrl}`;
-      }
-      imageContents.push({ type: "image_url", image_url: { url: primaryUrl, detail: "auto" } });
-      if (additionalImages && Array.isArray(additionalImages)) {
-        for (const img of additionalImages) {
-          if (typeof img === "string" && img.length > 100) {
-            let imgUrl = img;
-            if (!imgUrl.startsWith("data:")) {
-              imgUrl = `data:image/jpeg;base64,${imgUrl}`;
-            }
-            imageContents.push({ type: "image_url", image_url: { url: imgUrl, detail: "auto" } });
-          }
-        }
-      }
-      const systemPrompt = `You are a dental laboratory prescription reader. Analyze the dental prescription image(s) and extract all available information. Return ONLY valid JSON with these fields (use null for any field you cannot determine):
-
-{
-  "doctorName": "Dr. Full Name",
-  "patientName": "Patient Full Name",
-  "patientInitials": "PI",
-  "caseType": "one of: Crown & Bridge, Removable, Implant, Orthodontic, Other",
-  "toothIndices": "comma-separated tooth numbers like 3,5,14",
-  "shade": "shade value like A2, B1, etc.",
-  "material": "one of: Zirconia, E max, PFM, Gold, Composite, Acrylic, Flexible, PMMA, Metal Framework, Titanium, Other",
-  "dueDate": "MM/DD/YYYY format",
-  "isRush": false,
-  "notes": "any additional notes or special instructions",
-  "practiceName": "dental practice or office name",
-  "practiceAddress": "practice address",
-  "practicePhone": "practice phone number"
-}
-
-Important rules:
-- Read ALL pages if multiple images are provided
-- For tooth numbers, use Universal Numbering System (1-32)
-- If you see FDI notation, convert to Universal
-- Only set isRush to true if explicitly marked as rush/urgent
-- For caseType, match to the closest category listed above
-- Extract the shade exactly as written on the prescription
-- NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel" or "Sharpstein, Daniel"), the prescription is using Last, First format. You MUST swap it to First Last order and remove the comma. Examples: "Kidder, Daniel" \u2192 "Daniel Kidder", "Dr. Sharpstein, Daniel" \u2192 "Dr. Daniel Sharpstein". Always output names in natural First Last order with no commas.
-- Return ONLY the JSON object, no other text`;
-      const userContent = [
-        { type: "text", text: `Analyze this dental prescription (${imageContents.length} page${imageContents.length > 1 ? "s" : ""}).` },
-        ...imageContents
-      ];
-      const response = await openai.chat.completions.create({
-        model: "gpt-5.1",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userContent }
-        ],
-        max_completion_tokens: 1e3,
-        temperature: 0.1
-      });
-      const text3 = response.choices?.[0]?.message?.content || "";
-      const jsonMatch = text3.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        console.log("AI analyze-prescription: No JSON found in response:", text3.substring(0, 200));
-        return res.json({ success: false, error: "AI could not parse the prescription" });
-      }
-      const data = JSON.parse(jsonMatch[0]);
-      const cleanedData = {};
-      for (const [key, value] of Object.entries(data)) {
-        if (value !== null && value !== void 0 && value !== "" && value !== "null") {
-          if ((key === "doctorName" || key === "patientName") && typeof value === "string") {
-            cleanedData[key] = fixNameOrder2(value) ?? value;
-          } else {
-            cleanedData[key] = value;
-          }
-        }
-      }
-      console.log("AI analyze-prescription: Success, fields:", Object.keys(cleanedData).join(", "));
-      return res.json({ success: true, data: cleanedData });
-    } catch (err) {
-      const errMsg = err?.message || String(err);
-      console.error("AI analyze-prescription error:", errMsg);
-      return res.status(500).json({ success: false, error: "AI analysis failed. Please try again.", detail: errMsg });
-    }
-  });
-  app2.post("/api/crop-document", optionalAuth, async (req, res) => {
-    try {
-      const openai = getOpenAIClient();
-      if (!openai)
-        return res.status(503).json({ error: "AI integrations are not configured." });
       const { imageBase64 } = req.body;
       if (!imageBase64)
         return res.status(400).json({ error: "No image provided" });
@@ -4143,7 +2719,7 @@ Important rules:
       let aiResult = null;
       try {
         const response = await openai.chat.completions.create({
-          model: "gpt-5.1",
+          model: "gpt-4o",
           messages: [
             { role: "system", content: `You are a professional document scanner. Detect any document in the photo and return TIGHT crop coordinates that isolate ONLY the document. Use percentage coordinates (0-100). Return ONLY valid JSON: { "documentDetected": true, "crop": { "left": 15, "top": 8, "right": 85, "bottom": 92 }, "rotation": 0, "documentType": "prescription" }` },
             { role: "user", content: [
@@ -4151,7 +2727,7 @@ Important rules:
               { type: "image_url", image_url: { url: rotatedDataUrl, detail: "auto" } }
             ] }
           ],
-          max_completion_tokens: 250
+          max_tokens: 250
         });
         const text3 = response.choices?.[0]?.message?.content || "";
         const jsonMatch = text3.match(/\{[\s\S]*\}/);
@@ -4185,7 +2761,7 @@ Important rules:
       return res.status(500).json({ error: "Unable to process this image." });
     }
   });
-  app2.post("/api/document-to-pdf", optionalAuth, async (req, res) => {
+  app2.post("/api/document-to-pdf", async (req, res) => {
     try {
       const { images } = req.body;
       if (!images || !Array.isArray(images) || images.length === 0)
@@ -4295,11 +2871,8 @@ ${xrefOffset}
       res.status(500).json({ error: "PDF generation failed" });
     }
   });
-  app2.post("/api/smile-process", requireAuth, async (req, res) => {
+  app2.post("/api/smile-process", async (req, res) => {
     try {
-      const openai = getOpenAIClient();
-      if (!openai)
-        return res.status(503).json({ error: "AI integrations are not configured." });
       const { imageBase64, mode } = req.body;
       if (!imageBase64)
         return res.status(400).json({ error: "No image provided" });
@@ -4314,8 +2887,7 @@ ${xrefOffset}
         return res.status(400).json({ error: "Invalid mode." });
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
       const imgBuffer = Buffer.from(base64Data, "base64");
-      const imgFile = await toFile(imgBuffer, "image.png", { type: "image/png" });
-      const response = await openai.images.edit({ model: "gpt-image-1", image: imgFile, prompt, size: "1024x1024" });
+      const response = await openai.images.edit({ model: "gpt-image-1", image: imgBuffer, prompt, size: "1024x1024" });
       const outputBase64 = response.data?.[0]?.b64_json;
       if (!outputBase64)
         return res.status(500).json({ error: "AI did not return an image." });
@@ -4327,10 +2899,7 @@ ${xrefOffset}
   app2.delete("/api/admin/cleanup-email", async (req, res) => {
     try {
       const { email, adminKey } = req.body;
-      const cleanupKey = process.env.LABTRAX_ADMIN_CLEANUP_KEY;
-      if (!cleanupKey)
-        return res.status(404).json({ error: "Not found" });
-      if (adminKey !== cleanupKey)
+      if (adminKey !== "labtrax-cleanup-2026")
         return res.status(403).json({ error: "Unauthorized" });
       if (!email)
         return res.status(400).json({ error: "Email required" });
@@ -4348,142 +2917,15 @@ ${xrefOffset}
       res.status(500).json({ error: "Cleanup failed" });
     }
   });
-  app2.get("/api/admin/backup", requireAuth, async (req, res) => {
-    try {
-      const reqUser = req.user;
-      if (!reqUser || reqUser.role !== "admin") {
-        return res.status(403).json({ error: "Admin access required." });
-      }
-      const allUsers = await db.select().from(users);
-      const allCases = await db.select().from(labCases);
-      const safeUsers = allUsers.map((u) => {
-        const { password: _pw, ...rest } = u;
-        return rest;
-      });
-      const manifest = {
-        version: "1.0",
-        appName: "LabTrax",
-        exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        exportedBy: reqUser.username || reqUser.id,
-        counts: {
-          users: safeUsers.length,
-          cases: allCases.length
-        },
-        tables: ["users", "lab_cases"],
-        note: "Passwords are excluded from user records for security. Media files are included in the media/ directory."
-      };
-      const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
-      const mediaExists = fs.existsSync(mediaDir);
-      const dateStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-      const filename = `labtrax-backup-${dateStr}.zip`;
-      res.setHeader("Content-Type", "application/zip");
-      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-      res.setHeader("Cache-Control", "no-store");
-      const archive = archiver("zip", { zlib: { level: 6 } });
-      archive.on("error", (err) => {
-        console.error("Backup archive error:", err);
-        if (!res.headersSent)
-          res.status(500).json({ error: "Backup failed." });
-      });
-      archive.pipe(res);
-      archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
-      archive.append(JSON.stringify(safeUsers, null, 2), { name: "data/users.json" });
-      archive.append(JSON.stringify(allCases, null, 2), { name: "data/cases.json" });
-      if (mediaExists) {
-        archive.directory(mediaDir, "media");
-      }
-      await archive.finalize();
-    } catch (e) {
-      console.error("Backup endpoint error:", e?.message);
-      if (!res.headersSent)
-        res.status(500).json({ error: "Backup failed." });
-    }
-  });
-  app2.post("/api/admin/backup/onedrive", requireAuth, async (req, res) => {
-    try {
-      const reqUser = req.user;
-      if (!reqUser || reqUser.role !== "admin") {
-        return res.status(403).json({ error: "Admin access required." });
-      }
-      const allUsers = await db.select().from(users);
-      const allCases = await db.select().from(labCases);
-      const safeUsers = allUsers.map((u) => {
-        const { password: _pw, ...rest } = u;
-        return rest;
-      });
-      const dateStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-      const fileName = `labtrax-backup-${dateStr}.zip`;
-      const manifest = {
-        version: "1.0",
-        appName: "LabTrax",
-        exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        exportedBy: reqUser.username || reqUser.id,
-        counts: { users: safeUsers.length, cases: allCases.length },
-        tables: ["users", "lab_cases"],
-        note: "Passwords excluded. Media files included in media/ directory."
-      };
-      const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
-      const mediaExists = fs.existsSync(mediaDir);
-      const zipBuffer = await new Promise((resolve3, reject) => {
-        const chunks = [];
-        const archive = archiver("zip", { zlib: { level: 6 } });
-        archive.on("data", (chunk) => chunks.push(chunk));
-        archive.on("end", () => resolve3(Buffer.concat(chunks)));
-        archive.on("error", reject);
-        archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
-        archive.append(JSON.stringify(safeUsers, null, 2), { name: "data/users.json" });
-        archive.append(JSON.stringify(allCases, null, 2), { name: "data/cases.json" });
-        if (mediaExists)
-          archive.directory(mediaDir, "media");
-        archive.finalize();
-      });
-      const result = await uploadToOneDrive(zipBuffer, fileName, "LabTrax Backups");
-      return res.json({
-        success: true,
-        fileName: result.name,
-        size: result.size,
-        webUrl: result.webUrl,
-        folder: "LabTrax Backups"
-      });
-    } catch (e) {
-      console.error("OneDrive backup error:", e?.message);
-      return res.status(500).json({ error: e?.message || "OneDrive backup failed." });
-    }
-  });
   const httpServer = createServer(app2);
   return httpServer;
 }
 
 // server/index.ts
-import { sql as sql3 } from "drizzle-orm";
-import * as fs2 from "fs";
-import * as path2 from "path";
-var app = express2();
+import * as fs from "fs";
+import * as path from "path";
+var app = express();
 var log = console.log;
-var DEMO_ACCOUNTS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
-var SENSITIVE_LOG_KEYS = /* @__PURE__ */ new Set([
-  "accessToken",
-  "refreshToken",
-  "password",
-  "token",
-  "demoCode",
-  "demoResetLink",
-  "adminKey"
-]);
-function redactSensitivePayload(value) {
-  if (Array.isArray(value)) {
-    return value.map((entry) => redactSensitivePayload(entry));
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
-        key,
-        SENSITIVE_LOG_KEYS.has(key) ? "[REDACTED]" : redactSensitivePayload(entry)
-      ])
-    );
-  }
-  return value;
-}
 function setupCors(app2) {
   app2.use((req, res, next) => {
     const origins = /* @__PURE__ */ new Set();
@@ -4514,19 +2956,19 @@ function setupCors(app2) {
 }
 function setupBodyParsing(app2) {
   app2.use(
-    express2.json({
+    express.json({
       limit: "50mb",
       verify: (req, _res, buf) => {
         req.rawBody = buf;
       }
     })
   );
-  app2.use(express2.urlencoded({ extended: false, limit: "50mb" }));
+  app2.use(express.urlencoded({ extended: false, limit: "50mb" }));
 }
 function setupRequestLogging(app2) {
   app2.use((req, res, next) => {
     const start = Date.now();
-    const path3 = req.path;
+    const path2 = req.path;
     let capturedJsonResponse = void 0;
     const originalResJson = res.json;
     res.json = function(bodyJson, ...args) {
@@ -4534,18 +2976,16 @@ function setupRequestLogging(app2) {
       return originalResJson.apply(res, [bodyJson, ...args]);
     };
     res.on("finish", () => {
-      if (!path3.startsWith("/api"))
+      if (!path2.startsWith("/api"))
         return;
       const duration = Date.now() - start;
-      let logLine = `${req.method} ${path3} ${res.statusCode} in ${duration}ms`;
+      let logLine = `${req.method} ${path2} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(redactSensitivePayload(capturedJsonResponse))}`;
+        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
       if (logLine.length > 80) {
         logLine = logLine.slice(0, 79) + "\u2026";
       }
-      logLine = logLine.replace("\xE2\u20AC\xA6", "...");
-      logLine = logLine.replace(/[^\x20-\x7E]+$/, "...");
       log(logLine);
     });
     next();
@@ -4553,8 +2993,8 @@ function setupRequestLogging(app2) {
 }
 function getAppName() {
   try {
-    const appJsonPath = path2.resolve(process.cwd(), "app.json");
-    const appJsonContent = fs2.readFileSync(appJsonPath, "utf-8");
+    const appJsonPath = path.resolve(process.cwd(), "app.json");
+    const appJsonContent = fs.readFileSync(appJsonPath, "utf-8");
     const appJson = JSON.parse(appJsonContent);
     return appJson.expo?.name || "App Landing Page";
   } catch {
@@ -4562,19 +3002,19 @@ function getAppName() {
   }
 }
 function serveExpoManifest(platform, req, res) {
-  const manifestPath = path2.resolve(
+  const manifestPath = path.resolve(
     process.cwd(),
     "static-build",
     platform,
     "manifest.json"
   );
-  if (!fs2.existsSync(manifestPath)) {
+  if (!fs.existsSync(manifestPath)) {
     return res.status(404).json({ error: `Manifest not found for platform: ${platform}` });
   }
   res.setHeader("expo-protocol-version", "1");
   res.setHeader("expo-sfv-version", "0");
   res.setHeader("content-type", "application/json");
-  let manifest = fs2.readFileSync(manifestPath, "utf-8");
+  let manifest = fs.readFileSync(manifestPath, "utf-8");
   const forwardedHost = req.header("x-forwarded-host");
   const actualHost = forwardedHost || req.get("host");
   const forwardedProto = req.header("x-forwarded-proto");
@@ -4604,13 +3044,13 @@ function serveLandingPage({
   res.status(200).send(html);
 }
 function configureExpoAndLanding(app2) {
-  const templatePath = path2.resolve(
+  const templatePath = path.resolve(
     process.cwd(),
     "server",
     "templates",
     "landing-page.html"
   );
-  const landingPageTemplate = fs2.readFileSync(templatePath, "utf-8");
+  const landingPageTemplate = fs.readFileSync(templatePath, "utf-8");
   const appName = getAppName();
   log("Serving static Expo files with dynamic manifest routing");
   app2.use((req, res, next) => {
@@ -4618,32 +3058,32 @@ function configureExpoAndLanding(app2) {
       return next();
     }
     if (req.path === "/smile-preview") {
-      const smilePath = path2.resolve(process.cwd(), "server", "templates", "smile-preview.html");
-      if (fs2.existsSync(smilePath)) {
+      const smilePath = path.resolve(process.cwd(), "server", "templates", "smile-preview.html");
+      if (fs.existsSync(smilePath)) {
         return res.sendFile(smilePath);
       }
     }
     if (req.path === "/reset-password") {
-      const resetPath = path2.resolve(process.cwd(), "server", "templates", "reset-password.html");
-      if (fs2.existsSync(resetPath)) {
+      const resetPath = path.resolve(process.cwd(), "server", "templates", "reset-password.html");
+      if (fs.existsSync(resetPath)) {
         return res.sendFile(resetPath);
       }
     }
     if (req.path === "/privacy-policy" || req.path === "/privacy") {
-      const privacyPath = path2.resolve(process.cwd(), "server", "templates", "privacy-policy.html");
-      if (fs2.existsSync(privacyPath)) {
+      const privacyPath = path.resolve(process.cwd(), "server", "templates", "privacy-policy.html");
+      if (fs.existsSync(privacyPath)) {
         return res.sendFile(privacyPath);
       }
     }
     if (req.path === "/terms-of-service" || req.path === "/terms") {
-      const termsPath = path2.resolve(process.cwd(), "server", "templates", "terms-of-service.html");
-      if (fs2.existsSync(termsPath)) {
+      const termsPath = path.resolve(process.cwd(), "server", "templates", "terms-of-service.html");
+      if (fs.existsSync(termsPath)) {
         return res.sendFile(termsPath);
       }
     }
     if (req.path === "/app") {
-      const indexPath = path2.resolve(process.cwd(), "static-build", "index.html");
-      if (fs2.existsSync(indexPath)) {
+      const indexPath = path.resolve(process.cwd(), "static-build", "index.html");
+      if (fs.existsSync(indexPath)) {
         return res.sendFile(indexPath);
       }
       const devDomain = process.env.REPLIT_DEV_DOMAIN;
@@ -4672,14 +3112,14 @@ function configureExpoAndLanding(app2) {
     }
     next();
   });
-  app2.use("/assets", express2.static(path2.resolve(process.cwd(), "assets")));
-  app2.use("/public", express2.static(path2.resolve(process.cwd(), "public")));
-  app2.use("/app", express2.static(path2.resolve(process.cwd(), "static-build")));
-  app2.use(express2.static(path2.resolve(process.cwd(), "static-build")));
-  const webIndexPath = path2.resolve(process.cwd(), "static-build", "index.html");
+  app2.use("/assets", express.static(path.resolve(process.cwd(), "assets")));
+  app2.use("/public", express.static(path.resolve(process.cwd(), "public")));
+  app2.use("/app", express.static(path.resolve(process.cwd(), "static-build")));
+  app2.use(express.static(path.resolve(process.cwd(), "static-build")));
+  const webIndexPath = path.resolve(process.cwd(), "static-build", "index.html");
   app2.use((req, res, next) => {
     if (req.method === "GET" && req.path.startsWith("/app/") && !req.path.includes(".")) {
-      if (fs2.existsSync(webIndexPath)) {
+      if (fs.existsSync(webIndexPath)) {
         return res.sendFile(webIndexPath);
       }
     }
@@ -4719,12 +3159,9 @@ function setupSecurityHeaders(app2) {
   });
 }
 async function seedDemoAccount() {
-  if (!DEMO_ACCOUNTS_ENABLED) {
-    return;
-  }
   const accounts = [
-    { username: "demo_lab_owner", password: "LabTraxDemo#2026", email: "demo_lab_owner@labtrax.local", userType: "lab", role: "admin" },
-    { username: "demo_provider_admin", password: "LabTraxDemo#2026", email: "demo_provider_admin@labtrax.local", userType: "provider", role: "admin" }
+    { username: "phillipsjohnpaul@yahoo.com", password: "Jp#14482726", email: "phillipsjohnpaul@yahoo.com", userType: "lab", role: "admin" },
+    { username: "test@allieddl.com", password: "Test1234", email: "test@allieddl.com", userType: "lab", role: "admin" }
   ];
   for (const acct of accounts) {
     try {
@@ -4747,44 +3184,11 @@ async function seedDemoAccount() {
     }
   }
 }
-async function runStartupMigrations() {
-  try {
-    await db.execute(
-      sql3`DROP INDEX IF EXISTS "join_requests_lab_user_status_unique"`
-    );
-    await db.execute(
-      sql3`
-        DELETE FROM "join_requests"
-        WHERE status = 'pending'
-          AND id NOT IN (
-            SELECT DISTINCT ON (lab_id, user_id) id
-            FROM "join_requests"
-            WHERE status = 'pending'
-            ORDER BY lab_id, user_id, created_at DESC
-          )
-      `
-    );
-    await db.execute(
-      sql3`
-        CREATE UNIQUE INDEX IF NOT EXISTS "join_requests_pending_unique"
-        ON "join_requests" ("lab_id", "user_id")
-        WHERE status = 'pending'
-      `
-    );
-    await db.execute(
-      sql3`ALTER TABLE users ADD COLUMN IF NOT EXISTS work_status TEXT DEFAULT 'available'`
-    );
-    log("Startup migrations applied successfully");
-  } catch (err) {
-    console.error("Startup migration error:", err?.message || err);
-  }
-}
 (async () => {
   setupCors(app);
   setupSecurityHeaders(app);
   setupBodyParsing(app);
   setupRequestLogging(app);
-  await runStartupMigrations();
   configureExpoAndLanding(app);
   const server = await registerRoutes(app);
   setupErrorHandler(app);

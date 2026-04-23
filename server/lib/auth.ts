@@ -3,9 +3,6 @@ import type { Request } from "express";
 import { randomToken, sha256 } from "./crypto";
 
 const JWT_SECRET = process.env.JWT_SECRET || "labtrax-jwt-secret-change-in-production";
-if (!process.env.JWT_SECRET) {
-  console.warn("[SECURITY] JWT_SECRET env var is not set. Using insecure default — set JWT_SECRET before deploying to production.");
-}
 const ACCESS_TOKEN_TTL = "15m";
 const REFRESH_TOKEN_TTL = "7d";
 

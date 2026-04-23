@@ -13,40 +13,65 @@ function normalizeBaseUrl(url: string): string {
   return url.endsWith("/") ? url : `${url}/`;
 }
 
-export function getApiUrl(): string {
-  if (cachedBaseUrl) return cachedBaseUrl;
-
-  if (Platform.OS === "web" && typeof window !== "undefined" && window.location && window.location.origin) {
-    return normalizeBaseUrl(window.location.origin);
+function buildBaseUrl(
+  input: string,
+  options: { stripPort?: boolean } = {},
+): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return null;
   }
 
-  if (Platform.OS !== "web") {
-    const host = process.env.EXPO_PUBLIC_DOMAIN;
-    if (host) {
-      try {
-        let url = new URL(`https://${host}`);
-        url.port = "";
-        return normalizeBaseUrl(url.href);
-      } catch {
-        return PRODUCTION_URL;
-      }
-    }
-    return PRODUCTION_URL;
-  }
-
-  return PRODUCTION_URL;
-}
-
-function getApiUrlWithoutPort(): string | null {
-  let host = process.env.EXPO_PUBLIC_DOMAIN;
-  if (!host || !host.includes(":")) return null;
   try {
-    let url = new URL(`https://${host}`);
-    url.port = "";
-    return normalizeBaseUrl(url.href);
+    const value = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const url = new URL(value);
+    if (options.stripPort) {
+      url.port = "";
+    }
+    return normalizeBaseUrl(url.origin);
   } catch {
     return null;
   }
+}
+
+function addCandidateUrl(urls: string[], value: string | null) {
+  if (value && !urls.includes(value)) {
+    urls.push(value);
+  }
+}
+
+export function getApiBaseUrlCandidates(): string[] {
+  const urls: string[] = [];
+
+  if (typeof window !== "undefined" && window.location?.origin) {
+    addCandidateUrl(urls, normalizeBaseUrl(window.location.origin));
+  }
+
+  const host = process.env.EXPO_PUBLIC_DOMAIN;
+  if (host) {
+    addCandidateUrl(urls, buildBaseUrl(host));
+    addCandidateUrl(urls, buildBaseUrl(host, { stripPort: true }));
+  }
+
+  if (Platform.OS !== "web") {
+    addCandidateUrl(urls, PRODUCTION_URL);
+  } else if (urls.length === 0) {
+    addCandidateUrl(urls, PRODUCTION_URL);
+  }
+
+  if (cachedBaseUrl && !urls.includes(cachedBaseUrl)) {
+    return [cachedBaseUrl, ...urls];
+  }
+
+  if (cachedBaseUrl) {
+    return [cachedBaseUrl, ...urls.filter((url) => url !== cachedBaseUrl)];
+  }
+
+  return urls;
+}
+
+export function getApiUrl(): string {
+  return getApiBaseUrlCandidates()[0] ?? PRODUCTION_URL;
 }
 
 let _accessToken: string | null = null;
@@ -80,29 +105,53 @@ export function getAccessToken() {
   return _accessToken;
 }
 
-async function refreshAccessToken(): Promise<string | null> {
+async function refreshAccessToken(baseUrlOverride?: string): Promise<string | null> {
   if (!_refreshToken) return null;
   if (_refreshPromise) return _refreshPromise;
 
   _refreshPromise = (async () => {
+    const candidateUrls = baseUrlOverride
+      ? [baseUrlOverride, ...getApiBaseUrlCandidates().filter((url) => url !== baseUrlOverride)]
+      : getApiBaseUrlCandidates();
+    let sawAuthFailure = false;
+
     try {
-      const apiUrl = getApiUrl();
-      const url = new URL("/api/auth/refresh", apiUrl).toString();
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken: _refreshToken }),
-      });
-      if (!res.ok) {
+      for (const apiUrl of candidateUrls) {
+        try {
+          const url = new URL("/api/auth/refresh", apiUrl).toString();
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refreshToken: _refreshToken }),
+          });
+
+          if (!res.ok) {
+            if (res.status === 401 || res.status === 403) {
+              sawAuthFailure = true;
+            }
+            continue;
+          }
+
+          const data = await res.json();
+          if (data.data?.accessToken) {
+            _accessToken = data.data.accessToken;
+            cachedBaseUrl = apiUrl;
+            await AsyncStorage.setItem(
+              TOKEN_KEY,
+              JSON.stringify({
+                accessToken: _accessToken,
+                refreshToken: _refreshToken,
+              }),
+            );
+            return _accessToken;
+          }
+        } catch {}
+      }
+
+      if (sawAuthFailure) {
         await clearTokens();
-        return null;
       }
-      const data = await res.json();
-      if (data.data?.accessToken) {
-        _accessToken = data.data.accessToken;
-        await AsyncStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken: _accessToken, refreshToken: _refreshToken }));
-        return _accessToken;
-      }
+
       return null;
     } catch {
       return null;
@@ -122,60 +171,60 @@ function injectAuthHeaders(options?: RequestInit): RequestInit {
   return { ...options, headers };
 }
 
+async function fetchWithAuthRetry(
+  path: string,
+  baseUrl: string,
+  options: RequestInit,
+): Promise<Response> {
+  const requestUrl = new URL(path, baseUrl).toString();
+  let res = await fetch(requestUrl, options);
+
+  if (res.status === 401 && _refreshToken) {
+    const newToken = await refreshAccessToken(baseUrl);
+    if (newToken) {
+      const retryHeaders = new Headers(options.headers || {});
+      retryHeaders.set("Authorization", `Bearer ${newToken}`);
+      res = await fetch(requestUrl, { ...options, headers: retryHeaders });
+    }
+  }
+
+  return res;
+}
+
 async function resilientFetch(
   path: string,
   options?: RequestInit,
 ): Promise<Response> {
-  const primaryUrl = getApiUrl();
-  const primaryFullUrl = new URL(path, primaryUrl).toString();
   const authedOptions = injectAuthHeaders(options);
+  const candidateUrls = getApiBaseUrlCandidates();
+  let lastResponse: Response | null = null;
+  let lastError: unknown = null;
 
-  try {
-    let res = await fetch(primaryFullUrl, authedOptions);
+  for (const baseUrl of candidateUrls) {
+    try {
+      const res = await fetchWithAuthRetry(path, baseUrl, authedOptions);
+      const contentType = res.headers.get("content-type") || "";
 
-    if (res.status === 401 && _refreshToken) {
-      const newToken = await refreshAccessToken();
-      if (newToken) {
-        const retryHeaders = new Headers(authedOptions.headers || {});
-        retryHeaders.set("Authorization", `Bearer ${newToken}`);
-        res = await fetch(primaryFullUrl, { ...authedOptions, headers: retryHeaders });
-      }
-    }
-
-    if (res.ok) {
-      cachedBaseUrl = primaryUrl;
-      return res;
-    }
-    const contentType = res.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      cachedBaseUrl = primaryUrl;
-      return res;
-    }
-    const fallbackUrl = getApiUrlWithoutPort();
-    if (fallbackUrl && fallbackUrl !== primaryUrl) {
-      try {
-        const fallbackFullUrl = new URL(path, fallbackUrl).toString();
-        const fallbackRes = await fetch(fallbackFullUrl, authedOptions);
-        if (fallbackRes.ok || (fallbackRes.headers.get("content-type") || "").includes("application/json")) {
-          cachedBaseUrl = fallbackUrl;
-          return fallbackRes;
-        }
-      } catch {}
-    }
-    cachedBaseUrl = primaryUrl;
-    return res;
-  } catch (primaryError) {
-    const fallbackUrl = getApiUrlWithoutPort();
-    if (fallbackUrl && fallbackUrl !== primaryUrl) {
-      try {
-        const fallbackFullUrl = new URL(path, fallbackUrl).toString();
-        const res = await fetch(fallbackFullUrl, authedOptions);
-        cachedBaseUrl = fallbackUrl;
+      if (res.ok || contentType.includes("application/json")) {
+        cachedBaseUrl = baseUrl;
         return res;
-      } catch {}
+      }
+
+      lastResponse = res;
+    } catch (error) {
+      lastError = error;
     }
-    throw primaryError;
   }
+
+  if (lastResponse) {
+    return lastResponse;
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error(`Unable to reach API for ${path}`);
 }
 
 async function throwIfResNotOk(res: Response) {

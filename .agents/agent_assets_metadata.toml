@@ -30,33 +30,3 @@ id = "ZQs1OTEjuxqIbCx8hegVY"
 uri = "file://labtrax-source.tar.gz"
 type = "unspecified"
 title = "LabTrax Source Code (v1.0.6, build 51)"
-
-[[outputs]]
-id = "sf1xb00gAUTzNL_OMWkSl"
-uri = "file://labtrax-complete.tar.gz"
-type = "unspecified"
-title = "LabTrax Complete Project (210MB - includes all assets, builds, and source)"
-
-[[outputs]]
-id = "z-vADeqdVOVWQNf08Rsae"
-uri = "file://project.tar.gz"
-type = "unspecified"
-title = "Project Code (project.tar.gz)"
-
-[[outputs]]
-id = "lJn-2dZhHBVm61hObyiBi"
-uri = "file://scan_and_dropzone.tar.gz"
-type = "unspecified"
-title = "scan.tsx + LabFileDropZone.tsx"
-
-[[outputs]]
-id = "hzohzYyzSRbrbgz9VavaU"
-uri = "file://labtrax-source.zip"
-type = "unspecified"
-title = "LabTrax Source Code"
-
-[[outputs]]
-id = "PB9bWBqiJYDY7jksf5aZQ"
-uri = "file://labtrax-full.zip"
-type = "unspecified"
-title = "LabTrax Full Project (1.5 GB)"

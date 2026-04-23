@@ -136,7 +136,7 @@ router.get(
       });
     const orgIds = memberships
       .filter((m: any) => m.status === "active")
-      .map((m: any) => m.labId);
+      .map((m: any) => m.organizationId);
 
     const rows = orgIds.length
       ? await db.query.invoices.findMany({

@@ -54,7 +54,7 @@ function deriveDisplayInitials(input?: {
 }
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, refreshCases, fullRefreshCases } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, refreshCases } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
@@ -350,7 +350,7 @@ export default function CasesScreen() {
               style={({ pressed }) => [styles.barcodeLocateBtn, pressed && { opacity: 0.7 }]}
               onPress={async () => {
                 setRefreshing(true);
-                await fullRefreshCases();
+                await refreshCases();
                 setRefreshing(false);
               }}
             >
@@ -444,7 +444,7 @@ export default function CasesScreen() {
         refreshing={refreshing}
         onRefresh={async () => {
           setRefreshing(true);
-          await fullRefreshCases();
+          await refreshCases();
           setRefreshing(false);
         }}
         ListEmptyComponent={
