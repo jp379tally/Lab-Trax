@@ -4,18 +4,9 @@ import { registerRoutes } from "./routes";
 import { hashPassword } from "./lib/crypto";
 import { db } from "./db";
 import { users } from "../shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as fs from "fs";
 import * as path from "path";
-import {
-  getAllowedOriginHostnames,
-  getOriginHostname,
-  getReplitBackendOrigin,
-  getReplitWebOrigin,
-  isLoopbackOrigin,
-  getRequestOrigin,
-  normalizeOrigin,
-} from "./lib/origin";
 
 const app = express();
 const log = console.log;
@@ -54,17 +45,27 @@ function redactSensitivePayload(value: unknown): unknown {
 }
 
 function setupCors(app: express.Application) {
-  const allowedHostnames = getAllowedOriginHostnames();
-
   app.use((req, res, next) => {
+    const origins = new Set<string>();
+
+    if (process.env.REPLIT_DEV_DOMAIN) {
+      origins.add(`https://${process.env.REPLIT_DEV_DOMAIN}`);
+    }
+
+    if (process.env.REPLIT_DOMAINS) {
+      process.env.REPLIT_DOMAINS.split(",").forEach((d) => {
+        origins.add(`https://${d.trim()}`);
+      });
+    }
+
     const origin = req.header("origin");
-    const originHostname = getOriginHostname(origin);
 
+    // Allow localhost origins for Expo web development (any port)
     const isLocalhost =
-      originHostname === "localhost" ||
-      originHostname === "127.0.0.1";
+      origin?.startsWith("http://localhost:") ||
+      origin?.startsWith("http://127.0.0.1:");
 
-    if (origin && (isLocalhost || (originHostname && allowedHostnames.has(originHostname)))) {
+    if (origin && (origins.has(origin) || isLocalhost)) {
       res.header("Access-Control-Allow-Origin", origin);
       res.header(
         "Access-Control-Allow-Methods",
@@ -185,13 +186,12 @@ function serveLandingPage({
   landingPageTemplate: string;
   appName: string;
 }) {
-  const requestOrigin = getRequestOrigin(req);
-  const baseUrl =
-    (!isLoopbackOrigin(requestOrigin) ? requestOrigin : null) ??
-    getReplitBackendOrigin() ??
-    "http://localhost:5000";
-  const expsOrigin = getReplitWebOrigin() ?? baseUrl;
-  const expsUrl = expsOrigin.replace(/^https?:\/\//, "");
+  const forwardedProto = req.header("x-forwarded-proto");
+  const protocol = forwardedProto || req.protocol || "https";
+  const forwardedHost = req.header("x-forwarded-host");
+  const host = forwardedHost || req.get("host");
+  const baseUrl = `${protocol}://${host}`;
+  const expsUrl = `${host}`;
 
   log(`baseUrl`, baseUrl);
   log(`expsUrl`, expsUrl);
@@ -251,20 +251,13 @@ function configureExpoAndLanding(app: express.Application) {
     }
 
     if (req.path === "/app") {
-      const webOrigin = getReplitWebOrigin();
-      const preferLivePreview =
-        !!process.env.REPLIT_DEV_DOMAIN && !!webOrigin;
-
-      if (preferLivePreview && webOrigin) {
-        return res.redirect(webOrigin);
-      }
-
       const indexPath = path.resolve(process.cwd(), "static-build", "index.html");
       if (fs.existsSync(indexPath)) {
         return res.sendFile(indexPath);
       }
-      if (webOrigin) {
-        return res.redirect(webOrigin);
+      const devDomain = process.env.REPLIT_DEV_DOMAIN;
+      if (devDomain) {
+        return res.redirect(`https://${devDomain}:8081`);
       }
       return res.redirect("/");
     }
@@ -385,11 +378,46 @@ async function seedDemoAccount() {
   }
 }
 
+async function runStartupMigrations() {
+  try {
+    await db.execute(
+      sql`DROP INDEX IF EXISTS "join_requests_lab_user_status_unique"`
+    );
+    await db.execute(
+      sql`
+        DELETE FROM "join_requests"
+        WHERE status = 'pending'
+          AND id NOT IN (
+            SELECT DISTINCT ON (lab_id, user_id) id
+            FROM "join_requests"
+            WHERE status = 'pending'
+            ORDER BY lab_id, user_id, created_at DESC
+          )
+      `
+    );
+    await db.execute(
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS "join_requests_pending_unique"
+        ON "join_requests" ("lab_id", "user_id")
+        WHERE status = 'pending'
+      `
+    );
+    await db.execute(
+      sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS work_status TEXT DEFAULT 'available'`
+    );
+    log("Startup migrations applied successfully");
+  } catch (err: any) {
+    console.error("Startup migration error:", err?.message || err);
+  }
+}
+
 (async () => {
   setupCors(app);
   setupSecurityHeaders(app);
   setupBodyParsing(app);
   setupRequestLogging(app);
+
+  await runStartupMigrations();
 
   configureExpoAndLanding(app);
 
@@ -409,4 +437,32 @@ async function seedDemoAccount() {
       log(`express server serving on port ${port}`);
     },
   );
+
+  // ── Hourly OneDrive backup scheduler ──────────────────────────────────────
+  // Runs automatically every hour regardless of whether the app is open.
+  // First backup fires ~2 minutes after server start (to let DB settle),
+  // then repeats every hour.
+  const ONE_HOUR = 60 * 60 * 1000;
+  const scheduleHourlyBackup = () => {
+    const runBackup = async () => {
+      log("[Hourly Backup] Starting scheduled backup...");
+      const backupFn = (app as any)._runScheduledBackup;
+      if (typeof backupFn === "function") {
+        const result = await backupFn();
+        if (result.success) {
+          log(`[Hourly Backup] Success — ${result.fileName} (${((result.size || 0) / 1024 / 1024).toFixed(1)} MB)`);
+        } else {
+          log(`[Hourly Backup] Failed — ${result.error}`);
+        }
+      }
+    };
+
+    // Wait 2 minutes after startup, then run every hour
+    setTimeout(async () => {
+      await runBackup();
+      setInterval(runBackup, ONE_HOUR);
+    }, 2 * 60 * 1000);
+  };
+
+  scheduleHourlyBackup();
 })();
