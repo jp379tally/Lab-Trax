@@ -11,13 +11,17 @@ import * as path from "path";
 const app = express();
 const log = console.log;
 const DEMO_ACCOUNTS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
+const IS_DEPLOYED_ENV =
+  process.env.NODE_ENV === "production" ||
+  process.env.REPLIT_DEPLOYMENT === "1" ||
+  !!process.env.REPLIT_DEPLOYMENT_ID;
 const SCHEDULED_BACKUPS_ENABLED =
   process.env.LABTRAX_ENABLE_SCHEDULED_BACKUPS === "true" ||
-  (process.env.NODE_ENV !== "production" &&
+  (!IS_DEPLOYED_ENV &&
     process.env.LABTRAX_ENABLE_SCHEDULED_BACKUPS !== "false");
 const BACKUP_INITIAL_DELAY_MS = Number.parseInt(
   process.env.LABTRAX_BACKUP_INITIAL_DELAY_MS ||
-    (process.env.NODE_ENV === "production" ? "1800000" : "120000"),
+    (IS_DEPLOYED_ENV ? "1800000" : "120000"),
   10,
 );
 const SENSITIVE_LOG_KEYS = new Set([
