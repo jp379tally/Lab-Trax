@@ -1068,7 +1068,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ error: "Failed to send verification code. Please try again." });
       }
     } else {
-      console.log(`[SMS VERIFICATION] Twilio not configured. Dev mode only — code masked for security.`);
+      console.log(`[SMS VERIFICATION] Twilio not configured. Dev mode only â€” code masked for security.`);
     }
 
     const isDev = process.env.NODE_ENV === "development";
@@ -1131,7 +1131,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ error: "Failed to send verification code." });
       }
     } else {
-      console.log(`[EMAIL VERIFICATION] SMTP not configured. Dev mode only — code masked for security.`);
+      console.log(`[EMAIL VERIFICATION] SMTP not configured. Dev mode only â€” code masked for security.`);
     }
 
     const isDev = process.env.NODE_ENV === "development";
@@ -1188,7 +1188,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             </div></div>`,
         });
       } else {
-        console.log(`[EMAIL] SMTP not configured. Reset link generated for ${user.email} — token masked for security.`);
+        console.log(`[EMAIL] SMTP not configured. Reset link generated for ${user.email} â€” token masked for security.`);
       }
 
       const isDev = process.env.NODE_ENV === "development";
@@ -1228,7 +1228,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             </div></div>`,
         });
       } else {
-        console.log(`[EMAIL] SMTP not configured. Username reminder generated for ${user.email} — masked for security.`);
+        console.log(`[EMAIL] SMTP not configured. Username reminder generated for ${user.email} â€” masked for security.`);
       }
       res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
     } catch (error: any) {
@@ -1338,7 +1338,7 @@ Important rules:
 - Only set isRush to true if explicitly marked as rush/urgent
 - For caseType, match to the closest category listed above
 - Extract the shade exactly as written on the prescription
-- NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel" or "Sharpstein, Daniel"), the prescription is using Last, First format. You MUST swap it to First Last order and remove the comma. Examples: "Kidder, Daniel" → "Daniel Kidder", "Dr. Sharpstein, Daniel" → "Dr. Daniel Sharpstein". Always output names in natural First Last order with no commas.
+- NAME FORMAT: If a patient name or doctor name contains a comma (e.g. "Kidder, Daniel" or "Sharpstein, Daniel"), the prescription is using Last, First format. You MUST swap it to First Last order and remove the comma. Examples: "Kidder, Daniel" â†’ "Daniel Kidder", "Dr. Sharpstein, Daniel" â†’ "Dr. Daniel Sharpstein". Always output names in natural First Last order with no commas.
 - Return ONLY the JSON object, no other text`;
 
       const userContent: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail: "auto" } }> = [
@@ -1574,7 +1574,7 @@ Important rules:
     } catch { res.status(500).json({ error: "Cleanup failed" }); }
   });
 
-  // ── Temporary source-code download (no auth — remove after use) ───────────
+  // â”€â”€ Temporary source-code download (no auth â€” remove after use) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get("/dl/source", async (_req, res) => {
     try {
       const root = process.cwd();
@@ -1594,8 +1594,8 @@ Important rules:
     }
   });
 
-  // ── Admin Data Backup ─────────────────────────────────────────────────────
-  // ── Shared backup data gatherer ───────────────────────────────────────────
+  // â”€â”€ Admin Data Backup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // â”€â”€ Shared backup data gatherer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function gatherBackupData(exportedBy = "system") {
     const [
       allUsers, allCases, allOrgs, allMemberships,
@@ -1669,7 +1669,7 @@ Important rules:
     return archive;
   }
 
-  // ── Local backup retention manager ───────────────────────────────────────
+  // â”€â”€ Local backup retention manager â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function pruneLocalBackups(folder: string, keep: number) {
     try {
       const dir = path.resolve(process.cwd(), "backups", folder);
@@ -1697,20 +1697,24 @@ Important rules:
 
   // Export this so server/index.ts can call it for the nightly scheduler
   (app as any)._runScheduledBackup = async () => {
+    let fileName = "";
+    let tier: "daily" | "weekly" | "monthly" = "daily";
+    let zipBuffer: Buffer | null = null;
+    let localBackupSaved = false;
+
     try {
       const data = await gatherBackupData("nightly-scheduler");
       const now = new Date();
       const dateStr = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const dayOfWeek = now.getDay(); // 0 = Sunday
+      const dayOfWeek = now.getDay();
       const dayOfMonth = now.getDate();
 
-      // Determine retention tier
-      const isWeekly = dayOfWeek === 0;   // Sunday → weekly
-      const isMonthly = dayOfMonth === 1; // 1st → monthly
-      const tier: "daily" | "weekly" | "monthly" = isMonthly ? "monthly" : isWeekly ? "weekly" : "daily";
-      const fileName = `labtrax-${tier}-${dateStr}.zip`;
+      const isWeekly = dayOfWeek === 0;
+      const isMonthly = dayOfMonth === 1;
+      tier = isMonthly ? "monthly" : isWeekly ? "weekly" : "daily";
+      fileName = `labtrax-${tier}-${dateStr}.zip`;
 
-      const zipBuffer: Buffer = await new Promise((resolve, reject) => {
+      zipBuffer = await new Promise<Buffer>((resolve, reject) => {
         const chunks: Buffer[] = [];
         const archive = buildBackupArchive(data);
         archive.on("data", (c: Buffer) => chunks.push(c));
@@ -1721,31 +1725,49 @@ Important rules:
 
       const sizeMB = (zipBuffer.length / 1024 / 1024).toFixed(1);
 
-      // 1. Save to local server
       await saveLocalBackup(zipBuffer, fileName, tier);
+      localBackupSaved = true;
       await pruneLocalBackups("daily", 7);
       await pruneLocalBackups("weekly", 4);
       await pruneLocalBackups("monthly", 3);
       console.log(`[Nightly Backup] Saved locally: backups/${tier}/${fileName} (${sizeMB} MB)`);
 
-      // 2. Upload to OneDrive
       let webUrl = "";
       try {
-        const result = await uploadToOneDrive(zipBuffer, fileName, `LabTrax Backups/${tier}`);
+        const result = await uploadToOneDrive(
+          zipBuffer,
+          fileName,
+          `LabTrax Backups/${tier}`,
+        );
         webUrl = result.webUrl;
-        console.log(`[Nightly Backup] OneDrive: ${result.name} → ${webUrl}`);
+        console.log(`[Nightly Backup] OneDrive: ${result.name} -> ${webUrl}`);
       } catch (odErr: any) {
-        console.error("[Nightly Backup] OneDrive upload failed (local copy preserved):", odErr?.message);
+        const warning = odErr?.message || "OneDrive upload failed after local backup completed.";
+        console.error("[Nightly Backup] OneDrive upload failed (local copy preserved):", warning);
+        return {
+          success: true,
+          fileName,
+          size: zipBuffer.length,
+          tier,
+          webUrl,
+          warning,
+        };
       }
 
       return { success: true, fileName, size: zipBuffer.length, tier, webUrl };
     } catch (e: any) {
+      if (localBackupSaved && zipBuffer) {
+        const warning = e?.message || "Scheduled backup completed locally but remote upload failed.";
+        console.error("[Nightly Backup] Local backup completed but remote upload failed:", warning);
+        return { success: true, fileName, size: zipBuffer.length, tier, webUrl: "", warning };
+      }
+
       console.error("[Nightly Backup] Failed:", e?.message);
       return { success: false, error: e?.message };
     }
   };
 
-  // ── Restore endpoint ──────────────────────────────────────────────────────
+  // Restore endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const restoreUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
   app.post("/api/admin/restore", requireAuth, restoreUpload.single("backup"), async (req, res) => {
@@ -1800,7 +1822,7 @@ Important rules:
         await db.delete(organizations);
       }
 
-      // Upsert helper — skips rows that violate unique constraints on conflict
+      // Upsert helper â€” skips rows that violate unique constraints on conflict
       const upsertRows = async (table: any, rows: any[], label: string) => {
         if (!rows.length) { counts[label] = 0; return; }
         let restored = 0;
@@ -1843,7 +1865,7 @@ Important rules:
     }
   });
 
-  // ── List local backups ────────────────────────────────────────────────────
+  // â”€â”€ List local backups â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get("/api/admin/backups/list", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;
@@ -1868,7 +1890,7 @@ Important rules:
     }
   });
 
-  // ── Download a specific local backup ─────────────────────────────────────
+  // â”€â”€ Download a specific local backup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.get("/api/admin/backups/download/:tier/:filename", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;
@@ -1919,7 +1941,7 @@ Important rules:
     }
   });
 
-  // ── Admin Backup → OneDrive ───────────────────────────────────────────────
+  // â”€â”€ Admin Backup â†’ OneDrive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   app.post("/api/admin/backup/onedrive", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;

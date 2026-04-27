@@ -11,6 +11,15 @@ import * as path from "path";
 const app = express();
 const log = console.log;
 const DEMO_ACCOUNTS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
+const SCHEDULED_BACKUPS_ENABLED =
+  process.env.LABTRAX_ENABLE_SCHEDULED_BACKUPS === "true" ||
+  (process.env.NODE_ENV !== "production" &&
+    process.env.LABTRAX_ENABLE_SCHEDULED_BACKUPS !== "false");
+const BACKUP_INITIAL_DELAY_MS = Number.parseInt(
+  process.env.LABTRAX_BACKUP_INITIAL_DELAY_MS ||
+    (process.env.NODE_ENV === "production" ? "1800000" : "120000"),
+  10,
+);
 const SENSITIVE_LOG_KEYS = new Set([
   "accessToken",
   "refreshToken",
@@ -437,32 +446,48 @@ async function runStartupMigrations() {
       log(`express server serving on port ${port}`);
     },
   );
-
-  // ── Hourly OneDrive backup scheduler ──────────────────────────────────────
-  // Runs automatically every hour regardless of whether the app is open.
-  // First backup fires ~2 minutes after server start (to let DB settle),
-  // then repeats every hour.
+  // Hourly OneDrive backup scheduler.
+  // Keep the publish path stable by delaying the first background backup in production.
   const ONE_HOUR = 60 * 60 * 1000;
   const scheduleHourlyBackup = () => {
     const runBackup = async () => {
-      log("[Hourly Backup] Starting scheduled backup...");
-      const backupFn = (app as any)._runScheduledBackup;
-      if (typeof backupFn === "function") {
+      try {
+        log("[Hourly Backup] Starting scheduled backup...");
+        const backupFn = (app as any)._runScheduledBackup;
+        if (typeof backupFn !== "function") {
+          log("[Hourly Backup] Skipped - backup runner unavailable");
+          return;
+        }
+
         const result = await backupFn();
         if (result.success) {
-          log(`[Hourly Backup] Success — ${result.fileName} (${((result.size || 0) / 1024 / 1024).toFixed(1)} MB)`);
+          const warningSuffix = result.warning ? ` (warning: ${result.warning})` : "";
+          log(
+            `[Hourly Backup] Success - ${result.fileName} (${(
+              (result.size || 0) /
+              1024 /
+              1024
+            ).toFixed(1)} MB)${warningSuffix}`,
+          );
         } else {
-          log(`[Hourly Backup] Failed — ${result.error}`);
+          log(`[Hourly Backup] Failed - ${result.error}`);
         }
+      } catch (error: any) {
+        log(`[Hourly Backup] Failed - ${error?.message || "Unknown backup error"}`);
       }
     };
 
-    // Wait 2 minutes after startup, then run every hour
     setTimeout(async () => {
       await runBackup();
       setInterval(runBackup, ONE_HOUR);
-    }, 2 * 60 * 1000);
+    }, Math.max(BACKUP_INITIAL_DELAY_MS, 60_000));
   };
 
-  scheduleHourlyBackup();
+  if (SCHEDULED_BACKUPS_ENABLED) {
+    scheduleHourlyBackup();
+  } else {
+    log(
+      "[Hourly Backup] Scheduler disabled in web server. Set LABTRAX_ENABLE_SCHEDULED_BACKUPS=true to enable it explicitly.",
+    );
+  }
 })();
