@@ -11,17 +11,17 @@ import * as path from "path";
 const app = express();
 const log = console.log;
 const DEMO_ACCOUNTS_ENABLED = process.env.LABTRAX_ENABLE_DEMO_SEEDS === "true";
-const IS_DEPLOYED_ENV =
-  process.env.NODE_ENV === "production" ||
-  process.env.REPLIT_DEPLOYMENT === "1" ||
-  !!process.env.REPLIT_DEPLOYMENT_ID;
+const IS_DEPLOYMENT_RUNTIME = Boolean(process.env.WEB_REPL_RENEWAL);
 const SCHEDULED_BACKUPS_ENABLED =
   process.env.LABTRAX_ENABLE_SCHEDULED_BACKUPS === "true" ||
-  (!IS_DEPLOYED_ENV &&
+  (!IS_DEPLOYMENT_RUNTIME &&
+    process.env.NODE_ENV !== "production" &&
     process.env.LABTRAX_ENABLE_SCHEDULED_BACKUPS !== "false");
 const BACKUP_INITIAL_DELAY_MS = Number.parseInt(
   process.env.LABTRAX_BACKUP_INITIAL_DELAY_MS ||
-    (IS_DEPLOYED_ENV ? "1800000" : "120000"),
+    (IS_DEPLOYMENT_RUNTIME || process.env.NODE_ENV === "production"
+      ? "1800000"
+      : "120000"),
   10,
 );
 const SENSITIVE_LOG_KEYS = new Set([
@@ -33,6 +33,70 @@ const SENSITIVE_LOG_KEYS = new Set([
   "demoResetLink",
   "adminKey",
 ]);
+
+function isLoopbackHost(host?: string | null): boolean {
+  if (!host) {
+    return true;
+  }
+
+  const normalizedHost = host.split(",")[0].trim().toLowerCase();
+  return (
+    normalizedHost === "localhost" ||
+    normalizedHost.startsWith("localhost:") ||
+    normalizedHost === "127.0.0.1" ||
+    normalizedHost.startsWith("127.0.0.1:")
+  );
+}
+
+function getConfiguredPublicHost(): string | null {
+  const candidates = [
+    process.env.REPLIT_INTERNAL_APP_DOMAIN,
+    process.env.REPLIT_DEV_DOMAIN,
+    ...(process.env.REPLIT_DOMAINS?.split(",") ?? []).map((value) => value.trim()),
+    process.env.EXPO_PUBLIC_DOMAIN,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const normalized = candidate
+      .replace(/^https?:\/\//i, "")
+      .replace(/\/.*$/, "")
+      .trim();
+
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function getResolvedRequestHost(req: Request): string {
+  const forwardedHost = req.header("x-forwarded-host");
+  const directHost = req.get("host");
+
+  if (forwardedHost && !isLoopbackHost(forwardedHost)) {
+    return forwardedHost.split(",")[0].trim();
+  }
+
+  if (directHost && !isLoopbackHost(directHost)) {
+    return directHost;
+  }
+
+  return getConfiguredPublicHost() || directHost || "localhost";
+}
+
+function getResolvedRequestProtocol(req: Request): string {
+  const forwardedProto = req.header("x-forwarded-proto");
+  if (forwardedProto) {
+    return forwardedProto.split(",")[0].trim();
+  }
+
+  return isLoopbackHost(getResolvedRequestHost(req)) ? req.protocol || "http" : "https";
+}
 
 declare module "http" {
   interface IncomingMessage {
@@ -175,10 +239,8 @@ function serveExpoManifest(platform: string, req: Request, res: Response) {
 
   let manifest = fs.readFileSync(manifestPath, "utf-8");
 
-  const forwardedHost = req.header("x-forwarded-host");
-  const actualHost = forwardedHost || req.get("host");
-  const forwardedProto = req.header("x-forwarded-proto");
-  const protocol = forwardedProto || req.protocol || "https";
+  const actualHost = getResolvedRequestHost(req);
+  const protocol = getResolvedRequestProtocol(req);
   const actualBaseUrl = `${protocol}://${actualHost}`;
 
   manifest = manifest.replace(/https?:\/\/[^"]*?janeway\.replit\.dev(?::\d+)?/g, actualBaseUrl);
@@ -199,10 +261,8 @@ function serveLandingPage({
   landingPageTemplate: string;
   appName: string;
 }) {
-  const forwardedProto = req.header("x-forwarded-proto");
-  const protocol = forwardedProto || req.protocol || "https";
-  const forwardedHost = req.header("x-forwarded-host");
-  const host = forwardedHost || req.get("host");
+  const protocol = getResolvedRequestProtocol(req);
+  const host = getResolvedRequestHost(req);
   const baseUrl = `${protocol}://${host}`;
   const expsUrl = `${host}`;
 
@@ -434,6 +494,19 @@ async function runStartupMigrations() {
 
   configureExpoAndLanding(app);
 
+  app.get("/status", (_req: Request, res: Response) => {
+    res.status(200).type("text/plain").send("ok");
+  });
+
+  app.get("/health", (_req: Request, res: Response) => {
+    res.status(200).json({
+      ok: true,
+      status: "healthy",
+      deploymentRuntime: IS_DEPLOYMENT_RUNTIME,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   const server = await registerRoutes(app);
 
   setupErrorHandler(app);
@@ -491,7 +564,7 @@ async function runStartupMigrations() {
     scheduleHourlyBackup();
   } else {
     log(
-      "[Hourly Backup] Scheduler disabled in web server. Set LABTRAX_ENABLE_SCHEDULED_BACKUPS=true to enable it explicitly.",
+      `[Hourly Backup] Scheduler disabled in web server${IS_DEPLOYMENT_RUNTIME ? " for deployment runtime" : ""}. Set LABTRAX_ENABLE_SCHEDULED_BACKUPS=true to enable it explicitly.`,
     );
   }
 })();
