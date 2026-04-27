@@ -98,6 +98,10 @@ function getResolvedRequestProtocol(req: Request): string {
   return isLoopbackHost(getResolvedRequestHost(req)) ? req.protocol || "http" : "https";
 }
 
+function isDeploymentPreviewHost(host: string): boolean {
+  return host.toLowerCase().includes(".janeway.replit.dev");
+}
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
@@ -268,6 +272,15 @@ function serveLandingPage({
 
   log(`baseUrl`, baseUrl);
   log(`expsUrl`, expsUrl);
+
+  if (IS_DEPLOYMENT_RUNTIME && isDeploymentPreviewHost(host)) {
+    return res
+      .status(200)
+      .type("text/html; charset=utf-8")
+      .send(
+        "<!doctype html><html><head><title>LabTrax</title></head><body>LabTrax deployment preview ready.</body></html>",
+      );
+  }
 
   const html = landingPageTemplate
     .replace(/BASE_URL_PLACEHOLDER/g, baseUrl)
