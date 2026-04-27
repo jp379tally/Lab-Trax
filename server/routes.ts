@@ -1875,7 +1875,8 @@ Important rules:
       if (!reqUser || reqUser.role !== "admin") {
         return res.status(403).json({ error: "Admin access required." });
       }
-      const { tier, filename } = req.params;
+      const tier = req.params.tier as string;
+      const filename = req.params.filename as string;
       if (!["daily", "weekly", "monthly"].includes(tier)) {
         return res.status(400).json({ error: "Invalid tier." });
       }

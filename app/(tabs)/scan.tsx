@@ -1182,7 +1182,7 @@ export default function ScanScreen() {
           try {
             const errJson = JSON.parse(errText);
             if (errJson.error && errJson.error.includes("HEIC")) {
-              return { success: false, error: errJson.error };
+              return { success: false, error: errJson.error } as any;
             }
           } catch {}
           lastErr = new Error(`HTTP ${res.status}: ${errText.substring(0, 100)}`);
@@ -2590,7 +2590,7 @@ export default function ScanScreen() {
                   </Pressable>
                 </View>
               )}
-              <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, paddingTop: 12, backgroundColor: "rgba(0,0,0,0.85)" }}>
+              <View style={{ paddingHorizontal: 20, paddingBottom: (Platform.OS as string) === "web" ? 34 : insets.bottom + 10, paddingTop: 12, backgroundColor: "rgba(0,0,0,0.85)" }}>
                 <Pressable
                   onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
                   style={({ pressed }) => ({

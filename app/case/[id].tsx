@@ -26,7 +26,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { logAudit } from "@/lib/audit";
@@ -1192,7 +1192,7 @@ export default function CaseDetailScreen() {
                     ? registeredUsers.find(
                         (user) =>
                           user.id === entry.user ||
-                          user.username?.toLowerCase() === entry.user.toLowerCase()
+                          user.username?.toLowerCase() === entry.user?.toLowerCase()
                       )
                     : null;
                   const entryInitials = entry.user
@@ -1252,7 +1252,7 @@ export default function CaseDetailScreen() {
           <Text style={styles.sectionTitle}>Case History</Text>
         </View>
         <View style={styles.timeline}>
-          {(caseItem.activityLog && caseItem.activityLog.length > 0
+          {((caseItem.activityLog && caseItem.activityLog.length > 0
             ? [...caseItem.activityLog].sort((a, b) => b.timestamp - a.timestamp)
             : [...caseItem.routeHistory].sort((a, b) => b.timestamp - a.timestamp).map((rh) => ({
                 id: String(rh.timestamp),
@@ -1260,8 +1260,9 @@ export default function CaseDetailScreen() {
                 timestamp: rh.timestamp,
                 description: `Case moved to ${getStationInfo(rh.station, customStationLabels).label}`,
                 station: rh.station,
+                user: undefined,
               }))
-          ).map((entry, idx, arr) => {
+          ) as ActivityEntry[]).map((entry, idx, arr) => {
             const isLast = idx === arr.length - 1;
             const isFirst = idx === 0;
             const isStation = entry.type === "station_change" || entry.type === "created" || entry.type === "scan";
@@ -1299,7 +1300,7 @@ export default function CaseDetailScreen() {
               ? registeredUsers.find(
                   (user) =>
                     user.id === entry.user ||
-                    user.username?.toLowerCase() === entry.user.toLowerCase()
+                    user.username?.toLowerCase() === entry.user?.toLowerCase()
                 )
               : null;
             const entryUserName = entry.user
@@ -3270,7 +3271,7 @@ export default function CaseDetailScreen() {
                     addNotification({
                       title: "Case Updated",
                       message: `${currentUser || "A user"} edited case ${caseItem.caseNumber}: ${changeDesc}`,
-                      type: "case_update",
+                      type: "update",
                       caseId: caseItem.id,
                     });
                   }
@@ -3421,7 +3422,7 @@ export default function CaseDetailScreen() {
                     <Text style={labSlipStyles.slipLabel}>Tooth Details</Text>
                     {caseItem.toothMap!.map((t, i) => (
                       <Text key={i} style={labSlipStyles.slipValue}>
-                        #{t.tooth} - {t.type}{t.material ? ` (${t.material})` : ""}
+                        #{t.num} - {t.type}
                       </Text>
                     ))}
                   </View>

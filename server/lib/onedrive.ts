@@ -126,7 +126,7 @@ export async function uploadToOneDrive(
       {
         method: "PUT",
         headers: { "Content-Type": "application/octet-stream" },
-        body: fileBuffer,
+        body: fileBuffer as any,
       },
       token,
     );

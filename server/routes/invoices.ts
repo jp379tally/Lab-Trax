@@ -29,7 +29,7 @@ router.post(
   "/cases/:caseId/generate-invoice",
   asyncHandler(async (req, res) => {
     const found = await db.query.cases.findFirst({
-      where: eq(cases.id, req.params.caseId),
+      where: eq(cases.id, (req.params.caseId as string)),
     });
     if (!found) throw new HttpError(404, "Case not found.");
     await requireAnyRole(
@@ -158,7 +158,7 @@ router.get(
   "/:invoiceId",
   asyncHandler(async (req, res) => {
     const invoice = await db.query.invoices.findFirst({
-      where: eq(invoices.id, req.params.invoiceId),
+      where: eq(invoices.id, (req.params.invoiceId as string)),
     });
     if (!invoice) throw new HttpError(404, "Invoice not found.");
 
@@ -189,7 +189,7 @@ router.patch(
   "/:invoiceId",
   asyncHandler(async (req, res) => {
     const invoice = await db.query.invoices.findFirst({
-      where: eq(invoices.id, req.params.invoiceId),
+      where: eq(invoices.id, (req.params.invoiceId as string)),
     });
     if (!invoice) throw new HttpError(404, "Invoice not found.");
     await requireAnyRole(
@@ -263,7 +263,7 @@ router.post(
   "/:invoiceId/payments",
   asyncHandler(async (req, res) => {
     const invoice = await db.query.invoices.findFirst({
-      where: eq(invoices.id, req.params.invoiceId),
+      where: eq(invoices.id, (req.params.invoiceId as string)),
     });
     if (!invoice) throw new HttpError(404, "Invoice not found.");
     await requireAnyRole(

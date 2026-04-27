@@ -177,14 +177,14 @@ async function fetchWithAuthRetry(
   options: RequestInit,
 ): Promise<Response> {
   const requestUrl = new URL(path, baseUrl).toString();
-  let res = await fetch(requestUrl, options);
+  let res = await fetch(requestUrl, options as any);
 
   if (res.status === 401 && _refreshToken) {
     const newToken = await refreshAccessToken(baseUrl);
     if (newToken) {
       const retryHeaders = new Headers(options.headers || {});
       retryHeaders.set("Authorization", `Bearer ${newToken}`);
-      res = await fetch(requestUrl, { ...options, headers: retryHeaders });
+      res = await fetch(requestUrl, { ...options, headers: retryHeaders } as any);
     }
   }
 

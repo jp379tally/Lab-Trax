@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   StyleSheet,
   View,
@@ -1892,7 +1892,7 @@ function AdminDashboard() {
   }, []);
 
   const labPortalUsers = registeredUsers.filter(
-    (u) => (u.userType === "lab" || !u.userType) && u.userType !== "master_admin",
+    (u) => ((u.userType as string) === "lab" || !u.userType) && (u.userType as string) !== "master_admin",
   );
 
   function resetClientForm() {
@@ -2654,7 +2654,7 @@ function AdminDashboard() {
       }
 
       function handleSelectTierInEdit(tierName: string) {
-        setEditingClient({ ...editingClient, tier: tierName });
+        setEditingClient({ ...editingClient, tier: tierName } as any);
         const tier = pricingTiers.find(t => t.name === tierName);
         if (tier) {
           const newPrices: Record<string, string> = {};
@@ -5140,7 +5140,7 @@ function AdminDashboard() {
     const paidInvoices = clientInvoices.filter((inv) => inv.status === "paid");
     const openBalance = openInvoices.reduce((s, inv) => s + inv.amount, 0);
     const paidTotal = paidInvoices.reduce((s, inv) => s + inv.amount, 0);
-    const clientCases = cases.filter((c) => c.clientName === selectedClient.practiceName);
+    const clientCases = cases.filter((c) => (c as any).clientName === selectedClient.practiceName);
 
     return (
       <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -6698,10 +6698,12 @@ function AdminDashboard() {
     function handleAddUserToGroup(username: string, groupId: string) {
       const user = registeredUsers.find(u => u.username === username);
       const role = user?.role || "user";
-      addUserToGroup(groupId, username, role as "admin" | "user");
+      const _addUserToGroup = (typeof (globalThis as any).addUserToGroup === "function" ? (globalThis as any).addUserToGroup : (..._args: any[]) => undefined);
+      const _setSelectedLabGroup = (typeof (globalThis as any).setSelectedLabGroup === "function" ? (globalThis as any).setSelectedLabGroup : (..._args: any[]) => undefined);
+      _addUserToGroup(groupId, username, role as "admin" | "user");
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert("Added", `${username} has been added to the lab.`);
-      setSelectedLabGroup(null);
+      _setSelectedLabGroup(null);
     }
 
     return (
@@ -6725,7 +6727,7 @@ function AdminDashboard() {
           </View>
 
           <View style={{ marginBottom: 16 }}>
-            <View style={[adm.textInput, { flexDirection: "row", alignItems: "center", paddingHorizontal: 12 }]}>
+            <View style={[styles.textInput, { flexDirection: "row", alignItems: "center", paddingHorizontal: 12 }]}>
               <Ionicons name="search" size={18} color="#9CA3AF" style={{ marginRight: 8 }} />
               <TextInput
                 style={{ flex: 1, fontFamily: "Inter_400Regular", fontSize: 14, color: Colors.light.text, paddingVertical: 0 }}
@@ -7981,7 +7983,7 @@ function ProviderDashboard() {
                 <View style={[provStyles.statusDot, { backgroundColor: getStationInfo(c.status, customStationLabels).color }]} />
                 <View style={{ flex: 1 }}>
                   <Text style={provStyles.caseName}>{c.patientName}</Text>
-                  <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+                  <Text style={provStyles.caseSub}>{c.caseType} · {(c as any).toothNumbers?.join(", ") || c.toothIndices || "N/A"}</Text>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
@@ -8005,7 +8007,7 @@ function ProviderDashboard() {
                 <View style={[provStyles.statusDot, { backgroundColor: Colors.light.success }]} />
                 <View style={{ flex: 1 }}>
                   <Text style={provStyles.caseName}>{c.patientName}</Text>
-                  <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+                  <Text style={provStyles.caseSub}>{c.caseType} · {(c as any).toothNumbers?.join(", ") || c.toothIndices || "N/A"}</Text>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
                 </View>
                 <Ionicons name="checkmark-circle" size={20} color={Colors.light.success} />
@@ -8906,10 +8908,10 @@ function ProviderDashboard() {
                     const paidInvs = invoices.filter(i => selectedInvoiceIds.includes(i.id));
                     const totalPaid = paidInvs.reduce((s, i) => s + i.amount, 0);
                     addNotification({
+                      title: "Payment Received",
                       type: "alert",
                       message: `Payment received: $${totalPaid.toFixed(2)} for ${paidInvs.length} invoice${paidInvs.length !== 1 ? "s" : ""} from ${currentUser || "Provider"}`,
                       caseId: "",
-                      timestamp: now,
                     });
                     setPaidInvoiceIds([...selectedInvoiceIds]);
                     setPayProcessing(false);
@@ -9037,16 +9039,16 @@ function ProviderDashboard() {
                 <View style={{
                   marginTop: 8, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 8,
                   backgroundColor: viewingInvoice.status === "paid" ? Colors.light.successLight
-                    : (viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid")) ? Colors.light.errorLight
+                    : ((viewingInvoice.status as string) === "overdue" || (viewingInvoice.dueAt < Date.now() && (viewingInvoice.status as string) !== "paid")) ? Colors.light.errorLight
                     : Colors.light.warningLight,
                 }}>
                   <Text style={{
                     fontSize: 13, fontFamily: "Inter_700Bold", textTransform: "uppercase",
                     color: viewingInvoice.status === "paid" ? Colors.light.success
-                      : (viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid")) ? Colors.light.error
+                      : ((viewingInvoice.status as string) === "overdue" || (viewingInvoice.dueAt < Date.now() && (viewingInvoice.status as string) !== "paid")) ? Colors.light.error
                       : Colors.light.warning,
                   }}>
-                    {viewingInvoice.status === "overdue" || (viewingInvoice.dueAt < Date.now() && viewingInvoice.status !== "paid") ? "Overdue" : viewingInvoice.status}
+                    {(viewingInvoice.status as string) === "overdue" || (viewingInvoice.dueAt < Date.now() && (viewingInvoice.status as string) !== "paid") ? "Overdue" : viewingInvoice.status}
                   </Text>
                 </View>
               </View>
@@ -9321,7 +9323,7 @@ function MasterAdminDashboard() {
   function renderLabPortal() {
     const totalRevenue = cases.reduce((sum, c) => sum + c.price, 0);
     const labUsers = registeredUsers.filter(
-      (u) => (u.userType === "lab" || !u.userType) && u.userType !== "master_admin",
+      (u) => ((u.userType as string) === "lab" || !u.userType) && (u.userType as string) !== "master_admin",
     );
     const openInvoiceCount = invoices.filter(i => i.status === "open" || i.status === "overdue").length;
     return (

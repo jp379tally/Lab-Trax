@@ -288,7 +288,7 @@ router.post(
       if (org) {
         await db.insert(organizationJoinRequests).values({
           labId: org.id,
-          requestedByUserId: user.id,
+          userId: user.id,
           requestedRole: input.role === "admin" ? "admin" : "user",
           message: `${user.username} would like to join ${org.displayName || org.name}.`,
           status: "pending",
@@ -303,8 +303,8 @@ router.post(
         .insert(organizations)
         .values({
           type: orgType,
-          name: input.practiceName.trim(),
-          displayName: input.practiceName.trim(),
+          name: (input.practiceName ?? "").trim(),
+          displayName: (input.practiceName ?? "").trim(),
           addressLine1: input.practiceAddress || null,
           phone: input.practicePhone || null,
           billingEmail: input.email || null,
@@ -511,7 +511,7 @@ router.put(
   "/users/:id/profile",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const authUserId = (req as any).auth.userId;
     if (authUserId !== id) {
       throw new HttpError(403, "Unauthorized");
@@ -573,7 +573,7 @@ router.put(
   "/users/:id/password",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const authUserId = (req as any).auth.userId;
     if (authUserId !== id) {
       throw new HttpError(403, "You can only change your own password.");
@@ -614,7 +614,7 @@ router.delete(
   "/users/:id",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const authUserId = (req as any).auth.userId;
     if (authUserId !== id) {
       throw new HttpError(403, "You can only delete your own account.");
@@ -696,7 +696,7 @@ router.delete(
       action: "lab_deleted",
       entityType: "organization",
       entityId: labNameLower,
-      details: { labName, membersRemoved: memberIds.length },
+      metadataJson: { labName, membersRemoved: memberIds.length },
     });
     res.json({ success: true, membersRemoved: memberIds.length });
   })

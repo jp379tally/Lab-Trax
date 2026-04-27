@@ -180,7 +180,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(
       (req as any).auth.userId,
-      req.params.caseId
+      (req.params.caseId as string)
     );
     const [restorations, notes, attachments, events, locations] =
       await Promise.all([
@@ -242,7 +242,7 @@ router.patch(
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(
       (req as any).auth.userId,
-      req.params.caseId
+      (req.params.caseId as string)
     );
     await requireMembership(
       (req as any).auth.userId,
@@ -300,7 +300,7 @@ router.delete(
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(
       (req as any).auth.userId,
-      req.params.caseId
+      (req.params.caseId as string)
     );
     await requireAnyRole(
       (req as any).auth.userId,
@@ -325,7 +325,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(
       (req as any).auth.userId,
-      req.params.caseId
+      (req.params.caseId as string)
     );
     const input = z
       .object({
@@ -374,7 +374,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(
       (req as any).auth.userId,
-      req.params.caseId
+      (req.params.caseId as string)
     );
     await requireMembership(
       (req as any).auth.userId,
@@ -421,7 +421,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(
       (req as any).auth.userId,
-      req.params.caseId
+      (req.params.caseId as string)
     );
     await requireMembership(
       (req as any).auth.userId,
@@ -462,7 +462,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(
       (req as any).auth.userId,
-      req.params.caseId
+      (req.params.caseId as string)
     );
     await requireMembership(
       (req as any).auth.userId,
@@ -508,7 +508,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(
       (req as any).auth.userId,
-      req.params.caseId
+      (req.params.caseId as string)
     );
     await requireAnyRole(
       (req as any).auth.userId,
@@ -529,7 +529,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const submission =
       await db.query.caseSubmissionQueue.findFirst({
-        where: eq(caseSubmissionQueue.id, req.params.submissionId),
+        where: eq(caseSubmissionQueue.id, (req.params.submissionId as string)),
       });
     if (!submission) throw new HttpError(404, "Submission not found.");
     const found = await assertCaseAccess(
@@ -587,7 +587,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const submission =
       await db.query.caseSubmissionQueue.findFirst({
-        where: eq(caseSubmissionQueue.id, req.params.submissionId),
+        where: eq(caseSubmissionQueue.id, (req.params.submissionId as string)),
       });
     if (!submission) throw new HttpError(404, "Submission not found.");
     const found = await assertCaseAccess(

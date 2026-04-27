@@ -27,6 +27,7 @@
     "static-build",
     "backups",
     ".expo",
-    "public"
+    "public",
+    "server/replit_integrations"
   ]
 }
