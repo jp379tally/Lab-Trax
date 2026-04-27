@@ -1,0 +1,80 @@
+2026-04-27 11:23:38.30
+0c3c9e17
+System
+metasidecar: loaded enterprise status from environment is_enterprise=false
+2026-04-27 11:23:38.30
+0c3c9e17
+System
+forwarding local port 8081 to external port 80 (mapped as 1104)
+2026-04-27 11:23:38.30
+0c3c9e17
+System
+starting up user application
+2026-04-27 11:23:41.63
+0c3c9e17
+User
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-04-27 11:23:41.63
+0c3c9e17
+User
+(node:27) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-04-27 11:23:41.63
+0c3c9e17
+User
+- If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-04-27 11:23:41.63
+0c3c9e17
+User
+- If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+2026-04-27 11:23:41.63
+0c3c9e17
+User
+To prepare for this change:
+2026-04-27 11:23:41.63
+0c3c9e17
+User
+See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+2026-04-27 11:23:41.63
+0c3c9e17
+User
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-04-27 11:23:42.52
+0c3c9e17
+User
+Startup migrations applied successfully
+2026-04-27 11:23:42.54
+0c3c9e17
+User
+Serving static Expo files with dynamic manifest routing
+2026-04-27 11:23:42.54
+0c3c9e17
+User
+Expo routing: Checking expo-platform header on / and /manifest
+2026-04-27 11:23:42.54
+0c3c9e17
+User
+[Hourly Backup] Scheduler disabled in web server. Set LABTRAX_ENABLE_SCHEDULED_BACKUPS=true to enable it explicitly.
+2026-04-27 11:23:42.54
+0c3c9e17
+User
+express server serving on port 8081
+2026-04-27 11:23:42.76
+0c3c9e17
+User
+baseUrl http://127.0.0.1:1104
+2026-04-27 11:23:42.76
+0c3c9e17
+User
+expsUrl 127.0.0.1:1104
+2026-04-27 11:26:09.97
+23424ebf
+System
+system: received signal terminated
+2026-04-27 11:26:10.00
+23424ebf
+System
+command finished with error [node server_dist/index.js]: signal: terminated
+2026-04-27 11:26:10.07
+23424ebf
+System
+main done, exiting
