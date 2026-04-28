@@ -1,0 +1,96 @@
+2026-04-28 13:12:55.97
+44708868
+System
+system: received signal terminated
+2026-04-28 13:12:55.98
+44708868
+System
+command finished with error [node server_dist/index.js]: signal: terminated
+2026-04-28 13:12:56.00
+44708868
+System
+main done, exiting
+2026-04-28 13:28:21.68
+fa08ccc8
+System
+starting up user application
+2026-04-28 13:28:21.68
+fa08ccc8
+System
+forwarding local port 8081 to external port 80 (mapped as 1104)
+2026-04-28 13:28:21.68
+fa08ccc8
+System
+metasidecar: loaded enterprise status from environment is_enterprise=false
+2026-04-28 13:28:27.23
+fa08ccc8
+User
+(node:28) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-04-28 13:28:27.23
+fa08ccc8
+User
+- If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-04-28 13:28:27.23
+fa08ccc8
+User
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-04-28 13:28:27.23
+fa08ccc8
+User
+- If you want libpq compatibility now, use 'uselibpqcompat=true&sslmode=require'
+2026-04-28 13:28:27.23
+fa08ccc8
+User
+See https://www.postgresql.org/docs/current/libpq-ssl.html for libpq SSL mode definitions.
+2026-04-28 13:28:27.23
+fa08ccc8
+User
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-04-28 13:28:27.23
+fa08ccc8
+User
+To prepare for this change:
+2026-04-28 13:28:28.27
+fa08ccc8
+User
+Startup migrations applied successfully
+2026-04-28 13:28:28.28
+fa08ccc8
+User
+Serving static Expo files with dynamic manifest routing
+2026-04-28 13:28:28.28
+fa08ccc8
+User
+Expo routing: Checking expo-platform header on / and /manifest
+2026-04-28 13:28:28.29
+fa08ccc8
+User
+[Hourly Backup] Scheduler disabled in web server for deployment runtime. Set LABTRAX_ENABLE_SCHEDULED_BACKUPS=true to enable it explicitly.
+2026-04-28 13:28:28.29
+fa08ccc8
+User
+express server serving on port 8081
+2026-04-28 13:28:29.53
+fa08ccc8
+User
+baseUrl https://fa08ccc8-cf3d-4c54-94cb-26131959b87c-00-2wo1hqzdnrrer.janeway.replit.dev
+2026-04-28 13:28:29.53
+fa08ccc8
+User
+expsUrl fa08ccc8-cf3d-4c54-94cb-26131959b87c-00-2wo1hqzdnrrer.janeway.replit.dev
+2026-04-28 13:31:54.86
+fa08ccc8
+User
+GET /api/legacy/cases 401 in 9ms :: {"ok":false,"message":"Invalid access token...
+2026-04-28 13:31:55.68
+fa08ccc8
+User
+POST /api/auth/refresh 200 in 606ms :: {"ok":true,"data":{"accessToken":"[REDAC...
+2026-04-28 13:31:55.71
+fa08ccc8
+User
+GET /api/auth/users 200 in 858ms :: {"users":[{"id":"b5a40c86-217f-4dfe-a086-07...
+2026-04-28 13:31:56.31
+fa08ccc8
+User
+GET /api/legacy/cases 200 in 308ms :: {"cases":[{"caseNumber":"26-1","doctorNam...
