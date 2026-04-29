@@ -24,7 +24,7 @@ import Colors from "@/constants/colors";
 import { Notification, GroupJoinRequest, LabInvitation } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 
-function getNotifIcon(type: Notification["type"]) {
+function getNotifIcon(type: Notification["type"] | string | undefined) {
   switch (type) {
     case "rush":
       return { name: "flash" as const, color: Colors.light.error, bg: Colors.light.errorLight };
@@ -34,10 +34,20 @@ function getNotifIcon(type: Notification["type"]) {
       return { name: "checkmark-circle" as const, color: Colors.light.success, bg: Colors.light.successLight };
     case "alert":
       return { name: "alert-circle" as const, color: Colors.light.warning, bg: Colors.light.warningLight };
+    default:
+      // Defensive fallback so an unknown / new notification type from the
+      // server cannot crash the entire screen with a "Something went wrong"
+      // ErrorBoundary fault.
+      return {
+        name: "notifications" as const,
+        color: Colors.light.tint,
+        bg: Colors.light.tintLight,
+      };
   }
 }
 
 function formatTime(ts: number) {
+  if (typeof ts !== "number" || !isFinite(ts) || ts <= 0) return "—";
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return "Just now";
@@ -116,12 +126,23 @@ export default function NotificationsScreen() {
     }, [])
   );
 
-  const pendingJoinRequests = groupJoinRequests.filter(
-    r => r.targetAdminUsername.toLowerCase() === (currentUser || "").toLowerCase() && r.status === "pending"
+  // Defensive: optional-chain every field access. Missing/malformed entries
+  // must never crash this screen.
+  const lowerUser = (currentUser || "").toLowerCase();
+  const safeJoinRequests = Array.isArray(groupJoinRequests) ? groupJoinRequests : [];
+  const safeLabInvites = Array.isArray(labInvitations) ? labInvitations : [];
+  const pendingJoinRequests = safeJoinRequests.filter(
+    r =>
+      typeof r?.targetAdminUsername === "string" &&
+      r.targetAdminUsername.toLowerCase() === lowerUser &&
+      r?.status === "pending"
   );
 
-  const pendingLabInvites = labInvitations.filter(
-    i => i.targetUsername.toLowerCase() === (currentUser || "").toLowerCase() && i.status === "pending"
+  const pendingLabInvites = safeLabInvites.filter(
+    i =>
+      typeof i?.targetUsername === "string" &&
+      i.targetUsername.toLowerCase() === lowerUser &&
+      i?.status === "pending"
   );
 
   const currentUserProfile = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
