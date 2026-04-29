@@ -3,37 +3,6 @@
 
 let cachedSettings: any = null;
 let cacheExpiresAt = 0;
-const CONNECTOR_TIMEOUT_MS = Number.parseInt(
-  process.env.LABTRAX_ONEDRIVE_CONNECTOR_TIMEOUT_MS || "15000",
-  10,
-);
-const GRAPH_TIMEOUT_MS = Number.parseInt(
-  process.env.LABTRAX_ONEDRIVE_GRAPH_TIMEOUT_MS || "60000",
-  10,
-);
-
-async function fetchWithTimeout(
-  input: string,
-  init: RequestInit = {},
-  timeoutMs = GRAPH_TIMEOUT_MS,
-) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await fetch(input, {
-      ...init,
-      signal: controller.signal,
-    });
-  } catch (error: any) {
-    if (error?.name === "AbortError") {
-      throw new Error("Authentication timed out");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 async function getOneDriveAccessToken(): Promise<string> {
   const now = Date.now();
@@ -59,7 +28,7 @@ async function getOneDriveAccessToken(): Promise<string> {
     throw new Error("Replit identity token not found.");
   }
 
-  const response = await fetchWithTimeout(
+  const response = await fetch(
     `https://${hostname}/api/v2/connection?include_secrets=true&connector_names=onedrive`,
     {
       headers: {
@@ -67,7 +36,6 @@ async function getOneDriveAccessToken(): Promise<string> {
         "X-Replit-Token": xReplitToken,
       },
     },
-    CONNECTOR_TIMEOUT_MS,
   );
   if (!response.ok) {
     throw new Error(`Connector fetch failed: ${response.status}`);
@@ -99,13 +67,13 @@ async function graphRequest(
 ): Promise<Response> {
   const accessToken = token || (await getOneDriveAccessToken());
 
-  return fetchWithTimeout(`https://graph.microsoft.com/v1.0${requestPath}`, {
+  return fetch(`https://graph.microsoft.com/v1.0${requestPath}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       ...(options.headers || {}),
     },
-  }, GRAPH_TIMEOUT_MS);
+  });
 }
 
 export async function ensureOneDriveFolder(folderName: string): Promise<string> {
@@ -158,7 +126,7 @@ export async function uploadToOneDrive(
       {
         method: "PUT",
         headers: { "Content-Type": "application/octet-stream" },
-        body: fileBuffer as any,
+        body: fileBuffer,
       },
       token,
     );
@@ -206,7 +174,7 @@ export async function uploadToOneDrive(
   while (offset < fileBuffer.length) {
     const chunk = fileBuffer.slice(offset, offset + chunkSize);
     const end = offset + chunk.length - 1;
-    const chunkResponse = await fetchWithTimeout(uploadUrl, {
+    const chunkResponse = await fetch(uploadUrl, {
       method: "PUT",
       headers: {
         "Content-Length": String(chunk.length),
@@ -214,7 +182,7 @@ export async function uploadToOneDrive(
         "Content-Type": "application/octet-stream",
       },
       body: chunk,
-    }, GRAPH_TIMEOUT_MS);
+    });
 
     if (!chunkResponse.ok && chunkResponse.status !== 202) {
       const errorText = await chunkResponse.text();

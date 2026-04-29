@@ -30,9 +30,3 @@ id = "ZQs1OTEjuxqIbCx8hegVY"
 uri = "file://labtrax-source.tar.gz"
 type = "unspecified"
 title = "LabTrax Source Code (v1.0.6, build 51)"
-
-[[outputs]]
-id = "GmO8hYcumOEvrz4n2G1HV"
-uri = "file://exports/labtrax-source.zip"
-type = "unspecified"
-title = "LabTrax Source Code"

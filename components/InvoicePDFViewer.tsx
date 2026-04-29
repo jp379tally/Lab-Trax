@@ -274,7 +274,6 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
           text: "Discard",
           style: "destructive",
           onPress: () => {
-            if (!invoice) return;
             setEditLineItems(invoice.lineItems.map(li => ({ ...li })));
             setEditCredits(invoice.credits || 0);
             setEditBillTo(invoice.billTo || "");

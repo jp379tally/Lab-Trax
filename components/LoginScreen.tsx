@@ -946,7 +946,7 @@ export default function LoginScreen() {
             <View style={{ backgroundColor: "rgba(59,130,246,0.1)", borderWidth: 1, borderColor: "rgba(59,130,246,0.3)", borderRadius: 14, padding: 20, alignItems: "center" }}>
               <Ionicons name="business" size={32} color="#3B82F6" style={{ marginBottom: 8 }} />
               <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF", textAlign: "center", marginBottom: 4 }}>
-                "{matchingLabGroup?.practiceName}" already exists
+                "{matchingLabGroup.practiceName}" already exists
               </Text>
               <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18 }}>
                 A lab with this name is already registered. Would you like to request to join this lab?
@@ -1010,7 +1010,7 @@ export default function LoginScreen() {
             </View>
             <Text style={{ fontSize: 16, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>Request Sent</Text>
             <Text style={{ fontSize: 13, fontFamily: "Inter_400Regular", color: "rgba(255,255,255,0.6)", textAlign: "center", lineHeight: 18 }}>
-              Your request to join {matchingLabGroup?.practiceName} has been sent to the lab admin. You'll be notified when they respond.
+              Your request to join {matchingLabGroup.practiceName} has been sent to the lab admin. You'll be notified when they respond.
             </Text>
             <Pressable
               onPress={() => {

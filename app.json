@@ -41,13 +41,11 @@
       [
         "expo-router",
         {
-          "origin": "https://lab-trax.replit.app"
+          "origin": "https://replit.com/"
         }
       ],
       "expo-font",
-      "expo-web-browser",
-      "expo-secure-store",
-      "expo-tracking-transparency"
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

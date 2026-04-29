@@ -19,8 +19,9 @@ function ClassicTabLayout() {
   const unreadCount = filteredNotifs.filter(n => !n.read).length;
 
   return (
-    <View style={{ flex: 1, maxWidth: isWeb ? 600 : undefined, alignSelf: isWeb ? "center" as const : undefined, width: isWeb ? "100%" : undefined, backgroundColor: colors.backgroundSolid }}>
+    <View style={{ flex: 1, maxWidth: isWeb ? 600 : undefined, alignSelf: isWeb ? "center" as const : undefined, width: isWeb ? "100%" : undefined }}>
       <Tabs
+        sceneContainerStyle={{ backgroundColor: colors.backgroundSolid }}
         screenOptions={{
           tabBarActiveTintColor: colors.tint,
           tabBarInactiveTintColor: colors.tabIconDefault,

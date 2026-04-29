@@ -9,7 +9,7 @@ export async function getActiveMembership(userId: string, organizationId: string
   const membership = await db.query.organizationMemberships.findFirst({
     where: and(
       eq(organizationMemberships.userId, userId),
-      eq(organizationMemberships.labId, organizationId),
+      eq(organizationMemberships.organizationId, organizationId),
       eq(organizationMemberships.status, "active")
     ),
   });

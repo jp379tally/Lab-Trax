@@ -106,12 +106,14 @@ async function getSensitiveItem(key: string): Promise<string | null> {
     return null;
   }
 
-  try {
-    const secureValue = await SecureStore.getItemAsync(key);
-    if (secureValue !== null) {
-      return secureValue;
-    }
-  } catch {}
+  if (Platform.OS !== "web") {
+    try {
+      const secureValue = await SecureStore.getItemAsync(key);
+      if (secureValue !== null) {
+        return secureValue;
+      }
+    } catch {}
+  }
 
   try {
     return await AsyncStorage.getItem(key);
@@ -128,11 +130,13 @@ async function setSensitiveItem(key: string, value: string): Promise<void> {
     return;
   }
 
-  try {
-    await SecureStore.setItemAsync(key, value);
-    await AsyncStorage.removeItem(key);
-    return;
-  } catch {}
+  if (Platform.OS !== "web") {
+    try {
+      await SecureStore.setItemAsync(key, value);
+      await AsyncStorage.removeItem(key);
+      return;
+    } catch {}
+  }
 
   await AsyncStorage.setItem(key, value);
 }
@@ -147,9 +151,11 @@ async function removeSensitiveItem(key: string): Promise<void> {
     return;
   }
 
-  try {
-    await SecureStore.deleteItemAsync(key);
-  } catch {}
+  if (Platform.OS !== "web") {
+    try {
+      await SecureStore.deleteItemAsync(key);
+    } catch {}
+  }
 
   try {
     await AsyncStorage.removeItem(key);

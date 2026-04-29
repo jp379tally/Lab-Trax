@@ -12,7 +12,7 @@ import {
 import { Image } from "expo-image";
 import Svg, { Polygon } from "react-native-svg";
 import * as ImageManipulator from "expo-image-manipulator";
-import * as FileSystem from "expo-file-system/legacy";
+import * as FileSystem from "expo-file-system";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
