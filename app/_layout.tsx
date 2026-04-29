@@ -2,8 +2,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import { ThemeProvider as NavThemeProvider } from "@react-navigation/native";
 import * as SplashScreen from "expo-splash-screen";
+import * as Linking from "expo-linking";
 import React, { useEffect, useMemo } from "react";
-import { View, ActivityIndicator, StyleSheet, PanResponder } from "react-native";
+import { View, ActivityIndicator, StyleSheet, PanResponder, Platform } from "react-native";
+import { pushSharedFile } from "@/lib/shared-file-inbox";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { LinearGradient } from "expo-linear-gradient";
@@ -156,6 +158,15 @@ const authStyles = StyleSheet.create({
   },
 });
 
+// Recognize and store any file URL shared to LabTrax from the iOS/Android share sheet.
+function isFileUrl(url: string): boolean {
+  return (
+    url.startsWith("file://") ||
+    url.startsWith("content://") ||
+    /\.(jpe?g|png|heic|heif|gif|webp|pdf|mp4|mov|avi)(\?|$)/i.test(url)
+  );
+}
+
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
@@ -169,6 +180,37 @@ export default function RootLayout() {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, fontError]);
+
+  // Handle files shared to LabTrax from iOS/Android share sheet
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+
+    function handleUrl(event: { url: string }) {
+      const { url } = event;
+      if (!url) return;
+      // Accept direct file URLs and labtrax:// scheme with a ?file= param
+      if (isFileUrl(url)) {
+        pushSharedFile(url).catch(() => {});
+      } else if (url.startsWith("labtrax://")) {
+        try {
+          const parsed = Linking.parse(url);
+          const fileParam = parsed.queryParams?.file;
+          if (fileParam && typeof fileParam === "string") {
+            pushSharedFile(fileParam).catch(() => {});
+          }
+        } catch {}
+      }
+    }
+
+    // Incoming URL while app is running
+    const sub = Linking.addEventListener("url", handleUrl);
+    // File opened while app was closed
+    Linking.getInitialURL().then((url) => {
+      if (url) handleUrl({ url });
+    }).catch(() => {});
+
+    return () => sub.remove();
+  }, []);
 
 
   if (!fontsLoaded && !fontError) {

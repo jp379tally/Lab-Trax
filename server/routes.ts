@@ -6,18 +6,13 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import archiver from "archiver";
-import AdmZip from "adm-zip";
 import { uploadToOneDrive } from "./lib/onedrive";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "./db";
-import {
-  users, labCases, organizations, organizationMemberships,
-  organizationJoinRequests, organizationInvites, invoices,
-  invoiceLineItems, payments, auditLogs, notifications,
-} from "../shared/schema";
+import { users, labCases, organizations, organizationMemberships } from "../shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
@@ -1574,322 +1569,7 @@ Important rules:
     } catch { res.status(500).json({ error: "Cleanup failed" }); }
   });
 
-  // ── Temporary source-code download (no auth — remove after use) ───────────
-  app.get("/dl/source", async (_req, res) => {
-    try {
-      const root = process.cwd();
-      res.setHeader("Content-Type", "application/zip");
-      res.setHeader("Content-Disposition", 'attachment; filename="labtrax-source.zip"');
-      res.setHeader("Cache-Control", "no-store");
-      const archive = archiver("zip", { zlib: { level: 6 } });
-      archive.on("error", (e: Error) => { if (!res.headersSent) res.status(500).end(); });
-      archive.pipe(res);
-      archive.glob("**/*.{ts,tsx,js,cjs,json,md,html,sh,toml,css}", {
-        cwd: root,
-        ignore: ["node_modules/**",".git/**","server_dist/**",".expo/**",".cache/**","dist/**","build/**","attached_assets/**","uploads/**","public/**"],
-      });
-      await archive.finalize();
-    } catch (e: any) {
-      if (!res.headersSent) res.status(500).json({ error: e.message });
-    }
-  });
-
   // ── Admin Data Backup ─────────────────────────────────────────────────────
-  // ── Shared backup data gatherer ───────────────────────────────────────────
-  async function gatherBackupData(exportedBy = "system") {
-    const [
-      allUsers, allCases, allOrgs, allMemberships,
-      allJoinRequests, allInvites, allInvoices,
-      allLineItems, allPayments, allAuditLogs, allNotifications,
-    ] = await Promise.all([
-      db.select().from(users),
-      db.select().from(labCases),
-      db.select().from(organizations),
-      db.select().from(organizationMemberships),
-      db.select().from(organizationJoinRequests),
-      db.select().from(organizationInvites),
-      db.select().from(invoices),
-      db.select().from(invoiceLineItems),
-      db.select().from(payments),
-      db.select().from(auditLogs),
-      db.select().from(notifications),
-    ]);
-
-    const safeUsers = allUsers.map(u => { const { password: _pw, ...rest } = u as any; return rest; });
-
-    const manifest = {
-      version: "2.0",
-      appName: "LabTrax",
-      exportedAt: new Date().toISOString(),
-      exportedBy,
-      tables: [
-        "users", "lab_cases", "organizations", "lab_memberships",
-        "join_requests", "lab_invites", "invoices", "invoice_line_items",
-        "payments", "audit_logs", "notifications",
-      ],
-      counts: {
-        users: safeUsers.length,
-        cases: allCases.length,
-        organizations: allOrgs.length,
-        memberships: allMemberships.length,
-        joinRequests: allJoinRequests.length,
-        invites: allInvites.length,
-        invoices: allInvoices.length,
-        lineItems: allLineItems.length,
-        payments: allPayments.length,
-        auditLogs: allAuditLogs.length,
-        notifications: allNotifications.length,
-      },
-      note: "Passwords excluded. All database tables included. Media files in media/ directory.",
-    };
-
-    return {
-      manifest, safeUsers, allCases, allOrgs, allMemberships,
-      allJoinRequests, allInvites, allInvoices, allLineItems,
-      allPayments, allAuditLogs, allNotifications,
-    };
-  }
-
-  function buildBackupArchive(data: Awaited<ReturnType<typeof gatherBackupData>>) {
-    const archive = archiver("zip", { zlib: { level: 6 } });
-    archive.append(JSON.stringify(data.manifest, null, 2), { name: "manifest.json" });
-    archive.append(JSON.stringify(data.safeUsers, null, 2), { name: "data/users.json" });
-    archive.append(JSON.stringify(data.allCases, null, 2), { name: "data/lab_cases.json" });
-    archive.append(JSON.stringify(data.allOrgs, null, 2), { name: "data/organizations.json" });
-    archive.append(JSON.stringify(data.allMemberships, null, 2), { name: "data/memberships.json" });
-    archive.append(JSON.stringify(data.allJoinRequests, null, 2), { name: "data/join_requests.json" });
-    archive.append(JSON.stringify(data.allInvites, null, 2), { name: "data/invites.json" });
-    archive.append(JSON.stringify(data.allInvoices, null, 2), { name: "data/invoices.json" });
-    archive.append(JSON.stringify(data.allLineItems, null, 2), { name: "data/invoice_line_items.json" });
-    archive.append(JSON.stringify(data.allPayments, null, 2), { name: "data/payments.json" });
-    archive.append(JSON.stringify(data.allAuditLogs, null, 2), { name: "data/audit_logs.json" });
-    archive.append(JSON.stringify(data.allNotifications, null, 2), { name: "data/notifications.json" });
-    const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
-    if (fs.existsSync(mediaDir)) archive.directory(mediaDir, "media");
-    return archive;
-  }
-
-  // ── Local backup retention manager ───────────────────────────────────────
-  async function pruneLocalBackups(folder: string, keep: number) {
-    try {
-      const dir = path.resolve(process.cwd(), "backups", folder);
-      await mkdir(dir, { recursive: true });
-      const files = fs.readdirSync(dir)
-        .filter(f => f.endsWith(".zip"))
-        .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtime.getTime() }))
-        .sort((a, b) => b.mtime - a.mtime);
-      for (const file of files.slice(keep)) {
-        fs.unlinkSync(path.join(dir, file.name));
-        console.log(`[Backup Retention] Removed old backup: ${folder}/${file.name}`);
-      }
-    } catch (e: any) {
-      console.error("[Backup Retention] prune error:", e?.message);
-    }
-  }
-
-  async function saveLocalBackup(zipBuffer: Buffer, fileName: string, folder: "daily" | "weekly" | "monthly") {
-    const dir = path.resolve(process.cwd(), "backups", folder);
-    await mkdir(dir, { recursive: true });
-    const filePath = path.join(dir, fileName);
-    fs.writeFileSync(filePath, zipBuffer);
-    return filePath;
-  }
-
-  // Export this so server/index.ts can call it for the nightly scheduler
-  (app as any)._runScheduledBackup = async () => {
-    try {
-      const data = await gatherBackupData("nightly-scheduler");
-      const now = new Date();
-      const dateStr = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const dayOfWeek = now.getDay(); // 0 = Sunday
-      const dayOfMonth = now.getDate();
-
-      // Determine retention tier
-      const isWeekly = dayOfWeek === 0;   // Sunday → weekly
-      const isMonthly = dayOfMonth === 1; // 1st → monthly
-      const tier: "daily" | "weekly" | "monthly" = isMonthly ? "monthly" : isWeekly ? "weekly" : "daily";
-      const fileName = `labtrax-${tier}-${dateStr}.zip`;
-
-      const zipBuffer: Buffer = await new Promise((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        const archive = buildBackupArchive(data);
-        archive.on("data", (c: Buffer) => chunks.push(c));
-        archive.on("end", () => resolve(Buffer.concat(chunks)));
-        archive.on("error", reject);
-        archive.finalize();
-      });
-
-      const sizeMB = (zipBuffer.length / 1024 / 1024).toFixed(1);
-
-      // 1. Save to local server
-      await saveLocalBackup(zipBuffer, fileName, tier);
-      await pruneLocalBackups("daily", 7);
-      await pruneLocalBackups("weekly", 4);
-      await pruneLocalBackups("monthly", 3);
-      console.log(`[Nightly Backup] Saved locally: backups/${tier}/${fileName} (${sizeMB} MB)`);
-
-      // 2. Upload to OneDrive
-      let webUrl = "";
-      try {
-        const result = await uploadToOneDrive(zipBuffer, fileName, `LabTrax Backups/${tier}`);
-        webUrl = result.webUrl;
-        console.log(`[Nightly Backup] OneDrive: ${result.name} → ${webUrl}`);
-      } catch (odErr: any) {
-        console.error("[Nightly Backup] OneDrive upload failed (local copy preserved):", odErr?.message);
-      }
-
-      return { success: true, fileName, size: zipBuffer.length, tier, webUrl };
-    } catch (e: any) {
-      console.error("[Nightly Backup] Failed:", e?.message);
-      return { success: false, error: e?.message };
-    }
-  };
-
-  // ── Restore endpoint ──────────────────────────────────────────────────────
-  const restoreUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
-
-  app.post("/api/admin/restore", requireAuth, restoreUpload.single("backup"), async (req, res) => {
-    try {
-      const reqUser = (req as any).user;
-      if (!reqUser || reqUser.role !== "admin") {
-        return res.status(403).json({ error: "Admin access required." });
-      }
-
-      const { confirmation, mode = "merge" } = req.body as { confirmation?: string; mode?: string };
-      if (confirmation !== "RESTORE") {
-        return res.status(400).json({ error: 'Send confirmation: "RESTORE" to proceed.' });
-      }
-      if (!["merge", "replace"].includes(mode)) {
-        return res.status(400).json({ error: 'mode must be "merge" or "replace".' });
-      }
-      if (!req.file) {
-        return res.status(400).json({ error: "No backup file uploaded." });
-      }
-
-      const zip = new AdmZip(req.file.buffer);
-      const manifestEntry = zip.getEntry("manifest.json");
-      if (!manifestEntry) return res.status(400).json({ error: "Invalid backup: missing manifest.json" });
-
-      const manifest = JSON.parse(manifestEntry.getData().toString("utf8"));
-      if (manifest.appName !== "LabTrax") {
-        return res.status(400).json({ error: "This backup is not from LabTrax." });
-      }
-
-      const readTable = (name: string) => {
-        const entry = zip.getEntry(`data/${name}`);
-        if (!entry) return [];
-        try { return JSON.parse(entry.getData().toString("utf8")); } catch { return []; }
-      };
-
-      const restoredCases    = readTable("lab_cases.json");
-      const restoredOrgs     = readTable("organizations.json");
-      const restoredMembers  = readTable("memberships.json");
-      const restoredInvoices = readTable("invoices.json");
-      const restoredLineItems= readTable("invoice_line_items.json");
-      const restoredPayments = readTable("payments.json");
-
-      const counts: Record<string, number> = {};
-
-      if (mode === "replace") {
-        // Clear tables in dependency order before reinserting
-        await db.delete(payments);
-        await db.delete(invoiceLineItems);
-        await db.delete(invoices);
-        await db.delete(organizationMemberships);
-        await db.delete(labCases);
-        await db.delete(organizations);
-      }
-
-      // Upsert helper — skips rows that violate unique constraints on conflict
-      const upsertRows = async (table: any, rows: any[], label: string) => {
-        if (!rows.length) { counts[label] = 0; return; }
-        let restored = 0;
-        for (const row of rows) {
-          try {
-            await db.insert(table).values(row).onConflictDoNothing();
-            restored++;
-          } catch { /* skip conflicting rows */ }
-        }
-        counts[label] = restored;
-      };
-
-      await upsertRows(labCases,               restoredCases,     "cases");
-      await upsertRows(organizations,           restoredOrgs,      "organizations");
-      await upsertRows(organizationMemberships, restoredMembers,   "memberships");
-      await upsertRows(invoices,                restoredInvoices,  "invoices");
-      await upsertRows(invoiceLineItems,        restoredLineItems, "lineItems");
-      await upsertRows(payments,                restoredPayments,  "payments");
-
-      // Log the restore action
-      try {
-        await db.insert(auditLogs).values({
-          userId: reqUser.id,
-          action: "RESTORE",
-          entityType: "system",
-          entityId: "full-restore",
-          details: JSON.stringify({ mode, backupDate: manifest.exportedAt, counts }),
-        } as any);
-      } catch { /* audit log failure non-fatal */ }
-
-      return res.json({
-        success: true,
-        mode,
-        backupDate: manifest.exportedAt,
-        restored: counts,
-      });
-    } catch (e: any) {
-      console.error("Restore error:", e?.message);
-      return res.status(500).json({ error: e?.message || "Restore failed." });
-    }
-  });
-
-  // ── List local backups ────────────────────────────────────────────────────
-  app.get("/api/admin/backups/list", requireAuth, async (req, res) => {
-    try {
-      const reqUser = (req as any).user;
-      if (!reqUser || reqUser.role !== "admin") {
-        return res.status(403).json({ error: "Admin access required." });
-      }
-      const result: Record<string, any[]> = { daily: [], weekly: [], monthly: [] };
-      for (const tier of ["daily", "weekly", "monthly"] as const) {
-        const dir = path.resolve(process.cwd(), "backups", tier);
-        if (!fs.existsSync(dir)) continue;
-        result[tier] = fs.readdirSync(dir)
-          .filter(f => f.endsWith(".zip"))
-          .map(f => {
-            const stat = fs.statSync(path.join(dir, f));
-            return { name: f, size: stat.size, createdAt: stat.mtime.toISOString(), tier };
-          })
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      }
-      return res.json(result);
-    } catch (e: any) {
-      return res.status(500).json({ error: e?.message });
-    }
-  });
-
-  // ── Download a specific local backup ─────────────────────────────────────
-  app.get("/api/admin/backups/download/:tier/:filename", requireAuth, async (req, res) => {
-    try {
-      const reqUser = (req as any).user;
-      if (!reqUser || reqUser.role !== "admin") {
-        return res.status(403).json({ error: "Admin access required." });
-      }
-      const { tier, filename } = req.params;
-      if (!["daily", "weekly", "monthly"].includes(tier)) {
-        return res.status(400).json({ error: "Invalid tier." });
-      }
-      const safeName = path.basename(filename);
-      const filePath = path.resolve(process.cwd(), "backups", tier, safeName);
-      if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Backup not found." });
-      res.setHeader("Content-Type", "application/zip");
-      res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
-      res.sendFile(filePath);
-    } catch (e: any) {
-      return res.status(500).json({ error: e?.message });
-    }
-  });
-
   app.get("/api/admin/backup", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;
@@ -1897,7 +1577,30 @@ Important rules:
         return res.status(403).json({ error: "Admin access required." });
       }
 
-      const data = await gatherBackupData(reqUser.username || reqUser.id);
+      const allUsers = await db.select().from(users);
+      const allCases = await db.select().from(labCases);
+
+      const safeUsers = allUsers.map(u => {
+        const { password: _pw, ...rest } = u as any;
+        return rest;
+      });
+
+      const manifest = {
+        version: "1.0",
+        appName: "LabTrax",
+        exportedAt: new Date().toISOString(),
+        exportedBy: reqUser.username || reqUser.id,
+        counts: {
+          users: safeUsers.length,
+          cases: allCases.length,
+        },
+        tables: ["users", "lab_cases"],
+        note: "Passwords are excluded from user records for security. Media files are included in the media/ directory.",
+      };
+
+      const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
+      const mediaExists = fs.existsSync(mediaDir);
+
       const dateStr = new Date().toISOString().split("T")[0];
       const filename = `labtrax-backup-${dateStr}.zip`;
 
@@ -1905,12 +1608,21 @@ Important rules:
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.setHeader("Cache-Control", "no-store");
 
-      const archive = buildBackupArchive(data);
+      const archive = archiver("zip", { zlib: { level: 6 } });
       archive.on("error", (err: Error) => {
         console.error("Backup archive error:", err);
         if (!res.headersSent) res.status(500).json({ error: "Backup failed." });
       });
       archive.pipe(res);
+
+      archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
+      archive.append(JSON.stringify(safeUsers, null, 2), { name: "data/users.json" });
+      archive.append(JSON.stringify(allCases, null, 2), { name: "data/cases.json" });
+
+      if (mediaExists) {
+        archive.directory(mediaDir, "media");
+      }
+
       await archive.finalize();
     } catch (e: any) {
       console.error("Backup endpoint error:", e?.message);
@@ -1926,16 +1638,36 @@ Important rules:
         return res.status(403).json({ error: "Admin access required." });
       }
 
-      const data = await gatherBackupData(reqUser.username || reqUser.id);
-      const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const fileName = `labtrax-backup-${dateStr}.zip`;
+      const allUsers = await db.select().from(users);
+      const allCases = await db.select().from(labCases);
+      const safeUsers = allUsers.map(u => { const { password: _pw, ...rest } = u as any; return rest; });
 
+      const dateStr = new Date().toISOString().split("T")[0];
+      const fileName = `labtrax-backup-${dateStr}.zip`;
+      const manifest = {
+        version: "1.0",
+        appName: "LabTrax",
+        exportedAt: new Date().toISOString(),
+        exportedBy: reqUser.username || reqUser.id,
+        counts: { users: safeUsers.length, cases: allCases.length },
+        tables: ["users", "lab_cases"],
+        note: "Passwords excluded. Media files included in media/ directory.",
+      };
+
+      const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
+      const mediaExists = fs.existsSync(mediaDir);
+
+      // Collect ZIP into a buffer
       const zipBuffer: Buffer = await new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
-        const archive = buildBackupArchive(data);
+        const archive = archiver("zip", { zlib: { level: 6 } });
         archive.on("data", (chunk: Buffer) => chunks.push(chunk));
         archive.on("end", () => resolve(Buffer.concat(chunks)));
         archive.on("error", reject);
+        archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
+        archive.append(JSON.stringify(safeUsers, null, 2), { name: "data/users.json" });
+        archive.append(JSON.stringify(allCases, null, 2), { name: "data/cases.json" });
+        if (mediaExists) archive.directory(mediaDir, "media");
         archive.finalize();
       });
 

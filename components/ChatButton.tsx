@@ -150,8 +150,14 @@ function SwipeableRow({ children, onDelete }: { children: React.ReactNode; onDel
   );
 }
 
+const STATUS_DOT_COLORS: Record<string, string> = {
+  available: "#22C55E",
+  break: "#F59E0B",
+  out_of_office: "#94A3B8",
+};
+
 export function ChatButton() {
-  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, clients, addConversation, removeConversation } = useApp();
+  const { conversations, chatMessages, sendChatMessage, markConversationRead, totalUnreadMessages, clients, addConversation, removeConversation, activeLabAffiliationKey } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
   const [showChat, setShowChat] = useState(false);
@@ -168,23 +174,26 @@ export function ChatButton() {
   const allContacts = React.useMemo(() => {
     const contactMap = new Map<string, { username: string; groupName: string; role: string; type: string }>();
     const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
-    const myLabName = currentUserData?.practiceName || "";
+    const myLabName = currentUserData?.practiceName?.toLowerCase().trim() || "";
     if (myLabName) {
-      const labMembers = registeredUsers.filter(u => u.practiceName?.toLowerCase().trim() === myLabName.toLowerCase().trim() && u.username.toLowerCase() !== (currentUser || "").toLowerCase());
+      const labMembers = registeredUsers.filter(
+        u =>
+          u.practiceName?.toLowerCase().trim() === myLabName &&
+          u.username.toLowerCase() !== (currentUser || "").toLowerCase()
+      );
       for (const m of labMembers) {
-        contactMap.set(m.username.toLowerCase(), { username: m.username, groupName: myLabName, role: m.role || "user", type: m.userType || "lab" });
-      }
-    }
-    for (const u of registeredUsers) {
-      if (u.username.toLowerCase() !== (currentUser || "").toLowerCase() && !contactMap.has(u.username.toLowerCase())) {
-        contactMap.set(u.username.toLowerCase(), { username: u.username, groupName: u.practiceName || "", role: u.role || "user", type: u.userType || "other" });
+        contactMap.set(m.username.toLowerCase(), { username: m.username, groupName: m.practiceName || myLabName, role: m.role || "user", type: m.userType || "lab" });
       }
     }
     return Array.from(contactMap.values());
   }, [currentUser, registeredUsers]);
 
   const sortedConversations = React.useMemo(() => {
-    return [...conversations].sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+    return [...conversations].sort((a, b) => {
+      if (a.isLabChannel && !b.isLabChannel) return -1;
+      if (!a.isLabChannel && b.isLabChannel) return 1;
+      return b.lastMessageTime - a.lastMessageTime;
+    });
   }, [conversations]);
 
   const filteredConversations = React.useMemo(() => {
@@ -439,8 +448,14 @@ export function ChatButton() {
           renderItem={({ item }: { item: Conversation }) => {
             const hasUnread = item.unreadCount > 0;
             const lastMsgPreview = item.lastMessage || "Tap to start chatting";
-            return (
-              <SwipeableRow onDelete={() => removeConversation(item.id)}>
+            const participant = registeredUsers.find(
+              (u) => u.username.toLowerCase() === item.clientName.toLowerCase()
+            );
+            const statusColor = item.isLabChannel
+              ? "#0084FF"
+              : STATUS_DOT_COLORS[(participant as any)?.workStatus ?? "available"] ?? "#22C55E";
+
+            const rowContent = (
               <Pressable
                 onPress={() => {
                   setActiveConversationId(item.id);
@@ -449,11 +464,22 @@ export function ChatButton() {
                 style={({ pressed }) => [s.convRow, pressed && { backgroundColor: MESSENGER_HOVER }]}
               >
                 <View style={s.convAvatarWrap}>
-                  {renderAvatar(item.clientName, 56)}
-                  <View style={s.onlineDot} />
+                  {item.isLabChannel ? (
+                    <View style={[s.avatar, { width: 56, height: 56, borderRadius: 28, backgroundColor: "#0084FF" }]}>
+                      <Ionicons name="chatbubbles" size={26} color="#FFF" />
+                    </View>
+                  ) : (
+                    renderAvatar(item.clientName, 56)
+                  )}
+                  <View style={[s.onlineDot, { backgroundColor: statusColor }]} />
                 </View>
                 <View style={s.convInfo}>
-                  <Text style={[s.convName, hasUnread && s.convNameBold]} numberOfLines={1}>{item.clientName}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                    {item.isLabChannel && (
+                      <Text style={{ fontSize: 12, color: "#0084FF", fontFamily: "Inter_600SemiBold" }}>CHANNEL  </Text>
+                    )}
+                    <Text style={[s.convName, hasUnread && s.convNameBold]} numberOfLines={1}>{item.clientName}</Text>
+                  </View>
                   <View style={s.convPreviewRow}>
                     <Text style={[s.convPreview, hasUnread && s.convPreviewBold]} numberOfLines={1}>
                       {lastMsgPreview}
@@ -466,6 +492,14 @@ export function ChatButton() {
                   <View style={s.unreadDot} />
                 )}
               </Pressable>
+            );
+
+            if (item.isLabChannel) {
+              return rowContent;
+            }
+            return (
+              <SwipeableRow onDelete={() => removeConversation(item.id)}>
+                {rowContent}
               </SwipeableRow>
             );
           }}
@@ -548,6 +582,18 @@ export function ChatButton() {
 
   function renderMessageThread() {
     if (!activeConv) return null;
+    const isLabChannelThread = activeConv.isLabChannel || activeConv.id?.startsWith("lab:");
+    const threadParticipant = isLabChannelThread
+      ? null
+      : registeredUsers.find((u) => u.username.toLowerCase() === activeConv.clientName.toLowerCase());
+    const threadStatusColor = isLabChannelThread
+      ? "#0084FF"
+      : STATUS_DOT_COLORS[(threadParticipant as any)?.workStatus ?? "available"] ?? "#22C55E";
+    const threadStatusLabel = isLabChannelThread
+      ? "Group channel"
+      : ({ available: "Active now", break: "On break", out_of_office: "Out of office" } as Record<string, string>)[
+          (threadParticipant as any)?.workStatus ?? "available"
+        ] ?? "Active now";
 
     return (
       <>
@@ -560,12 +606,18 @@ export function ChatButton() {
           </Pressable>
           <Pressable style={[s.threadHeaderCenter, { flex: 1 }]} onPress={() => {}}>
             <View style={s.threadAvatarWrap}>
-              {renderAvatar(activeConv.clientName, 36)}
-              <View style={[s.onlineDot, { width: 10, height: 10, borderWidth: 1.5, bottom: -1, right: -1 }]} />
+              {isLabChannelThread ? (
+                <View style={[s.avatar, { width: 36, height: 36, borderRadius: 18, backgroundColor: "#0084FF" }]}>
+                  <Ionicons name="chatbubbles" size={18} color="#FFF" />
+                </View>
+              ) : (
+                renderAvatar(activeConv.clientName, 36)
+              )}
+              <View style={[s.onlineDot, { width: 10, height: 10, borderWidth: 1.5, bottom: -1, right: -1, backgroundColor: threadStatusColor }]} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={s.threadName} numberOfLines={1}>{activeConv.clientName}</Text>
-              <Text style={s.threadStatus}>Active now</Text>
+              <Text style={s.threadStatus}>{threadStatusLabel}</Text>
             </View>
           </Pressable>
           <Pressable
@@ -586,8 +638,9 @@ export function ChatButton() {
           renderItem={({ item, index }: { item: ChatMessage; index: number }) => {
             const normalizedCurrentUser = (currentUser || "").toLowerCase();
             const senderKey = item.senderId?.toLowerCase?.() || "";
-            const isMe =
-              senderKey === normalizedCurrentUser || item.senderType === "lab";
+            const isMe = isLabChannelThread
+              ? senderKey === normalizedCurrentUser
+              : senderKey === normalizedCurrentUser || item.senderType === "lab";
             const prevItem = index < activeMsgs.length - 1 ? activeMsgs[index + 1] : null;
             const nextItem = index > 0 ? activeMsgs[index - 1] : null;
             const prevSenderKey = prevItem?.senderId?.toLowerCase?.() || prevItem?.senderType;
@@ -612,10 +665,13 @@ export function ChatButton() {
                 <View style={[s.msgRow, isMe && s.msgRowRight]}>
                   {!isMe && (
                     <View style={{ width: 28, marginRight: 8, alignSelf: "flex-end" }}>
-                      {showSenderAvatar && renderAvatar(activeConv?.clientName || "?", 28)}
+                      {showSenderAvatar && renderAvatar(isLabChannelThread ? (item.senderId || "?") : (activeConv?.clientName || "?"), 28)}
                     </View>
                   )}
                   <View style={{ maxWidth: "75%", alignItems: isMe ? "flex-end" : "flex-start" }}>
+                    {!isMe && isLabChannelThread && isFirstInGroup && (
+                      <Text style={{ fontSize: 11, color: MESSENGER_SECONDARY, fontFamily: "Inter_500Medium", marginBottom: 2, marginLeft: 2 }}>{item.senderId || "Unknown"}</Text>
+                    )}
                     {item.imageUri ? (
                       <View style={s.imageMsgWrap}>
                         <Image source={{ uri: item.imageUri }} style={s.msgImage} contentFit="cover" />

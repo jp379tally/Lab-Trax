@@ -10,6 +10,7 @@ import {
   Modal,
   Animated as RNAnimated,
   PanResponder,
+  RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -101,9 +102,10 @@ function SwipeableNotifRow({ children, onDelete }: { children: React.ReactNode; 
 }
 
 export default function NotificationsScreen() {
-  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite } = useApp();
+  const { markNotificationRead, markAllNotificationsRead, removeNotification, groupJoinRequests, respondToGroupJoinRequest, labInvitations, respondToLabInvite, hardRefresh } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
+  const [refreshing, setRefreshing] = useState(false);
   const [confirmJoinRequest, setConfirmJoinRequest] = useState<{ request: GroupJoinRequest; accept: boolean; role?: "admin" | "user" } | null>(null);
   const [confirmLabInvite, setConfirmLabInvite] = useState<{ invite: LabInvitation; accept: boolean } | null>(null);
   const filteredNotifications = useProviderFilteredNotifications();
@@ -254,6 +256,18 @@ export default function NotificationsScreen() {
           { paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 },
         ]}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={async () => {
+                setRefreshing(true);
+                await hardRefresh();
+                setRefreshing(false);
+              }}
+            />
+          ) : undefined
+        }
         ListHeaderComponent={
           (pendingJoinRequests.length > 0 || pendingLabInvites.length > 0) ? (
             <View style={styles.inviteSection}>

@@ -2,7 +2,7 @@
   "expo": {
     "name": "LabTrax",
     "slug": "labtrax",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "labtrax",
@@ -15,14 +15,36 @@
     },
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "51",
+      "buildNumber": "52",
       "bundleIdentifier": "com.allieddl.labtrax",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture photos of dental cases and scans for case tracking, documentation, and communication with the dental lab.",
         "NSPhotoLibraryUsageDescription": "This app accesses your photo library to attach images of dental cases, prescriptions, and documents for case tracking and communication.",
         "NSMicrophoneUsageDescription": "This app uses the microphone to record video of dental cases for documentation and lab communication.",
         "NSLocationWhenInUseUsageDescription": "This app uses your location to auto-fill your practice or lab address during account setup.",
-        "NSFaceIDUsageDescription": "This app uses Face ID to securely unlock access to patient case data and HIPAA-protected information."
+        "NSFaceIDUsageDescription": "This app uses Face ID to securely unlock access to patient case data and HIPAA-protected information.",
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true,
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Image",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": ["public.image", "public.jpeg", "public.png", "public.heic"],
+            "CFBundleTypeRole": "Viewer"
+          },
+          {
+            "CFBundleTypeName": "PDF Document",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": ["com.adobe.pdf"],
+            "CFBundleTypeRole": "Viewer"
+          },
+          {
+            "CFBundleTypeName": "Video",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": ["public.movie", "public.video"],
+            "CFBundleTypeRole": "Viewer"
+          }
+        ]
       }
     },
     "android": {

@@ -1,1 +1,12 @@
 labtrax-full-source.tar.gz filter=lfs diff=lfs merge=lfs -text
+labtrax-complete.tar.gz filter=lfs diff=lfs merge=lfs -text
+attached_assets/2-labtrax-upload-second-attached-assets-part-a_1775763149244.zip filter=lfs diff=lfs merge=lfs -text
+attached_assets/3-labtrax-upload-third-attached-assets-part-b_1775763194440.zip filter=lfs diff=lfs merge=lfs -text
+labtrax-part1.tar.gz.part filter=lfs diff=lfs merge=lfs -text
+attached_assets/2-labtrax-updated-attached-assets-part-a-2026-04-14_1776173750139.zip filter=lfs diff=lfs merge=lfs -text
+attached_assets/3-labtrax-updated-attached-assets-part-b-2026-04-14_1776173817231.zip filter=lfs diff=lfs merge=lfs -text
+attached_assets/2-labtrax-updated-attached-assets-part-a-case-sync-fix-2026-04_1776188349127.zip filter=lfs diff=lfs merge=lfs -text
+attached_assets/3-labtrax-updated-attached-assets-part-b-case-sync-fix-2026-04_1776188379497.zip filter=lfs diff=lfs merge=lfs -text
+attached_assets/2-drag-contents-second-attached-assets-a_1776195627496.zip filter=lfs diff=lfs merge=lfs -text
+attached_assets/3-drag-contents-third-attached-assets-b_1776195744350.zip filter=lfs diff=lfs merge=lfs -text
+project.tar.gz filter=lfs diff=lfs merge=lfs -text

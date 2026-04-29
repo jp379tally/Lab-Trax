@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
@@ -30,9 +31,33 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
-import { getApiBaseUrlCandidates, getApiUrl, resilientFetch } from "@/lib/query-client";
+import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
+import { convertPdfToImages } from "@/lib/pdfToImages";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
+import { ManualCropOverlay } from "@/components/ManualCropOverlay";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
+
+async function normalizePrescriptionImage(uri: string): Promise<{ uri: string; mimeType: string }> {
+  if (Platform.OS === "web") return { uri, mimeType: "image/jpeg" };
+  try {
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      [],
+      { format: ImageManipulator.SaveFormat.JPEG, compress: 0.95 }
+    );
+    return { uri: result.uri, mimeType: "image/jpeg" };
+  } catch {
+    return { uri, mimeType: "image/jpeg" };
+  }
+}
+
+type CaseAttachment = {
+  id: string;
+  uri: string;
+  kind: "image" | "video" | "pdf";
+  name?: string;
+};
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
@@ -152,8 +177,11 @@ export default function ScanScreen() {
   const [removableSubtypeOpen, setRemovableSubtypeOpen] = useState(false);
   const [removableStage, setRemovableStage] = useState("");
   const [removableStageOpen, setRemovableStageOpen] = useState(false);
+  const [removableArch, setRemovableArch] = useState<"Upper" | "Lower" | "Both" | "">("");
   const [isRush, setIsRush] = useState(false);
-  const [isCropping, setIsCropping] = useState(false);
+  const [showCropOverlay, setShowCropOverlay] = useState(false);
+  const [cropOverlayUri, setCropOverlayUri] = useState("");
+  const [cropOverlayIndex, setCropOverlayIndex] = useState(0);
   const [notes, setNotes] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [dueDateOpen, setDueDateOpen] = useState(false);
@@ -165,6 +193,8 @@ export default function ScanScreen() {
   const [timeDueMinute, setTimeDueMinute] = useState(0);
   const [timeDuePeriod, setTimeDuePeriod] = useState<"AM" | "PM">("AM");
   const [casePhotos, setCasePhotos] = useState<string[]>([]);
+  const [caseAttachments, setCaseAttachments] = useState<CaseAttachment[]>([]);
+  const [isSubmittingCase, setIsSubmittingCase] = useState(false);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
@@ -191,6 +221,7 @@ export default function ScanScreen() {
   const [barcodeCameraLayout, setBarcodeCameraLayout] = useState({ width: 0, height: 0 });
   const [shadeOpen, setShadeOpen] = useState(false);
   const [isSavingPdf, setIsSavingPdf] = useState(false);
+  const [selectedReviewPhotos, setSelectedReviewPhotos] = useState<number[]>([]);
   const [selectedPrinter, setSelectedPrinter] = useState<{ name: string; url: string } | null>(null);
 
   const SHADE_OPTIONS = ["A1", "A2", "A3", "A3.5", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4", "D2", "D3", "D4", "0M1", "0M2", "0M3", "BL1", "BL2", "BL3", "Custom", "Other"];
@@ -433,11 +464,17 @@ export default function ScanScreen() {
 
   const calculatedPrice = React.useMemo(() => {
     const unitPrice = MATERIAL_PRICES[material] || 250;
+    if (caseType === "Removable") {
+      const archCount = removableArch === "Both" ? 2 : removableArch ? 1 : 1;
+      return unitPrice * archCount;
+    }
     return unitPrice * Math.max(billableTeethCount, 1);
-  }, [material, billableTeethCount]);
+  }, [material, billableTeethCount, caseType, removableArch]);
 
   useFocusEffect(
     useCallback(() => {
+      setCameraPaused(false);
+      isPickingFilesRef.current = false;
       if (phase !== "form") {
         setPhase("camera");
         setCapturedUri(null);
@@ -542,12 +579,14 @@ export default function ScanScreen() {
     if (!rawUri) {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ["images"],
-        quality: 0.8,
-        base64: true,
+        allowsEditing: false,
+        quality: 1,
+        base64: false,
       });
       if (!result.canceled && result.assets[0]) {
         const asset = result.assets[0];
-        rawUri = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : asset.uri;
+        const normalized = await normalizePrescriptionImage(asset.uri);
+        rawUri = normalized.uri;
       }
     }
 
@@ -573,12 +612,10 @@ export default function ScanScreen() {
     }
 
     if (dataUri.startsWith("data:")) {
-      const cropped = await cropDocumentIfNeeded(dataUri);
-      const finalUri = cropped !== dataUri ? cropped : dataUri;
-      setCapturedUri(finalUri);
+      setCapturedUri(dataUri);
       setCasePhotos((prev) => {
-        if (prev.includes(finalUri)) return prev;
-        return [...prev, finalUri];
+        if (prev.includes(dataUri)) return prev;
+        return [...prev, dataUri];
       });
     } else {
       setCasePhotos((prev) => {
@@ -589,50 +626,61 @@ export default function ScanScreen() {
     cropDoneRef.current = true;
   }
 
-  async function handleManualCrop() {
+  function handleManualCrop() {
     if (casePhotos.length === 0) return;
-    setIsCropping(true);
-    try {
-      const lastPhoto = casePhotos[casePhotos.length - 1];
-      let imageData = lastPhoto;
-      if (!imageData.startsWith("data:")) {
-        try {
-          const base64 = await FileSystem.readAsStringAsync(imageData, { encoding: FileSystem.EncodingType.Base64 });
-          imageData = `data:image/jpeg;base64,${base64}`;
-        } catch (readErr: any) {
-          console.log("Could not read photo for crop:", readErr?.message);
-          setIsCropping(false);
-          return;
-        }
-      }
-      const apiUrl = getApiUrl();
-      const cropUrl = new URL("/api/crop-document", apiUrl);
-      const resp = await resilientFetch(cropUrl.toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: imageData }),
-      });
-      const data = await resp.json();
-      if (data.croppedImageBase64) {
-        setCasePhotos(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = data.croppedImageBase64;
-          return updated;
-        });
-        setCapturedUri(data.croppedImageBase64);
-        if (data.documentDetected) {
-          Alert.alert("Document Cropped", `Detected ${data.documentType || "document"} and cropped automatically.`);
-        } else {
-          Alert.alert("No Document Detected", "Could not detect a document. The image was auto-corrected but not cropped.");
-        }
-      } else {
-        Alert.alert("Crop Failed", "Unable to crop this image. Please try retaking the photo.");
-      }
-    } catch (e: any) {
-      console.log("Manual crop failed:", e?.message);
-      Alert.alert("Crop Error", "Something went wrong while cropping. Please try again.");
+    const targetIndex = selectedReviewPhotos.length === 1
+      ? selectedReviewPhotos[0]
+      : casePhotos.length - 1;
+    const targetPhoto = casePhotos[targetIndex];
+    if (!targetPhoto) return;
+    setCropOverlayIndex(targetIndex);
+    setCropOverlayUri(targetPhoto);
+    setShowCropOverlay(true);
+  }
+
+  function handleCropOverlayCropped(croppedUri: string) {
+    setShowCropOverlay(false);
+    const idx = cropOverlayIndex;
+    setCasePhotos(prev => {
+      const updated = [...prev];
+      updated[idx] = croppedUri;
+      return updated;
+    });
+    setCapturedUri(croppedUri);
+  }
+
+  function handleCropOverlayCancel() {
+    setShowCropOverlay(false);
+  }
+
+  function toggleReviewPhotoSelection(index: number) {
+    setSelectedReviewPhotos((prev) =>
+      prev.includes(index) ? prev.filter((item) => item !== index) : [...prev, index].sort((a, b) => a - b)
+    );
+  }
+
+  function clearReviewPhotoSelection() {
+    setSelectedReviewPhotos([]);
+  }
+
+  function deleteSelectedReviewPhotos() {
+    if (selectedReviewPhotos.length === 0) return;
+
+    const selectedSet = new Set(selectedReviewPhotos);
+    const remainingPhotos = casePhotos.filter((_, idx) => !selectedSet.has(idx));
+
+    if (remainingPhotos.length === 0) {
+      setCasePhotos([]);
+      setCapturedUri(null);
+      setSelectedReviewPhotos([]);
+      setPhase("camera");
+      scanAnim.setValue(0);
+      return;
     }
-    setIsCropping(false);
+
+    setCasePhotos(remainingPhotos);
+    setCapturedUri(remainingPhotos[remainingPhotos.length - 1] || null);
+    setSelectedReviewPhotos([]);
   }
 
   async function handleTakeRegularPhoto() {
@@ -727,21 +775,33 @@ export default function ScanScreen() {
     if (!result.canceled && result.assets[0]) {
       const asset = result.assets[0];
       const isVideo = asset.type === "video";
+
+      const attachment: CaseAttachment = {
+        id: generateId(),
+        uri: asset.uri,
+        kind: isVideo ? "video" : "image",
+        name: asset.fileName || undefined,
+      };
+
       if (isVideo) {
-        setCustomShadeVideos(prev => [...prev, asset.uri]);
+        setCustomShadeVideos((prev) => [...prev, asset.uri]);
       } else {
-        setCustomShadePhotos(prev => [...prev, asset.uri]);
+        setCustomShadePhotos((prev) => [...prev, asset.uri]);
+        setCasePhotos((prev) => [...prev, asset.uri]);
       }
-      setCasePhotos(prev => [...prev, asset.uri]);
+
+      setCaseAttachments((prev) => [...prev, attachment]);
+
       const entry: ActivityEntry = {
         id: generateId(),
         type: "photo",
         timestamp: Date.now(),
         description: `Custom shading ${isVideo ? "video" : "photo"} captured`,
-        imageUri: asset.uri,
+        imageUri: isVideo ? undefined : asset.uri,
         user: userInitials,
       };
-      setActivityEntries(prev => [...prev, entry]);
+      appendActivityEntry(entry);
+
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       Alert.alert(
@@ -767,14 +827,14 @@ export default function ScanScreen() {
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
-      quality: 0.9,
-      base64: true,
+      allowsEditing: false,
+      quality: 1,
     });
 
     if (!result.canceled && result.assets[0]) {
       const asset = result.assets[0];
-      const mimeType = asset.mimeType || (asset.uri?.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
-      let rawUri = asset.base64 ? `data:${mimeType};base64,${asset.base64}` : asset.uri;
+      const normalized = await normalizePrescriptionImage(asset.uri);
+      let rawUri = normalized.uri;
 
       cropDoneRef.current = false;
       setCapturedUri(rawUri);
@@ -807,12 +867,10 @@ export default function ScanScreen() {
       }
 
       if (dataUri.startsWith("data:")) {
-        const cropped = await cropDocumentIfNeeded(dataUri);
-        const finalUri = cropped !== dataUri ? cropped : dataUri;
-        setCapturedUri(finalUri);
+        setCapturedUri(dataUri);
         setCasePhotos((prev) => {
-          if (prev.includes(finalUri)) return prev;
-          return [...prev, finalUri];
+          if (prev.includes(dataUri)) return prev;
+          return [...prev, dataUri];
         });
       } else {
         setCasePhotos((prev) => {
@@ -826,34 +884,6 @@ export default function ScanScreen() {
 
   const [webDragOver, setWebDragOver] = useState(false);
 
-  async function convertPdfToImages(arrayBuffer: ArrayBuffer): Promise<string[]> {
-    try {
-      const pdfjsLib = await import("pdfjs-dist");
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
-      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
-      const pageImages: string[] = [];
-      const maxPages = Math.min(pdf.numPages, 10);
-      for (let i = 1; i <= maxPages; i++) {
-        const page = await pdf.getPage(i);
-        const scale = 2.0;
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement("canvas");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) continue;
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        const imgDataUri = canvas.toDataURL("image/png");
-        pageImages.push(imgDataUri);
-      }
-      console.log(`PDF converted: ${pageImages.length} page(s) from ${pdf.numPages} total`);
-      return pageImages;
-    } catch (err: any) {
-      console.log("PDF conversion failed:", err?.message);
-      return [];
-    }
-  }
-
   async function processWebFiles(files: FileList | File[]) {
     if (!files || (files as any).length === 0) return;
     setPhase("scanning");
@@ -865,14 +895,21 @@ export default function ScanScreen() {
       const validExts = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tiff", ".webp", ".pdf"];
       const isValid = validTypes.some((t) => file.type.startsWith(t)) || validExts.some((ext) => file.name.toLowerCase().endsWith(ext));
       if (!isValid) continue;
-      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      const isPdf = file.type === "application/pdf" || file.name?.toLowerCase().endsWith(".pdf");
       if (isPdf) {
+        if (Platform.OS !== "web") {
+          Alert.alert(
+            "PDF upload not supported on mobile",
+            "Please upload an image on mobile, or use the web app for PDF files."
+          );
+          continue;
+        }
         try {
           const arrayBuffer = await file.arrayBuffer();
           const pdfImages = await convertPdfToImages(arrayBuffer);
           uploadedUris.push(...pdfImages);
-        } catch (err: any) {
-          console.log("Web upload: PDF conversion failed:", file.name, err?.message);
+        } catch (error) {
+          console.log("PDF conversion failed:", error);
         }
         continue;
       }
@@ -970,6 +1007,7 @@ export default function ScanScreen() {
 
   function handleAddMoreFromReview() {
     setCapturedUri(null);
+    setSelectedReviewPhotos([]);
     setPhase("camera");
     scanAnim.setValue(0);
   }
@@ -1132,8 +1170,7 @@ export default function ScanScreen() {
     }
   }
 
-  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any }> {
-    const { getApiUrl } = await import("@/lib/query-client");
+  async function sendToAI(base64Data: string, additionalImages?: string[]): Promise<{ success: boolean; data?: any; error?: string }> {
     const payload: any = { imageBase64: base64Data };
     if (additionalImages && additionalImages.length > 0) {
       payload.additionalImages = additionalImages;
@@ -1141,63 +1178,52 @@ export default function ScanScreen() {
     const jsonBody = JSON.stringify(payload);
     console.log("AI: Sending request, body size:", jsonBody.length, "platform:", Platform.OS);
 
-    const urls = getApiBaseUrlCandidates()
-      .map((baseUrl) => {
-        try {
-          return new URL("/api/analyze-prescription", baseUrl).toString();
-        } catch (e: any) {
-          console.log("AI: URL construction failed for base:", baseUrl, e?.message);
-          return null;
-        }
-      })
-      .filter((url): url is string => Boolean(url));
+    const primaryUrl = new URL("/api/analyze-prescription", getApiUrl()).toString();
+    console.log("AI: Trying URL:", primaryUrl);
 
-    if (urls.length === 0) {
-      console.log("AI: No valid URLs constructed. EXPO_PUBLIC_DOMAIN:", process.env.EXPO_PUBLIC_DOMAIN);
+    const token = getAccessToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    try {
+      const fetchFn: typeof fetch = (globalThis as any).fetch ?? fetch;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      let res: Response;
+      try {
+        res = await fetchFn(primaryUrl, {
+          method: "POST",
+          headers,
+          body: jsonBody,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      console.log("AI: Response status:", res.status);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.log("AI response error:", res.status, errText.substring(0, 300));
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error && errJson.error.includes("HEIC")) {
+            return { success: false, error: errJson.error };
+          }
+          if (errJson.detail) console.log("AI error detail:", errJson.detail);
+        } catch {}
+        return { success: false };
+      }
+      const result = await res.json();
+      console.log("AI: Parsed result success:", result?.success, "fields:", result?.data ? Object.keys(result.data).join(",") : "none");
+      return result;
+    } catch (err: any) {
+      console.log("AI: Request failed:", err?.message || String(err));
       return { success: false };
     }
-
-    let lastErr: any = null;
-    for (const url of urls) {
-      try {
-        console.log("AI: Trying URL:", url);
-        const fetchPromise = globalThis.fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-          },
-          body: jsonBody,
-        });
-
-        const timeoutPromise = new Promise<Response>((_, reject) => {
-          setTimeout(() => reject(new Error("Request timeout after 90s")), 90000);
-        });
-
-        const res = await Promise.race([fetchPromise, timeoutPromise]);
-        console.log("AI: Response status:", res.status);
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          console.log("AI response error:", res.status, errText.substring(0, 200));
-          try {
-            const errJson = JSON.parse(errText);
-            if (errJson.error && errJson.error.includes("HEIC")) {
-              return { success: false, error: errJson.error };
-            }
-          } catch {}
-          lastErr = new Error(`HTTP ${res.status}: ${errText.substring(0, 100)}`);
-          continue;
-        }
-        const result = await res.json();
-        console.log("AI: Parsed result success:", result?.success);
-        return result;
-      } catch (err: any) {
-        console.log("AI: URL failed:", url, err?.message || String(err));
-        lastErr = err;
-      }
-    }
-    console.log("AI: All URLs failed. Last error:", lastErr?.message || String(lastErr));
-    return { success: false };
   }
 
   async function handleSavePDF() {
@@ -1459,9 +1485,7 @@ export default function ScanScreen() {
           throw sendErr;
         }
 
-        if (result.error && result.error.includes("HEIC")) {
-          failReason = result.error;
-        } else if (result.success && result.data) {
+        if (result.success && result.data) {
           const d = result.data;
           if (d.doctorName) setDoctorName(d.doctorName);
           if (d.patientName) setPatientName(d.patientName);
@@ -1491,31 +1515,64 @@ export default function ScanScreen() {
           }
 
           if (d.doctorName) {
-            const stripDr = (n: string) => n.trim().toLowerCase().replace(/^dr\.?\s*/i, "");
-            const drNameNorm = stripDr(d.doctorName);
+            const normName = (n: string) => n.trim().toLowerCase()
+              .replace(/^dr\.?\s*/i, "")
+              .replace(/,?\s*(dds|dmd|ms|bds|bchd|phd|dmd\/phd)\b.*$/i, "")
+              .replace(/[,.']/g, "")
+              .replace(/\s+/g, " ")
+              .trim();
+            const namesOverlap = (a: string, b: string) => {
+              const na = normName(a);
+              const nb = normName(b);
+              if (!na || !nb) return false;
+              if (na === nb) return true;
+              const partsA = na.split(" ");
+              const partsB = nb.split(" ");
+              const sharedWords = partsA.filter(w => w.length > 1 && partsB.includes(w));
+              return sharedWords.length >= Math.min(2, Math.min(partsA.length, partsB.length));
+            };
             const existingClient = clients.find(
-              (c) => stripDr(c.leadDoctor) === drNameNorm || (c.additionalProviders || []).some(p => stripDr(p) === drNameNorm)
+              (c) =>
+                namesOverlap(c.leadDoctor || "", d.doctorName) ||
+                (c.additionalProviders || []).some(p => namesOverlap(p, d.doctorName)) ||
+                namesOverlap(c.practiceName || "", d.doctorName) ||
+                (d.practiceName && normName(c.practiceName || "").includes(normName(d.practiceName))) ||
+                (d.practiceName && normName(d.practiceName).includes(normName(c.practiceName || "")))
             );
             if (!existingClient) {
               setTimeout(() => {
+                const drName = /^dr\.?\s/i.test(d.doctorName.trim())
+                  ? d.doctorName.trim()
+                  : `Dr. ${d.doctorName.trim()}`;
                 Alert.alert(
                   "New Provider Detected",
-                  `"${d.doctorName}" is not in your active provider list. Would you like to add them?`,
+                  `"${drName}" is not in your provider list. Add them now so they appear in the admin hub and can be assigned to invoices?\n\nYou can fill in full details from the admin hub afterwards.`,
                   [
                     {
-                      text: "No",
+                      text: "Not Now",
                       style: "cancel",
+                      // No action — provider not added
                     },
                     {
-                      text: "Yes, Add Provider",
+                      text: "Add Provider",
                       onPress: () => {
-                        setAddingNewDoctor(true);
-                        setNewDoctorInput(d.doctorName.replace(/^Dr\.\s*/i, "") || "");
-                        setNewDoctorPractice(d.practiceName || "");
-                        setNewDoctorAddress(d.practiceAddress || "");
-                        setNewDoctorPhone(d.practicePhone || "");
-                        setNewDoctorEmail("");
-                        setDoctorDropdownOpen(true);
+                        // Immediately save the provider — no second step needed.
+                        addClient({
+                          practiceName: d.practiceName || drName,
+                          leadDoctor: drName,
+                          phone: d.practicePhone || "",
+                          email: "",
+                          address: d.practiceAddress || "",
+                          tier: "Standard",
+                          discountRate: 0,
+                        });
+                        // Let the user know it's done and editable in the admin hub.
+                        setTimeout(() => {
+                          Alert.alert(
+                            "Provider Added ✓",
+                            `${drName} has been added to your provider list. You can edit their full details (address, email, pricing) from the admin hub anytime.`
+                          );
+                        }, 300);
                       },
                     },
                   ]
@@ -1560,6 +1617,8 @@ export default function ScanScreen() {
   function handleManualEntry() {
     setCapturedUri(null);
     setCasePhotos([]);
+    setCaseAttachments([]);
+    setIsSubmittingCase(false);
     setActivityEntries([{
       id: generateId(),
       type: "scan",
@@ -1870,10 +1929,18 @@ export default function ScanScreen() {
     if (!result.canceled && result.assets.length > 0) {
       const newUris = result.assets.map((a) => a.uri);
       setCasePhotos((prev) => [...prev, ...newUris]);
+      const newAttachments: CaseAttachment[] = result.assets.map((a) => ({
+        id: generateId(),
+        uri: a.uri,
+        kind: "image" as const,
+        name: a.fileName || undefined,
+      }));
+      setCaseAttachments((prev) => [...prev, ...newAttachments]);
+      const ts = Date.now();
       const newEntries: ActivityEntry[] = newUris.map((uri) => ({
         id: generateId(),
         type: "photo" as const,
-        timestamp: Date.now(),
+        timestamp: ts,
         description: "Photo added from library",
         imageUri: uri,
         user: userInitials,
@@ -1891,6 +1958,7 @@ export default function ScanScreen() {
         const photo = await cameraRef.current.takePictureAsync();
         if (photo?.uri) {
           setCasePhotos((prev) => [...prev, photo.uri]);
+          setCaseAttachments((prev) => [...prev, { id: generateId(), uri: photo.uri, kind: "image" as const }]);
           const entry: ActivityEntry = {
             id: generateId(),
             type: "photo",
@@ -1899,7 +1967,7 @@ export default function ScanScreen() {
             imageUri: photo.uri,
             user: userInitials,
           };
-          setActivityEntries((prev) => [entry, ...prev]);
+          appendActivityEntry(entry);
           if (Platform.OS !== "web") {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }
@@ -1914,6 +1982,7 @@ export default function ScanScreen() {
     if (!result.canceled && result.assets[0]) {
       const uri = result.assets[0].uri;
       setCasePhotos((prev) => [...prev, uri]);
+      setCaseAttachments((prev) => [...prev, { id: generateId(), uri, kind: "image" as const }]);
       const entry: ActivityEntry = {
         id: generateId(),
         type: "photo",
@@ -1922,7 +1991,7 @@ export default function ScanScreen() {
         imageUri: uri,
         user: userInitials,
       };
-      setActivityEntries((prev) => [entry, ...prev]);
+      appendActivityEntry(entry);
       if (Platform.OS !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
@@ -1935,12 +2004,6 @@ export default function ScanScreen() {
     const wasInCameraPhase = phase === "camera";
 
     try {
-      if (wasInCameraPhase) {
-        setCameraReady(false);
-        setCameraPaused(true);
-        await new Promise((r) => setTimeout(r, Platform.OS === "ios" ? 400 : 200));
-      }
-
       const result = await DocumentPicker.getDocumentAsync({
         type: ["image/*", "application/pdf"],
         multiple: Platform.OS !== "ios",
@@ -1948,7 +2011,6 @@ export default function ScanScreen() {
       });
 
       if (result.canceled || !result.assets || result.assets.length === 0) {
-        if (wasInCameraPhase) setCameraPaused(false);
         isPickingFilesRef.current = false;
         return;
       }
@@ -1963,44 +2025,30 @@ export default function ScanScreen() {
         if (wasInCameraPhase && isImage) {
           cropDoneRef.current = false;
           let dataUri = asset.uri;
+
           if (!asset.uri.startsWith("data:") && Platform.OS !== "web") {
             try {
               const FSystem = await import("expo-file-system");
-              const b64 = await FSystem.readAsStringAsync(asset.uri, { encoding: FSystem.EncodingType.Base64 });
+              const b64 = await FSystem.readAsStringAsync(asset.uri, {
+                encoding: FSystem.EncodingType.Base64,
+              });
               const mime = asset.mimeType || "image/jpeg";
               dataUri = `data:${mime};base64,${b64}`;
-            } catch (e: any) {
-              console.log("Attach file read error:", e?.message);
-              try {
-                const FSystem = await import("expo-file-system");
-                const destUri = FSystem.cacheDirectory + "attach_" + Date.now() + ".jpg";
-                await FSystem.copyAsync({ from: asset.uri, to: destUri });
-                const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
-                dataUri = `data:image/jpeg;base64,${b64}`;
-              } catch (copyErr: any) {
-                console.log("Attach file copy fallback failed:", copyErr?.message);
-              }
-            }
+            } catch {}
           }
 
           setCapturedUri(dataUri);
-          setCameraPaused(false);
           setPhase("scanning");
 
           if (dataUri.startsWith("data:")) {
             const cropped = await cropDocumentIfNeeded(dataUri);
             const finalUri = cropped !== dataUri ? cropped : dataUri;
             setCapturedUri(finalUri);
-            setCasePhotos((prev) => {
-              if (prev.includes(finalUri)) return prev;
-              return [...prev, finalUri];
-            });
+            setCasePhotos((prev) => (prev.includes(finalUri) ? prev : [...prev, finalUri]));
           } else {
-            setCasePhotos((prev) => {
-              if (prev.includes(dataUri)) return prev;
-              return [...prev, dataUri];
-            });
+            setCasePhotos((prev) => (prev.includes(dataUri) ? prev : [...prev, dataUri]));
           }
+
           cropDoneRef.current = true;
           isPickingFilesRef.current = false;
           return;
@@ -2009,51 +2057,27 @@ export default function ScanScreen() {
         if (wasInCameraPhase && asset.mimeType === "application/pdf") {
           setCasePhotos((prev) => [...prev, asset.uri]);
           setCapturedUri(asset.uri);
-          setCameraPaused(false);
           setPhase("scanning");
           cropDoneRef.current = true;
           isPickingFilesRef.current = false;
           return;
         }
 
-        if (isImage) {
-          setCasePhotos((prev) => [...prev, asset.uri]);
-          const entry: ActivityEntry = {
+        if (isImage || asset.mimeType === "application/pdf") {
+          const attachment: CaseAttachment = {
             id: generateId(),
-            type: "photo" as const,
-            timestamp: Date.now(),
-            description: `File attached: ${asset.name}`,
-            imageUri: asset.uri,
-            user: userInitials,
+            uri: asset.uri,
+            kind: asset.mimeType === "application/pdf" ? "pdf" : "image",
+            name: asset.name,
           };
-          setActivityEntries((prev) => [entry, ...prev]);
-        } else if (asset.mimeType === "application/pdf") {
-          const entry: ActivityEntry = {
-            id: generateId(),
-            type: "note" as const,
-            timestamp: Date.now(),
-            description: `PDF attached: ${asset.name}`,
-            user: userInitials,
-          };
-          setActivityEntries((prev) => [entry, ...prev]);
+          setCaseAttachments((prev) => [...prev, attachment]);
           setCasePhotos((prev) => [...prev, asset.uri]);
         }
       }
 
-      if (wasInCameraPhase) setCameraPaused(false);
-
-      if (!wasInCameraPhase) {
-        const totalCount = result.assets.length;
-        Alert.alert(
-          "Files Attached",
-          `${totalCount} file${totalCount !== 1 ? "s" : ""} attached successfully.`
-        );
-      }
       isPickingFilesRef.current = false;
     } catch (e: any) {
-      if (wasInCameraPhase) setCameraPaused(false);
       isPickingFilesRef.current = false;
-      console.error("Attach files error:", e);
       if (
         e?.message?.includes("cancel") ||
         e?.message?.includes("Cancel") ||
@@ -2094,7 +2118,15 @@ export default function ScanScreen() {
 
     const savedPatientName = patientName.trim();
 
-    const finalNotes = (removableSubtype ? `[${removableSubtype}]` : "") + (removableStage ? `[Stage: ${removableStage}] ` : (removableSubtype ? " " : "")) + notes.trim();
+    const archLabel = removableArch === "Both" ? "Upper, Lower" : removableArch || "";
+    const finalNotes = [
+      removableSubtype ? `[${removableSubtype}]` : "",
+      removableArch ? `[${removableArch === "Both" ? "Upper & Lower" : removableArch}]` : "",
+      removableStage ? `[Stage: ${removableStage}]` : "",
+      notes.trim(),
+    ].filter(Boolean).join(" ");
+
+    const effectiveToothIndices = caseType === "Removable" && archLabel ? archLabel : toothIndices.trim();
 
     const newCase = addCase({
       caseNumber,
@@ -2102,7 +2134,7 @@ export default function ScanScreen() {
       patientName: savedPatientName,
       patientInitials: savedPatientName.split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
       caseType: (caseType || "") as any,
-      toothIndices: toothIndices.trim(),
+      toothIndices: effectiveToothIndices,
       shade: shade.trim(),
       material,
       status: "INTAKE",
@@ -2111,6 +2143,7 @@ export default function ScanScreen() {
       price: calculatedPrice,
       dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
       photos: casePhotos,
+      videos: caseAttachments.filter((x) => x.kind === "video").map((x) => x.uri),
       activityLog: activityEntries,
       toothMap: toothMapEntries,
     });
@@ -2239,7 +2272,22 @@ export default function ScanScreen() {
     router.push(`/chart-history?patient=${encodeURIComponent(pName)}`);
   }
 
+  function appendActivityEntry(entry: ActivityEntry) {
+    setActivityEntries((prev) => {
+      const duplicate = prev.some(
+        (e) =>
+          e.description === entry.description &&
+          e.user === entry.user &&
+          Math.abs(e.timestamp - entry.timestamp) < 2000
+      );
+      if (duplicate) return prev;
+      return [...prev, entry];
+    });
+  }
+
   function handleSubmit() {
+    if (isSubmittingCase) return;
+
     if (!doctorName.trim()) {
       Alert.alert("Required", "Doctor name is required");
       return;
@@ -2249,23 +2297,56 @@ export default function ScanScreen() {
       return;
     }
 
-    const matchingCases = cases.filter(
-      (c) => (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase()
-    );
+    setIsSubmittingCase(true);
+    const finish = () => setIsSubmittingCase(false);
 
-    if (matchingCases.length > 0) {
-      const caseNums = matchingCases.map((c) => c.caseNumber).join(", ");
-      Alert.alert(
-        "Patient Already on File",
-        `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "View Chart", onPress: () => router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`) },
-          { text: "Add Case", onPress: () => createCase(true) },
-        ]
+    try {
+      const matchingCases = cases.filter(
+        (c) => (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase()
       );
-    } else {
-      createCase(false);
+
+      if (matchingCases.length > 0) {
+        const caseNums = matchingCases.map((c) => c.caseNumber).join(", ");
+        Alert.alert(
+          "Patient Already on File",
+          `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
+          [
+            {
+              text: "Cancel",
+              style: "cancel",
+              onPress: finish,
+            },
+            {
+              text: "View Chart",
+              onPress: () => {
+                finish();
+                router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`);
+              },
+            },
+            {
+              text: "Add Case",
+              onPress: () => {
+                try {
+                  createCase(true);
+                } finally {
+                  finish();
+                }
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      try {
+        createCase(false);
+      } finally {
+        finish();
+      }
+    } catch (err) {
+      finish();
+      console.error("[handleSubmit] ERROR:", err);
+      Alert.alert("Error", "Could not submit case.");
     }
   }
 
@@ -2301,7 +2382,8 @@ export default function ScanScreen() {
     setRemovableSubtypeOpen(false);
     setRemovableStage("");
     setRemovableStageOpen(false);
-    setIsCropping(false);
+    setRemovableArch("");
+    setShowCropOverlay(false);
     setIsRush(false);
     setNotes("");
     setDueDate("");
@@ -2314,6 +2396,8 @@ export default function ScanScreen() {
     setTimeDueMinute(0);
     setTimeDuePeriod("AM");
     setCasePhotos([]);
+    setCaseAttachments([]);
+    setIsSubmittingCase(false);
     setActivityEntries([]);
     scanAnim.setValue(0);
   }
@@ -2633,24 +2717,31 @@ export default function ScanScreen() {
           <Text style={styles.formTitle}>New Case</Text>
           <Pressable
             onPress={handleSubmit}
+            disabled={isSubmittingCase}
             style={({ pressed }) => [
               styles.submitBtn,
-              pressed && { opacity: 0.8 },
+              isSubmittingCase && { opacity: 0.55 },
+              pressed && !isSubmittingCase && { opacity: 0.8 },
             ]}
             testID="submit-case-btn"
             accessibilityLabel="Submit Case"
           >
             <View pointerEvents="none">
-              <Ionicons name="checkmark" size={22} color="#FFF" />
+              {isSubmittingCase ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <Ionicons name="checkmark" size={22} color="#FFF" />
+              )}
             </View>
           </Pressable>
         </View>
-        <ScrollView
+        <KeyboardAwareScrollViewCompat
           style={styles.formScroll}
           contentContainerStyle={{
             paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
           }}
           showsVerticalScrollIndicator={false}
+          bottomOffset={32}
         >
           {pendingBarcode && (
             <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "rgba(139,92,246,0.1)", borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "rgba(139,92,246,0.3)" }}>
@@ -2663,26 +2754,56 @@ export default function ScanScreen() {
               </Pressable>
             </View>
           )}
-          {casePhotos.length > 0 ? (
+          {(caseAttachments.length > 0 || casePhotos.length > 0) ? (
             <View style={styles.photoStripSection}>
               <View style={styles.photoStripHeader}>
-                <Text style={styles.formLabel}>Photos ({casePhotos.length})</Text>
+                <Text style={styles.formLabel}>
+                  Attachments ({caseAttachments.length > 0 ? caseAttachments.length : casePhotos.length})
+                </Text>
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoStrip}>
-                {casePhotos.map((uri, idx) => (
-                  <View key={idx} style={styles.photoThumbWrap}>
-                    <Image source={{ uri }} style={styles.photoThumb} contentFit="cover" />
-                    <Pressable
-                      onPress={() => {
-                        setCasePhotos((prev) => prev.filter((_, i) => i !== idx));
-                        setActivityEntries((prev) => prev.filter((e) => e.imageUri !== uri));
-                      }}
-                      style={styles.photoRemoveBtn}
-                    >
-                      <Ionicons name="close-circle" size={20} color="#EF4444" />
-                    </Pressable>
-                  </View>
-                ))}
+                {caseAttachments.length > 0
+                  ? caseAttachments.map((item) => (
+                      <View key={item.id} style={styles.photoThumbWrap}>
+                        {item.kind === "image" ? (
+                          <Image source={{ uri: item.uri }} style={styles.photoThumb} contentFit="cover" />
+                        ) : item.kind === "video" ? (
+                          <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#CBD5E1" }]}>
+                            <Ionicons name="play-circle" size={34} color="#1E293B" />
+                            <Text style={{ fontSize: 11, marginTop: 4, color: "#1E293B", fontFamily: "Inter_600SemiBold" }}>Video</Text>
+                          </View>
+                        ) : (
+                          <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#E2E8F0" }]}>
+                            <Ionicons name="document-text-outline" size={28} color="#334155" />
+                            <Text style={{ fontSize: 11, marginTop: 4, color: "#334155", fontFamily: "Inter_600SemiBold" }}>PDF</Text>
+                          </View>
+                        )}
+                        <Pressable
+                          onPress={() => {
+                            setCaseAttachments((prev) => prev.filter((x) => x.id !== item.id));
+                            setCasePhotos((prev) => prev.filter((u) => u !== item.uri));
+                            setActivityEntries((prev) => prev.filter((e) => e.imageUri !== item.uri));
+                          }}
+                          style={styles.photoRemoveBtn}
+                        >
+                          <Ionicons name="close-circle" size={20} color="#EF4444" />
+                        </Pressable>
+                      </View>
+                    ))
+                  : casePhotos.map((uri, idx) => (
+                      <View key={idx} style={styles.photoThumbWrap}>
+                        <Image source={{ uri }} style={styles.photoThumb} contentFit="cover" />
+                        <Pressable
+                          onPress={() => {
+                            setCasePhotos((prev) => prev.filter((_, i) => i !== idx));
+                            setActivityEntries((prev) => prev.filter((e) => e.imageUri !== uri));
+                          }}
+                          style={styles.photoRemoveBtn}
+                        >
+                          <Ionicons name="close-circle" size={20} color="#EF4444" />
+                        </Pressable>
+                      </View>
+                    ))}
                 <Pressable onPress={handleTakePhotoPrompt} style={styles.addPhotoThumb}>
                   <Ionicons name="add" size={28} color={Colors.light.tint} />
                 </Pressable>
@@ -3157,12 +3278,14 @@ export default function ScanScreen() {
                         setMaterial("Acrylic");
                         setRemovableSubtype("");
                         setRemovableStage("");
+                        setRemovableArch("");
                       } else {
                         setMaterial("Zirconia");
                         setRemovableSubtype("");
                         setRemovableSubtypeOpen(false);
                         setRemovableStage("");
                         setRemovableStageOpen(false);
+                        setRemovableArch("");
                       }
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
@@ -3226,6 +3349,53 @@ export default function ScanScreen() {
                       </Pressable>
                     ))}
                   </ScrollView>
+                </View>
+              )}
+            </View>
+          )}
+
+          {caseType === "Removable" && (
+            <View style={[styles.formGroup]}>
+              <Text style={styles.formLabel}>Arch</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {(["Upper", "Lower", "Both"] as const).map((arch) => (
+                  <Pressable
+                    key={arch}
+                    onPress={() => {
+                      setRemovableArch(removableArch === arch ? "" : arch);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => [
+                      {
+                        flex: 1,
+                        paddingVertical: 10,
+                        borderRadius: 8,
+                        borderWidth: 1.5,
+                        alignItems: "center" as const,
+                        borderColor: removableArch === arch ? Colors.light.tint : Colors.light.border,
+                        backgroundColor: removableArch === arch ? Colors.light.tint + "18" : Colors.light.background,
+                        opacity: pressed ? 0.7 : 1,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 14,
+                        fontWeight: removableArch === arch ? "700" : "500",
+                        color: removableArch === arch ? Colors.light.tint : Colors.light.textSecondary,
+                      }}
+                    >
+                      {arch}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              {removableArch && showPrice && (
+                <View style={[styles.toothPricingRow, { marginTop: 8 }]}>
+                  <Text style={styles.toothPricingLabel}>
+                    {removableArch === "Both" ? "2 arches" : "1 arch"} × ${MATERIAL_PRICES[material] || 250}/{material}
+                  </Text>
+                  <Text style={styles.toothPricingTotal}>${calculatedPrice.toLocaleString()}</Text>
                 </View>
               )}
             </View>
@@ -3812,7 +3982,7 @@ export default function ScanScreen() {
               })}
             </View>
           )}
-        </ScrollView>
+        </KeyboardAwareScrollViewCompat>
         {labelAndBarcodeModals}
       </View>
     );
@@ -4112,28 +4282,49 @@ export default function ScanScreen() {
               <Text style={styles.detectedViewText}>
                 {casePhotos.length} RX Page{casePhotos.length !== 1 ? "s" : ""} Captured
               </Text>
+              <Text style={styles.detectedSubText}>
+                Tap a thumbnail to select it, then delete or crop.
+              </Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewPhotoStrip}>
-                {casePhotos.map((uri, idx) => (
-                  <Image key={idx} source={{ uri }} style={styles.reviewThumb} contentFit="cover" />
-                ))}
+                {casePhotos.map((uri, idx) => {
+                  const isSelected = selectedReviewPhotos.includes(idx);
+                  return (
+                    <Pressable
+                      key={idx}
+                      onPress={() => toggleReviewPhotoSelection(idx)}
+                      style={styles.reviewThumbWrap}
+                    >
+                      <Image
+                        source={{ uri }}
+                        style={[styles.reviewThumb, isSelected && styles.reviewThumbSelected]}
+                        contentFit="cover"
+                      />
+                      <View style={[styles.reviewThumbBadge, isSelected && styles.reviewThumbBadgeSelected]}>
+                        <Ionicons name={isSelected ? "checkmark" : "ellipse-outline"} size={16} color="#FFF" />
+                      </View>
+                    </Pressable>
+                  );
+                })}
               </ScrollView>
             </View>
           </View>
         )}
 
-        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]}>
+        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]} pointerEvents="none">
           <Text style={styles.scanTitle}>AI Intake</Text>
           <Text style={styles.scanSubtitle}>
             {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "review" ? "Add more pages or continue" : "RX recognized"}
           </Text>
         </View>
 
-        <View style={styles.viewfinderFrame}>
-          <View style={styles.cornerTL} />
-          <View style={styles.cornerTR} />
-          <View style={styles.cornerBL} />
-          <View style={styles.cornerBR} />
-        </View>
+        {phase !== "review" && (
+          <View style={styles.viewfinderFrame} pointerEvents="none">
+            <View style={styles.cornerTL} />
+            <View style={styles.cornerTR} />
+            <View style={styles.cornerBL} />
+            <View style={styles.cornerBR} />
+          </View>
+        )}
       </View>
 
       <View
@@ -4217,37 +4408,30 @@ export default function ScanScreen() {
         {phase === "review" && (
           <View style={styles.detectedActions}>
             <Pressable
-              onPress={() => {
-                setCasePhotos(prev => prev.slice(0, -1));
-                setCapturedUri(null);
-                setPhase("camera");
-                scanAnim.setValue(0);
-              }}
+              onPress={deleteSelectedReviewPhotos}
+              disabled={selectedReviewPhotos.length === 0 || isAnalyzing}
               style={({ pressed }) => [
                 styles.reviewActionBtn,
-                { backgroundColor: "rgba(239,68,68,0.2)", borderWidth: 1, borderColor: "rgba(239,68,68,0.5)" },
+                { backgroundColor: "rgba(239,68,68,0.2)", borderWidth: 1, borderColor: "rgba(239,68,68,0.45)" },
                 pressed && { opacity: 0.7 },
+                (selectedReviewPhotos.length === 0 || isAnalyzing) && { opacity: 0.45 },
               ]}
             >
-              <Ionicons name="refresh" size={22} color="#EF4444" />
-              <Text style={[styles.actionBtnText, { color: "#EF4444" }]}>Retake</Text>
+              <Ionicons name="trash-outline" size={22} color="#FCA5A5" />
+              <Text style={[styles.actionBtnText, { color: "#FCA5A5" }]}>
+                {selectedReviewPhotos.length > 0 ? `Delete (${selectedReviewPhotos.length})` : "Delete"}
+              </Text>
             </Pressable>
             <Pressable
               onPress={handleManualCrop}
-              disabled={isCropping}
               style={({ pressed }) => [
                 styles.reviewActionBtn,
-                { backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
+                { backgroundColor: "rgba(20,184,166,0.3)", borderWidth: 1, borderColor: "rgba(20,184,166,0.7)" },
                 pressed && { opacity: 0.7 },
-                isCropping && { opacity: 0.5 },
               ]}
             >
-              {isCropping ? (
-                <ActivityIndicator size="small" color="#FFF" />
-              ) : (
-                <Ionicons name="crop" size={22} color="#FFF" />
-              )}
-              <Text style={styles.actionBtnText}>{isCropping ? "Cropping..." : "Crop Photo"}</Text>
+              <Ionicons name="crop" size={22} color="#5EEAD4" />
+              <Text style={[styles.actionBtnText, { color: "#5EEAD4" }]}>Crop Photo</Text>
             </Pressable>
             <Pressable
               onPress={handleAddMoreFromReview}
@@ -4381,6 +4565,13 @@ export default function ScanScreen() {
       </Modal>
 
       {labelAndBarcodeModals}
+
+      <ManualCropOverlay
+        visible={showCropOverlay}
+        imageUri={cropOverlayUri}
+        onCancel={handleCropOverlayCancel}
+        onCropped={handleCropOverlayCropped}
+      />
     </View>
   );
 }
@@ -4615,13 +4806,34 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     marginTop: 8,
   },
+  reviewThumbWrap: {
+    position: "relative",
+    marginRight: 10,
+  },
   reviewThumb: {
     width: 90,
     height: 90,
     borderRadius: 12,
-    marginRight: 10,
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.3)",
+  },
+  reviewThumbSelected: {
+    borderColor: Colors.light.tint,
+    borderWidth: 3,
+  },
+  reviewThumbBadge: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reviewThumbBadgeSelected: {
+    backgroundColor: Colors.light.tint,
   },
   reviewActionBtn: {
     flexGrow: 1,

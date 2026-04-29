@@ -1,5 +1,5 @@
-// Microsoft OneDrive integration via the Replit connector proxy.
-// Uses the connected OneDrive account to upload files via Microsoft Graph API.
+// Microsoft OneDrive integration via Replit connector proxy
+// Uses the connected OneDrive account to upload files via Microsoft Graph API
 
 let cachedSettings: any = null;
 let cacheExpiresAt = 0;
@@ -7,67 +7,47 @@ let cacheExpiresAt = 0;
 async function getOneDriveAccessToken(): Promise<string> {
   const now = Date.now();
   if (cachedSettings && cacheExpiresAt > now + 60_000) {
-    return (
-      cachedSettings.settings?.access_token ||
-      cachedSettings.settings?.oauth?.credentials?.access_token
-    );
+    return cachedSettings.settings?.access_token || cachedSettings.settings?.oauth?.credentials?.access_token;
   }
 
   const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
-  if (!hostname) {
-    throw new Error("OneDrive connector not available in this environment.");
-  }
+  if (!hostname) throw new Error("OneDrive connector not available in this environment.");
 
   const xReplitToken = process.env.REPL_IDENTITY
-    ? `repl ${process.env.REPL_IDENTITY}`
+    ? "repl " + process.env.REPL_IDENTITY
     : process.env.WEB_REPL_RENEWAL
-      ? `depl ${process.env.WEB_REPL_RENEWAL}`
-      : null;
+    ? "depl " + process.env.WEB_REPL_RENEWAL
+    : null;
 
-  if (!xReplitToken) {
-    throw new Error("Replit identity token not found.");
-  }
+  if (!xReplitToken) throw new Error("Replit identity token not found.");
 
-  const response = await fetch(
+  const resp = await fetch(
     `https://${hostname}/api/v2/connection?include_secrets=true&connector_names=onedrive`,
-    {
-      headers: {
-        Accept: "application/json",
-        "X-Replit-Token": xReplitToken,
-      },
-    },
+    { headers: { Accept: "application/json", "X-Replit-Token": xReplitToken } }
   );
-  if (!response.ok) {
-    throw new Error(`Connector fetch failed: ${response.status}`);
-  }
-
-  const data = await response.json();
+  if (!resp.ok) throw new Error(`Connector fetch failed: ${resp.status}`);
+  const data = await resp.json();
   cachedSettings = data.items?.[0];
-  if (!cachedSettings) {
-    throw new Error("OneDrive connection not found. Please reconnect.");
-  }
+
+  if (!cachedSettings) throw new Error("OneDrive connection not found. Please reconnect.");
 
   const expiresAt = cachedSettings.settings?.expires_at;
-  cacheExpiresAt = expiresAt ? new Date(expiresAt).getTime() : now + 3_500_000;
+  cacheExpiresAt = expiresAt ? new Date(expiresAt).getTime() : now + 3500_000;
 
   const token =
     cachedSettings.settings?.access_token ||
     cachedSettings.settings?.oauth?.credentials?.access_token;
-  if (!token) {
-    throw new Error("OneDrive access token not available.");
-  }
-
+  if (!token) throw new Error("OneDrive access token not available.");
   return token;
 }
 
 async function graphRequest(
-  requestPath: string,
+  path: string,
   options: RequestInit = {},
-  token?: string,
+  token?: string
 ): Promise<Response> {
   const accessToken = token || (await getOneDriveAccessToken());
-
-  return fetch(`https://graph.microsoft.com/v1.0${requestPath}`, {
+  return fetch(`https://graph.microsoft.com/v1.0${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -78,18 +58,17 @@ async function graphRequest(
 
 export async function ensureOneDriveFolder(folderName: string): Promise<string> {
   const token = await getOneDriveAccessToken();
-  const checkResponse = await graphRequest(
+  const checkResp = await graphRequest(
     `/me/drive/root:/${encodeURIComponent(folderName)}`,
     { method: "GET" },
-    token,
+    token
   );
-
-  if (checkResponse.ok) {
-    const item = await checkResponse.json();
+  if (checkResp.ok) {
+    const item = await checkResp.json();
     return item.id;
   }
 
-  const createResponse = await graphRequest(
+  const createResp = await graphRequest(
     "/me/drive/root/children",
     {
       method: "POST",
@@ -100,50 +79,46 @@ export async function ensureOneDriveFolder(folderName: string): Promise<string> 
         "@microsoft.graph.conflictBehavior": "rename",
       }),
     },
-    token,
+    token
   );
-  if (!createResponse.ok) {
-    const errorText = await createResponse.text();
-    throw new Error(`Could not create OneDrive folder: ${errorText}`);
+  if (!createResp.ok) {
+    const err = await createResp.text();
+    throw new Error(`Could not create OneDrive folder: ${err}`);
   }
-
-  const folder = await createResponse.json();
+  const folder = await createResp.json();
   return folder.id;
 }
 
 export async function uploadToOneDrive(
   fileBuffer: Buffer,
   fileName: string,
-  folderPath = "LabTrax Backups",
+  folderPath = "LabTrax Backups"
 ): Promise<{ webUrl: string; name: string; size: number }> {
   const token = await getOneDriveAccessToken();
   const uploadPath = `/${folderPath}/${fileName}`;
-  const chunkSize = 5 * 1024 * 1024;
+  const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB chunks
 
   if (fileBuffer.length <= 4 * 1024 * 1024) {
-    const response = await graphRequest(
+    // Simple upload for files ≤ 4 MB
+    const resp = await graphRequest(
       `/me/drive/root:${encodeURIComponent(uploadPath).replace(/%2F/g, "/")}:/content`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/octet-stream" },
         body: fileBuffer,
       },
-      token,
+      token
     );
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`OneDrive upload failed: ${errorText}`);
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`OneDrive upload failed: ${err}`);
     }
-
-    const item = await response.json();
-    return {
-      webUrl: item.webUrl || "",
-      name: item.name,
-      size: item.size,
-    };
+    const item = await resp.json();
+    return { webUrl: item.webUrl || "", name: item.name, size: item.size };
   }
 
-  const sessionResponse = await graphRequest(
+  // Large file upload session
+  const sessionResp = await graphRequest(
     `/me/drive/root:${encodeURIComponent(uploadPath).replace(/%2F/g, "/")}:/createUploadSession`,
     {
       method: "POST",
@@ -155,26 +130,22 @@ export async function uploadToOneDrive(
         },
       }),
     },
-    token,
+    token
   );
-  if (!sessionResponse.ok) {
-    const errorText = await sessionResponse.text();
-    throw new Error(`Could not create OneDrive upload session: ${errorText}`);
+  if (!sessionResp.ok) {
+    const err = await sessionResp.text();
+    throw new Error(`Could not create OneDrive upload session: ${err}`);
   }
-
-  const session = await sessionResponse.json();
+  const session = await sessionResp.json();
   const uploadUrl: string = session.uploadUrl;
-  if (!uploadUrl) {
-    throw new Error("No upload URL returned from OneDrive.");
-  }
+  if (!uploadUrl) throw new Error("No upload URL returned from OneDrive.");
 
   let offset = 0;
   let lastResponse: any = null;
-
   while (offset < fileBuffer.length) {
-    const chunk = fileBuffer.slice(offset, offset + chunkSize);
+    const chunk = fileBuffer.slice(offset, offset + CHUNK_SIZE);
     const end = offset + chunk.length - 1;
-    const chunkResponse = await fetch(uploadUrl, {
+    const chunkResp = await fetch(uploadUrl, {
       method: "PUT",
       headers: {
         "Content-Length": String(chunk.length),
@@ -183,15 +154,11 @@ export async function uploadToOneDrive(
       },
       body: chunk,
     });
-
-    if (!chunkResponse.ok && chunkResponse.status !== 202) {
-      const errorText = await chunkResponse.text();
-      throw new Error(
-        `OneDrive chunk upload failed at offset ${offset}: ${errorText}`,
-      );
+    if (!chunkResp.ok && chunkResp.status !== 202) {
+      const err = await chunkResp.text();
+      throw new Error(`OneDrive chunk upload failed at offset ${offset}: ${err}`);
     }
-
-    lastResponse = await chunkResponse.json().catch(() => ({}));
+    lastResponse = await chunkResp.json().catch(() => ({}));
     offset += chunk.length;
   }
 

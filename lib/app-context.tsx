@@ -627,10 +627,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     syncActiveLabAffiliationState().catch(() => {
-      // Network/server errors — do NOT clear existing membership state.
-      // Clearing on a transient error would delete all lab cases from the
-      // device. The interval will retry and restore correct state once the
-      // server is reachable again.
+      if (cancelled) {
+        return;
+      }
+      setHasActiveLabMembership(false);
+      setActiveLabAffiliationKey(null);
+      setActiveLabAffiliationName(null);
     });
 
     return () => {
@@ -644,10 +646,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     membershipVersion,
   ]);
 
-  // Note: automatic lab-case cleanup on affiliation key change was removed.
-  // Clearing cases on a transient null (server restart / network error)
-  // was causing ALL lab cases to be permanently wiped from the device.
-  // Case removal on an explicit "Leave Lab" is handled inside leaveLab().
+  const prevActiveLabKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prevKey = prevActiveLabKeyRef.current;
+    prevActiveLabKeyRef.current = activeLabAffiliationKey;
+
+    if (prevKey && !activeLabAffiliationKey) {
+      setAllCases((prev) => {
+        const filtered = prev.filter(
+          (c) => !resolveCaseAffiliationKeys(c).includes(prevKey)
+        );
+        AsyncStorage.setItem(CASES_KEY, JSON.stringify(filtered));
+        return filtered;
+      });
+    }
+  }, [activeLabAffiliationKey]);
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
     if (status === "approved" || status === "accepted") {

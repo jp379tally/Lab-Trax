@@ -29,7 +29,7 @@ export const STATIONS: { id: CaseStatus; label: string; color: string }[] = [
   { id: "HOLD", label: "On Hold", color: "#94A3B8" },
 ];
 
-export type ActivityEntryType = "photo" | "note" | "station_change" | "scan" | "created" | "courtesy_text" | "barcode_assigned" | "barcode_unassigned" | "invoice_paid" | "invoice_attached" | "tracking_added" | "exocad_linked" | "exocad_shared" | "document";
+export type ActivityEntryType = "photo" | "video" | "note" | "station_change" | "scan" | "created" | "courtesy_text" | "barcode_assigned" | "barcode_unassigned" | "invoice_paid" | "invoice_attached" | "tracking_added" | "exocad_linked" | "exocad_shared" | "document";
 
 export type CourtesyTextStatus = "sent" | "date_requested" | "date_proposed" | "accepted" | "declined";
 
@@ -112,6 +112,7 @@ export interface LabCase {
   dueDate: string;
   routeHistory: { station: CaseStatus; timestamp: number }[];
   photos: string[];
+  videos?: string[];
   activityLog: ActivityEntry[];
   trackingNumbers?: string[];
   toothMap?: ToothEntry[];
@@ -157,6 +158,7 @@ export interface Conversation {
   lastMessage: string;
   lastMessageTime: number;
   unreadCount: number;
+  isLabChannel?: boolean;
 }
 
 export interface Group {
@@ -576,6 +578,13 @@ export const SAMPLE_CASES: LabCase[] = [
   },
 ];
 
+export interface ProviderContact {
+  name: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+}
+
 export interface Client {
   id: string;
   clientNumber: number;
@@ -583,6 +592,7 @@ export interface Client {
   practiceName: string;
   leadDoctor: string;
   additionalProviders?: string[];
+  providerContacts?: ProviderContact[];
   phone: string;
   email: string;
   address: string;
@@ -635,6 +645,7 @@ export interface Invoice {
   shade: string;
   caseNotes: string;
   lineItems: InvoiceLineItem[];
+  creditNote?: string;
 }
 
 export const SAMPLE_CLIENTS: Client[] = [
@@ -1085,6 +1096,14 @@ export const DEFAULT_TIER_ITEMS = [
   { key: "denture", label: "Denture" },
   { key: "partial", label: "Partial" },
   { key: "implant", label: "Implant" },
+  { key: "night_guard_hard", label: "Night Guard - Hard" },
+  { key: "night_guard_soft", label: "Night Guard - Soft" },
+  { key: "night_guard_hard_soft", label: "Night Guard - Hard/Soft" },
+  { key: "retainer_hawley", label: "Retainer - Hawley" },
+  { key: "retainer_hard", label: "Retainer - Hard" },
+  { key: "retainer_lingual", label: "Retainer - Lingual" },
+  { key: "snore_guard", label: "Snore Guard" },
+  { key: "sports_guard", label: "Sports Guard" },
 ];
 
 export interface InventoryItem {
@@ -1112,25 +1131,36 @@ export const sampleInventory: InventoryItem[] = [
   { id: generateId(), name: "Polishing Wheels", category: "Tools", quantity: 22, minQuantity: 10, unit: "pcs" },
 ];
 
+const APPLIANCE_PRICE_DEFAULTS = {
+  night_guard_hard: 0,
+  night_guard_soft: 0,
+  night_guard_hard_soft: 0,
+  retainer_hawley: 0,
+  retainer_hard: 0,
+  retainer_lingual: 0,
+  snore_guard: 0,
+  sports_guard: 0,
+};
+
 export const DEFAULT_PRICING_TIERS: PricingTier[] = [
   {
     id: "corporate",
     name: "Corporate",
-    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0, ...APPLIANCE_PRICE_DEFAULTS },
   },
   {
     id: "economy",
     name: "Economy",
-    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0, ...APPLIANCE_PRICE_DEFAULTS },
   },
   {
     id: "standard",
     name: "Standard",
-    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0, ...APPLIANCE_PRICE_DEFAULTS },
   },
   {
     id: "premium",
     name: "Premium",
-    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0 },
+    prices: { zirconia_crown: 0, emax_crown: 0, pfm_crown: 0, denture: 0, partial: 0, implant: 0, ...APPLIANCE_PRICE_DEFAULTS },
   },
 ];

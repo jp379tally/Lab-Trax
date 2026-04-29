@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import {
   StyleSheet,
   View,
@@ -14,12 +15,14 @@ import {
   KeyboardAvoidingView,
   Share,
   Linking,
+  RefreshControl,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
+import * as Print from "expo-print";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -67,7 +70,7 @@ function deriveDisplayInitials(input?: {
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh } = useApp();
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -84,8 +87,10 @@ export default function CaseDetailScreen() {
       if (uri) setCompanyLogo(uri);
     });
   }, []);
+  const [refreshing, setRefreshing] = useState(false);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
+  const [showAddSomethingModal, setShowAddSomethingModal] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
   const [showPhotoPreview, setShowPhotoPreview] = useState(false);
@@ -97,7 +102,7 @@ export default function CaseDetailScreen() {
   const [entryNoteMode, setEntryNoteMode] = useState(false);
   const [entryNoteText, setEntryNoteText] = useState("");
   const [showAddItemModal, setShowAddItemModal] = useState(false);
-  type AddItemStep = "caseType" | "toothChart" | "material" | "removableSubtype" | "removableMaterial" | "gingivaShade" | "applianceSubtype" | "applianceNightGuard" | "applianceEssexTeeth" | "applianceEssexShade" | "complete";
+  type AddItemStep = "caseType" | "toothChart" | "material" | "removableSubtype" | "removableMaterial" | "gingivaShade" | "applianceSubtype" | "applianceArch" | "applianceNightGuardType" | "applianceRetainerType" | "applianceNightGuard" | "applianceEssexTeeth" | "applianceEssexShade" | "complete";
   const [addItemStep, setAddItemStep] = useState<AddItemStep>("caseType");
   const [itemCaseType, setItemCaseType] = useState<CaseTypeValue>("");
   const [itemSelectedTeeth, setItemSelectedTeeth] = useState<number[]>([]);
@@ -110,6 +115,8 @@ export default function CaseDetailScreen() {
   const [removableCustomMaterial, setRemovableCustomMaterial] = useState("");
   const [applianceSubtype, setApplianceSubtype] = useState("");
   const [nightGuardType, setNightGuardType] = useState("");
+  const [applianceArch, setApplianceArch] = useState<"" | "Upper" | "Lower" | "Both">("");
+  const [applianceVariant, setApplianceVariant] = useState("");
   const [essexShade, setEssexShade] = useState("");
 
   const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
@@ -162,6 +169,7 @@ export default function CaseDetailScreen() {
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
   const [photoNotes, setPhotoNotes] = useState("");
   const [showPhotoNotes, setShowPhotoNotes] = useState(false);
+  const finishPhotosRef = useRef(false);
   const [showQuickEdit, setShowQuickEdit] = useState(false);
   const [qeDoctor, setQeDoctor] = useState("");
   const [qePatient, setQePatient] = useState("");
@@ -356,9 +364,47 @@ export default function CaseDetailScreen() {
       }
     }
 
+    const savedCase = { ...caseItem, ...updates };
     setShowEditCase(false);
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Saved", "Case updated successfully.");
+
+    Alert.alert(
+      "Changes Saved",
+      "Do you want to reprint the case label?",
+      [
+        { text: "No", style: "cancel" },
+        { text: "Yes", onPress: () => handlePrintCaseLabel(savedCase) },
+      ]
+    );
+  }
+
+  async function handlePrintCaseLabel(caseRecord: typeof caseItem) {
+    try {
+      const html = buildCaseLabelHtml(caseRecord);
+      await Print.printAsync({ html });
+    } catch {
+      Alert.alert("Print Error", "Unable to print the updated case label.");
+    }
+  }
+
+  function buildCaseLabelHtml(caseRecord: typeof caseItem) {
+    return `<html><head><style>
+      body { font-family: Arial, sans-serif; padding: 20px; }
+      .label { border: 2px solid #111; border-radius: 12px; padding: 20px; max-width: 400px; }
+      .title { font-size: 26px; font-weight: bold; margin-bottom: 12px; }
+      .row { font-size: 17px; margin: 6px 0; }
+    </style></head><body>
+      <div class="label">
+        <div class="title">Case #${caseRecord?.caseNumber || ""}</div>
+        <div class="row"><strong>Patient:</strong> ${caseRecord?.patientName || caseRecord?.patientInitials || ""}</div>
+        <div class="row"><strong>Doctor:</strong> ${cleanDoctorDisplay(caseRecord?.doctorName || "")}</div>
+        <div class="row"><strong>Teeth:</strong> ${caseRecord?.toothIndices || ""}</div>
+        <div class="row"><strong>Shade:</strong> ${caseRecord?.shade || ""}</div>
+        <div class="row"><strong>Material:</strong> ${caseRecord?.material || ""}</div>
+        <div class="row"><strong>Due:</strong> ${caseRecord?.dueDate || ""}</div>
+        ${caseRecord?.notes ? `<div class="row"><strong>Notes:</strong> ${caseRecord.notes}</div>` : ""}
+      </div>
+    </body></html>`;
   }
 
   function webFilePickerForCamera(): Promise<string | null> {
@@ -666,8 +712,56 @@ export default function CaseDetailScreen() {
     setRemovableCustomMaterial("");
     setApplianceSubtype("");
     setNightGuardType("");
+    setApplianceArch("");
+    setApplianceVariant("");
     setEssexShade("");
     setShowAddItemModal(true);
+  }
+
+  function getAppliancePriceKey(subtype: string, variant: string): string {
+    if (subtype === "Night Guard") {
+      if (variant === "Hard") return "night_guard_hard";
+      if (variant === "Soft") return "night_guard_soft";
+      if (variant === "Hard/Soft") return "night_guard_hard_soft";
+    } else if (subtype === "Retainer") {
+      if (variant === "Hawley") return "retainer_hawley";
+      if (variant === "Hard") return "retainer_hard";
+      if (variant === "Lingual") return "retainer_lingual";
+    } else if (subtype === "Snore Guard") {
+      return "snore_guard";
+    } else if (subtype === "Sports Guard") {
+      return "sports_guard";
+    }
+    return "";
+  }
+
+  function getApplianceUnitPrice(priceKey: string): number {
+    const client = clients.find(c => c.practiceName === caseItem?.clientName);
+    if (client?.customPricing?.[priceKey] !== undefined && client.customPricing[priceKey] > 0) {
+      return client.customPricing[priceKey];
+    }
+    const tier = pricingTiers.find(t => t.name === client?.tier);
+    return tier?.prices?.[priceKey] || 0;
+  }
+
+  function addApplianceToInvoice(subtype: string, variant: string, arch: string) {
+    const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
+    if (!linkedInv) return;
+    const priceKey = getAppliancePriceKey(subtype, variant);
+    const unitPrice = getApplianceUnitPrice(priceKey);
+    const itemLabel = variant ? `${subtype} - ${variant}` : subtype;
+    let newItems;
+    if (arch === "Both") {
+      newItems = [
+        { qty: 1, item: itemLabel, description: `${itemLabel} (Upper)`, rate: unitPrice, amount: unitPrice },
+        { qty: 1, item: itemLabel, description: `${itemLabel} (Lower)`, rate: unitPrice, amount: unitPrice },
+      ];
+    } else {
+      const archLabel = arch ? ` (${arch})` : "";
+      newItems = [{ qty: 1, item: itemLabel, description: `${itemLabel}${archLabel}`, rate: unitPrice, amount: unitPrice }];
+    }
+    const updLi = [...linkedInv.lineItems, ...newItems];
+    updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
   }
 
   function handleSaveItem() {
@@ -677,8 +771,7 @@ export default function CaseDetailScreen() {
     }
     const skipToothValidation =
       (itemCaseType === "Removable" && (removableSubtype === "Full Denture" || removableSubtype === "Immediate Denture" || removableSubtype === "Denture")) ||
-      (itemCaseType === "Appliance" && ["Snore Guard", "Ortho Retainer", "Other"].includes(applianceSubtype)) ||
-      (itemCaseType === "Appliance" && applianceSubtype === "Night Guard");
+      (itemCaseType === "Appliance");
 
     if (!skipToothValidation && itemSelectedTeeth.length === 0) {
       Alert.alert("Missing Info", "Please select at least one tooth.");
@@ -740,9 +833,7 @@ export default function CaseDetailScreen() {
               allowsMultipleSelection: true,
             });
             if (!result.canceled && result.assets.length > 0) {
-              result.assets.forEach((asset) => {
-                addCasePhoto(caseItem!.id, asset.uri, userInitials);
-              });
+              await Promise.all(result.assets.map((asset) => addCasePhoto(caseItem!.id, asset.uri, userInitials)));
               if (Platform.OS !== "web") {
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               }
@@ -762,9 +853,7 @@ export default function CaseDetailScreen() {
                 multiple: true,
               });
               if (!result.canceled && result.assets && result.assets.length > 0) {
-                result.assets.forEach((asset) => {
-                  addCasePhoto(caseItem!.id, asset.uri, userInitials);
-                });
+                await Promise.all(result.assets.map((asset) => addCasePhoto(caseItem!.id, asset.uri, userInitials)));
                 if (Platform.OS !== "web") {
                   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 }
@@ -780,40 +869,43 @@ export default function CaseDetailScreen() {
   }
 
   function handleFinishPhotos() {
-    capturedPhotos.forEach((uri) => {
-      addCasePhoto(caseItem!.id, uri, userInitials);
-    });
-    if (photoNotes.trim()) {
-      addCaseNote(caseItem!.id, photoNotes.trim(), userInitials);
-    }
-    if (Platform.OS !== "web") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
-    const photoCount = capturedPhotos.length;
-    const hasNotes = !!photoNotes.trim();
+    if (finishPhotosRef.current) return;
+    finishPhotosRef.current = true;
 
-    if (userType === "provider") {
-      const parts: string[] = [];
-      parts.push(`${photoCount} file${photoCount > 1 ? "s" : ""}`);
-      if (hasNotes) parts.push("notes");
-      const notifTitle = "Provider Media Added";
-      const notifMsg = `${currentUser || "Provider"} added ${parts.join(" and ")} to Case ${caseItem!.caseNumber}`;
-      addNotification({
-        title: notifTitle,
-        message: notifMsg,
-        type: "alert",
-        caseId: caseItem!.id,
-      });
-    }
+    const photosToSave = [...capturedPhotos];
+    const noteToSave = photoNotes.trim();
+    const caseId = caseItem!.id;
+    const caseNumber = caseItem!.caseNumber;
 
-    const msg = hasNotes
-      ? `${photoCount} file${photoCount > 1 ? "s" : ""} and notes added to case.`
-      : `${photoCount} file${photoCount > 1 ? "s" : ""} added to case.`;
-    Alert.alert("Saved", msg);
     setCapturedPhotos([]);
     setPhotoNotes("");
     setShowPhotoNotes(false);
     setShowPhotoPreview(false);
+
+    if (Platform.OS !== "web") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+
+    (async () => {
+      try {
+        await addCasePhotosWithNote(caseId, photosToSave, noteToSave, userInitials);
+        if (userType === "provider") {
+          const photoCount = photosToSave.length;
+          const hasNotes = !!noteToSave;
+          const parts: string[] = [];
+          parts.push(`${photoCount} file${photoCount > 1 ? "s" : ""}`);
+          if (hasNotes) parts.push("notes");
+          addNotification({
+            title: "Provider Media Added",
+            message: `${currentUser || "Provider"} added ${parts.join(" and ")} to Case ${caseNumber}`,
+            type: "alert",
+            caseId,
+          });
+        }
+      } finally {
+        finishPhotosRef.current = false;
+      }
+    })();
   }
 
   function handleSaveNote() {
@@ -854,8 +946,8 @@ export default function CaseDetailScreen() {
     });
   }
 
-  function handleEntrySavePhotos() {
-    entryPhotos.forEach((uri) => addCasePhoto(caseItem!.id, uri, userInitials));
+  async function handleEntrySavePhotos() {
+    await Promise.all(entryPhotos.map((uri) => addCasePhoto(caseItem!.id, uri, userInitials)));
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setEntryPhotos([]);
     setEntryPhotoMode(false);
@@ -902,7 +994,7 @@ export default function CaseDetailScreen() {
               try {
                 const uri = await webFilePickerForCamera();
                 if (uri) {
-                  addCasePhoto(caseItem!.id, uri, userInitials);
+                  await addCasePhoto(caseItem!.id, uri, userInitials);
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Photo Added", "Photo has been attached to this case.");
                 }
@@ -918,7 +1010,7 @@ export default function CaseDetailScreen() {
                   quality: 1.0,
                 });
                 if (!result.canceled && result.assets[0]) {
-                  addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
+                  await addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Photo Added", "Photo has been attached to this case.");
                 }
@@ -935,7 +1027,7 @@ export default function CaseDetailScreen() {
               try {
                 const uri = await webFilePickerForCamera();
                 if (uri) {
-                  addCasePhoto(caseItem!.id, uri, userInitials);
+                  await addCasePhoto(caseItem!.id, uri, userInitials);
                   Alert.alert("Media Added", "Media has been attached to this case.");
                 }
               } catch {
@@ -951,7 +1043,7 @@ export default function CaseDetailScreen() {
                   videoMaxDuration: 60,
                 });
                 if (!result.canceled && result.assets[0]) {
-                  addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
+                  await addCasePhoto(caseItem!.id, result.assets[0].uri, userInitials);
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Alert.alert("Video Added", "Video has been attached to this case.");
                 }
@@ -975,9 +1067,7 @@ export default function CaseDetailScreen() {
               allowsMultipleSelection: true,
             });
             if (!result.canceled && result.assets.length > 0) {
-              result.assets.forEach((asset) => {
-                addCasePhoto(caseItem!.id, asset.uri, userInitials);
-              });
+              await Promise.all(result.assets.map((asset) => addCasePhoto(caseItem!.id, asset.uri, userInitials)));
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               Alert.alert("Media Added", `${result.assets.length} file(s) attached to this case.`);
             }
@@ -1008,10 +1098,23 @@ export default function CaseDetailScreen() {
         <ChatButton />
       </View>
 
-      <ScrollView
+      <KeyboardAwareScrollViewCompat
         style={styles.scroll}
         contentContainerStyle={{ paddingBottom: Platform.OS === "web" ? 34 + 40 : insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
+        bottomOffset={24}
+        refreshControl={
+          Platform.OS !== "web" ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={async () => {
+                setRefreshing(true);
+                await hardRefresh();
+                setRefreshing(false);
+              }}
+            />
+          ) : undefined
+        }
       >
         {isAdmin && (
         <Pressable
@@ -1049,6 +1152,7 @@ export default function CaseDetailScreen() {
         <Pressable
           style={styles.infoGrid}
           onPress={() => {
+            if (!isAdmin) return;
             setQeDoctor(caseItem.doctorName || "");
             setQePatient((caseItem as any).patientName || caseItem.patientInitials || "");
             setQeTeeth(caseItem.toothIndices || "");
@@ -1098,9 +1202,11 @@ export default function CaseDetailScreen() {
               </Text>
             </View>
           )}
-          <View style={{ position: "absolute", top: 8, right: 8 }}>
-            <Ionicons name="pencil" size={14} color={Colors.light.textTertiary} />
-          </View>
+          {isAdmin && (
+            <View style={{ position: "absolute", top: 8, right: 8 }}>
+              <Ionicons name="pencil" size={14} color={Colors.light.textTertiary} />
+            </View>
+          )}
         </Pressable>
 
 
@@ -1192,7 +1298,7 @@ export default function CaseDetailScreen() {
                     ? registeredUsers.find(
                         (user) =>
                           user.id === entry.user ||
-                          user.username?.toLowerCase() === entry.user.toLowerCase()
+                          user.username?.toLowerCase() === (entry.user ?? "").toLowerCase()
                       )
                     : null;
                   const entryInitials = entry.user
@@ -1253,13 +1359,21 @@ export default function CaseDetailScreen() {
         </View>
         <View style={styles.timeline}>
           {(caseItem.activityLog && caseItem.activityLog.length > 0
-            ? [...caseItem.activityLog].sort((a, b) => b.timestamp - a.timestamp)
+            ? (() => {
+                const sorted = [...caseItem.activityLog].sort((a, b) => b.timestamp - a.timestamp);
+                const photoTimestamps = sorted.filter(e => e.type === "photo" || e.type === "video").map(e => e.timestamp);
+                return sorted.filter(entry => {
+                  if (entry.type !== "note") return true;
+                  return !photoTimestamps.some(pt => Math.abs(pt - entry.timestamp) < 5000);
+                });
+              })()
             : [...caseItem.routeHistory].sort((a, b) => b.timestamp - a.timestamp).map((rh) => ({
                 id: String(rh.timestamp),
                 type: "station_change" as const,
                 timestamp: rh.timestamp,
                 description: `Case moved to ${getStationInfo(rh.station, customStationLabels).label}`,
                 station: rh.station,
+                user: undefined as string | undefined,
               }))
           ).map((entry, idx, arr) => {
             const isLast = idx === arr.length - 1;
@@ -1267,6 +1381,7 @@ export default function CaseDetailScreen() {
             const isStation = entry.type === "station_change" || entry.type === "created" || entry.type === "scan";
             const isNote = entry.type === "note";
             const isPhoto = entry.type === "photo";
+            const isVideo = entry.type === "video";
             const isBarcode = entry.type === "barcode_assigned" || entry.type === "barcode_unassigned";
             const isInvoice = entry.type === "invoice_paid" || entry.type === "invoice_attached";
             const isTracking = entry.type === "tracking_added";
@@ -1281,7 +1396,7 @@ export default function CaseDetailScreen() {
               dotColor = isFirst ? stationInfo.color : Colors.light.textTertiary;
             } else if (isNote) {
               dotColor = "#F59E0B";
-            } else if (isPhoto) {
+            } else if (isPhoto || isVideo) {
               dotColor = "#8B5CF6";
             } else if (isBarcode) {
               dotColor = "#10B981";
@@ -1299,7 +1414,7 @@ export default function CaseDetailScreen() {
               ? registeredUsers.find(
                   (user) =>
                     user.id === entry.user ||
-                    user.username?.toLowerCase() === entry.user.toLowerCase()
+                    user.username?.toLowerCase() === (entry.user ?? "").toLowerCase()
                 )
               : null;
             const entryUserName = entry.user
@@ -1334,7 +1449,7 @@ export default function CaseDetailScreen() {
                   </View>
                   {!isLast && <View style={styles.timelineConnector} />}
                 </View>
-                <View style={[styles.timelineContent, isPhoto && entry.imageUri ? { paddingBottom: 20 } : {}]}>
+                <View style={[styles.timelineContent, (isPhoto || isVideo) && entry.imageUri ? { paddingBottom: 20 } : {}]}>
                   {isStation && stationInfo ? (
                     <View>
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -1427,6 +1542,14 @@ export default function CaseDetailScreen() {
                       onPress={() => {
                         if (isPhoto && entry.imageUri) {
                           setFullScreenPhoto(entry.imageUri);
+                        } else if (isVideo && entry.imageUri) {
+                          if (Platform.OS === "web") {
+                            (window as any).open(entry.imageUri, "_blank");
+                          } else {
+                            Linking.openURL(entry.imageUri).catch(() =>
+                              Alert.alert("Cannot play video", "Unable to open video on this device.")
+                            );
+                          }
                         } else if (isNote) {
                           Alert.alert("Note", entry.description);
                         }
@@ -1441,7 +1564,7 @@ export default function CaseDetailScreen() {
                     >
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <Ionicons
-                          name={isNote ? "document-text" : "camera"}
+                          name={isNote ? "document-text" : isVideo ? "videocam" : "camera"}
                           size={13}
                           color={isNote ? "#D97706" : "#7C3AED"}
                         />
@@ -1452,16 +1575,16 @@ export default function CaseDetailScreen() {
                           textTransform: "uppercase",
                           letterSpacing: 0.5,
                         }}>
-                          {isNote ? "Note" : "Photo"}
+                          {isNote ? "Note" : isVideo ? "Video" : "Photo"}
                         </Text>
                         {entry.user && (
                           <View style={styles.initialsChip}>
                             <Text style={styles.initialsText}>{entryUserInitials}</Text>
                           </View>
                         )}
-                        {isPhoto && entry.imageUri && (
+                        {(isPhoto || isVideo) && entry.imageUri && (
                           <View style={{ marginLeft: "auto" }}>
-                            <Ionicons name="expand-outline" size={14} color="#7C3AED" />
+                            <Ionicons name={isVideo ? "play-circle-outline" : "expand-outline"} size={14} color="#7C3AED" />
                           </View>
                         )}
                       </View>
@@ -1473,24 +1596,6 @@ export default function CaseDetailScreen() {
                       }}>
                         {entry.description}
                       </Text>
-                      {isPhoto && (() => {
-                        const nearbyNote = (caseItem.activityLog || []).find(
-                          (e) => e.type === "note" && Math.abs(e.timestamp - entry.timestamp) < 5000
-                        );
-                        if (!nearbyNote) return null;
-                        return (
-                          <Text style={{
-                            fontSize: 12,
-                            fontFamily: "Inter_400Regular",
-                            fontStyle: "italic",
-                            color: Colors.light.textSecondary,
-                            marginTop: 4,
-                            lineHeight: 17,
-                          }}>
-                            {nearbyNote.description}
-                          </Text>
-                        );
-                      })()}
                       {isPhoto && entry.imageUri && (
                         <Image
                           source={{ uri: entry.imageUri }}
@@ -1503,6 +1608,49 @@ export default function CaseDetailScreen() {
                           resizeMode="cover"
                         />
                       )}
+                      {isVideo && entry.imageUri && (
+                        <View style={{
+                          width: "100%",
+                          height: 80,
+                          borderRadius: 8,
+                          marginTop: 8,
+                          backgroundColor: "#1E1B2E",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexDirection: "row",
+                          gap: 8,
+                        }}>
+                          <Ionicons name="play-circle" size={32} color="#A78BFA" />
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#C4B5FD" }}>Tap to play video</Text>
+                        </View>
+                      )}
+                      {(isPhoto || isVideo) && (() => {
+                        const nearbyNote = (caseItem.activityLog || []).find(
+                          (e) => e.type === "note" && Math.abs(e.timestamp - entry.timestamp) < 5000
+                        );
+                        if (!nearbyNote) return null;
+                        return (
+                          <View style={{
+                            marginTop: 8,
+                            paddingTop: 8,
+                            borderTopWidth: 1,
+                            borderTopColor: "#E9D5FF",
+                          }}>
+                            <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 4 }}>
+                              <Ionicons name="document-text" size={12} color="#7C3AED" />
+                              <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#7C3AED", textTransform: "uppercase", letterSpacing: 0.5 }}>Note</Text>
+                            </View>
+                            <Text style={{
+                              fontSize: 13,
+                              fontFamily: "Inter_400Regular",
+                              color: Colors.light.text,
+                              lineHeight: 18,
+                            }}>
+                              {nearbyNote.description}
+                            </Text>
+                          </View>
+                        );
+                      })()}
                     </Pressable>
                   )}
                   <Text style={styles.timelineTime}>
@@ -1578,89 +1726,74 @@ export default function CaseDetailScreen() {
             </View>
           )}
 
-          <View style={styles.actionRow}>
+          {userType !== "provider" && caseItem.status !== "COMPLETE" && (
             <Pressable
-              onPress={handleTakePhoto}
+              onPress={async () => {
+                if (caseItem.assignedBarcode) {
+                  Alert.alert(
+                    "Barcode Assigned",
+                    `This case already has barcode: ${caseItem.assignedBarcode}`,
+                    [
+                      { text: "Keep", style: "cancel" },
+                      {
+                        text: "Reassign",
+                        onPress: async () => {
+                          if (!cameraPermission?.granted) {
+                            const perm = await requestCameraPermission();
+                            if (!perm.granted) { Alert.alert("Camera access is required to scan barcodes."); return; }
+                          }
+                          setBarcodeScanned(false);
+                          setShowBarcodeScanner(true);
+                        },
+                      },
+                    ]
+                  );
+                } else {
+                  if (!cameraPermission?.granted) {
+                    const perm = await requestCameraPermission();
+                    if (!perm.granted) { Alert.alert("Camera access is required to scan barcodes."); return; }
+                  }
+                  setBarcodeScanned(false);
+                  setShowBarcodeScanner(true);
+                }
+              }}
               style={({ pressed }) => [
                 styles.actionBtn,
-                styles.actionBtnHalf,
-                { backgroundColor: "#0EA5E9" },
+                { backgroundColor: caseItem.assignedBarcode ? "#22C55E" : "#8B5CF6" },
                 pressed && { opacity: 0.85 },
               ]}
             >
-              <Ionicons name="camera" size={20} color="#FFF" />
-              <Text style={styles.actionBtnText}>Add Picture/Video</Text>
+              <Ionicons name="barcode" size={20} color="#FFF" />
+              <Text style={styles.actionBtnText}>
+                {caseItem.assignedBarcode ? `Barcode: ${caseItem.assignedBarcode}` : "Assign Barcode"}
+              </Text>
             </Pressable>
-
-            <Pressable
-              onPress={() => setShowNoteModal(true)}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                styles.actionBtnHalf,
-                { backgroundColor: "#8B5CF6" },
-                pressed && { opacity: 0.85 },
-              ]}
-            >
-              <MaterialCommunityIcons name="note-plus" size={20} color="#FFF" />
-              <Text style={styles.actionBtnText}>Add Note</Text>
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={handleAttachFile}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: Colors.light.surface, borderWidth: 1.5, borderColor: Colors.light.tint },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="attach" size={20} color={Colors.light.tint} />
-            <Text style={[styles.actionBtnText, { color: Colors.light.tint }]}>Attach File</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={openAddItemModal}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: "#10B981" },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="add-circle" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>Add Item</Text>
-          </Pressable>
-
-          {userType !== "provider" && (
-          <Pressable
-            onPress={() => {
-              const stationInfo = getStationInfo(caseItem.status, customStationLabels);
-              const msg = `Hello Dr. ${caseItem.doctorName}, this is a courtesy text to inform you that patient ${caseItem.patientName} has a case that was delayed in production. The case is currently in ${stationInfo.label}. If the patient is scheduled and you would like a more specific updated estimated delivery date and time please let us know.`;
-              setCourtesyMessage(msg);
-              setShowCourtesyModal(true);
-            }}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: "#F59E0B" },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="time" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>Courtesy Text</Text>
-          </Pressable>
           )}
 
-          {userType !== "provider" && (
           <Pressable
-            onPress={() => setShowLabSlipModal(true)}
+            onPress={() => setShowAddSomethingModal(true)}
             style={({ pressed }) => [
               styles.actionBtn,
-              { backgroundColor: "#6366F1" },
+              { backgroundColor: "#4F46E5" },
               pressed && { opacity: 0.85 },
             ]}
           >
-            <Ionicons name="document-text" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>Reprint Lab Slip</Text>
+            <Ionicons name="add-circle-outline" size={20} color="#FFF" />
+            <Text style={styles.actionBtnText}>Add Something to This Case</Text>
           </Pressable>
+
+          {userType !== "provider" && (
+            <Pressable
+              onPress={() => setShowLabSlipModal(true)}
+              style={({ pressed }) => [
+                styles.actionBtn,
+                { backgroundColor: "#6366F1" },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Ionicons name="document-text" size={20} color="#FFF" />
+              <Text style={styles.actionBtnText}>Reprint Lab Slip</Text>
+            </Pressable>
           )}
 
           {caseItem.exocadWebviewUrl ? (
@@ -1746,56 +1879,6 @@ export default function CaseDetailScreen() {
               <Text style={styles.actionBtnText}>Link ExoCAD Design</Text>
             </Pressable>
           ) : null}
-
-          {userType !== "provider" && caseItem.status !== "COMPLETE" && (
-          <Pressable
-            onPress={async () => {
-              if (caseItem.assignedBarcode) {
-                Alert.alert(
-                  "Barcode Assigned",
-                  `This case already has barcode: ${caseItem.assignedBarcode}`,
-                  [
-                    { text: "Keep", style: "cancel" },
-                    {
-                      text: "Reassign",
-                      onPress: async () => {
-                        if (!cameraPermission?.granted) {
-                          const perm = await requestCameraPermission();
-                          if (!perm.granted) {
-                            Alert.alert("Camera access is required to scan barcodes.");
-                            return;
-                          }
-                        }
-                        setBarcodeScanned(false);
-                        setShowBarcodeScanner(true);
-                      },
-                    },
-                  ]
-                );
-              } else {
-                if (!cameraPermission?.granted) {
-                  const perm = await requestCameraPermission();
-                  if (!perm.granted) {
-                    Alert.alert("Camera access is required to scan barcodes.");
-                    return;
-                  }
-                }
-                setBarcodeScanned(false);
-                setShowBarcodeScanner(true);
-              }
-            }}
-            style={({ pressed }) => [
-              styles.actionBtn,
-              { backgroundColor: caseItem.assignedBarcode ? "#22C55E" : "#8B5CF6" },
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Ionicons name="barcode" size={20} color="#FFF" />
-            <Text style={styles.actionBtnText}>
-              {caseItem.assignedBarcode ? `Barcode: ${caseItem.assignedBarcode}` : "Assign Barcode"}
-            </Text>
-          </Pressable>
-          )}
 
           {(caseItem.courtesyTexts || []).length > 0 && (
             <View style={ctStyles.courtesySection}>
@@ -1928,7 +2011,7 @@ export default function CaseDetailScreen() {
             </View>
           )}
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
 
       <Modal
         visible={showPhotoPreview}
@@ -2130,6 +2213,76 @@ export default function CaseDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      <Modal
+        visible={showAddSomethingModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAddSomethingModal(false)}
+      >
+        <View style={addStyles.backdrop}>
+          <View style={addStyles.card}>
+            <Text style={addStyles.title}>What would you like to add?</Text>
+
+            <Pressable
+              style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+              onPress={() => { setShowAddSomethingModal(false); setTimeout(handleTakePhoto, 200); }}
+            >
+              <Ionicons name="camera-outline" size={22} color="#0F172A" />
+              <Text style={addStyles.optionText}>Picture or Video</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+              onPress={() => { setShowAddSomethingModal(false); setTimeout(() => setShowNoteModal(true), 200); }}
+            >
+              <Ionicons name="document-text-outline" size={22} color="#0F172A" />
+              <Text style={addStyles.optionText}>Note</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+              onPress={() => { setShowAddSomethingModal(false); setTimeout(handleAttachFile, 200); }}
+            >
+              <Ionicons name="attach-outline" size={22} color="#0F172A" />
+              <Text style={addStyles.optionText}>File</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+              onPress={() => { setShowAddSomethingModal(false); setTimeout(openAddItemModal, 200); }}
+            >
+              <Ionicons name="layers-outline" size={22} color="#0F172A" />
+              <Text style={addStyles.optionText}>Item</Text>
+            </Pressable>
+
+            {userType !== "provider" && (
+              <Pressable
+                style={({ pressed }) => [addStyles.option, pressed && { opacity: 0.75 }]}
+                onPress={() => {
+                  setShowAddSomethingModal(false);
+                  setTimeout(() => {
+                    const stationInfo = getStationInfo(caseItem.status, customStationLabels);
+                    const msg = `Hello Dr. ${caseItem.doctorName}, this is a courtesy text to inform you that patient ${caseItem.patientName} has a case that was delayed in production. The case is currently in ${stationInfo.label}. If the patient is scheduled and you would like a more specific updated estimated delivery date and time please let us know.`;
+                    setCourtesyMessage(msg);
+                    setShowCourtesyModal(true);
+                  }, 200);
+                }}
+              >
+                <Ionicons name="chatbubble-outline" size={22} color="#0F172A" />
+                <Text style={addStyles.optionText}>Courtesy Text</Text>
+              </Pressable>
+            )}
+
+            <Pressable
+              style={({ pressed }) => [addStyles.cancelBtn, pressed && { opacity: 0.75 }]}
+              onPress={() => setShowAddSomethingModal(false)}
+            >
+              <Text style={addStyles.cancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
       {isAdmin && (
       <Modal
         visible={showCompleteInfo}
@@ -2169,26 +2322,51 @@ export default function CaseDetailScreen() {
               <View style={styles.completeSectionWrap}>
                 <View style={styles.completeSectionHeader}>
                   <Ionicons name="camera" size={16} color="#8B5CF6" />
-                  <Text style={styles.completeSectionTitle}>Completion Photos</Text>
+                  <Text style={styles.completeSectionTitle}>Completion Media</Text>
                 </View>
                 {(() => {
-                  const completePhotos = (caseItem.activityLog || [])
-                    .filter((a) => a.type === "photo" && a.imageUri)
-                    .map((a) => a.imageUri!);
+                  const mediaEntries = (caseItem.activityLog || []).filter((a) => (a.type === "photo" || a.type === "video") && a.imageUri);
+                  const completePhotos = mediaEntries.filter(a => a.type === "photo").map((a) => a.imageUri!);
                   const allPhotos = [...(caseItem.photos || []), ...completePhotos];
                   const uniquePhotos = [...new Set(allPhotos)];
-                  if (uniquePhotos.length === 0) {
-                    return <Text style={styles.completeEmptyText}>No photos available</Text>;
+                  const videoEntries = mediaEntries.filter(a => a.type === "video");
+                  if (uniquePhotos.length === 0 && videoEntries.length === 0) {
+                    return <Text style={styles.completeEmptyText}>No media available</Text>;
                   }
                   return (
-                    <View style={styles.completePhotoGrid}>
-                      {uniquePhotos.map((uri, idx) => (
-                        <Image
-                          key={idx}
-                          source={{ uri }}
-                          style={styles.completePhoto}
-                          resizeMode="cover"
-                        />
+                    <View>
+                      {uniquePhotos.length > 0 && (
+                        <View style={styles.completePhotoGrid}>
+                          {uniquePhotos.map((uri, idx) => (
+                            <Pressable key={idx} onPress={() => setFullScreenPhoto(uri)}>
+                              <Image
+                                source={{ uri }}
+                                style={styles.completePhoto}
+                                resizeMode="cover"
+                              />
+                            </Pressable>
+                          ))}
+                        </View>
+                      )}
+                      {videoEntries.map((v, idx) => (
+                        <Pressable
+                          key={`vid-${idx}`}
+                          onPress={() => {
+                            if (Platform.OS === "web") {
+                              (window as any).open(v.imageUri, "_blank");
+                            } else {
+                              Linking.openURL(v.imageUri!).catch(() => Alert.alert("Cannot play video", "Unable to open video."));
+                            }
+                          }}
+                          style={{ flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "#1E1B2E", borderRadius: 10, padding: 12, marginTop: 8 }}
+                        >
+                          <Ionicons name="play-circle" size={28} color="#A78BFA" />
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#C4B5FD" }}>Video {idx + 1}</Text>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#7C6FA0" }}>Tap to play</Text>
+                          </View>
+                          <Ionicons name="open-outline" size={16} color="#7C6FA0" />
+                        </Pressable>
                       ))}
                     </View>
                   );
@@ -2230,6 +2408,12 @@ export default function CaseDetailScreen() {
                   setAddItemStep("removableMaterial");
                 } else if (addItemStep === "applianceSubtype") {
                   setAddItemStep("caseType");
+                } else if (addItemStep === "applianceArch") {
+                  setAddItemStep("applianceSubtype");
+                } else if (addItemStep === "applianceNightGuardType") {
+                  setAddItemStep("applianceArch");
+                } else if (addItemStep === "applianceRetainerType") {
+                  setAddItemStep("applianceArch");
                 } else if (addItemStep === "applianceNightGuard") {
                   setAddItemStep("applianceSubtype");
                 } else if (addItemStep === "applianceEssexTeeth") {
@@ -2250,6 +2434,9 @@ export default function CaseDetailScreen() {
                  addItemStep === "removableMaterial" ? "Select Material" :
                  addItemStep === "gingivaShade" ? "Select Gingiva Shade" :
                  addItemStep === "applianceSubtype" ? "Select Appliance Type" :
+                 addItemStep === "applianceArch" ? "Select Arch" :
+                 addItemStep === "applianceNightGuardType" ? "Night Guard Type" :
+                 addItemStep === "applianceRetainerType" ? "Retainer Type" :
                  addItemStep === "applianceNightGuard" ? "Night Guard Type" :
                  addItemStep === "applianceEssexTeeth" ? "Select Teeth" :
                  addItemStep === "applianceEssexShade" ? "Select Shade" : "Add Item"}
@@ -2712,45 +2899,39 @@ export default function CaseDetailScreen() {
 
             {addItemStep === "applianceSubtype" && (
               <View style={styles.addItemCaseTypeList}>
-                {["Night Guard", "Snore Guard", "Essex", "Ortho Retainer", "Other"].map((sub) => (
+                {[
+                  { label: "Night Guard", icon: "moon" as const },
+                  { label: "Retainer", icon: "fitness" as const },
+                  { label: "Snore Guard", icon: "bed" as const },
+                  { label: "Sports Guard", icon: "shield" as const },
+                ].map(({ label, icon }) => (
                   <Pressable
-                    key={sub}
+                    key={label}
                     onPress={() => {
-                      setApplianceSubtype(sub);
+                      setApplianceSubtype(label);
+                      setApplianceArch("");
+                      setApplianceVariant("");
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      if (sub === "Night Guard") {
-                        setAddItemStep("applianceNightGuard");
-                      } else if (sub === "Essex") {
-                        setAddItemStep("applianceEssexTeeth");
+                      if (label === "Night Guard" || label === "Retainer") {
+                        setAddItemStep("applianceArch");
                       } else {
-                        const mat = sub;
-                        addCaseItem(caseItem!.id, itemCaseType, [], {}, mat, { applianceSubType: sub });
-                        const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
-                        if (linkedInv) {
-                          const unitPrice = MATERIAL_PRICES[mat] || 250;
-                          const newLi = { qty: 1, item: `${mat} Appliance`, description: `Appliance - ${sub}`, rate: unitPrice, amount: unitPrice };
-                          const updLi = [...linkedInv.lineItems, newLi];
-                          updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
-                        }
+                        addCaseItem(caseItem!.id, itemCaseType, [], {}, label, { applianceSubType: label });
+                        addApplianceToInvoice(label, "", "");
                         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                         setShowAddItemModal(false);
                       }
                     }}
                     style={({ pressed }) => [
                       styles.addItemCaseTypeItem,
-                      applianceSubtype === sub && styles.addItemCaseTypeItemSelected,
+                      applianceSubtype === label && styles.addItemCaseTypeItemSelected,
                       pressed && { opacity: 0.7 },
                     ]}
                   >
                     <View style={styles.addItemCaseTypeIcon}>
-                      <Ionicons
-                        name={sub === "Night Guard" ? "moon" : sub === "Snore Guard" ? "bed" : sub === "Essex" ? "layers" : sub === "Ortho Retainer" ? "fitness" : "ellipsis-horizontal"}
-                        size={20}
-                        color={applianceSubtype === sub ? Colors.light.tint : Colors.light.textSecondary}
-                      />
+                      <Ionicons name={icon} size={20} color={applianceSubtype === label ? Colors.light.tint : Colors.light.textSecondary} />
                     </View>
-                    <Text style={[styles.addItemCaseTypeText, applianceSubtype === sub && styles.addItemCaseTypeTextSelected]}>
-                      {sub}
+                    <Text style={[styles.addItemCaseTypeText, applianceSubtype === label && styles.addItemCaseTypeTextSelected]}>
+                      {label}
                     </Text>
                     <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
                   </Pressable>
@@ -2758,41 +2939,134 @@ export default function CaseDetailScreen() {
               </View>
             )}
 
-            {addItemStep === "applianceNightGuard" && (
+            {addItemStep === "applianceArch" && (
               <View style={styles.addItemCaseTypeList}>
-                {["Hard Night Guard", "Hard/Soft Night Guard"].map((ng) => (
+                <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                    {applianceSubtype} · Select arch
+                  </Text>
+                </View>
+                {(["Upper", "Lower", "Both"] as const).map((arch) => (
                   <Pressable
-                    key={ng}
+                    key={arch}
                     onPress={() => {
-                      setNightGuardType(ng);
+                      setApplianceArch(arch);
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      addCaseItem(caseItem!.id, itemCaseType, [], {}, applianceSubtype, { applianceSubType: applianceSubtype, nightGuardType: ng });
-                      const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
-                      if (linkedInv) {
-                        const unitPrice = MATERIAL_PRICES[applianceSubtype] || 250;
-                        const newLi = { qty: 1, item: `${ng} Appliance`, description: `Appliance - ${ng}`, rate: unitPrice, amount: unitPrice };
-                        const updLi = [...linkedInv.lineItems, newLi];
-                        updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
+                      if (applianceSubtype === "Night Guard") {
+                        setAddItemStep("applianceNightGuardType");
+                      } else {
+                        setAddItemStep("applianceRetainerType");
                       }
-                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                      setShowAddItemModal(false);
                     }}
                     style={({ pressed }) => [
                       styles.addItemCaseTypeItem,
-                      nightGuardType === ng && styles.addItemCaseTypeItemSelected,
+                      applianceArch === arch && styles.addItemCaseTypeItemSelected,
                       pressed && { opacity: 0.7 },
                     ]}
                   >
                     <View style={styles.addItemCaseTypeIcon}>
                       <Ionicons
-                        name={ng === "Hard Night Guard" ? "shield" : "shield-half"}
+                        name={arch === "Upper" ? "arrow-up-circle" : arch === "Lower" ? "arrow-down-circle" : "swap-vertical"}
                         size={20}
-                        color={nightGuardType === ng ? Colors.light.tint : Colors.light.textSecondary}
+                        color={applianceArch === arch ? Colors.light.tint : Colors.light.textSecondary}
                       />
                     </View>
-                    <Text style={[styles.addItemCaseTypeText, nightGuardType === ng && styles.addItemCaseTypeTextSelected]}>
-                      {ng}
-                    </Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.addItemCaseTypeText, applianceArch === arch && styles.addItemCaseTypeTextSelected]}>
+                        {arch}
+                      </Text>
+                      {arch === "Both" && (
+                        <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>
+                          Bills as 2 line items
+                        </Text>
+                      )}
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.light.textTertiary} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {addItemStep === "applianceNightGuardType" && (
+              <View style={styles.addItemCaseTypeList}>
+                <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                    Night Guard · {applianceArch} · Select type
+                  </Text>
+                </View>
+                {[
+                  { label: "Hard", icon: "shield" as const, desc: "Rigid acrylic" },
+                  { label: "Soft", icon: "water" as const, desc: "Flexible EVA" },
+                  { label: "Hard/Soft", icon: "shield-half" as const, desc: "Dual-laminate" },
+                ].map(({ label, icon, desc }) => (
+                  <Pressable
+                    key={label}
+                    onPress={() => {
+                      setApplianceVariant(label);
+                      setNightGuardType(label);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      addCaseItem(caseItem!.id, itemCaseType, [], {}, "Night Guard", { applianceSubType: "Night Guard", nightGuardType: label });
+                      addApplianceToInvoice("Night Guard", label, applianceArch);
+                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setShowAddItemModal(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.addItemCaseTypeItem,
+                      applianceVariant === label && styles.addItemCaseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={styles.addItemCaseTypeIcon}>
+                      <Ionicons name={icon} size={20} color={applianceVariant === label ? Colors.light.tint : Colors.light.textSecondary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.addItemCaseTypeText, applianceVariant === label && styles.addItemCaseTypeTextSelected]}>
+                        {label}
+                      </Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>{desc}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {addItemStep === "applianceRetainerType" && (
+              <View style={styles.addItemCaseTypeList}>
+                <View style={{ paddingHorizontal: 4, paddingBottom: 8 }}>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.textSecondary }}>
+                    Retainer · {applianceArch} · Select type
+                  </Text>
+                </View>
+                {[
+                  { label: "Hawley", icon: "construct" as const, desc: "Wire + acrylic" },
+                  { label: "Hard", icon: "layers" as const, desc: "Clear rigid" },
+                  { label: "Lingual", icon: "git-commit" as const, desc: "Fixed wire" },
+                ].map(({ label, icon, desc }) => (
+                  <Pressable
+                    key={label}
+                    onPress={() => {
+                      setApplianceVariant(label);
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      addCaseItem(caseItem!.id, itemCaseType, [], {}, "Retainer", { applianceSubType: "Retainer", nightGuardType: label });
+                      addApplianceToInvoice("Retainer", label, applianceArch);
+                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      setShowAddItemModal(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.addItemCaseTypeItem,
+                      applianceVariant === label && styles.addItemCaseTypeItemSelected,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={styles.addItemCaseTypeIcon}>
+                      <Ionicons name={icon} size={20} color={applianceVariant === label ? Colors.light.tint : Colors.light.textSecondary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.addItemCaseTypeText, applianceVariant === label && styles.addItemCaseTypeTextSelected]}>
+                        {label}
+                      </Text>
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, marginTop: 1 }}>{desc}</Text>
+                    </View>
                   </Pressable>
                 ))}
               </View>
@@ -3270,14 +3544,22 @@ export default function CaseDetailScreen() {
                     addNotification({
                       title: "Case Updated",
                       message: `${currentUser || "A user"} edited case ${caseItem.caseNumber}: ${changeDesc}`,
-                      type: "case_update",
+                      type: "update",
                       caseId: caseItem.id,
                     });
                   }
 
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  Alert.alert("Saved", "Case information updated.");
+                  const savedQe = { ...caseItem, ...caseUpdates };
                   setShowQuickEdit(false);
+                  Alert.alert(
+                    "Changes Saved",
+                    "Do you want to reprint the case label?",
+                    [
+                      { text: "No", style: "cancel" },
+                      { text: "Yes", onPress: () => handlePrintCaseLabel(savedQe) },
+                    ]
+                  );
                 }}
                 style={({ pressed }) => [{ flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: "#2563EB", alignItems: "center" as const }, pressed && { opacity: 0.85 }]}
               >
@@ -3421,7 +3703,7 @@ export default function CaseDetailScreen() {
                     <Text style={labSlipStyles.slipLabel}>Tooth Details</Text>
                     {caseItem.toothMap!.map((t, i) => (
                       <Text key={i} style={labSlipStyles.slipValue}>
-                        #{t.tooth} - {t.type}{t.material ? ` (${t.material})` : ""}
+                        #{t.num} - {t.type}
                       </Text>
                     ))}
                   </View>
@@ -4906,5 +5188,51 @@ const editFieldStyles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
     color: "#1E293B",
     backgroundColor: "#F8FAFC",
+  },
+});
+
+const addStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end",
+  },
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 34,
+    gap: 4,
+  },
+  title: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#64748B",
+    marginBottom: 8,
+  },
+  option: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingVertical: 15,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E2E8F0",
+  },
+  optionText: {
+    fontSize: 16,
+    fontFamily: "Inter_500Medium",
+    color: "#0F172A",
+  },
+  cancelBtn: {
+    alignItems: "center",
+    paddingVertical: 16,
+    marginTop: 6,
+  },
+  cancelText: {
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    color: "#EF4444",
   },
 });
