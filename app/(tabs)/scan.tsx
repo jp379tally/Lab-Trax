@@ -1757,31 +1757,12 @@ export default function ScanScreen() {
   const SCAN_TARGET_WIDTH = 280;
   const SCAN_TARGET_HEIGHT = 180;
 
-  function isBarcodeInTargetArea(bounds: any, cornerPoints: any, cameraWidth: number, cameraHeight: number): boolean {
-    if (!cameraWidth || !cameraHeight) return true;
-
-    const targetLeft = (cameraWidth - SCAN_TARGET_WIDTH) / 2;
-    const targetTop = (cameraHeight - SCAN_TARGET_HEIGHT) / 2;
-    const targetRight = (cameraWidth + SCAN_TARGET_WIDTH) / 2;
-    const targetBottom = (cameraHeight + SCAN_TARGET_HEIGHT) / 2;
-
-    if (cornerPoints && cornerPoints.length >= 4) {
-      for (const p of cornerPoints) {
-        if (p.x < targetLeft || p.x > targetRight || p.y < targetTop || p.y > targetBottom) {
-          return false;
-        }
-      }
-      return true;
-    }
-
-    if (bounds && bounds.origin) {
-      const bLeft = bounds.origin.x;
-      const bTop = bounds.origin.y;
-      const bRight = bLeft + (bounds.size?.width || 0);
-      const bBottom = bTop + (bounds.size?.height || 0);
-      return bLeft >= targetLeft && bTop >= targetTop && bRight <= targetRight && bBottom <= targetBottom;
-    }
-
+  function isBarcodeInTargetArea(_bounds: any, _cornerPoints: any, _cameraWidth: number, _cameraHeight: number): boolean {
+    // Accept any successfully decoded barcode. The visual frame on screen is
+    // just an aiming guide for the user — we do not hard-gate on coordinates
+    // because expo-camera reports cornerPoints in raw camera image pixels
+    // while the camera View's onLayout reports points in dp. Comparing the two
+    // would silently reject nearly every read.
     return true;
   }
 
@@ -2661,7 +2642,7 @@ export default function ScanScreen() {
                     </View>
                     <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
                       <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
-                      <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
+                      <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Hold steady and aim the barcode at the frame</Text>
                     </View>
                   </View>
                 </CameraView>
@@ -4206,7 +4187,7 @@ export default function ScanScreen() {
                 </View>
                 <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
                   <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
-                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
+                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Hold steady and aim the barcode at the frame</Text>
                 </View>
               </View>
             </CameraView>
@@ -4537,7 +4518,7 @@ export default function ScanScreen() {
                 </View>
                 <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
                   <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
-                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Only barcodes within the frame will be scanned</Text>
+                  <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Hold steady and aim the barcode at the frame</Text>
                 </View>
               </View>
             </CameraView>
