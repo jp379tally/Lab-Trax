@@ -23,6 +23,7 @@ import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -384,6 +385,168 @@ export default function CaseDetailScreen() {
       await Print.printAsync({ html });
     } catch {
       Alert.alert("Print Error", "Unable to print the updated case label.");
+    }
+  }
+
+  function buildCaseHistoryHtml(): string {
+    if (!caseItem) return "";
+    const stationLabel = getStationInfo(caseItem.status, customStationLabels).label;
+    const fmtDate = (ts: number) => {
+      const d = new Date(ts);
+      return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} · ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })}`;
+    };
+    const escapeHtml = (s: string) =>
+      String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+    const entries = caseItem.activityLog && caseItem.activityLog.length > 0
+      ? [...caseItem.activityLog].sort((a, b) => a.timestamp - b.timestamp)
+      : [...caseItem.routeHistory].sort((a, b) => a.timestamp - b.timestamp).map((rh) => ({
+          id: String(rh.timestamp),
+          type: "station_change" as const,
+          timestamp: rh.timestamp,
+          description: `Case moved to ${getStationInfo(rh.station, customStationLabels).label}`,
+          station: rh.station,
+          user: undefined as string | undefined,
+        }));
+
+    const typeLabel: Record<string, string> = {
+      created: "Created",
+      scan: "Scanned",
+      station_change: "Station Change",
+      note: "Note",
+      photo: "Photo",
+      video: "Video",
+      barcode_assigned: "Barcode Assigned",
+      barcode_unassigned: "Barcode Removed",
+      invoice_paid: "Invoice Paid",
+      invoice_attached: "Invoice Attached",
+      tracking_added: "Tracking Added",
+      courtesy_text: "Courtesy Text",
+      exocad_linked: "Exocad Linked",
+      exocad_shared: "Exocad Shared",
+    };
+
+    const rows = entries
+      .map((e) => {
+        const matchingUser = e.user
+          ? registeredUsers.find(
+              (u) => u.id === e.user || u.username?.toLowerCase() === (e.user ?? "").toLowerCase()
+            )
+          : null;
+        const userDisplay = matchingUser
+          ? [matchingUser.firstName, matchingUser.lastName].filter(Boolean).join(" ") || matchingUser.username || (e.user ?? "")
+          : (e.user ?? "");
+        const eType: string = (e as any).type ?? "";
+        const label = typeLabel[eType] || eType.replace(/_/g, " ");
+        const stationStr = e.station ? getStationInfo(e.station, customStationLabels).label : "";
+        return `<tr>
+          <td class="ts">${escapeHtml(fmtDate(e.timestamp))}</td>
+          <td class="ev">${escapeHtml(label)}${stationStr ? ` <span class="meta">(${escapeHtml(stationStr)})</span>` : ""}</td>
+          <td class="desc">${escapeHtml((e as any).description || "")}</td>
+          <td class="user">${escapeHtml(userDisplay)}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const printedAt = new Date();
+    const printedAtStr = `${printedAt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} ${printedAt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })}`;
+
+    return `<!DOCTYPE html>
+<html><head><meta charset="utf-8" />
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; padding: 24px; color: #111; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { font-size: 12px; color: #666; margin-bottom: 18px; }
+  .summary { background: #F8FAFC; border: 1px solid #E5E7EB; border-radius: 10px; padding: 12px 16px; margin-bottom: 18px; }
+  .summary-row { display: flex; flex-wrap: wrap; gap: 18px 28px; font-size: 13px; }
+  .summary-row div { min-width: 140px; }
+  .summary-row strong { color: #111; }
+  .summary-row span { color: #555; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  thead th { text-align: left; background: #F1F5F9; padding: 8px 10px; border-bottom: 1px solid #CBD5E1; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #475569; }
+  tbody td { padding: 8px 10px; border-bottom: 1px solid #F1F5F9; vertical-align: top; }
+  tbody tr:nth-child(even) td { background: #FAFAFA; }
+  .ts { white-space: nowrap; color: #475569; width: 150px; }
+  .ev { color: #111; font-weight: 600; width: 150px; }
+  .meta { color: #94A3B8; font-weight: 400; font-size: 11px; }
+  .desc { color: #1F2937; }
+  .user { color: #475569; white-space: nowrap; width: 120px; text-align: right; }
+  .empty { padding: 24px; text-align: center; color: #94A3B8; font-size: 13px; }
+  .footer { margin-top: 24px; font-size: 10px; color: #94A3B8; text-align: center; }
+</style></head>
+<body>
+  <h1>Case History — #${escapeHtml(String(caseItem.caseNumber || ""))}</h1>
+  <div class="sub">Printed ${escapeHtml(printedAtStr)}</div>
+  <div class="summary">
+    <div class="summary-row">
+      <div><strong>Patient:</strong> <span>${escapeHtml(caseItem.patientName || caseItem.patientInitials || "")}</span></div>
+      <div><strong>Provider:</strong> <span>${escapeHtml(cleanDoctorDisplay(caseItem.doctorName || ""))}</span></div>
+      <div><strong>Current Station:</strong> <span>${escapeHtml(stationLabel)}</span></div>
+      <div><strong>Material:</strong> <span>${escapeHtml(caseItem.material || "")}</span></div>
+      <div><strong>Teeth:</strong> <span>${escapeHtml(caseItem.toothIndices || "")}</span></div>
+      <div><strong>Shade:</strong> <span>${escapeHtml(caseItem.shade || "")}</span></div>
+      <div><strong>Due Date:</strong> <span>${escapeHtml(caseItem.dueDate || "")}</span></div>
+      <div><strong>Created:</strong> <span>${escapeHtml(fmtDate(caseItem.createdAt || 0))}</span></div>
+    </div>
+  </div>
+  ${entries.length > 0 ? `<table>
+    <thead><tr><th>When</th><th>Event</th><th>Detail</th><th>By</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>` : `<div class="empty">No history entries yet.</div>`}
+  <div class="footer">LabTrax · Case #${escapeHtml(String(caseItem.caseNumber || ""))} · ${entries.length} ${entries.length === 1 ? "entry" : "entries"}</div>
+</body></html>`;
+  }
+
+  async function handlePrintCaseHistory() {
+    if (!caseItem) return;
+    try {
+      const html = buildCaseHistoryHtml();
+      if (Platform.OS === "web") {
+        await Print.printAsync({ html });
+        return;
+      }
+      Alert.alert(
+        "Print Case History",
+        "Choose how you'd like to send this case history.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Print",
+            onPress: async () => {
+              try {
+                await Print.printAsync({ html });
+              } catch {
+                Alert.alert("Print Error", "Unable to print the case history.");
+              }
+            },
+          },
+          {
+            text: "Save / Share PDF",
+            onPress: async () => {
+              try {
+                const { uri } = await Print.printToFileAsync({ html });
+                if (await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(uri, {
+                    mimeType: "application/pdf",
+                    UTI: "com.adobe.pdf",
+                    dialogTitle: `Case ${caseItem.caseNumber || ""} History`,
+                  });
+                } else {
+                  Alert.alert("Saved", `PDF saved to: ${uri}`);
+                }
+              } catch {
+                Alert.alert("Export Error", "Unable to create the PDF.");
+              }
+            },
+          },
+        ]
+      );
+    } catch {
+      Alert.alert("Print Error", "Unable to build the case history document.");
     }
   }
 
@@ -1354,8 +1517,27 @@ export default function CaseDetailScreen() {
           </View>
         )}
 
-        <View style={styles.sectionHeader}>
+        <View style={[styles.sectionHeader, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
           <Text style={styles.sectionTitle}>Case History</Text>
+          <Pressable
+            onPress={handlePrintCaseHistory}
+            style={({ pressed }) => ({
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              paddingVertical: 6,
+              paddingHorizontal: 10,
+              borderRadius: 8,
+              backgroundColor: pressed ? "rgba(0,0,0,0.06)" : "transparent",
+              borderWidth: 1,
+              borderColor: Colors.light.border,
+            })}
+            testID="print-case-history-btn"
+            accessibilityLabel="Print case history"
+          >
+            <Ionicons name="print-outline" size={16} color={Colors.light.tint} />
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>Print</Text>
+          </Pressable>
         </View>
         <View style={styles.timeline}>
           {(caseItem.activityLog && caseItem.activityLog.length > 0
