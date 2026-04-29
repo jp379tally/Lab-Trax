@@ -12,7 +12,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "./db";
-import { users, labCases, organizations, organizationMemberships } from "../shared/schema";
+import { users, labCases, labPendingFiles, organizations, organizationMemberships } from "../shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
@@ -501,10 +501,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Pull organization id from the case's affiliationKey ("org:<UUID>") so
+      // we can populate the indexed organization_id column. This makes
+      // multi-device lab visibility work even if a fallback codepath ever
+      // queries by column instead of by JSON contents.
+      let organizationIdFromKey: string | null = null;
+      const affiliationKey =
+        typeof normalizedCaseData?.affiliationKey === "string"
+          ? normalizedCaseData.affiliationKey
+          : "";
+      if (affiliationKey.startsWith("org:")) {
+        const candidate = affiliationKey.slice(4).trim();
+        if (candidate) organizationIdFromKey = candidate;
+      }
+
       const serializedCaseData = JSON.stringify(normalizedCaseData);
       await db.insert(labCases).values({
         id,
         ownerId: normalizedCaseData.ownerId || ownerId,
+        organizationId: organizationIdFromKey,
         caseData: serializedCaseData,
         updatedAt: new Date(),
         deletedAt: null,
@@ -513,6 +528,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         target: labCases.id,
         set: {
           ownerId: normalizedCaseData.ownerId || ownerId,
+          organizationId: organizationIdFromKey,
           caseData: serializedCaseData,
           updatedAt: new Date(),
           deletedAt: null,
@@ -728,6 +744,244 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Legacy get cases error:", error?.message || error);
       res.status(500).json({ error: "Failed to fetch cases" });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Lab pending files: a server-backed shared inbox for files that have been
+  // dropped/uploaded by any member of a lab but not yet attached to a specific
+  // case. All members of the same lab can see, download, annotate, and assign
+  // these files from any device.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  async function getCallerLabOrganizationIds(reqUser: any): Promise<string[]> {
+    if (!reqUser?.id) return [];
+    const memberships = await db
+      .select()
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.userId, reqUser.id),
+          eq(organizationMemberships.status, "active")
+        )
+      );
+    if (memberships.length === 0) return [];
+    const labIds = memberships.map((m) => m.labId);
+    const orgs = await db
+      .select()
+      .from(organizations)
+      .where(inArray(organizations.id, labIds));
+    return orgs
+      .filter((o) => o.type === "lab" && o.isActive !== false)
+      .map((o) => o.id);
+  }
+
+  app.get("/api/lab-pending-files", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
+      const requestedOrgId =
+        typeof req.query.organizationId === "string"
+          ? (req.query.organizationId as string).trim()
+          : "";
+
+      const callerOrgIds = await getCallerLabOrganizationIds(reqUser);
+      const isMasterAdmin = reqUser.userType === "master_admin";
+
+      let allowedOrgIds: string[];
+      if (requestedOrgId) {
+        if (!isMasterAdmin && !callerOrgIds.includes(requestedOrgId)) {
+          return res.json({ files: [] });
+        }
+        allowedOrgIds = [requestedOrgId];
+      } else {
+        allowedOrgIds = callerOrgIds;
+      }
+
+      if (allowedOrgIds.length === 0) {
+        return res.json({ files: [] });
+      }
+
+      const rows = await db
+        .select()
+        .from(labPendingFiles)
+        .where(inArray(labPendingFiles.organizationId, allowedOrgIds));
+
+      const files = rows
+        .map((row) => ({
+          id: row.id,
+          organizationId: row.organizationId,
+          uploaderUserId: row.uploaderUserId,
+          uploaderName: row.uploaderName || null,
+          fileUrl: row.fileUrl,
+          fileName: row.fileName,
+          mimeType: row.mimeType,
+          notes: row.notes || "",
+          createdAt:
+            row.createdAt instanceof Date
+              ? row.createdAt.toISOString()
+              : new Date(row.createdAt as any).toISOString(),
+        }))
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+
+      res.json({ files });
+    } catch (error: any) {
+      console.error("List pending files error:", error?.message || error);
+      res.status(500).json({ error: "Failed to list pending files" });
+    }
+  });
+
+  app.post("/api/lab-pending-files", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
+      const {
+        organizationId,
+        fileUrl,
+        fileName,
+        mimeType,
+        notes,
+        uploaderName,
+      } = req.body || {};
+
+      if (
+        typeof organizationId !== "string" ||
+        !organizationId.trim() ||
+        typeof fileUrl !== "string" ||
+        !fileUrl.trim() ||
+        typeof fileName !== "string" ||
+        !fileName.trim() ||
+        typeof mimeType !== "string" ||
+        !mimeType.trim()
+      ) {
+        return res.status(400).json({
+          error: "organizationId, fileUrl, fileName, and mimeType are required",
+        });
+      }
+
+      const callerOrgIds = await getCallerLabOrganizationIds(reqUser);
+      const isMasterAdmin = reqUser.userType === "master_admin";
+      if (!isMasterAdmin && !callerOrgIds.includes(organizationId)) {
+        return res.status(403).json({
+          error: "You are not a member of this lab.",
+        });
+      }
+
+      const [inserted] = await db
+        .insert(labPendingFiles)
+        .values({
+          organizationId,
+          uploaderUserId: reqUser.id,
+          uploaderName:
+            (typeof uploaderName === "string" && uploaderName.trim()) ||
+            reqUser.username ||
+            null,
+          fileUrl: fileUrl.trim(),
+          fileName: fileName.trim(),
+          mimeType: mimeType.trim(),
+          notes: typeof notes === "string" ? notes : "",
+        })
+        .returning();
+
+      res.json({
+        success: true,
+        file: {
+          id: inserted.id,
+          organizationId: inserted.organizationId,
+          uploaderUserId: inserted.uploaderUserId,
+          uploaderName: inserted.uploaderName || null,
+          fileUrl: inserted.fileUrl,
+          fileName: inserted.fileName,
+          mimeType: inserted.mimeType,
+          notes: inserted.notes || "",
+          createdAt:
+            inserted.createdAt instanceof Date
+              ? inserted.createdAt.toISOString()
+              : new Date(inserted.createdAt as any).toISOString(),
+        },
+      });
+    } catch (error: any) {
+      console.error("Create pending file error:", error?.message || error);
+      res.status(500).json({ error: "Failed to save pending file" });
+    }
+  });
+
+  app.patch("/api/lab-pending-files/:id", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
+      const id = req.params.id as string;
+      const { notes } = req.body || {};
+      if (typeof notes !== "string") {
+        return res.status(400).json({ error: "notes (string) is required" });
+      }
+
+      const [existing] = await db
+        .select()
+        .from(labPendingFiles)
+        .where(eq(labPendingFiles.id, id));
+      if (!existing) {
+        return res.status(404).json({ error: "Pending file not found" });
+      }
+
+      const callerOrgIds = await getCallerLabOrganizationIds(reqUser);
+      const isMasterAdmin = reqUser.userType === "master_admin";
+      if (!isMasterAdmin && !callerOrgIds.includes(existing.organizationId)) {
+        return res.status(403).json({
+          error: "You are not a member of this lab.",
+        });
+      }
+
+      await db
+        .update(labPendingFiles)
+        .set({ notes })
+        .where(eq(labPendingFiles.id, id));
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Update pending file error:", error?.message || error);
+      res.status(500).json({ error: "Failed to update pending file" });
+    }
+  });
+
+  app.delete("/api/lab-pending-files/:id", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
+      const id = req.params.id as string;
+
+      const [existing] = await db
+        .select()
+        .from(labPendingFiles)
+        .where(eq(labPendingFiles.id, id));
+      if (!existing) {
+        return res.json({ success: true, alreadyMissing: true });
+      }
+
+      const callerOrgIds = await getCallerLabOrganizationIds(reqUser);
+      const isMasterAdmin = reqUser.userType === "master_admin";
+      if (!isMasterAdmin && !callerOrgIds.includes(existing.organizationId)) {
+        return res.status(403).json({
+          error: "You are not a member of this lab.",
+        });
+      }
+
+      await db.delete(labPendingFiles).where(eq(labPendingFiles.id, id));
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Delete pending file error:", error?.message || error);
+      res.status(500).json({ error: "Failed to delete pending file" });
     }
   });
 

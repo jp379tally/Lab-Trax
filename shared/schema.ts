@@ -50,11 +50,34 @@ export const users = pgTable("users", {
 export const labCases = pgTable("lab_cases", {
   id: varchar("id").primaryKey(),
   ownerId: varchar("owner_id").notNull(),
+  organizationId: varchar("organization_id"),
   caseData: text("case_data").notNull(),
   updatedAt: timestamp("updated_at").defaultNow(),
   deletedAt: timestamp("deleted_at"),
   deletedBy: varchar("deleted_by"),
 });
+
+export const labPendingFiles = pgTable(
+  "lab_pending_files",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    organizationId: varchar("organization_id").notNull(),
+    uploaderUserId: varchar("uploader_user_id").notNull(),
+    uploaderName: text("uploader_name"),
+    fileUrl: text("file_url").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    orgIdx: index("lab_pending_files_org_idx").on(table.organizationId),
+  })
+);
 
 export const organizations = pgTable("organizations", {
   id: varchar("id")

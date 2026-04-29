@@ -22,6 +22,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Colors from "@/constants/colors";
 import { Client, LabCase } from "@/lib/data";
 import { popSharedFiles } from "@/lib/shared-file-inbox";
+import { getApiUrl, resilientFetch } from "@/lib/query-client";
+import { useApp } from "@/lib/app-context";
 
 function getStorageKey(user: string | null): string {
   const safeUser = (user || "unknown").replace(/[^a-zA-Z0-9_@.-]/g, "_");
@@ -36,6 +38,12 @@ export interface PendingFile {
   uploadedBy: string;
   uploadedAt: number;
   notes?: string;
+  // When set, this file lives on the server and is shared across every member
+  // of the lab identified by `serverOrganizationId`. Local-only files (no
+  // active lab membership, or upload still in progress) leave these undefined
+  // and persist only in the dropper's AsyncStorage.
+  serverId?: string;
+  serverOrganizationId?: string;
 }
 
 interface LabFileDropZoneProps {
@@ -45,6 +53,74 @@ interface LabFileDropZoneProps {
   onAddToCase: (caseId: string, fileUri: string) => void;
   isAdmin: boolean;
   isFocused?: boolean;
+}
+
+// Extract the org UUID from an "org:<UUID>" affiliation key.
+function getActiveLabOrganizationId(
+  activeLabAffiliationKey: string | null
+): string | null {
+  if (!activeLabAffiliationKey) return null;
+  if (!activeLabAffiliationKey.startsWith("org:")) return null;
+  const id = activeLabAffiliationKey.slice(4).trim();
+  return id || null;
+}
+
+// Upload a binary blob to /api/media/upload and return the served URL. Works
+// for both web (File from drag-drop / <input>) and native (uri from
+// ImagePicker / DocumentPicker).
+async function uploadBinaryToServer(
+  source:
+    | { kind: "web"; file: File }
+    | { kind: "native"; uri: string; name: string; type: string }
+): Promise<string | null> {
+  try {
+    const formData = new FormData();
+    if (source.kind === "web") {
+      formData.append("file", source.file, source.file.name);
+    } else {
+      // React Native FormData accepts an object with uri/name/type.
+      formData.append("file", {
+        uri: source.uri,
+        name: source.name,
+        type: source.type,
+      } as any);
+    }
+    const response = await resilientFetch("/api/media/upload", {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return typeof data?.url === "string" ? data.url : null;
+  } catch {
+    return null;
+  }
+}
+
+interface ServerPendingFileResponse {
+  id: string;
+  organizationId: string;
+  uploaderUserId: string;
+  uploaderName: string | null;
+  fileUrl: string;
+  fileName: string;
+  mimeType: string;
+  notes: string;
+  createdAt: string;
+}
+
+function serverFileToPending(file: ServerPendingFileResponse): PendingFile {
+  return {
+    id: `server:${file.id}`,
+    serverId: file.id,
+    serverOrganizationId: file.organizationId,
+    uri: file.fileUrl,
+    fileName: file.fileName,
+    mimeType: file.mimeType,
+    uploadedBy: file.uploaderName || "Lab member",
+    uploadedAt: new Date(file.createdAt).getTime() || Date.now(),
+    notes: file.notes || "",
+  };
 }
 
 function detectMimeKind(mimeType: string): "image" | "video" | "pdf" | "file" {
@@ -63,6 +139,8 @@ export function LabFileDropZone({
   isFocused = true,
 }: LabFileDropZoneProps) {
   const insets = useSafeAreaInsets();
+  const { activeLabAffiliationKey, activeLabAffiliationName } = useApp();
+  const activeLabOrgId = getActiveLabOrganizationId(activeLabAffiliationKey);
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -161,18 +239,103 @@ export function LabFileDropZone({
     return () => { cancelled = true; };
   }, [currentUser]);
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Sync the lab-shared inbox from the server.
+  //
+  // Whenever the active lab changes, the dashboard regains focus, or every
+  // 30 seconds while focused, refresh the list of server-backed pending
+  // files. We merge them with any local-only files (those that haven't been
+  // uploaded yet, or ones created when no lab was active).
+  // ──────────────────────────────────────────────────────────────────────────
+  const refreshServerFiles = useCallback(async () => {
+    if (!activeLabOrgId) return;
+    try {
+      const url = new URL("/api/lab-pending-files", getApiUrl());
+      url.searchParams.set("organizationId", activeLabOrgId);
+      const response = await resilientFetch(url.toString());
+      if (!response.ok) return;
+      const data = await response.json();
+      const incoming: PendingFile[] = Array.isArray(data?.files)
+        ? data.files.map(serverFileToPending)
+        : [];
+      const incomingIds = new Set(incoming.map((f) => f.serverId));
+      const merged = [
+        ...incoming,
+        ...pendingFilesRef.current.filter(
+          (f) => !f.serverId || !incomingIds.has(f.serverId)
+        ),
+      ].filter(
+        // Drop any stale server entries from another org (e.g. lab switch)
+        (f) =>
+          !f.serverId ||
+          !f.serverOrganizationId ||
+          f.serverOrganizationId === activeLabOrgId
+      );
+      await persistFiles(merged);
+    } catch {
+      // Network errors are non-fatal; we'll retry on the next interval.
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLabOrgId, persistFiles]);
+
+  useEffect(() => {
+    if (!activeLabOrgId) return;
+    if (!isFocused) return;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      refreshServerFiles().catch(() => {});
+    };
+    tick();
+    const intervalId = setInterval(tick, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [activeLabOrgId, isFocused, refreshServerFiles]);
+
+  // When the active lab changes (membership added/removed remotely), drop
+  // server entries from the previous lab so they don't leak into the new one.
+  const prevActiveLabOrgIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevActiveLabOrgIdRef.current;
+    prevActiveLabOrgIdRef.current = activeLabOrgId;
+    if (prev && prev !== activeLabOrgId) {
+      const filtered = pendingFilesRef.current.filter(
+        (f) => !f.serverOrganizationId || f.serverOrganizationId === activeLabOrgId
+      );
+      if (filtered.length !== pendingFilesRef.current.length) {
+        persistFiles(filtered).catch(() => {});
+      }
+    }
+  }, [activeLabOrgId, persistFiles]);
+
   function promptNoteForFile(file: PendingFile) {
     setNoteTarget(file);
     setDraftNote(file.notes || "");
     setNoteModalVisible(true);
   }
 
+  async function patchServerNote(serverId: string, notes: string) {
+    try {
+      await resilientFetch(`/api/lab-pending-files/${serverId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes }),
+      });
+    } catch {}
+  }
+
   function saveNoteFromModal() {
     if (!noteTarget) return;
+    const trimmed = draftNote.trim();
     const updated = pendingFilesRef.current.map((f) =>
-      f.id === noteTarget.id ? { ...f, notes: draftNote.trim() } : f
+      f.id === noteTarget.id ? { ...f, notes: trimmed } : f
     );
     persistFiles(updated).catch(() => {});
+    if (noteTarget.serverId) {
+      patchServerNote(noteTarget.serverId, trimmed);
+    }
     setNoteModalVisible(false);
     setNoteTarget(null);
     setDraftNote("");
@@ -192,23 +355,121 @@ export function LabFileDropZone({
 
   function savePreviewNote() {
     if (!previewTarget) return;
+    const trimmed = previewDraftNote.trim();
+    // Resolve against the current list defensively: if the file was promoted
+    // to a server-backed entry while the preview was open, the previewTarget
+    // still holds the old local id/serverId. Match by id OR by uri so we
+    // always update the live entry and PATCH the server.
+    const live =
+      pendingFilesRef.current.find((f) => f.id === previewTarget.id) ||
+      pendingFilesRef.current.find((f) => f.uri === previewTarget.uri);
     const updated = pendingFilesRef.current.map((f) =>
-      f.id === previewTarget.id ? { ...f, notes: previewDraftNote.trim() } : f
+      f === live ? { ...f, notes: trimmed } : f
     );
     persistFiles(updated).catch(() => {});
+    const serverId = live?.serverId || previewTarget.serverId;
+    if (serverId) {
+      patchServerNote(serverId, trimmed);
+    }
     setPreviewVisible(false);
     setPreviewTarget(null);
     setPreviewDraftNote("");
   }
 
+  async function deleteServerFile(serverId: string) {
+    try {
+      await resilientFetch(`/api/lab-pending-files/${serverId}`, {
+        method: "DELETE",
+      });
+    } catch {}
+  }
+
   function deleteFromPreview() {
     if (!previewTarget) return;
-    const updated = pendingFilesRef.current.filter((f) => f.id !== previewTarget.id);
+    const live =
+      pendingFilesRef.current.find((f) => f.id === previewTarget.id) ||
+      pendingFilesRef.current.find((f) => f.uri === previewTarget.uri);
+    const updated = pendingFilesRef.current.filter((f) => f !== live);
     persistFiles(updated).catch(() => {});
-    if (selectedFile?.id === previewTarget.id) resetSelection();
+    const serverId = live?.serverId || previewTarget.serverId;
+    if (serverId) {
+      deleteServerFile(serverId);
+    }
+    if (live && selectedFile?.id === live.id) resetSelection();
     setPreviewVisible(false);
     setPreviewTarget(null);
     setPreviewDraftNote("");
+  }
+
+  // Try to publish the file to the lab-shared inbox on the server. If the
+  // user has an active lab membership and the upload succeeds, we replace the
+  // local-only entry with a server-backed entry that everyone in the lab can
+  // see. If anything fails, we keep the local entry intact so the user
+  // doesn't lose their work.
+  async function maybePromoteToServer(
+    localFile: PendingFile,
+    source:
+      | { kind: "web"; file: File }
+      | { kind: "native"; uri: string; name: string; type: string }
+  ) {
+    const orgId = activeLabOrgId;
+    if (!orgId) return;
+    try {
+      const url = await uploadBinaryToServer(source);
+      if (!url) return;
+      const response = await resilientFetch("/api/lab-pending-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId: orgId,
+          fileUrl: url,
+          fileName: localFile.fileName,
+          mimeType: localFile.mimeType,
+          notes: localFile.notes || "",
+          uploaderName: localFile.uploadedBy,
+        }),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (!data?.file) return;
+      const serverEntry = serverFileToPending(
+        data.file as ServerPendingFileResponse
+      );
+      // Replace the local placeholder with the server-backed entry, keeping
+      // any note edits the user just made.
+      const currentLocal = pendingFilesRef.current.find(
+        (f) => f.id === localFile.id
+      );
+      const preservedNote =
+        currentLocal?.notes ?? serverEntry.notes ?? "";
+      const next = pendingFilesRef.current.map((f) =>
+        f.id === localFile.id ? { ...serverEntry, notes: preservedNote } : f
+      );
+      await persistFiles(next);
+      // If the user added a note in the gap between drop and upload, push it
+      // up so other lab members can see it too.
+      if (
+        preservedNote &&
+        preservedNote.trim() &&
+        preservedNote.trim() !== (serverEntry.notes || "").trim()
+      ) {
+        patchServerNote(serverEntry.serverId!, preservedNote.trim());
+      }
+      // If the user is editing this file's note right now, update the
+      // pointer so future saves go to the server entry.
+      setNoteTarget((current) =>
+        current && current.id === localFile.id
+          ? { ...serverEntry, notes: current.notes ?? serverEntry.notes }
+          : current
+      );
+      setSelectedFile((current) =>
+        current && current.id === localFile.id
+          ? { ...serverEntry, notes: current.notes ?? serverEntry.notes }
+          : current
+      );
+    } catch {
+      // Leave the local entry in place and let the user retry.
+    }
   }
 
   const addFileAndPromptNote = useCallback(
@@ -251,10 +512,12 @@ export function LabFileDropZone({
             notes: "",
           };
           await addFileAndPromptNote(pending);
+          // Push to lab-shared inbox in background so other devices can see it.
+          maybePromoteToServer(pending, { kind: "web", file });
         } catch {}
       }
     },
-    [addFileAndPromptNote, currentUser],
+    [addFileAndPromptNote, currentUser, activeLabOrgId],
   );
 
   const processDroppedFilesRef = useRef(processDroppedFiles);
@@ -279,6 +542,12 @@ export function LabFileDropZone({
           notes: "",
         };
         await addFileAndPromptNote(pending);
+        maybePromoteToServer(pending, {
+          kind: "native",
+          uri: asset.uri,
+          name: pending.fileName,
+          type: pending.mimeType,
+        });
       }
     } catch {}
   }
@@ -317,6 +586,12 @@ export function LabFileDropZone({
           notes: "",
         };
         await addFileAndPromptNote(pending);
+        maybePromoteToServer(pending, {
+          kind: "native",
+          uri: asset.uri,
+          name: pending.fileName,
+          type: pending.mimeType,
+        });
       }
     } catch {}
   }
@@ -345,6 +620,12 @@ export function LabFileDropZone({
           notes: "",
         };
         await addFileAndPromptNote(pending);
+        maybePromoteToServer(pending, {
+          kind: "native",
+          uri: asset.uri,
+          name: pending.fileName,
+          type: pending.mimeType,
+        });
       }
     } catch {}
   }
@@ -407,8 +688,12 @@ export function LabFileDropZone({
   }
 
   function removeFile(fileId: string) {
+    const target = pendingFilesRef.current.find((f) => f.id === fileId);
     const updated = pendingFilesRef.current.filter((f) => f.id !== fileId);
     persistFiles(updated).catch(() => {});
+    if (target?.serverId) {
+      deleteServerFile(target.serverId);
+    }
     if (selectedFile?.id === fileId) resetSelection();
   }
 

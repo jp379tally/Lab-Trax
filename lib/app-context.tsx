@@ -10,7 +10,7 @@ import React, {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system";
 import { getApiUrl, resilientFetch, getAccessToken } from "./query-client";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 import {
   UserRole,
   LabCase,
@@ -661,6 +661,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
     }
   }, [activeLabAffiliationKey]);
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Cross-device membership sync.
+  //
+  // When a lab admin (e.g. SDR1's owner) adds or removes a member from another
+  // device, that change is invisible to the affected user's app until it
+  // re-fetches /api/auth/me. Without an explicit trigger, the app only
+  // re-fetches on login, profile change, or in-app accept/leave actions. This
+  // means a user who was just added to a lab won't see the lab's cases until
+  // they kill and re-open the app.
+  //
+  // To fix this, we (1) bump membershipVersion every time the app comes back
+  // to the foreground, and (2) bump it on a 60-second timer while the app is
+  // active. Both are cheap (a single GET /api/auth/me) and resolve the
+  // "added/removed remotely" problem within seconds.
+  // ──────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        setMembershipVersion((v) => v + 1);
+      }
+    });
+
+    const intervalMs = 60_000;
+    const intervalId = setInterval(() => {
+      setMembershipVersion((v) => v + 1);
+    }, intervalMs);
+
+    return () => {
+      subscription.remove();
+      clearInterval(intervalId);
+    };
+  }, [currentUserId]);
 
   function mapJoinRequestStatus(status?: string): GroupJoinRequest["status"] {
     if (status === "approved" || status === "accepted") {

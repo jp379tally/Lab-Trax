@@ -405,6 +405,33 @@ async function runStartupMigrations() {
     await db.execute(
       sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS work_status TEXT DEFAULT 'available'`
     );
+    // Multi-device lab sharing: ensure organization_id is on lab_cases and the
+    // shared lab_pending_files table exists so cases and drag-dropped files
+    // sync across every member of a lab.
+    await db.execute(
+      sql`ALTER TABLE lab_cases ADD COLUMN IF NOT EXISTS organization_id varchar`
+    );
+    await db.execute(
+      sql`CREATE INDEX IF NOT EXISTS lab_cases_org_idx ON lab_cases (organization_id)`
+    );
+    await db.execute(
+      sql`
+        CREATE TABLE IF NOT EXISTS lab_pending_files (
+          id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+          organization_id varchar NOT NULL,
+          uploader_user_id varchar NOT NULL,
+          uploader_name text NOT NULL,
+          file_url text NOT NULL,
+          file_name text NOT NULL,
+          mime_type text,
+          notes text,
+          created_at timestamp DEFAULT now() NOT NULL
+        )
+      `
+    );
+    await db.execute(
+      sql`CREATE INDEX IF NOT EXISTS lab_pending_files_org_idx ON lab_pending_files (organization_id)`
+    );
     log("Startup migrations applied successfully");
   } catch (err: any) {
     console.error("Startup migration error:", err?.message || err);
