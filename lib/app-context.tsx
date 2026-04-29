@@ -892,9 +892,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     try {
       const serverCases = await fetchCasesFromServer(visibleCaseAffiliationScope, currentUserId);
-      setAllCases(serverCases);
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(serverCases));
-      prevCasesRef.current = serverCases;
+      // IMPORTANT: never overwrite local data with the server response. If the
+      // server returns 0 cases (transient error, scope mismatch, network blip,
+      // session not yet established on a new device), overwriting would wipe
+      // every locally-created case. Merge instead — server wins only for
+      // cases that exist on both sides and have a newer updatedAt.
+      mergeServerCases(serverCases);
+      // Also push any local cases the server may not have yet (e.g. cases
+      // created offline or while the previous sync attempt failed).
+      for (const c of allCases) {
+        if (!c.ownerId) continue;
+        const serverMatch = serverCases.find((s) => s.id === c.id);
+        if (!serverMatch) {
+          syncCaseToServer(c);
+        }
+      }
     } catch (e) {
       console.log("Could not full-refresh cases:", e);
     }
@@ -1011,16 +1023,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!syncReadyRef.current || fetchingRef.current || !currentUserId) return;
     const prev = prevCasesRef.current;
+    // Only push additions/updates here. Do NOT auto-delete server cases when
+    // they go missing from local state — "missing locally" can mean many
+    // benign things (refresh returned a partial list, user switched lab/org,
+    // affiliation scope changed, server briefly unavailable). Explicit user
+    // deletes already call deleteCaseFromServer() inline from removeCase(),
+    // so a separate auto-delete pass here would only ever cause data loss.
     for (const c of allCases) {
       if (!c.ownerId) continue;
       const old = prev.find(p => p.id === c.id);
       if (!old || old.updatedAt !== c.updatedAt) {
         syncCaseToServer(c);
-      }
-    }
-    for (const old of prev) {
-      if (!allCases.find(c => c.id === old.id)) {
-        deleteCaseFromServer(old.id);
       }
     }
     prevCasesRef.current = allCases;
