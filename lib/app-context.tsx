@@ -867,6 +867,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const prevCasesRef = useRef<LabCase[]>([]);
   const syncReadyRef = useRef(false);
   const fetchingRef = useRef(false);
+  const inFlightSyncIdsRef = useRef<Set<string>>(new Set());
+
+  function pushCaseToServerOnce(c: LabCase) {
+    if (!c.ownerId) return;
+    if (inFlightSyncIdsRef.current.has(c.id)) return;
+    inFlightSyncIdsRef.current.add(c.id);
+    Promise.resolve(syncCaseToServer(c)).finally(() => {
+      inFlightSyncIdsRef.current.delete(c.id);
+    });
+  }
 
   async function refreshCases() {
     if (fetchingRef.current || !currentUserId || visibleCaseAffiliationScope.length === 0) {
@@ -899,13 +909,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // cases that exist on both sides and have a newer updatedAt.
       mergeServerCases(serverCases);
       // Also push any local cases the server may not have yet (e.g. cases
-      // created offline or while the previous sync attempt failed).
-      for (const c of allCases) {
+      // created offline or while the previous sync attempt failed). Snapshot
+      // the local list once and dedupe with inFlightSyncIdsRef so rapid
+      // repeated refreshes don't enqueue duplicate POSTs for the same case.
+      const localSnapshot = [...allCases];
+      const serverIds = new Set(serverCases.map((s) => s.id));
+      for (const c of localSnapshot) {
         if (!c.ownerId) continue;
-        const serverMatch = serverCases.find((s) => s.id === c.id);
-        if (!serverMatch) {
-          syncCaseToServer(c);
-        }
+        if (serverIds.has(c.id)) continue;
+        pushCaseToServerOnce(c);
       }
     } catch (e) {
       console.log("Could not full-refresh cases:", e);
@@ -1033,7 +1045,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!c.ownerId) continue;
       const old = prev.find(p => p.id === c.id);
       if (!old || old.updatedAt !== c.updatedAt) {
-        syncCaseToServer(c);
+        pushCaseToServerOnce(c);
       }
     }
     prevCasesRef.current = allCases;

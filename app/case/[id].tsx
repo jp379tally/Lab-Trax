@@ -391,8 +391,10 @@ export default function CaseDetailScreen() {
   function buildCaseHistoryHtml(): string {
     if (!caseItem) return "";
     const stationLabel = getStationInfo(caseItem.status, customStationLabels).label;
-    const fmtDate = (ts: number) => {
+    const fmtDate = (ts: number | undefined | null) => {
+      if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return "—";
       const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return "—";
       return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} · ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })}`;
     };
     const escapeHtml = (s: string) =>
@@ -402,9 +404,11 @@ export default function CaseDetailScreen() {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
 
-    const entries = caseItem.activityLog && caseItem.activityLog.length > 0
-      ? [...caseItem.activityLog].sort((a, b) => a.timestamp - b.timestamp)
-      : [...caseItem.routeHistory].sort((a, b) => a.timestamp - b.timestamp).map((rh) => ({
+    const safeActivityLog = Array.isArray(caseItem.activityLog) ? caseItem.activityLog : [];
+    const safeRouteHistory = Array.isArray(caseItem.routeHistory) ? caseItem.routeHistory : [];
+    const entries = safeActivityLog.length > 0
+      ? [...safeActivityLog].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
+      : [...safeRouteHistory].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0)).map((rh) => ({
           id: String(rh.timestamp),
           type: "station_change" as const,
           timestamp: rh.timestamp,
