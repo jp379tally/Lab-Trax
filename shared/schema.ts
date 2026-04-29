@@ -52,6 +52,8 @@ export const labCases = pgTable("lab_cases", {
   ownerId: varchar("owner_id").notNull(),
   caseData: text("case_data").notNull(),
   updatedAt: timestamp("updated_at").defaultNow(),
+  deletedAt: timestamp("deleted_at"),
+  deletedBy: varchar("deleted_by"),
 });
 
 export const organizations = pgTable("organizations", {

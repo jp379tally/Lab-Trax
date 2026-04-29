@@ -80,7 +80,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteCase(id: string): Promise<void> {
-    await db.delete(labCases).where(eq(labCases.id, id));
+    // Soft-delete only: never physically remove a case row. Hard delete was
+    // the root cause of the Apr 27 2026 mass-wipe incident; soft delete keeps
+    // data recoverable from the admin trash even if the caller is buggy.
+    await db
+      .update(labCases)
+      .set({ deletedAt: new Date(), deletedBy: "system" })
+      .where(eq(labCases.id, id));
   }
 }
 

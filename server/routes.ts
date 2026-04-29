@@ -455,6 +455,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .from(labCases)
         .where(eq(labCases.id, id));
 
+      // If a soft-deleted case is being re-upserted (e.g. user restored from
+      // local storage on another device), un-delete it so it becomes visible
+      // again on subsequent fetches.
+      const wasSoftDeleted = !!(existingCaseRow as any)?.deletedAt;
+
       let normalizedCaseData: any;
       try {
         normalizedCaseData =
@@ -502,15 +507,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ownerId: normalizedCaseData.ownerId || ownerId,
         caseData: serializedCaseData,
         updatedAt: new Date(),
+        deletedAt: null,
+        deletedBy: null,
       }).onConflictDoUpdate({
         target: labCases.id,
         set: {
           ownerId: normalizedCaseData.ownerId || ownerId,
           caseData: serializedCaseData,
           updatedAt: new Date(),
+          deletedAt: null,
+          deletedBy: null,
         },
       });
-      res.json({ success: true });
+      res.json({ success: true, restoredFromTrash: wasSoftDeleted });
     } catch (error: any) {
       console.error("Legacy upsert case error:", error?.message || error);
       res.status(500).json({ error: "Failed to save case" });
@@ -535,7 +544,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.json({ cases: [] });
         }
 
-        const rows = await db.select().from(labCases);
+        const rows = (await db.select().from(labCases)).filter(
+          (r) => !(r as any).deletedAt
+        );
         const parsedRows = rows
           .map((row) => {
             try {
@@ -708,7 +719,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       const ownerIds = ownerIdsParam.split(",").filter(Boolean);
       if (ownerIds.length === 0) return res.json({ cases: [] });
-      const rows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
+      const allRows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
+      const rows = allRows.filter((r) => !(r as any).deletedAt);
       const cases = rows.map(r => {
         try { return JSON.parse(r.caseData); } catch { return null; }
       }).filter(Boolean);
@@ -722,11 +734,185 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/legacy/cases/:caseId", requireAuth, async (req, res) => {
     try {
       const caseId = req.params.caseId as string;
-      await db.delete(labCases).where(eq(labCases.id, caseId));
+      const reqUser = (req as any).user;
+      if (!reqUser) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
+
+      const [existing] = await db
+        .select()
+        .from(labCases)
+        .where(eq(labCases.id, caseId));
+
+      if (!existing) {
+        // Idempotent: nothing to delete is treated as success so retries
+        // don't fail the client.
+        return res.json({ success: true, alreadyMissing: true });
+      }
+
+      // Authorization: only the owner, an admin/owner of an org the case
+      // owner belongs to, or a master_admin may delete a case. This prevents
+      // a buggy or compromised client from wiping data that doesn't belong
+      // to its user.
+      const isMasterAdmin = reqUser.userType === "master_admin";
+      const isOwner = existing.ownerId === reqUser.id;
+      let isOrgAdminForOwner = false;
+      if (!isMasterAdmin && !isOwner) {
+        const callerMemberships = await db
+          .select()
+          .from(organizationMemberships)
+          .where(
+            and(
+              eq(organizationMemberships.userId, reqUser.id),
+              eq(organizationMemberships.status, "active")
+            )
+          );
+        const callerAdminLabIds = callerMemberships
+          .filter((m) => m.role === "admin" || m.role === "owner")
+          .map((m) => m.labId);
+        if (callerAdminLabIds.length > 0) {
+          const ownerMemberships = await db
+            .select()
+            .from(organizationMemberships)
+            .where(
+              and(
+                eq(organizationMemberships.userId, existing.ownerId),
+                eq(organizationMemberships.status, "active"),
+                inArray(organizationMemberships.labId, callerAdminLabIds)
+              )
+            );
+          isOrgAdminForOwner = ownerMemberships.length > 0;
+        }
+      }
+
+      if (!isMasterAdmin && !isOwner && !isOrgAdminForOwner) {
+        return res
+          .status(403)
+          .json({ error: "Not authorized to delete this case." });
+      }
+
+      // SAFEGUARD: do NOT physically delete. Mark as deleted so an admin can
+      // recover the case from the trash if the deletion was unintended (e.g.
+      // a buggy client or accidental tap).
+      await db
+        .update(labCases)
+        .set({
+          deletedAt: new Date(),
+          deletedBy: reqUser.username || reqUser.id || "unknown",
+        })
+        .where(eq(labCases.id, caseId));
       res.json({ success: true });
     } catch (error: any) {
       console.error("Legacy delete case error:", error?.message || error);
       res.status(500).json({ error: "Failed to delete case" });
+    }
+  });
+
+  // Helper: returns the set of owner_ids an admin/owner caller can manage.
+  // master_admin sees everything; org admins see themselves + members of any
+  // org where they are admin/owner.
+  async function getAdminScopedOwnerIds(
+    reqUser: any
+  ): Promise<{ scope: "all" | "owners"; ownerIds: Set<string> }> {
+    if (reqUser?.userType === "master_admin") {
+      return { scope: "all", ownerIds: new Set() };
+    }
+    const ownerIds = new Set<string>();
+    if (reqUser?.id) ownerIds.add(reqUser.id);
+    const callerMemberships = await db
+      .select()
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.userId, reqUser.id),
+          eq(organizationMemberships.status, "active")
+        )
+      );
+    const callerAdminLabIds = callerMemberships
+      .filter((m) => m.role === "admin" || m.role === "owner")
+      .map((m) => m.labId);
+    if (callerAdminLabIds.length > 0) {
+      const peers = await db
+        .select()
+        .from(organizationMemberships)
+        .where(
+          and(
+            inArray(organizationMemberships.labId, callerAdminLabIds),
+            eq(organizationMemberships.status, "active")
+          )
+        );
+      peers.forEach((m) => ownerIds.add(m.userId));
+    }
+    return { scope: "owners", ownerIds };
+  }
+
+  // Admin: list soft-deleted cases (the "trash"), scoped to caller's org(s)
+  app.get("/api/admin/cases/trash", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      const { scope, ownerIds } = await getAdminScopedOwnerIds(reqUser);
+      const all = await db.select().from(labCases);
+      const trashed = all
+        .filter((r) => !!(r as any).deletedAt)
+        .filter((r) => scope === "all" || ownerIds.has(r.ownerId))
+        .map((r) => {
+          let parsed: any = null;
+          try { parsed = JSON.parse(r.caseData); } catch {}
+          return {
+            id: r.id,
+            ownerId: r.ownerId,
+            deletedAt: (r as any).deletedAt,
+            deletedBy: (r as any).deletedBy,
+            updatedAt: r.updatedAt,
+            caseNumber: parsed?.caseNumber,
+            patientName: parsed?.patientName || parsed?.patientInitials,
+            doctorName: parsed?.doctorName,
+          };
+        })
+        .sort((a, b) => {
+          const ad = a.deletedAt ? new Date(a.deletedAt as any).getTime() : 0;
+          const bd = b.deletedAt ? new Date(b.deletedAt as any).getTime() : 0;
+          return bd - ad;
+        });
+      res.json({ cases: trashed });
+    } catch (error: any) {
+      console.error("Trash list error:", error?.message || error);
+      res.status(500).json({ error: "Failed to list trash" });
+    }
+  });
+
+  // Admin: restore a soft-deleted case (scoped to caller's org/master_admin)
+  app.post("/api/admin/cases/:caseId/restore", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      const caseId = req.params.caseId as string;
+      const [existing] = await db
+        .select()
+        .from(labCases)
+        .where(eq(labCases.id, caseId));
+      if (!existing) {
+        return res.status(404).json({ error: "Case not found." });
+      }
+      const { scope, ownerIds } = await getAdminScopedOwnerIds(reqUser);
+      if (scope !== "all" && !ownerIds.has(existing.ownerId)) {
+        return res
+          .status(403)
+          .json({ error: "Not authorized to restore this case." });
+      }
+      await db
+        .update(labCases)
+        .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
+        .where(eq(labCases.id, caseId));
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Restore case error:", error?.message || error);
+      res.status(500).json({ error: "Failed to restore case" });
     }
   });
 
