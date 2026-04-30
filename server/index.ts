@@ -462,53 +462,40 @@ async function runStartupMigrations() {
       END;
       $$;
     `);
-    // REMEDIATION: An earlier (looser) version of this backfill could write
-    // an organization_id into lab_cases that:
-    //   (a) points to an organization that no longer exists, OR
-    //   (b) refers to a lab the case's owner is NOT an active member of.
-    // In case (a) the case becomes invisible to EVERYONE — the owner cannot
-    // see it (organization_id IS NOT NULL fails the private branch) and no
-    // lab member sees it because the lab doesn't exist. In case (b) the
-    // case may have leaked into a lab the owner shouldn't be sharing it
-    // into. This statement is idempotent — once organization_id is either
-    // NULL or correctly assigned, subsequent runs are no-ops.
+    // REMEDIATION: NULL out organization_id values that point at
+    // organizations that no longer exist (or aren't of type 'lab'). Such
+    // rows are invisible to EVERYONE — the owner cannot see them
+    // (organization_id IS NOT NULL fails the private branch) and no lab
+    // member sees them because the lab doesn't exist. Idempotent.
+    //
+    // We deliberately DO NOT remediate based on the owner's lab
+    // membership here. Domain rule for dental-lab fulfillment: a scanner
+    // (who may not be a member of the receiving lab) is allowed to drop
+    // a case into that lab's inbox. Stripping organization_id when the
+    // owner isn't a member would silently hide cases the lab is supposed
+    // to fulfill — the exact regression that broke SDR1 visibility.
     await db.execute(sql`
       UPDATE lab_cases lc
       SET organization_id = NULL
       WHERE lc.organization_id IS NOT NULL
         AND lc.deleted_at IS NULL
-        AND (
-          NOT EXISTS (
-            SELECT 1 FROM organizations o
-            WHERE o.id = lc.organization_id AND o.type = 'lab'
-          )
-          OR NOT EXISTS (
-            SELECT 1 FROM lab_memberships lm
-            WHERE lm.lab_id = lc.organization_id
-              AND lm.user_id = lc.owner_id
-              AND lm.status = 'active'
-          )
+        AND NOT EXISTS (
+          SELECT 1 FROM organizations o
+          WHERE o.id = lc.organization_id AND o.type = 'lab'
         )
     `);
 
-    // Both backfill passes refuse to assign organization_id unless:
-    //   (a) the target organization actually exists as an active lab, and
-    //   (b) the case's owner is an ACTIVE member of that lab.
-    // Without (b), a stale `affiliationKey: "org:<UUID>"` left over from a
-    // membership the owner has since lost would silently re-promote a
-    // private case into a lab-shared case and expose it to everyone in
-    // that lab. Owner-membership gating ensures the migration is purely
-    // restorative — it only revives the visibility the owner already had.
-    // The lab_memberships table uses column `lab_id` (not organization_id) —
-    // the Drizzle schema in shared/schema.ts maps it via labId on the
-    // organizationMemberships table.
+    // Backfill passes promote a case into a lab when its
+    // affiliationKey/affiliationName JSON points at a real lab. The only
+    // safety rail is that the target organization exists as an active
+    // lab — we no longer require the case owner to be a member of that
+    // lab, because in this product anyone can scan a case for any lab's
+    // inbox. Both passes are idempotent (they only touch rows whose
+    // organization_id is currently NULL).
     await db.execute(sql`
       UPDATE lab_cases lc
       SET organization_id = o.id
       FROM organizations o
-      JOIN lab_memberships lm
-        ON lm.lab_id = o.id
-       AND lm.status = 'active'
       WHERE lc.organization_id IS NULL
         AND lc.deleted_at IS NULL
         AND lc.case_data IS NOT NULL
@@ -517,8 +504,7 @@ async function runStartupMigrations() {
         AND (try_to_jsonb(lc.case_data) ->> 'affiliationKey') LIKE 'org:%'
         AND length(try_to_jsonb(lc.case_data) ->> 'affiliationKey') > 4
         AND o.type = 'lab'
-        AND o.id::text = substring((try_to_jsonb(lc.case_data) ->> 'affiliationKey') from 5)
-        AND lm.user_id = lc.owner_id
+        AND o.id::text = trim(substring((try_to_jsonb(lc.case_data) ->> 'affiliationKey') from 5))
     `);
     await db.execute(sql`
       WITH unambiguous_lab_names AS (
@@ -533,9 +519,6 @@ async function runStartupMigrations() {
       UPDATE lab_cases lc
       SET organization_id = u.lab_id
       FROM unambiguous_lab_names u
-      JOIN lab_memberships lm
-        ON lm.lab_id = u.lab_id
-       AND lm.status = 'active'
       WHERE lc.organization_id IS NULL
         AND lc.deleted_at IS NULL
         AND lc.case_data IS NOT NULL
@@ -543,7 +526,6 @@ async function runStartupMigrations() {
         AND try_to_jsonb(lc.case_data) IS NOT NULL
         AND lower(coalesce(try_to_jsonb(lc.case_data) ->> 'affiliationName', '')) <> ''
         AND lower(try_to_jsonb(lc.case_data) ->> 'affiliationName') = u.normalized_name
-        AND lm.user_id = lc.owner_id
     `);
 
     log("Startup migrations applied successfully");

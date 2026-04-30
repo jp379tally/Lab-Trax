@@ -28,19 +28,24 @@ export function isCaseVisibleToUser(
   return userLabIds.has(labCase.organizationId);
 }
 
-// Determine the organization_id column value for a case being written, given
-// what the user requested (via the legacy `affiliationKey` JSON field) and
-// which labs they actually belong to. Cross-lab tagging is silently rejected
-// (the case becomes private) so the client cannot leak cases into a lab the
-// user does not belong to.
-export function resolveOrganizationIdForWrite(
-  affiliationKey: string | null | undefined,
-  userLabIds: ReadonlySet<string>
+// Pure parser: extract the organization UUID from an `affiliationKey`
+// JSON field shaped like `org:<UUID>`. Returns null for any other shape.
+// The caller is responsible for verifying the org exists in the database
+// (so we never persist references to phantom orgs).
+//
+// NOTE: We deliberately do NOT require the writer to be a member of the
+// target lab. In this product's domain (dental-lab fulfillment), a
+// scanner — who may or may not be a member of the receiving lab — must
+// be able to drop a case into the lab's inbox. Once tagged, the case is
+// visible to every member of that lab via `isCaseVisibleToUser`.
+// Membership-gating writes was the source of cases silently disappearing.
+export function parseOrganizationIdFromAffiliationKey(
+  affiliationKey: string | null | undefined
 ): string | null {
   if (typeof affiliationKey !== "string") return null;
   const trimmed = affiliationKey.trim();
   if (!trimmed.startsWith("org:")) return null;
   const candidate = trimmed.slice(4).trim();
   if (!candidate) return null;
-  return userLabIds.has(candidate) ? candidate : null;
+  return candidate;
 }

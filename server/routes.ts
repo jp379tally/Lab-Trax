@@ -17,7 +17,7 @@ import { eq, and, inArray, or, isNull, sql } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
 import { requireAuth, optionalAuth } from "./middleware/auth";
-import { resolveOrganizationIdForWrite } from "./lib/case-visibility";
+import { parseOrganizationIdFromAffiliationKey } from "./lib/case-visibility";
 
 // Look up the set of lab organization ids the given user is an active member
 // of. This is the SINGLE source of truth used to decide which lab cases the
@@ -570,18 +570,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           }
 
-          // Resolve the organization_id column from the case's affiliationKey
-          // ("org:<UUID>"), but ONLY if the caller is actually an active
-          // member of that lab. Cross-lab tagging is silently downgraded to
-          // a private case.
-          const organizationIdFromKey = resolveOrganizationIdForWrite(
-            normalizedCaseData?.affiliationKey,
-            callerLabIds
+          // Resolve the organization_id column from the case's
+          // affiliationKey ("org:<UUID>"). Domain rule (dental-lab
+          // fulfillment): a scanner is allowed to drop a case into ANY
+          // lab's inbox, even one they are not a member of — same way
+          // anyone can email a help desk. The only safety check is that
+          // the target organization actually exists and is a lab; we
+          // never want to persist a reference to a phantom org.
+          const candidateOrgId = parseOrganizationIdFromAffiliationKey(
+            normalizedCaseData?.affiliationKey
           );
+          let organizationIdFromKey: string | null = null;
+          if (candidateOrgId) {
+            const [orgRow] = await tx
+              .select({ id: organizations.id })
+              .from(organizations)
+              .where(
+                and(
+                  eq(organizations.id, candidateOrgId),
+                  eq(organizations.type, "lab")
+                )
+              )
+              .limit(1);
+            if (orgRow) {
+              organizationIdFromKey = candidateOrgId;
+            }
+          }
 
           // Keep the JSON view consistent with the column when the
-          // affiliation was rejected. Trim first so whitespace-padded keys
-          // cannot leave a stale `org:` value in the JSON.
+          // affiliation pointed at a non-existent / non-lab org. Trim
+          // first so whitespace-padded keys cannot leave a stale `org:`
+          // value in the JSON.
           if (!organizationIdFromKey) {
             const rawKey =
               typeof normalizedCaseData.affiliationKey === "string"

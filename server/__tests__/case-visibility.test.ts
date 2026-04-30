@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   isCaseVisibleToUser,
-  resolveOrganizationIdForWrite,
+  parseOrganizationIdFromAffiliationKey,
 } from "../lib/case-visibility";
 
 const USER_A = "user-a";
@@ -50,6 +50,19 @@ describe("isCaseVisibleToUser", () => {
     ).toBe(true);
   });
 
+  it("shows lab case to a lab member even when the case owner is not a member", () => {
+    // Domain rule: a non-member scanner can drop a case into a lab inbox.
+    // Once tagged with the lab's organization_id, every active lab member
+    // sees it regardless of who scanned it.
+    expect(
+      isCaseVisibleToUser(
+        { ownerId: USER_A, organizationId: LAB_1 },
+        USER_B,
+        new Set([LAB_1])
+      )
+    ).toBe(true);
+  });
+
   it("hides lab case from non-members", () => {
     expect(
       isCaseVisibleToUser(
@@ -81,35 +94,33 @@ describe("isCaseVisibleToUser", () => {
   });
 });
 
-describe("resolveOrganizationIdForWrite", () => {
+describe("parseOrganizationIdFromAffiliationKey", () => {
   it("returns null for nullish or non-string input", () => {
-    expect(resolveOrganizationIdForWrite(null, new Set([LAB_1]))).toBeNull();
-    expect(resolveOrganizationIdForWrite(undefined, new Set([LAB_1]))).toBeNull();
+    expect(parseOrganizationIdFromAffiliationKey(null)).toBeNull();
+    expect(parseOrganizationIdFromAffiliationKey(undefined)).toBeNull();
   });
 
   it("returns null for keys without org: prefix", () => {
-    expect(resolveOrganizationIdForWrite("private", new Set([LAB_1]))).toBeNull();
-    expect(resolveOrganizationIdForWrite("lab:Acme", new Set([LAB_1]))).toBeNull();
+    expect(parseOrganizationIdFromAffiliationKey("private")).toBeNull();
+    expect(parseOrganizationIdFromAffiliationKey("lab:Acme")).toBeNull();
   });
 
   it("returns null when key is empty after prefix", () => {
-    expect(resolveOrganizationIdForWrite("org:", new Set([LAB_1]))).toBeNull();
-    expect(resolveOrganizationIdForWrite("org:   ", new Set([LAB_1]))).toBeNull();
+    expect(parseOrganizationIdFromAffiliationKey("org:")).toBeNull();
+    expect(parseOrganizationIdFromAffiliationKey("org:   ")).toBeNull();
   });
 
-  it("returns the org id when the user is a member", () => {
-    expect(resolveOrganizationIdForWrite(`org:${LAB_1}`, new Set([LAB_1]))).toBe(LAB_1);
+  it("returns the org id for a well-formed key", () => {
+    expect(parseOrganizationIdFromAffiliationKey(`org:${LAB_1}`)).toBe(LAB_1);
   });
 
-  it("rejects org tags the user does not belong to (cross-lab leak protection)", () => {
-    expect(
-      resolveOrganizationIdForWrite(`org:${LAB_2}`, new Set([LAB_1]))
-    ).toBeNull();
+  it("returns the org id even when the writer is not a member of the lab", () => {
+    // The parser is intentionally permissive — non-members are allowed to
+    // tag cases for a lab inbox. Membership is only enforced on READ.
+    expect(parseOrganizationIdFromAffiliationKey(`org:${LAB_2}`)).toBe(LAB_2);
   });
 
   it("trims whitespace around the affiliation key", () => {
-    expect(
-      resolveOrganizationIdForWrite(`  org:${LAB_1}  `, new Set([LAB_1]))
-    ).toBe(LAB_1);
+    expect(parseOrganizationIdFromAffiliationKey(`  org:${LAB_1}  `)).toBe(LAB_1);
   });
 });
