@@ -432,6 +432,120 @@ async function runStartupMigrations() {
     await db.execute(
       sql`CREATE INDEX IF NOT EXISTS lab_pending_files_org_idx ON lab_pending_files (organization_id)`
     );
+
+    // Backfill organization_id on legacy lab_cases rows that were saved before
+    // we started populating the column. Visibility is now decided purely from
+    // this column, so any case stuck with a NULL organization_id but a valid
+    // affiliationKey in its case_data JSON would silently disappear from
+    // every lab member's view. Two passes:
+    //   1. Pull the UUID directly out of "org:<UUID>" affiliationKey values.
+    //   2. Fall back to matching affiliationName against organizations by
+    //      display_name or name — but ONLY when the match is unambiguous, so
+    //      two labs that happen to share a display name never silently leak
+    //      cases between them.
+    // Both passes are idempotent (touch only rows with NULL organization_id).
+    //
+    // We define a `try_to_jsonb(text)` helper that returns NULL on parse
+    // failure instead of aborting the entire UPDATE. This makes the backfill
+    // robust against any malformed legacy JSON payload, no matter how it's
+    // shaped — a single bad row can never block the migration.
+    await db.execute(sql`
+      CREATE OR REPLACE FUNCTION try_to_jsonb(input text)
+      RETURNS jsonb
+      LANGUAGE plpgsql
+      IMMUTABLE
+      AS $$
+      BEGIN
+        RETURN input::jsonb;
+      EXCEPTION WHEN others THEN
+        RETURN NULL;
+      END;
+      $$;
+    `);
+    // REMEDIATION: An earlier (looser) version of this backfill could write
+    // an organization_id into lab_cases that:
+    //   (a) points to an organization that no longer exists, OR
+    //   (b) refers to a lab the case's owner is NOT an active member of.
+    // In case (a) the case becomes invisible to EVERYONE — the owner cannot
+    // see it (organization_id IS NOT NULL fails the private branch) and no
+    // lab member sees it because the lab doesn't exist. In case (b) the
+    // case may have leaked into a lab the owner shouldn't be sharing it
+    // into. This statement is idempotent — once organization_id is either
+    // NULL or correctly assigned, subsequent runs are no-ops.
+    await db.execute(sql`
+      UPDATE lab_cases lc
+      SET organization_id = NULL
+      WHERE lc.organization_id IS NOT NULL
+        AND lc.deleted_at IS NULL
+        AND (
+          NOT EXISTS (
+            SELECT 1 FROM organizations o
+            WHERE o.id = lc.organization_id AND o.type = 'lab'
+          )
+          OR NOT EXISTS (
+            SELECT 1 FROM lab_memberships lm
+            WHERE lm.lab_id = lc.organization_id
+              AND lm.user_id = lc.owner_id
+              AND lm.status = 'active'
+          )
+        )
+    `);
+
+    // Both backfill passes refuse to assign organization_id unless:
+    //   (a) the target organization actually exists as an active lab, and
+    //   (b) the case's owner is an ACTIVE member of that lab.
+    // Without (b), a stale `affiliationKey: "org:<UUID>"` left over from a
+    // membership the owner has since lost would silently re-promote a
+    // private case into a lab-shared case and expose it to everyone in
+    // that lab. Owner-membership gating ensures the migration is purely
+    // restorative — it only revives the visibility the owner already had.
+    // The lab_memberships table uses column `lab_id` (not organization_id) —
+    // the Drizzle schema in shared/schema.ts maps it via labId on the
+    // organizationMemberships table.
+    await db.execute(sql`
+      UPDATE lab_cases lc
+      SET organization_id = o.id
+      FROM organizations o
+      JOIN lab_memberships lm
+        ON lm.lab_id = o.id
+       AND lm.status = 'active'
+      WHERE lc.organization_id IS NULL
+        AND lc.deleted_at IS NULL
+        AND lc.case_data IS NOT NULL
+        AND lc.case_data <> ''
+        AND try_to_jsonb(lc.case_data) IS NOT NULL
+        AND (try_to_jsonb(lc.case_data) ->> 'affiliationKey') LIKE 'org:%'
+        AND length(try_to_jsonb(lc.case_data) ->> 'affiliationKey') > 4
+        AND o.type = 'lab'
+        AND o.id::text = substring((try_to_jsonb(lc.case_data) ->> 'affiliationKey') from 5)
+        AND lm.user_id = lc.owner_id
+    `);
+    await db.execute(sql`
+      WITH unambiguous_lab_names AS (
+        SELECT lower(coalesce(display_name, name)) AS normalized_name,
+               min(id) AS lab_id
+        FROM organizations
+        WHERE type = 'lab'
+          AND coalesce(display_name, name) IS NOT NULL
+        GROUP BY lower(coalesce(display_name, name))
+        HAVING count(*) = 1
+      )
+      UPDATE lab_cases lc
+      SET organization_id = u.lab_id
+      FROM unambiguous_lab_names u
+      JOIN lab_memberships lm
+        ON lm.lab_id = u.lab_id
+       AND lm.status = 'active'
+      WHERE lc.organization_id IS NULL
+        AND lc.deleted_at IS NULL
+        AND lc.case_data IS NOT NULL
+        AND lc.case_data <> ''
+        AND try_to_jsonb(lc.case_data) IS NOT NULL
+        AND lower(coalesce(try_to_jsonb(lc.case_data) ->> 'affiliationName', '')) <> ''
+        AND lower(try_to_jsonb(lc.case_data) ->> 'affiliationName') = u.normalized_name
+        AND lm.user_id = lc.owner_id
+    `);
+
     log("Startup migrations applied successfully");
   } catch (err: any) {
     console.error("Startup migration error:", err?.message || err);

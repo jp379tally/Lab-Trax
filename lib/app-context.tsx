@@ -341,19 +341,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return ids;
   }, [allLabAffiliationKeysList]);
 
+  // Defense-in-depth client filter that mirrors the server's visibility rule
+  // (server is authoritative — see GET /api/legacy/cases). A case is visible
+  // when it is tagged with one of my labs, or when it is private and I own
+  // it. This matches the server filter exactly so a case never appears in
+  // the UI that the server would not return, even for offline-only cases
+  // sitting in AsyncStorage from a previous session.
   const cases = useMemo(() => {
     if (!currentUserId) return [];
+    const myLabIds = new Set(allLabOrganizationIds);
     return [...allCases]
-      .filter((labCase) =>
-        resolveCaseAffiliationKeys(labCase).some((key) =>
-          visibleCaseAffiliationKeys.has(key)
-        )
-      )
+      .filter((labCase) => {
+        const key =
+          typeof labCase.affiliationKey === "string"
+            ? labCase.affiliationKey.trim()
+            : "";
+        if (key.startsWith("org:")) {
+          return myLabIds.has(key.slice(4));
+        }
+        return labCase.ownerId === currentUserId;
+      })
       .sort(
         (a, b) =>
           (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)
       );
-  }, [allCases, currentUserId, visibleCaseAffiliationKeys]);
+  }, [allCases, currentUserId, allLabOrganizationIds]);
 
   function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
     setAllCases(updater);
@@ -388,21 +400,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function fetchCasesFromServer(
-    scopeKeys: string[],
-    viewerUserId?: string | null
-  ): Promise<LabCase[]> {
+  // Server decides visibility purely from the authenticated user's lab
+  // memberships. The client passes nothing — no scope keys, no viewer id —
+  // so a stale UI state can never hide a case that the user is actually
+  // entitled to see.
+  async function fetchCasesFromServer(): Promise<LabCase[]> {
     try {
-      const normalizedScopeKeys = Array.from(
-        new Set(scopeKeys.filter((value): value is string => !!value))
-      );
-      if (!viewerUserId || normalizedScopeKeys.length === 0) return [];
-
-      const params = new URLSearchParams({
-        viewerUserId,
-        scopeKeys: normalizedScopeKeys.join(","),
-      });
-      const res = await resilientFetch(`/api/legacy/cases?${params.toString()}`);
+      const res = await resilientFetch(`/api/legacy/cases`);
       if (res.ok) {
         const data = await res.json();
         return data.cases || [];
@@ -732,21 +736,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     membershipVersion,
   ]);
 
-  const prevActiveLabKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    const prevKey = prevActiveLabKeyRef.current;
-    prevActiveLabKeyRef.current = activeLabAffiliationKey;
-
-    if (prevKey && !activeLabAffiliationKey) {
-      setAllCases((prev) => {
-        const filtered = prev.filter(
-          (c) => !resolveCaseAffiliationKeys(c).includes(prevKey)
-        );
-        AsyncStorage.setItem(CASES_KEY, JSON.stringify(filtered));
-        return filtered;
-      });
-    }
-  }, [activeLabAffiliationKey]);
+  // (Removed: legacy "purge cases when active lab clears" effect.)
+  //
+  // Visibility is now decided by the server from the user's lab memberships
+  // and mirrored on the client by the `cases` filter above. Mutating
+  // AsyncStorage here based on transient UI state (e.g. switching active
+  // labs) was the root cause of cases disappearing across devices: the
+  // purge would run on one device, push the deletion-by-omission to the
+  // server on the next sync pass, and silently strip the lab's cases for
+  // every member. The filter approach achieves the same UX without ever
+  // mutating persisted state.
 
   // ──────────────────────────────────────────────────────────────────────────
   // Cross-device membership sync.
@@ -1000,15 +999,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   async function refreshCases() {
-    if (fetchingRef.current || !currentUserId || visibleCaseAffiliationScope.length === 0) {
+    if (fetchingRef.current || !currentUserId) {
       return;
     }
     fetchingRef.current = true;
     try {
-      const serverCases = await fetchCasesFromServer(
-        visibleCaseAffiliationScope,
-        currentUserId
-      );
+      const serverCases = await fetchCasesFromServer();
       mergeServerCases(serverCases);
     } catch (e) {
       console.log("Could not refresh cases:", e);
@@ -1018,11 +1014,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   async function fullRefreshCases() {
-    if (!currentUserId || visibleCaseAffiliationScope.length === 0) {
+    if (!currentUserId) {
       return;
     }
     try {
-      const serverCases = await fetchCasesFromServer(visibleCaseAffiliationScope, currentUserId);
+      const serverCases = await fetchCasesFromServer();
       // IMPORTANT: never overwrite local data with the server response. If the
       // server returns 0 cases (transient error, scope mismatch, network blip,
       // session not yet established on a new device), overwriting would wipe
@@ -1096,7 +1092,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    if (!currentUserId || visibleCaseAffiliationScope.length === 0) {
+    if (!currentUserId) {
       syncReadyRef.current = false;
       return;
     }
@@ -1106,7 +1102,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     syncReadyRef.current = false;
     fetchingRef.current = true;
 
-    fetchCasesFromServer(visibleCaseAffiliationScope, currentUserId)
+    fetchCasesFromServer()
       .then((serverCases) => {
         if (cancelled) {
           return;
@@ -1130,17 +1126,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       fetchingRef.current = false;
     };
-  }, [currentUserId, visibleCaseAffiliationScope]);
+  }, [currentUserId]);
 
   useEffect(() => {
-    if (!currentUserId || visibleCaseAffiliationScope.length === 0) {
+    if (!currentUserId) {
       return;
     }
 
     const interval = setInterval(() => {
       if (fetchingRef.current) return;
       fetchingRef.current = true;
-      fetchCasesFromServer(visibleCaseAffiliationScope, currentUserId)
+      fetchCasesFromServer()
         .then((serverCases) => {
           mergeServerCases(serverCases);
         })
@@ -1151,7 +1147,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, 15000);
 
     return () => clearInterval(interval);
-  }, [currentUserId, visibleCaseAffiliationScope]);
+  }, [currentUserId]);
 
   useEffect(() => {
     if (!syncReadyRef.current || fetchingRef.current || !currentUserId) return;

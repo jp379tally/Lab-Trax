@@ -13,10 +13,33 @@ import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "./db";
 import { users, labCases, labPendingFiles, organizations, organizationMemberships } from "../shared/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, or, isNull, sql } from "drizzle-orm";
 import { hashPassword } from "./lib/crypto";
 import { HttpError } from "./lib/http";
 import { requireAuth, optionalAuth } from "./middleware/auth";
+import { resolveOrganizationIdForWrite } from "./lib/case-visibility";
+
+// Look up the set of lab organization ids the given user is an active member
+// of. This is the SINGLE source of truth used to decide which lab cases the
+// user can see or write — clients never get to influence this set.
+async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
+  const memberships = await db
+    .select({ labId: organizationMemberships.labId })
+    .from(organizationMemberships)
+    .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+    .where(
+      and(
+        eq(organizationMemberships.userId, userId),
+        eq(organizationMemberships.status, "active"),
+        eq(organizations.type, "lab")
+      )
+    );
+  const ids = new Set<string>();
+  for (const row of memberships) {
+    if (row.labId) ids.add(row.labId);
+  }
+  return Array.from(ids);
+}
 
 import authRoutes from "./routes/auth";
 import organizationRoutes from "./routes/organizations";
@@ -450,296 +473,277 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "id, ownerId, and caseData are required" });
       }
 
-      const [existingCaseRow] = await db
-        .select()
-        .from(labCases)
-        .where(eq(labCases.id, id));
+      const callerUserId = (req as any).auth?.userId as string | undefined;
+      if (!callerUserId) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
 
-      // If a soft-deleted case is being re-upserted (e.g. user restored from
-      // local storage on another device), un-delete it so it becomes visible
-      // again on subsequent fetches.
-      const wasSoftDeleted = !!(existingCaseRow as any)?.deletedAt;
+      const callerLabIdsList = await fetchUserActiveLabIds(callerUserId);
+      const callerLabIds = new Set(callerLabIdsList);
 
-      let normalizedCaseData: any;
+      // Wrap the auth check + write in a single transaction with a row lock
+      // (SELECT ... FOR UPDATE) so a concurrent writer cannot slip in between
+      // the authorization decision and the upsert. This closes the
+      // check-then-write TOCTOU window on the ownership/visibility boundary.
+      let result: { authError?: { status: number; message: string }; restoredFromTrash?: boolean } = {};
       try {
-        normalizedCaseData =
-          typeof caseData === "string" ? JSON.parse(caseData) : caseData;
-      } catch {
-        normalizedCaseData = null;
-      }
+        result = await db.transaction(async (tx) => {
+          const lockedRows = await tx.execute<{
+            id: string;
+            owner_id: string;
+            organization_id: string | null;
+            case_data: string;
+            deleted_at: Date | null;
+          }>(
+            sql`SELECT id, owner_id, organization_id, case_data, deleted_at
+                FROM lab_cases
+                WHERE id = ${id}
+                FOR UPDATE`
+          );
+          const lockedRow = (lockedRows as any).rows?.[0] ?? (Array.isArray(lockedRows) ? (lockedRows as any)[0] : null);
 
-      if (!normalizedCaseData || typeof normalizedCaseData !== "object") {
-        normalizedCaseData = { id, ownerId };
-      }
-
-      if (!normalizedCaseData.id) {
-        normalizedCaseData.id = id;
-      }
-      if (!normalizedCaseData.ownerId) {
-        normalizedCaseData.ownerId = ownerId;
-      }
-
-      if (existingCaseRow?.caseData) {
-        try {
-          const existingCaseData = JSON.parse(existingCaseRow.caseData);
-          if (
-            !normalizedCaseData.affiliationKey &&
-            existingCaseData?.affiliationKey
-          ) {
-            normalizedCaseData.affiliationKey = existingCaseData.affiliationKey;
+          // Authorization, performed AFTER the row lock so the decision
+          // cannot be invalidated by a concurrent writer.
+          //   INSERT path: caller may only create a case under their own id.
+          //   UPDATE path: caller must be the existing owner OR an active
+          //     member of the lab the case is currently tagged with.
+          if (!lockedRow) {
+            if (ownerId !== callerUserId) {
+              return {
+                authError: {
+                  status: 403,
+                  message: "Cannot create a case under another user.",
+                },
+              };
+            }
+          } else {
+            const existingOwner = lockedRow.owner_id;
+            const existingOrg = lockedRow.organization_id;
+            const isExistingOwner = existingOwner === callerUserId;
+            const isLabMember = !!existingOrg && callerLabIds.has(existingOrg);
+            if (!isExistingOwner && !isLabMember) {
+              return {
+                authError: {
+                  status: 403,
+                  message: "Not authorized to modify this case.",
+                },
+              };
+            }
           }
-          if (
-            (normalizedCaseData.affiliationName === undefined ||
-              normalizedCaseData.affiliationName === null ||
-              normalizedCaseData.affiliationName === "") &&
-            existingCaseData?.affiliationName
-          ) {
-            normalizedCaseData.affiliationName = existingCaseData.affiliationName;
+
+          const wasSoftDeleted = !!lockedRow?.deleted_at;
+
+          let normalizedCaseData: any;
+          try {
+            normalizedCaseData =
+              typeof caseData === "string" ? JSON.parse(caseData) : caseData;
+          } catch {
+            normalizedCaseData = null;
           }
-        } catch {
-          // Ignore malformed legacy payloads and overwrite them with the incoming case.
-        }
+          if (!normalizedCaseData || typeof normalizedCaseData !== "object") {
+            normalizedCaseData = { id, ownerId };
+          }
+          if (!normalizedCaseData.id) normalizedCaseData.id = id;
+          if (!normalizedCaseData.ownerId) normalizedCaseData.ownerId = ownerId;
+
+          if (lockedRow?.case_data) {
+            try {
+              const existingCaseData = JSON.parse(lockedRow.case_data);
+              if (
+                !normalizedCaseData.affiliationKey &&
+                existingCaseData?.affiliationKey
+              ) {
+                normalizedCaseData.affiliationKey =
+                  existingCaseData.affiliationKey;
+              }
+              if (
+                (normalizedCaseData.affiliationName === undefined ||
+                  normalizedCaseData.affiliationName === null ||
+                  normalizedCaseData.affiliationName === "") &&
+                existingCaseData?.affiliationName
+              ) {
+                normalizedCaseData.affiliationName =
+                  existingCaseData.affiliationName;
+              }
+            } catch {
+              // Ignore malformed legacy payloads.
+            }
+          }
+
+          // Resolve the organization_id column from the case's affiliationKey
+          // ("org:<UUID>"), but ONLY if the caller is actually an active
+          // member of that lab. Cross-lab tagging is silently downgraded to
+          // a private case.
+          const organizationIdFromKey = resolveOrganizationIdForWrite(
+            normalizedCaseData?.affiliationKey,
+            callerLabIds
+          );
+
+          // Keep the JSON view consistent with the column when the
+          // affiliation was rejected. Trim first so whitespace-padded keys
+          // cannot leave a stale `org:` value in the JSON.
+          if (!organizationIdFromKey) {
+            const rawKey =
+              typeof normalizedCaseData.affiliationKey === "string"
+                ? normalizedCaseData.affiliationKey.trim()
+                : "";
+            if (rawKey.startsWith("org:")) {
+              normalizedCaseData.affiliationKey = null;
+              normalizedCaseData.affiliationName = null;
+            }
+          }
+
+          // Force ownerId for safety: inserts get the caller; updates keep
+          // the existing owner so a lab member editing a shared case never
+          // changes its ownership. The body's ownerId is ignored.
+          const safeOwnerId = lockedRow ? lockedRow.owner_id : callerUserId;
+          normalizedCaseData.ownerId = safeOwnerId;
+
+          const serializedCaseData = JSON.stringify(normalizedCaseData);
+          await tx
+            .insert(labCases)
+            .values({
+              id,
+              ownerId: safeOwnerId,
+              organizationId: organizationIdFromKey,
+              caseData: serializedCaseData,
+              updatedAt: new Date(),
+              deletedAt: null,
+              deletedBy: null,
+            })
+            .onConflictDoUpdate({
+              target: labCases.id,
+              set: {
+                ownerId: safeOwnerId,
+                organizationId: organizationIdFromKey,
+                caseData: serializedCaseData,
+                updatedAt: new Date(),
+                deletedAt: null,
+                deletedBy: null,
+              },
+            });
+
+          return { restoredFromTrash: wasSoftDeleted };
+        });
+      } catch (txErr: any) {
+        console.error("Legacy upsert case tx error:", txErr?.message || txErr);
+        return res.status(500).json({ error: "Failed to save case" });
       }
 
-      // Pull organization id from the case's affiliationKey ("org:<UUID>") so
-      // we can populate the indexed organization_id column. This makes
-      // multi-device lab visibility work even if a fallback codepath ever
-      // queries by column instead of by JSON contents.
-      let organizationIdFromKey: string | null = null;
-      const affiliationKey =
-        typeof normalizedCaseData?.affiliationKey === "string"
-          ? normalizedCaseData.affiliationKey
-          : "";
-      if (affiliationKey.startsWith("org:")) {
-        const candidate = affiliationKey.slice(4).trim();
-        if (candidate) organizationIdFromKey = candidate;
+      if (result.authError) {
+        return res
+          .status(result.authError.status)
+          .json({ error: result.authError.message });
       }
-
-      const serializedCaseData = JSON.stringify(normalizedCaseData);
-      await db.insert(labCases).values({
-        id,
-        ownerId: normalizedCaseData.ownerId || ownerId,
-        organizationId: organizationIdFromKey,
-        caseData: serializedCaseData,
-        updatedAt: new Date(),
-        deletedAt: null,
-        deletedBy: null,
-      }).onConflictDoUpdate({
-        target: labCases.id,
-        set: {
-          ownerId: normalizedCaseData.ownerId || ownerId,
-          organizationId: organizationIdFromKey,
-          caseData: serializedCaseData,
-          updatedAt: new Date(),
-          deletedAt: null,
-          deletedBy: null,
-        },
-      });
-      res.json({ success: true, restoredFromTrash: wasSoftDeleted });
+      res.json({ success: true, restoredFromTrash: !!result.restoredFromTrash });
     } catch (error: any) {
       console.error("Legacy upsert case error:", error?.message || error);
       res.status(500).json({ error: "Failed to save case" });
     }
   });
 
+  // Visibility is decided server-side from the authenticated user's lab
+  // memberships. The endpoint deliberately ignores any client-supplied
+  // scope/owner/viewer parameters so a stale or buggy client cannot hide
+  // its own cases or expose someone else's.
+  //
+  //   visible = (organization_id IS NULL AND owner_id = me)
+  //          OR organization_id IN (my active lab ids)
+  //
   app.get("/api/legacy/cases", requireAuth, async (req, res) => {
     try {
-      const scopeKeysParam =
-        typeof req.query.scopeKeys === "string" ? req.query.scopeKeys : "";
-      const viewerUserId =
-        typeof req.query.viewerUserId === "string" ? req.query.viewerUserId : "";
-
-      if (scopeKeysParam) {
-        const requestedScopeKeys = new Set(
-          scopeKeysParam
-            .split(",")
-            .map((value) => value.trim())
-            .filter(Boolean)
-        );
-        if (!viewerUserId || requestedScopeKeys.size === 0) {
-          return res.json({ cases: [] });
-        }
-
-        const rows = (await db.select().from(labCases)).filter(
-          (r) => !(r as any).deletedAt
-        );
-        const parsedRows = rows
-          .map((row) => {
-            try {
-              const parsedCase = JSON.parse(row.caseData);
-              if (!parsedCase || typeof parsedCase !== "object") {
-                return null;
-              }
-              return {
-                row,
-                caseData: {
-                  ...parsedCase,
-                  ownerId:
-                    typeof parsedCase.ownerId === "string"
-                      ? parsedCase.ownerId
-                      : row.ownerId,
-                },
-              };
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean) as Array<{
-          row: typeof rows[number];
-          caseData: any;
-        }>;
-
-        const ownerIds = [
-          ...new Set(
-            parsedRows
-              .map((entry) => entry.caseData.ownerId)
-              .filter((value): value is string => !!value)
-          ),
-        ];
-
-        const activeMembershipRows = ownerIds.length
-          ? await db
-              .select()
-              .from(organizationMemberships)
-              .where(
-                and(
-                  inArray(organizationMemberships.userId, ownerIds),
-                  eq(organizationMemberships.status, "active")
-                )
-              )
-          : [];
-
-        const organizationIds = [
-          ...new Set(
-            activeMembershipRows
-              .map((membership) => membership.labId)
-              .filter(Boolean)
-          ),
-        ];
-        const organizationRows = organizationIds.length
-          ? await db
-              .select()
-              .from(organizations)
-              .where(inArray(organizations.id, organizationIds))
-          : [];
-
-        const membershipsByUserId = new Map<string, typeof activeMembershipRows>();
-        for (const membership of activeMembershipRows) {
-          const currentMemberships =
-            membershipsByUserId.get(membership.userId) ?? [];
-          currentMemberships.push(membership);
-          membershipsByUserId.set(membership.userId, currentMemberships);
-        }
-        const organizationsById = new Map(
-          organizationRows.map((organization) => [organization.id, organization])
-        );
-
-        const repairedRows = new Map<
-          string,
-          { ownerId: string; caseData: string }
-        >();
-        const visibleCases = parsedRows
-          .map(({ row, caseData }) => {
-            const ownerUserId =
-              typeof caseData.ownerId === "string" ? caseData.ownerId : row.ownerId;
-            if (!ownerUserId) {
-              return null;
-            }
-
-            let resolvedCase = { ...caseData, ownerId: ownerUserId };
-
-            const affiliationKeyIsPrivate =
-              typeof resolvedCase.affiliationKey === "string" &&
-              resolvedCase.affiliationKey.startsWith("private:");
-            const hasExplicitLabAffiliation =
-              !!resolvedCase.affiliationName ||
-              (!!resolvedCase.affiliationKey && !affiliationKeyIsPrivate);
-
-            if (!hasExplicitLabAffiliation) {
-              const ownerMemberships = membershipsByUserId.get(ownerUserId) ?? [];
-
-              for (const membership of ownerMemberships) {
-                const organization = organizationsById.get(membership.labId);
-                if (!organization || organization.type !== "lab") {
-                  continue;
-                }
-                const organizationAffiliationKey =
-                  buildLegacyOrganizationAffiliationKey(membership.labId);
-                const legacyLabAffiliationKey = buildLegacyLabAffiliationKey(
-                  organization.displayName || organization.name || null
-                );
-
-                if (
-                  !requestedScopeKeys.has(organizationAffiliationKey || "") &&
-                  !(
-                    legacyLabAffiliationKey &&
-                    requestedScopeKeys.has(legacyLabAffiliationKey)
-                  )
-                ) {
-                  continue;
-                }
-
-                resolvedCase = {
-                  ...resolvedCase,
-                  affiliationKey: organizationAffiliationKey,
-                  affiliationName:
-                    organization.displayName || organization.name || null,
-                };
-                repairedRows.set(row.id, {
-                  ownerId: ownerUserId,
-                  caseData: JSON.stringify(resolvedCase),
-                });
-                break;
-              }
-            }
-
-            const caseAffiliationKeys = resolveLegacyCaseAffiliationKeys(resolvedCase);
-            const isVisible = caseAffiliationKeys.some((key) =>
-              requestedScopeKeys.has(key)
-            );
-
-            return isVisible ? resolvedCase : null;
-          })
-          .filter(Boolean)
-          .sort(
-            (a: any, b: any) =>
-              (Number(b.updatedAt) || Number(b.createdAt) || 0) -
-              (Number(a.updatedAt) || Number(a.createdAt) || 0)
-          );
-
-        for (const [caseId, repaired] of repairedRows.entries()) {
-          await db
-            .insert(labCases)
-            .values({
-              id: caseId,
-              ownerId: repaired.ownerId,
-              caseData: repaired.caseData,
-              updatedAt: new Date(),
-            })
-            .onConflictDoUpdate({
-              target: labCases.id,
-              set: {
-                ownerId: repaired.ownerId,
-                caseData: repaired.caseData,
-                updatedAt: new Date(),
-              },
-            });
-        }
-
-        return res.json({ cases: visibleCases });
+      const userId = (req as any).auth?.userId as string | undefined;
+      if (!userId) {
+        return res.status(401).json({ error: "Authentication required." });
       }
 
-      const ownerIdsParam = req.query.ownerIds as string;
-      if (!ownerIdsParam) {
-        return res.json({ cases: [] });
+      const labIds = await fetchUserActiveLabIds(userId);
+
+      const conditions = [
+        and(isNull(labCases.organizationId), eq(labCases.ownerId, userId)),
+      ];
+      if (labIds.length > 0) {
+        conditions.push(inArray(labCases.organizationId, labIds));
       }
-      const ownerIds = ownerIdsParam.split(",").filter(Boolean);
-      if (ownerIds.length === 0) return res.json({ cases: [] });
-      const allRows = await db.select().from(labCases).where(inArray(labCases.ownerId, ownerIds));
-      const rows = allRows.filter((r) => !(r as any).deletedAt);
-      const cases = rows.map(r => {
-        try { return JSON.parse(r.caseData); } catch { return null; }
-      }).filter(Boolean);
+
+      const rows = await db
+        .select()
+        .from(labCases)
+        .where(and(isNull(labCases.deletedAt), or(...conditions)));
+
+      // Preload organization display info so we can keep the JSON payload
+      // (affiliationKey/affiliationName) in sync with the authoritative
+      // organization_id column. After the startup backfill, some legacy rows
+      // have an organization_id set but no matching affiliationKey in the
+      // JSON — without this sync the client's defense-in-depth filter would
+      // hide cases the server is returning.
+      const orgIdsInResult = Array.from(
+        new Set(
+          rows
+            .map((r) => r.organizationId)
+            .filter((id): id is string => !!id)
+        )
+      );
+      const orgInfoById = new Map<string, { displayName: string | null; name: string | null }>();
+      if (orgIdsInResult.length > 0) {
+        const orgRows = await db
+          .select()
+          .from(organizations)
+          .where(inArray(organizations.id, orgIdsInResult));
+        for (const o of orgRows) {
+          orgInfoById.set(o.id, { displayName: o.displayName, name: o.name });
+        }
+      }
+
+      const cases = rows
+        .map((row) => {
+          try {
+            const parsed = JSON.parse(row.caseData);
+            if (!parsed || typeof parsed !== "object") return null;
+            // Always trust the column for ownerId so the client view matches
+            // the server-authoritative visibility decision.
+            if (typeof parsed.ownerId !== "string" || !parsed.ownerId) {
+              parsed.ownerId = row.ownerId;
+            }
+            // Mirror the organization_id column into the JSON fields the
+            // client uses, so the client view exactly matches what the server
+            // returned. Without this, backfilled rows whose JSON is missing
+            // `affiliationKey: "org:<UUID>"` would be filtered out by the
+            // client's defense-in-depth check even though the server already
+            // approved them.
+            if (row.organizationId) {
+              parsed.organizationId = row.organizationId;
+              parsed.affiliationKey = `org:${row.organizationId}`;
+              const orgInfo = orgInfoById.get(row.organizationId);
+              if (orgInfo) {
+                parsed.affiliationName =
+                  orgInfo.displayName || orgInfo.name || parsed.affiliationName || null;
+              }
+            } else {
+              // Private case: nullify any leftover lab affiliation in the JSON
+              // so the client filter (which keys on affiliationKey) never
+              // disagrees with the server's NULL-organization decision.
+              parsed.organizationId = null;
+              if (
+                typeof parsed.affiliationKey === "string" &&
+                parsed.affiliationKey.trim().startsWith("org:")
+              ) {
+                parsed.affiliationKey = null;
+                parsed.affiliationName = null;
+              }
+            }
+            return parsed;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean)
+        .sort(
+          (a: any, b: any) =>
+            (Number(b.updatedAt) || Number(b.createdAt) || 0) -
+            (Number(a.updatedAt) || Number(a.createdAt) || 0)
+        );
+
       res.json({ cases });
     } catch (error: any) {
       console.error("Legacy get cases error:", error?.message || error);
