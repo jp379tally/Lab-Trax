@@ -117,6 +117,12 @@ interface AppContextValue {
   userIsAffiliated: boolean;
   activeLabAffiliationKey: string | null;
   activeLabAffiliationName: string | null;
+  // Org IDs for EVERY active lab the current user belongs to (not just the
+  // singular "active" one). Consumers that need to fetch or display data
+  // shared across all of the user's labs (e.g. the lab-shared file inbox)
+  // should iterate this list rather than relying on the single
+  // activeLabAffiliationKey.
+  allLabOrganizationIds: string[];
   leaveLab: () => Promise<{ success: boolean; error?: string }>;
   deleteLab: () => Promise<{ success: boolean; error?: string }>;
   isLabCreator: boolean;
@@ -262,6 +268,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeLabAffiliationKey, setActiveLabAffiliationKey] = useState<string | null>(null);
   const [activeLabAffiliationName, setActiveLabAffiliationName] = useState<string | null>(null);
   const [hasActiveLabMembership, setHasActiveLabMembership] = useState(false);
+  const [allLabAffiliationKeysList, setAllLabAffiliationKeysList] = useState<string[]>([]);
+  const [allLabAffiliationNamesList, setAllLabAffiliationNamesList] = useState<string[]>([]);
   const [membershipVersion, setMembershipVersion] = useState(0);
   const conversationsStorageKey = useMemo(
     () => (currentUserId ? `${CONVERSATIONS_KEY}:${currentUserId}` : CONVERSATIONS_KEY),
@@ -283,23 +291,55 @@ export function AppProvider({ children }: { children: ReactNode }) {
       keys.add(privateAffiliationKey);
     }
 
+    // Include scope keys for EVERY lab the user is an active member of, not
+    // just the singular "active" one. A user added to a lab must see every
+    // case in that lab regardless of which device or owner created it, and
+    // users who belong to multiple labs (e.g. owners of two practices) should
+    // see cases from all of their labs simultaneously. This also avoids a
+    // race where a non-deterministic ordering of memberships caused the app
+    // to flip between labs and intermittently hide cases.
+    for (const labKey of allLabAffiliationKeysList) {
+      if (labKey) keys.add(labKey);
+    }
     if (activeLabAffiliationKey) {
       keys.add(activeLabAffiliationKey);
     }
 
-    const legacyLabAffiliationKey = hasActiveLabMembership
-      ? buildLegacyLabAffiliationKey(activeLabAffiliationName)
-      : null;
-    if (legacyLabAffiliationKey) {
-      keys.add(legacyLabAffiliationKey);
+    if (hasActiveLabMembership) {
+      for (const labName of allLabAffiliationNamesList) {
+        const legacyKey = buildLegacyLabAffiliationKey(labName);
+        if (legacyKey) keys.add(legacyKey);
+      }
+      const activeLegacyKey = buildLegacyLabAffiliationKey(activeLabAffiliationName);
+      if (activeLegacyKey) keys.add(activeLegacyKey);
     }
 
     return keys;
-  }, [activeLabAffiliationKey, activeLabAffiliationName, currentUserId, hasActiveLabMembership]);
+  }, [
+    activeLabAffiliationKey,
+    activeLabAffiliationName,
+    allLabAffiliationKeysList,
+    allLabAffiliationNamesList,
+    currentUserId,
+    hasActiveLabMembership,
+  ]);
   const visibleCaseAffiliationScope = useMemo(
     () => Array.from(visibleCaseAffiliationKeys).sort(),
     [visibleCaseAffiliationKeys]
   );
+
+  // Bare organization IDs (no "org:" prefix) for every lab the current user
+  // belongs to. Used by the lab-shared inbox so files surface from every lab
+  // the user is a member of, not just the singular "active" one.
+  const allLabOrganizationIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const labKey of allLabAffiliationKeysList) {
+      if (labKey?.startsWith("org:")) {
+        ids.push(labKey.slice(4));
+      }
+    }
+    return ids;
+  }, [allLabAffiliationKeysList]);
 
   const cases = useMemo(() => {
     if (!currentUserId) return [];
@@ -567,8 +607,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function sortMembershipsDeterministically(
+    memberships: ServerMembership[]
+  ): ServerMembership[] {
+    // Stable, deterministic ordering so a user with multiple lab memberships
+    // (e.g. an owner of two labs) always picks the SAME lab as their
+    // "primary active" lab across reloads and devices. Without this the
+    // first-found membership flipped between requests, which silently hid
+    // cases from a user whose only lab was not the one picked that round.
+    return [...memberships].sort((a, b) => {
+      const aId = a.organizationId || "";
+      const bId = b.organizationId || "";
+      if (aId < bId) return -1;
+      if (aId > bId) return 1;
+      return 0;
+    });
+  }
+
   async function findCurrentLabMembership(): Promise<ServerMembership | null> {
-    const memberships = await fetchMyMemberships();
+    const memberships = sortMembershipsDeterministically(await fetchMyMemberships());
     return (
       memberships.find(
         (membership) =>
@@ -579,7 +636,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   async function findCurrentLabAdminMembership(): Promise<ServerMembership | null> {
-    const memberships = await fetchMyMemberships();
+    const memberships = sortMembershipsDeterministically(await fetchMyMemberships());
     return (
       memberships.find(
         (membership) =>
@@ -599,14 +656,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setHasActiveLabMembership(false);
           setActiveLabAffiliationKey(null);
           setActiveLabAffiliationName(null);
+          setAllLabAffiliationKeysList([]);
+          setAllLabAffiliationNamesList([]);
         }
         return;
       }
 
-      const activeMembership = await findCurrentLabMembership();
+      const memberships = sortMembershipsDeterministically(
+        await fetchMyMemberships()
+      );
       if (cancelled) {
         return;
       }
+
+      const activeLabMemberships = memberships.filter(
+        (membership) =>
+          membership.status === "active" &&
+          membership.organization?.type === "lab"
+      );
+
+      const labKeys: string[] = [];
+      const labNames: string[] = [];
+      for (const membership of activeLabMemberships) {
+        const labKey = buildOrganizationAffiliationKey(membership.organizationId);
+        if (labKey) labKeys.push(labKey);
+        const labName =
+          membership.organization?.displayName ||
+          membership.organization?.name ||
+          null;
+        if (labName) labNames.push(labName);
+      }
+
+      setAllLabAffiliationKeysList(labKeys);
+      setAllLabAffiliationNamesList(labNames);
+
+      const activeMembership = activeLabMemberships[0] || null;
 
       if (activeMembership?.organizationId) {
         setHasActiveLabMembership(true);
@@ -633,6 +717,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setHasActiveLabMembership(false);
       setActiveLabAffiliationKey(null);
       setActiveLabAffiliationName(null);
+      setAllLabAffiliationKeysList([]);
+      setAllLabAffiliationNamesList([]);
     });
 
     return () => {
@@ -2757,6 +2843,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       userIsAffiliated,
       activeLabAffiliationKey,
       activeLabAffiliationName,
+      allLabOrganizationIds,
       leaveLab,
       deleteLab,
       isLabCreator,
@@ -2770,7 +2857,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       hardRefresh,
       updateWorkStatus,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

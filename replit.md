@@ -99,3 +99,5 @@ Preferred communication style: Simple, everyday language.
 
 ### AI Services
 - **OpenAI API**: Utilized for GPT-5.1 vision (prescription/document scanning), chat, and gpt-image-1 (smile preview). Accessed via the Replit AI integration proxy at `localhost:1106/modelfarm/openai`.
+## Multi-Lab Visibility (April 2026)
+A user can be a member of more than one lab (e.g. an owner who runs two practices). The case list and the lab-shared file inbox both surface content from EVERY active lab the user belongs to, not just one "active" lab. The client tracks the union of org-affiliation keys for all the user's lab memberships and includes them in `visibleCaseAffiliationKeys` and the `?scopeKeys=` parameter sent to `GET /api/legacy/cases`. The `LabFileDropZone` component omits `organizationId` on the `GET /api/lab-pending-files` request so the server returns files from every lab the caller belongs to. Memberships returned by `GET /api/auth/me` are sorted deterministically by lab id so the singular "active" lab (used as the target for new uploads) is the same on every device and across reloads.

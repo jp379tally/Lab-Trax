@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { and, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
@@ -472,6 +472,7 @@ router.get(
           organizationMemberships.userId,
           (req as any).auth.userId
         ),
+        orderBy: [asc(organizationMemberships.labId)],
       });
     const orgIds = memberships.map((m: any) => m.labId);
     const orgs = orgIds.length

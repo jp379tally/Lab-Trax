@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   InteractionManager,
@@ -139,8 +139,20 @@ export function LabFileDropZone({
   isFocused = true,
 }: LabFileDropZoneProps) {
   const insets = useSafeAreaInsets();
-  const { activeLabAffiliationKey, activeLabAffiliationName } = useApp();
+  const { activeLabAffiliationKey, activeLabAffiliationName, allLabOrganizationIds } = useApp();
   const activeLabOrgId = getActiveLabOrganizationId(activeLabAffiliationKey);
+  // Memoized stable key for the *set* of labs the user belongs to. Used as
+  // a dependency for the polling effect so it re-runs when the user is added
+  // to or removed from a lab on another device. Sorting guarantees that two
+  // arrays with the same membership produce the same key.
+  const allLabOrgIdsKey = useMemo(
+    () => [...allLabOrganizationIds].sort().join(","),
+    [allLabOrganizationIds]
+  );
+  const allLabOrgIdsSet = useMemo(
+    () => new Set(allLabOrganizationIds),
+    [allLabOrganizationIds]
+  );
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -248,10 +260,16 @@ export function LabFileDropZone({
   // uploaded yet, or ones created when no lab was active).
   // ──────────────────────────────────────────────────────────────────────────
   const refreshServerFiles = useCallback(async () => {
-    if (!activeLabOrgId) return;
+    // Skip when the user has no lab memberships at all — the server-backed
+    // inbox is only meaningful for lab members.
+    if (allLabOrganizationIds.length === 0) return;
     try {
+      // Intentionally omit `organizationId` so the server returns pending
+      // files for EVERY lab the caller belongs to. This is what makes
+      // multi-lab users (e.g. an owner of two practices) and any user newly
+      // added to an additional lab see the full set of shared files without
+      // having to switch the singular "active" lab manually.
       const url = new URL("/api/lab-pending-files", getApiUrl());
-      url.searchParams.set("organizationId", activeLabOrgId);
       const response = await resilientFetch(url.toString());
       if (!response.ok) return;
       const data = await response.json();
@@ -265,21 +283,22 @@ export function LabFileDropZone({
           (f) => !f.serverId || !incomingIds.has(f.serverId)
         ),
       ].filter(
-        // Drop any stale server entries from another org (e.g. lab switch)
+        // Drop server entries from labs the user is no longer a member of
+        // (e.g. they were removed from a lab on another device).
         (f) =>
           !f.serverId ||
           !f.serverOrganizationId ||
-          f.serverOrganizationId === activeLabOrgId
+          allLabOrgIdsSet.has(f.serverOrganizationId)
       );
       await persistFiles(merged);
     } catch {
       // Network errors are non-fatal; we'll retry on the next interval.
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLabOrgId, persistFiles]);
+  }, [allLabOrgIdsKey, persistFiles]);
 
   useEffect(() => {
-    if (!activeLabOrgId) return;
+    if (allLabOrganizationIds.length === 0) return;
     if (!isFocused) return;
     let cancelled = false;
     const tick = () => {
@@ -292,23 +311,27 @@ export function LabFileDropZone({
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [activeLabOrgId, isFocused, refreshServerFiles]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allLabOrgIdsKey, isFocused, refreshServerFiles]);
 
-  // When the active lab changes (membership added/removed remotely), drop
-  // server entries from the previous lab so they don't leak into the new one.
-  const prevActiveLabOrgIdRef = useRef<string | null>(null);
+  // When the user is removed from a lab on another device, drop any
+  // server entries that belong to a lab they are no longer a member of so
+  // they don't continue showing in the inbox.
+  const prevLabOrgIdsKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    const prev = prevActiveLabOrgIdRef.current;
-    prevActiveLabOrgIdRef.current = activeLabOrgId;
-    if (prev && prev !== activeLabOrgId) {
+    const prev = prevLabOrgIdsKeyRef.current;
+    prevLabOrgIdsKeyRef.current = allLabOrgIdsKey;
+    if (prev !== null && prev !== allLabOrgIdsKey) {
       const filtered = pendingFilesRef.current.filter(
-        (f) => !f.serverOrganizationId || f.serverOrganizationId === activeLabOrgId
+        (f) =>
+          !f.serverOrganizationId || allLabOrgIdsSet.has(f.serverOrganizationId)
       );
       if (filtered.length !== pendingFilesRef.current.length) {
         persistFiles(filtered).catch(() => {});
       }
     }
-  }, [activeLabOrgId, persistFiles]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allLabOrgIdsKey, persistFiles]);
 
   function promptNoteForFile(file: PendingFile) {
     setNoteTarget(file);
