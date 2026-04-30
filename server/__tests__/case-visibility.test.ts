@@ -51,9 +51,10 @@ describe("isCaseVisibleToUser", () => {
   });
 
   it("shows lab case to a lab member even when the case owner is not a member", () => {
-    // Domain rule: a non-member scanner can drop a case into a lab inbox.
-    // Once tagged with the lab's organization_id, every active lab member
-    // sees it regardless of who scanned it.
+    // The case is the lab's data once tagged. Every active member of
+    // that lab sees it, regardless of who originally scanned it. (The
+    // owner-may-not-be-a-member situation arises from legacy data
+    // restored by the startup backfill.)
     expect(
       isCaseVisibleToUser(
         { ownerId: USER_A, organizationId: LAB_1 },
@@ -114,9 +115,11 @@ describe("parseOrganizationIdFromAffiliationKey", () => {
     expect(parseOrganizationIdFromAffiliationKey(`org:${LAB_1}`)).toBe(LAB_1);
   });
 
-  it("returns the org id even when the writer is not a member of the lab", () => {
-    // The parser is intentionally permissive — non-members are allowed to
-    // tag cases for a lab inbox. Membership is only enforced on READ.
+  it("returns the org id regardless of caller (parser is pure)", () => {
+    // The parser only extracts the candidate org id from the JSON key;
+    // it knows nothing about membership. The route layer is responsible
+    // for enforcing "only active members of a lab may put cases there"
+    // before the candidate is persisted to organization_id.
     expect(parseOrganizationIdFromAffiliationKey(`org:${LAB_2}`)).toBe(LAB_2);
   });
 

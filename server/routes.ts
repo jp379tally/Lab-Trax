@@ -504,9 +504,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           // Authorization, performed AFTER the row lock so the decision
           // cannot be invalidated by a concurrent writer.
-          //   INSERT path: caller may only create a case under their own id.
-          //   UPDATE path: caller must be the existing owner OR an active
-          //     member of the lab the case is currently tagged with.
+          //
+          // Domain rule: "only active members of a lab can change the
+          // lab's information." Translated to this endpoint:
+          //   INSERT: caller may only create a case under their own id.
+          //   UPDATE of a LAB case: caller must be an active member of
+          //     that lab. Being the original scanner (owner) is NOT
+          //     enough — once a case lives in a lab it is the lab's
+          //     data, and only members may modify it.
+          //   UPDATE of a PRIVATE case: caller must be the owner.
           if (!lockedRow) {
             if (ownerId !== callerUserId) {
               return {
@@ -519,15 +525,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
           } else {
             const existingOwner = lockedRow.owner_id;
             const existingOrg = lockedRow.organization_id;
-            const isExistingOwner = existingOwner === callerUserId;
-            const isLabMember = !!existingOrg && callerLabIds.has(existingOrg);
-            if (!isExistingOwner && !isLabMember) {
-              return {
-                authError: {
-                  status: 403,
-                  message: "Not authorized to modify this case.",
-                },
-              };
+            if (existingOrg) {
+              const isLabMember = callerLabIds.has(existingOrg);
+              if (!isLabMember) {
+                return {
+                  authError: {
+                    status: 403,
+                    message:
+                      "Only active members of this lab can modify its cases.",
+                  },
+                };
+              }
+            } else {
+              const isExistingOwner = existingOwner === callerUserId;
+              if (!isExistingOwner) {
+                return {
+                  authError: {
+                    status: 403,
+                    message: "Not authorized to modify this case.",
+                  },
+                };
+              }
             }
           }
 
@@ -571,17 +589,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           // Resolve the organization_id column from the case's
-          // affiliationKey ("org:<UUID>"). Domain rule (dental-lab
-          // fulfillment): a scanner is allowed to drop a case into ANY
-          // lab's inbox, even one they are not a member of — same way
-          // anyone can email a help desk. The only safety check is that
-          // the target organization actually exists and is a lab; we
-          // never want to persist a reference to a phantom org.
+          // affiliationKey ("org:<UUID>"). Domain rule: only an active
+          // member of the target lab may put a case there. If the
+          // caller isn't a member, the org tag is silently stripped and
+          // the case becomes private to them.
+          //
+          // Two safety checks gate the assignment:
+          //   (a) the target org actually exists as type='lab' (no
+          //       references to phantom orgs are ever persisted), and
+          //   (b) the caller is an active member of that lab.
           const candidateOrgId = parseOrganizationIdFromAffiliationKey(
             normalizedCaseData?.affiliationKey
           );
           let organizationIdFromKey: string | null = null;
-          if (candidateOrgId) {
+          if (candidateOrgId && callerLabIds.has(candidateOrgId)) {
             const [orgRow] = await tx
               .select({ id: organizations.id })
               .from(organizations)
@@ -598,9 +619,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           // Keep the JSON view consistent with the column when the
-          // affiliation pointed at a non-existent / non-lab org. Trim
-          // first so whitespace-padded keys cannot leave a stale `org:`
-          // value in the JSON.
+          // affiliation was rejected (caller not a member, or org
+          // doesn't exist). Trim first so whitespace-padded keys cannot
+          // leave a stale `org:` value in the JSON.
           if (!organizationIdFromKey) {
             const rawKey =
               typeof normalizedCaseData.affiliationKey === "string"
