@@ -42,6 +42,7 @@ import {
   DeletedClientInvoice,
 } from "./data";
 import { useAuth } from "./auth-context";
+import { reconcileCases } from "./case-reconciliation";
 
 interface AppContextValue {
   role: UserRole;
@@ -1098,54 +1099,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // Reconcile local cache with the authoritative server response.
-  //
-  //   • For every case the server returned: server's payload wins
-  //     unconditionally (the server normalizes affiliationKey/affiliationName
-  //     from the organization_id column, so adopting it guarantees the
-  //     client view matches what the server actually authorized).
-  //   • For local cases NOT in the server response:
-  //       – Lab-tagged cases (affiliationKey "org:…") are dropped. The
-  //         server is the single source of truth for lab visibility; if
-  //         it didn't return the case, we no longer have access (lab
-  //         membership revoked, never had it, etc.) and the case must
-  //         disappear from this device immediately.
-  //       – Private cases (no lab tag) are kept. They may be offline
-  //         scans waiting to be pushed to the server on the next sync.
+  // Reconcile local cache with the authoritative server response. The
+  // pure reconciliation function lives in lib/case-reconciliation.ts so it
+  // can be unit-tested without React; this wrapper handles the setState
+  // and AsyncStorage side effects.
   function mergeServerCases(serverCases: LabCase[]) {
-    setAllCases(prev => {
-      const serverById = new Map(serverCases.map(c => [c.id, c]));
-      const next: LabCase[] = [];
-      let changed = false;
-
-      for (const local of prev) {
-        const server = serverById.get(local.id);
-        if (server) {
-          next.push(server);
-          if (server !== local) changed = true;
-          continue;
-        }
-        const localKey =
-          typeof local.affiliationKey === "string"
-            ? local.affiliationKey.trim()
-            : "";
-        if (localKey.startsWith("org:")) {
-          // Server didn't return this lab case → we cannot see it anymore.
-          changed = true;
-          continue;
-        }
-        // Private (or untagged) local case — keep as a potential pending sync.
-        next.push(local);
-      }
-
-      // Append cases the server has that we don't yet know about.
-      for (const sc of serverCases) {
-        if (!prev.some(c => c.id === sc.id)) {
-          next.push(sc);
-          changed = true;
-        }
-      }
-
+    setAllCases((prev) => {
+      const { next, changed } = reconcileCases(prev, serverCases);
       if (!changed) return prev;
       AsyncStorage.setItem(CASES_KEY, JSON.stringify(next));
       prevCasesRef.current = next;
