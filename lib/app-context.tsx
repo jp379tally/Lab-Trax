@@ -1212,11 +1212,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
         AsyncStorage.getItem(PRICING_TIERS_KEY),
       ]);
 
+      // CRITICAL: never stomp non-empty state from the local cache. The
+      // server fetch (mount effect) runs in parallel with this load and is
+      // the authoritative source. If the network response wins the race
+      // and populates state with the lab's full case list, blindly calling
+      // setAllCases(parsedCases) here would overwrite 46 fresh cases with
+      // (possibly stale) cached data. Equally, the empty-cache branch
+      // calling setAllCases([]) on a freshly-cleared cache (post-logout
+      // sign-in) would wipe the server's response. Always guard with a
+      // functional setState that only hydrates from cache when state is
+      // empty — the server fetch's reconcileCases handles everything else.
       if (savedCases) {
-        const parsedCases: LabCase[] = JSON.parse(savedCases);
-        setAllCases(parsedCases);
-      } else {
-        setAllCases([]);
+        try {
+          const parsedCases: LabCase[] = JSON.parse(savedCases);
+          setAllCases((prev) => (prev.length === 0 ? parsedCases : prev));
+        } catch {
+          // Corrupted cache — leave state alone; the server fetch will
+          // populate it.
+        }
       }
 
       if (savedRole) {
@@ -1315,13 +1328,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         AsyncStorage.removeItem("@drivesync_pending_client");
       }
     } catch (e) {
-      setAllCases([]);
-      setNotifications([]);
-      setClients([]);
-      setUsers([]);
-      setInvoices([]);
-      setConversations([]);
-      setChatMessages([]);
+      // Same rule as above: never wipe state from a load error. The server
+      // fetch reconciles authoritatively; clearing here can race-stomp a
+      // freshly-fetched lab case list.
     } finally {
       setIsLoading(false);
     }
