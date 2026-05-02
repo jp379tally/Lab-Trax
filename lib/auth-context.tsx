@@ -433,6 +433,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     await removeSensitiveItem(AUTH_PASSWORD_KEY);
     await AsyncStorage.removeItem(AUTH_KEY);
+    // Clear locally cached cases so the next user signing in on this device
+    // does not briefly see the previous user's cases before the first server
+    // fetch reconciles. The server is the source of truth for visibility;
+    // the local cache is merely an offline cache scoped to a single session.
+    await AsyncStorage.removeItem("@drivesync_cases");
   }
 
   async function deleteAccount(): Promise<{ success: boolean; error?: string }> {

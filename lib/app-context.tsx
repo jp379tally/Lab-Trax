@@ -341,15 +341,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return ids;
   }, [allLabAffiliationKeysList]);
 
-  // Defense-in-depth client filter that mirrors the server's visibility rule
-  // (server is authoritative — see GET /api/legacy/cases). A case is visible
-  // when it is tagged with one of my labs, or when it is private and I own
-  // it. This matches the server filter exactly so a case never appears in
-  // the UI that the server would not return, even for offline-only cases
-  // sitting in AsyncStorage from a previous session.
+  // The server is the single source of truth for case visibility (see
+  // GET /api/legacy/cases — visibility is derived from lab_memberships
+  // server-side and the client cannot influence it). The client must NOT
+  // re-check lab membership locally, because the local membership snapshot
+  // can lag the server (fresh device, network blip, racy load order on
+  // app boot, just-joined lab). Re-checking would hide cases the server
+  // already authorized, which is the bug we keep getting bitten by.
+  //
+  // Rules:
+  //   • Cases tagged with a lab (affiliationKey "org:<UUID>") are shown
+  //     unconditionally — if it lives in our local cache it's because the
+  //     server returned it to us, OR we just created it and the server has
+  //     accepted it (POST is membership-gated, so it can't enter local with
+  //     a lab tag we aren't authorized for).
+  //   • Private cases (no "org:" tag) are filtered by ownership so a stale
+  //     case left over from a previously-signed-in user on this device does
+  //     not leak across accounts.
   const cases = useMemo(() => {
     if (!currentUserId) return [];
-    const myLabIds = new Set(allLabOrganizationIds);
     return [...allCases]
       .filter((labCase) => {
         const key =
@@ -357,7 +367,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? labCase.affiliationKey.trim()
             : "";
         if (key.startsWith("org:")) {
-          return myLabIds.has(key.slice(4));
+          return true;
         }
         return labCase.ownerId === currentUserId;
       })
@@ -365,7 +375,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         (a, b) =>
           (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)
       );
-  }, [allCases, currentUserId, allLabOrganizationIds]);
+  }, [allCases, currentUserId]);
 
   function setCases(updater: LabCase[] | ((prev: LabCase[]) => LabCase[])) {
     setAllCases(updater);
@@ -403,18 +413,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Server decides visibility purely from the authenticated user's lab
   // memberships. The client passes nothing — no scope keys, no viewer id —
   // so a stale UI state can never hide a case that the user is actually
-  // entitled to see.
-  async function fetchCasesFromServer(): Promise<LabCase[]> {
+  // entitled to see. We return a discriminated result so the caller can
+  // tell "you genuinely have zero cases" (ok=true, cases=[]) apart from
+  // "fetch failed, preserve local cache" (ok=false). The previous shape
+  // (always returning []) caused us to silently wipe-or-not-wipe based on
+  // an ambiguous signal.
+  type FetchCasesResult =
+    | { ok: true; cases: LabCase[] }
+    | { ok: false };
+
+  async function fetchCasesFromServer(): Promise<FetchCasesResult> {
     try {
       const res = await resilientFetch(`/api/legacy/cases`);
       if (res.ok) {
         const data = await res.json();
-        return data.cases || [];
+        return { ok: true, cases: Array.isArray(data?.cases) ? data.cases : [] };
       }
+      return { ok: false };
     } catch (e) {
       console.log("Could not fetch cases from server:", e);
+      return { ok: false };
     }
-    return [];
   }
 
   async function readApiError(response: Response): Promise<string> {
@@ -1004,8 +1023,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     fetchingRef.current = true;
     try {
-      const serverCases = await fetchCasesFromServer();
-      mergeServerCases(serverCases);
+      const result = await fetchCasesFromServer();
+      if (result.ok) {
+        mergeServerCases(result.cases);
+      }
     } catch (e) {
       console.log("Could not refresh cases:", e);
     } finally {
@@ -1018,22 +1039,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      const serverCases = await fetchCasesFromServer();
-      // IMPORTANT: never overwrite local data with the server response. If the
-      // server returns 0 cases (transient error, scope mismatch, network blip,
-      // session not yet established on a new device), overwriting would wipe
-      // every locally-created case. Merge instead — server wins only for
-      // cases that exist on both sides and have a newer updatedAt.
-      mergeServerCases(serverCases);
-      // Also push any local cases the server may not have yet (e.g. cases
-      // created offline or while the previous sync attempt failed). Snapshot
-      // the local list once and dedupe with inFlightSyncIdsRef so rapid
-      // repeated refreshes don't enqueue duplicate POSTs for the same case.
+      const result = await fetchCasesFromServer();
+      if (!result.ok) {
+        // Fetch failed (network/auth blip). Preserve local cache untouched —
+        // do not reconcile, do not push, just bail out and let the next
+        // poll try again. This avoids wiping legitimate cases on a transient
+        // failure.
+        return;
+      }
+      // Server response is authoritative. mergeServerCases reconciles:
+      // adopts server payloads, drops local lab-tagged ghosts the server
+      // no longer authorizes, preserves local-only private cases.
+      mergeServerCases(result.cases);
+      // Push any local-only private cases the server may not have yet
+      // (e.g. scans created offline). We deliberately do NOT re-push
+      // lab-tagged cases that disappeared from the server response —
+      // mergeServerCases just dropped them because the server says we
+      // can't see them, so re-pushing would only cause a 403/strip cycle.
       const localSnapshot = [...allCases];
-      const serverIds = new Set(serverCases.map((s) => s.id));
+      const serverIds = new Set(result.cases.map((s) => s.id));
       for (const c of localSnapshot) {
         if (!c.ownerId) continue;
         if (serverIds.has(c.id)) continue;
+        const key =
+          typeof c.affiliationKey === "string" ? c.affiliationKey.trim() : "";
+        if (key.startsWith("org:")) continue;
         pushCaseToServerOnce(c);
       }
     } catch (e) {
@@ -1068,26 +1098,58 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // Reconcile local cache with the authoritative server response.
+  //
+  //   • For every case the server returned: server's payload wins
+  //     unconditionally (the server normalizes affiliationKey/affiliationName
+  //     from the organization_id column, so adopting it guarantees the
+  //     client view matches what the server actually authorized).
+  //   • For local cases NOT in the server response:
+  //       – Lab-tagged cases (affiliationKey "org:…") are dropped. The
+  //         server is the single source of truth for lab visibility; if
+  //         it didn't return the case, we no longer have access (lab
+  //         membership revoked, never had it, etc.) and the case must
+  //         disappear from this device immediately.
+  //       – Private cases (no lab tag) are kept. They may be offline
+  //         scans waiting to be pushed to the server on the next sync.
   function mergeServerCases(serverCases: LabCase[]) {
-    if (serverCases.length === 0) return;
     setAllCases(prev => {
-      const localMap = new Map(prev.map(c => [c.id, c]));
+      const serverById = new Map(serverCases.map(c => [c.id, c]));
+      const next: LabCase[] = [];
       let changed = false;
-      for (const sc of serverCases) {
-        const local = localMap.get(sc.id);
-        if (!local) {
-          localMap.set(sc.id, sc);
+
+      for (const local of prev) {
+        const server = serverById.get(local.id);
+        if (server) {
+          next.push(server);
+          if (server !== local) changed = true;
+          continue;
+        }
+        const localKey =
+          typeof local.affiliationKey === "string"
+            ? local.affiliationKey.trim()
+            : "";
+        if (localKey.startsWith("org:")) {
+          // Server didn't return this lab case → we cannot see it anymore.
           changed = true;
-        } else if (sc.updatedAt && local.updatedAt && sc.updatedAt > local.updatedAt) {
-          localMap.set(sc.id, sc);
+          continue;
+        }
+        // Private (or untagged) local case — keep as a potential pending sync.
+        next.push(local);
+      }
+
+      // Append cases the server has that we don't yet know about.
+      for (const sc of serverCases) {
+        if (!prev.some(c => c.id === sc.id)) {
+          next.push(sc);
           changed = true;
         }
       }
+
       if (!changed) return prev;
-      const merged = Array.from(localMap.values());
-      AsyncStorage.setItem(CASES_KEY, JSON.stringify(merged));
-      prevCasesRef.current = merged;
-      return merged;
+      AsyncStorage.setItem(CASES_KEY, JSON.stringify(next));
+      prevCasesRef.current = next;
+      return next;
     });
   }
 
@@ -1103,14 +1165,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchingRef.current = true;
 
     fetchCasesFromServer()
-      .then((serverCases) => {
+      .then((result) => {
         if (cancelled) {
           return;
         }
-
-        if (serverCases.length > 0) {
-          mergeServerCases(serverCases);
+        if (result.ok) {
+          // mergeServerCases handles both populated and empty responses
+          // correctly: lab-tagged ghosts get reconciled away, private
+          // local-only cases are preserved, server payloads win.
+          mergeServerCases(result.cases);
         } else {
+          // Fetch failed — keep whatever was loaded from AsyncStorage so
+          // the user still sees their previously-synced cases until the
+          // next poll succeeds.
           prevCasesRef.current = localCasesSnapshot;
         }
       })
@@ -1137,8 +1204,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (fetchingRef.current) return;
       fetchingRef.current = true;
       fetchCasesFromServer()
-        .then((serverCases) => {
-          mergeServerCases(serverCases);
+        .then((result) => {
+          if (result.ok) {
+            mergeServerCases(result.cases);
+          }
         })
         .catch(() => null)
         .finally(() => {
