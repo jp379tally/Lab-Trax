@@ -456,6 +456,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ ok: true });
   });
 
+  // Diagnostic endpoint: lets the client report its own React state for a
+  // given user so we can see — from the deployment logs — exactly what the
+  // device thinks is in `allCases`, what the server returned, and which
+  // membership keys are active. Each field is logged on its own line so the
+  // 80-char log truncation does not hide the values.
+  app.post("/api/_debug/client-state", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string | undefined;
+      const body = (req.body || {}) as Record<string, unknown>;
+      const tag = `[CLIENT_STATE u=${userId || "?"}]`;
+      console.log(`${tag} marker=${String(body.marker ?? "")}`);
+      console.log(`${tag} username=${String(body.username ?? "")}`);
+      console.log(`${tag} build=${String(body.build ?? "")}`);
+      console.log(`${tag} allCasesLen=${String(body.allCasesLen ?? "")}`);
+      console.log(`${tag} casesLen=${String(body.casesLen ?? "")}`);
+      console.log(`${tag} hasActiveLab=${String(body.hasActiveLab ?? "")}`);
+      console.log(`${tag} activeLabKey=${String(body.activeLabKey ?? "")}`);
+      console.log(`${tag} activeLabName=${String(body.activeLabName ?? "")}`);
+      console.log(`${tag} fetchOk=${String(body.fetchOk ?? "")}`);
+      console.log(`${tag} serverCount=${String(body.serverCount ?? "")}`);
+      console.log(`${tag} sample0=${String(body.sample0 ?? "")}`);
+      console.log(`${tag} sample1=${String(body.sample1 ?? "")}`);
+      console.log(`${tag} sample2=${String(body.sample2 ?? "")}`);
+      console.log(`${tag} cacheLen=${String(body.cacheLen ?? "")}`);
+      console.log(`${tag} note=${String(body.note ?? "")}`);
+      res.json({ ok: true });
+    } catch (e: any) {
+      console.log(`[CLIENT_STATE] error: ${e?.message || e}`);
+      res.json({ ok: true });
+    }
+  });
+
   app.post("/api/check-username", async (req, res) => {
     const { username } = req.body;
     if (!username || typeof username !== "string") {
