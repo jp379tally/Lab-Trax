@@ -528,6 +528,52 @@ async function runStartupMigrations() {
         AND lower(try_to_jsonb(lc.case_data) ->> 'affiliationName') = u.normalized_name
     `);
 
+    // ONE-TIME MERGE: SDR1 duplicate-lab consolidation.
+    // Two organizations both ended up with display_name="SDR1":
+    //   SOURCE a9877ba7-... (1 case, 3 members)
+    //   TARGET fe67257e-... (45 cases, 2 members)
+    // Members of SOURCE could not see TARGET's 45 cases, even though the
+    // user thought everyone was in "SDR1". Per user instruction, merge
+    // SOURCE into TARGET and delete SOURCE. Idempotent: the IF guard
+    // skips this block once SOURCE no longer exists.
+    await db.execute(sql`
+      DO $$
+      DECLARE
+        src_id text := 'a9877ba7-dea7-4021-9959-a29b65d62d39';
+        tgt_id text := 'fe67257e-5cc5-4489-afc9-62afb5b9829c';
+      BEGIN
+        IF EXISTS (SELECT 1 FROM organizations WHERE id = src_id)
+           AND EXISTS (SELECT 1 FROM organizations WHERE id = tgt_id) THEN
+
+          INSERT INTO lab_memberships (lab_id, user_id, role, status, joined_at, approved_by_user_id)
+          SELECT tgt_id, user_id, role, status, COALESCE(joined_at, now()), approved_by_user_id
+          FROM lab_memberships
+          WHERE lab_id = src_id
+          ON CONFLICT (lab_id, user_id) DO NOTHING;
+
+          DELETE FROM lab_memberships WHERE lab_id = src_id;
+
+          UPDATE lab_cases
+          SET organization_id = tgt_id,
+              case_data = REPLACE(case_data, 'org:' || src_id, 'org:' || tgt_id)
+          WHERE organization_id = src_id AND deleted_at IS NULL;
+
+          UPDATE lab_cases
+          SET case_data = REPLACE(case_data, 'org:' || src_id, 'org:' || tgt_id)
+          WHERE case_data LIKE '%org:' || src_id || '%';
+
+          UPDATE audit_logs SET organization_id = tgt_id WHERE organization_id = src_id;
+
+          DELETE FROM join_requests WHERE lab_id = src_id;
+          DELETE FROM lab_invites WHERE lab_id = src_id;
+
+          DELETE FROM organizations WHERE id = src_id;
+
+          RAISE NOTICE 'SDR1 duplicate-lab merge complete (source=% -> target=%)', src_id, tgt_id;
+        END IF;
+      END $$;
+    `);
+
     log("Startup migrations applied successfully");
   } catch (err: any) {
     console.error("Startup migration error:", err?.message || err);
