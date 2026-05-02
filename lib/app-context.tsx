@@ -426,12 +426,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   async function fetchCasesFromServer(): Promise<FetchCasesResult> {
     try {
       const res = await resilientFetch(`/api/legacy/cases`);
+      lastFetchStatusRef.current = res.status;
       if (res.ok) {
-        const data = await res.json();
-        return { ok: true, cases: Array.isArray(data?.cases) ? data.cases : [] };
+        try {
+          const data = await res.json();
+          lastFetchErrRef.current = "";
+          return { ok: true, cases: Array.isArray(data?.cases) ? data.cases : [] };
+        } catch (parseErr: any) {
+          lastFetchErrRef.current = `parse:${String(parseErr?.message || parseErr).slice(0, 60)}`;
+          return { ok: false };
+        }
       }
+      lastFetchErrRef.current = `http:${res.status}`;
       return { ok: false };
-    } catch (e) {
+    } catch (e: any) {
+      lastFetchStatusRef.current = -1;
+      lastFetchErrRef.current = `throw:${String(e?.message || e).slice(0, 60)}`;
       console.log("Could not fetch cases from server:", e);
       return { ok: false };
     }
@@ -1116,6 +1126,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const lastFetchOkRef = useRef<boolean | null>(null);
   const lastFetchCountRef = useRef<number>(-1);
   const lastFetchSampleRef = useRef<string[]>([]);
+  const lastFetchStatusRef = useRef<number>(0);
+  const lastFetchErrRef = useRef<string>("");
 
   useEffect(() => {
     if (!currentUserId) {
@@ -1192,34 +1204,54 @@ export function AppProvider({ children }: { children: ReactNode }) {
             cacheLen = "parse-error";
           }
         }
-        const filtered = allCases.filter((c) => {
-          const key =
-            typeof c.affiliationKey === "string"
-              ? c.affiliationKey.trim()
-              : "";
-          if (key.startsWith("org:")) return true;
-          return c.ownerId === currentUserId;
-        });
-        const sample = lastFetchSampleRef.current;
+        // Inline raw probe — perform our OWN fetch right now from the
+        // diagnostic effect, bypassing fetchCasesFromServer entirely, so we
+        // can see exactly what the device sees: HTTP status, body byte
+        // length, JSON parse success, and the "cases" array length.
+        let probeStatus = 0;
+        let probeBytes = -1;
+        let probeParseOk = false;
+        let probeCount = -1;
+        let probeErr = "";
+        try {
+          const probeRes = await resilientFetch("/api/legacy/cases");
+          probeStatus = probeRes.status;
+          try {
+            const text = await probeRes.text();
+            probeBytes = text.length;
+            try {
+              const parsed = JSON.parse(text);
+              probeParseOk = true;
+              probeCount = Array.isArray(parsed?.cases)
+                ? parsed.cases.length
+                : -2;
+            } catch (pe: any) {
+              probeErr = `parse:${String(pe?.message || pe).slice(0, 50)}`;
+            }
+          } catch (te: any) {
+            probeErr = `text:${String(te?.message || te).slice(0, 50)}`;
+          }
+        } catch (fe: any) {
+          probeErr = `throw:${String(fe?.message || fe).slice(0, 50)}`;
+        }
         await resilientFetch("/api/_debug/client-state", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             marker,
             username: currentUser || "",
-            build: "95",
-            allCasesLen: allCases.length,
-            casesLen: filtered.length,
-            hasActiveLab: hasActiveLabMembership,
-            activeLabKey: activeLabAffiliationKey || "",
-            activeLabName: activeLabAffiliationName || "",
+            build: "96",
             fetchOk: lastFetchOkRef.current,
+            fetchStatus: lastFetchStatusRef.current,
+            fetchErr: lastFetchErrRef.current,
             serverCount: lastFetchCountRef.current,
-            sample0: sample[0] || "",
-            sample1: sample[1] || "",
-            sample2: sample[2] || "",
+            probeStatus,
+            probeBytes,
+            probeParseOk,
+            probeCount,
+            probeErr,
             cacheLen,
-            note: "post-signin diagnostic",
+            note: "post-signin diagnostic w/ raw probe",
           }),
         });
       } catch {

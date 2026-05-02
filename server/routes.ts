@@ -480,6 +480,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`${tag} sample1=${String(body.sample1 ?? "")}`);
       console.log(`${tag} sample2=${String(body.sample2 ?? "")}`);
       console.log(`${tag} cacheLen=${String(body.cacheLen ?? "")}`);
+      console.log(`${tag} fetchStatus=${String(body.fetchStatus ?? "")}`);
+      console.log(`${tag} fetchErr=${String(body.fetchErr ?? "")}`);
+      console.log(`${tag} probeStatus=${String(body.probeStatus ?? "")}`);
+      console.log(`${tag} probeBytes=${String(body.probeBytes ?? "")}`);
+      console.log(`${tag} probeParseOk=${String(body.probeParseOk ?? "")}`);
+      console.log(`${tag} probeCount=${String(body.probeCount ?? "")}`);
+      console.log(`${tag} probeErr=${String(body.probeErr ?? "")}`);
       console.log(`${tag} note=${String(body.note ?? "")}`);
       res.json({ ok: true });
     } catch (e: any) {
@@ -723,6 +730,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
   //          OR organization_id IN (my active lab ids)
   //
   app.get("/api/legacy/cases", requireAuth, async (req, res) => {
+    // Detect when the client closes the connection before we finish writing
+    // the response. Express logs `200 in XXms` on `finish`; this `close`
+    // listener captures the case where the socket was destroyed while we
+    // were still streaming bytes — the symptom we'd see if the client's
+    // fetch is timing out or being aborted mid-body.
+    const started = Date.now();
+    let finished = false;
+    res.on("finish", () => {
+      finished = true;
+    });
+    res.on("close", () => {
+      if (!finished) {
+        const userId = (req as any).auth?.userId as string | undefined;
+        console.log(
+          `[CASES_ABORT] u=${userId || "?"} after=${Date.now() - started}ms`
+        );
+      }
+    });
     try {
       const userId = (req as any).auth?.userId as string | undefined;
       if (!userId) {
