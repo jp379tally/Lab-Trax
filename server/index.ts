@@ -1,5 +1,6 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
+import compression from "compression";
 import { registerRoutes } from "./routes";
 import { hashPassword } from "./lib/crypto";
 import { db } from "./db";
@@ -583,6 +584,15 @@ async function runStartupMigrations() {
 (async () => {
   setupCors(app);
   setupSecurityHeaders(app);
+  app.use(
+    compression({
+      threshold: 1024,
+      filter: (req, res) => {
+        if (req.headers["x-no-compression"]) return false;
+        return compression.filter(req, res);
+      },
+    }),
+  );
   setupBodyParsing(app);
   setupRequestLogging(app);
 

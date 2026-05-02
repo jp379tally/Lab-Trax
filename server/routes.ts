@@ -841,7 +841,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
             (Number(a.updatedAt) || Number(a.createdAt) || 0)
         );
 
-      res.json({ cases });
+      const payload = { cases };
+      try {
+        const bytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
+        const userId2 = (req as any).auth?.userId as string | undefined;
+        console.log(
+          `[CASES_SIZE] u=${userId2 || "?"} count=${cases.length} bytes=${bytes}`
+        );
+      } catch {}
+      res.json(payload);
     } catch (error: any) {
       console.error("Legacy get cases error:", error?.message || error);
       res.status(500).json({ error: "Failed to fetch cases" });
