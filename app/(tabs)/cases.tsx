@@ -283,10 +283,26 @@ export default function CasesScreen() {
                 setInvoiceCase(item);
                 if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               }}
-              style={{ padding: 6, borderRadius: 8, backgroundColor: "#EFF6FF", marginRight: 4 }}
+              style={({ pressed }) => [
+                {
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 4,
+                  paddingVertical: 6,
+                  paddingHorizontal: 10,
+                  borderRadius: 8,
+                  backgroundColor: "#2563EB",
+                  marginRight: 6,
+                },
+                pressed && { opacity: 0.8 },
+              ]}
               hitSlop={8}
+              testID={`edit-invoice-${item.id}`}
             >
-              <Ionicons name="document-text-outline" size={16} color="#2563EB" />
+              <Ionicons name="document-text" size={14} color="#FFF" />
+              <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#FFF" }}>
+                Invoice
+              </Text>
             </Pressable>
           )}
           <Feather
