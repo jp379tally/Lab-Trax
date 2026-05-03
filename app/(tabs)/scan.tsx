@@ -199,6 +199,8 @@ export default function ScanScreen() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [doctorDropdownOpen, setDoctorDropdownOpen] = useState(false);
   const [doctorSearch, setDoctorSearch] = useState("");
+  const [providerPickerOpen, setProviderPickerOpen] = useState(false);
+  const [providerPickerSearch, setProviderPickerSearch] = useState("");
   const [patientDropdownOpen, setPatientDropdownOpen] = useState(false);
   const [patientSearch, setPatientSearch] = useState("");
   const [addingNewPatient, setAddingNewPatient] = useState(false);
@@ -1521,61 +1523,159 @@ export default function ScanScreen() {
               .replace(/[,.']/g, "")
               .replace(/\s+/g, " ")
               .trim();
-            const namesOverlap = (a: string, b: string) => {
-              const na = normName(a);
-              const nb = normName(b);
-              if (!na || !nb) return false;
-              if (na === nb) return true;
-              const partsA = na.split(" ");
-              const partsB = nb.split(" ");
-              const sharedWords = partsA.filter(w => w.length > 1 && partsB.includes(w));
-              return sharedWords.length >= Math.min(2, Math.min(partsA.length, partsB.length));
+            const levenshtein = (a: string, b: string) => {
+              if (a === b) return 0;
+              const m = a.length, n = b.length;
+              if (!m) return n;
+              if (!n) return m;
+              const dp: number[] = new Array(n + 1);
+              for (let j = 0; j <= n; j++) dp[j] = j;
+              for (let i = 1; i <= m; i++) {
+                let prev = dp[0];
+                dp[0] = i;
+                for (let j = 1; j <= n; j++) {
+                  const tmp = dp[j];
+                  dp[j] = a.charCodeAt(i - 1) === b.charCodeAt(j - 1)
+                    ? prev
+                    : 1 + Math.min(prev, dp[j], dp[j - 1]);
+                  prev = tmp;
+                }
+              }
+              return dp[n];
             };
-            const existingClient = clients.find(
-              (c) =>
-                namesOverlap(c.leadDoctor || "", d.doctorName) ||
-                (c.additionalProviders || []).some(p => namesOverlap(p, d.doctorName)) ||
-                namesOverlap(c.practiceName || "", d.doctorName) ||
-                (d.practiceName && normName(c.practiceName || "").includes(normName(d.practiceName))) ||
-                (d.practiceName && normName(d.practiceName).includes(normName(c.practiceName || "")))
-            );
-            if (!existingClient) {
+            const scoreMatch = (
+              provName: string,
+              practice: string,
+              scanned: string,
+              scannedPractice?: string,
+            ): number => {
+              const a = normName(provName);
+              const b = normName(scanned);
+              if (!a || !b) return 0;
+              if (a === b) return 100;
+              const partsA = a.split(" ").filter(w => w.length > 1);
+              const partsB = b.split(" ").filter(w => w.length > 1);
+              const shared = partsA.filter(w => partsB.includes(w));
+              let score = shared.length * 25;
+              const lastA = partsA[partsA.length - 1] || "";
+              const lastB = partsB[partsB.length - 1] || "";
+              if (lastA && lastB) {
+                if (lastA === lastB) score += 45;
+                else if (lastA.length >= 4 && lastB.length >= 4) {
+                  const dist = levenshtein(lastA, lastB);
+                  const maxLen = Math.max(lastA.length, lastB.length);
+                  if (dist <= 1) score += 35;
+                  else if (dist === 2 && maxLen >= 6) score += 18;
+                }
+              }
+              if (practice && scannedPractice) {
+                const pa = normName(practice);
+                const pb = normName(scannedPractice);
+                if (pa && pb && (pa === pb || pa.includes(pb) || pb.includes(pa))) {
+                  score += 15;
+                }
+              }
+              return score;
+            };
+
+            type Cand = { providerName: string; practiceName: string; clientId: string; score: number };
+            const ranked: Cand[] = allProviderEntries
+              .map(e => ({
+                providerName: e.providerName,
+                practiceName: e.practiceName,
+                clientId: e.clientId,
+                score: scoreMatch(e.providerName, e.practiceName, d.doctorName, d.practiceName),
+              }))
+              .filter(c => c.score >= 35)
+              .sort((a, b) => b.score - a.score);
+
+            const exactMatch = ranked.find(c => c.score >= 100);
+            const bestSimilar = ranked[0];
+
+            const ensureDr = (n: string) =>
+              /^dr\.?\s/i.test(n.trim()) ? n.trim() : `Dr. ${n.trim()}`;
+
+            const assignToProvider = (entry: { providerName: string }) => {
+              setDoctorName(entry.providerName);
+            };
+
+            const addAsNew = () => {
+              const drName = ensureDr(d.doctorName);
+              addClient({
+                practiceName: d.practiceName || drName,
+                leadDoctor: drName,
+                phone: d.practicePhone || "",
+                email: "",
+                address: d.practiceAddress || "",
+                tier: "Standard",
+                discountRate: 0,
+              });
+              setDoctorName(drName);
               setTimeout(() => {
-                const drName = /^dr\.?\s/i.test(d.doctorName.trim())
-                  ? d.doctorName.trim()
-                  : `Dr. ${d.doctorName.trim()}`;
+                Alert.alert(
+                  "Provider Added ✓",
+                  `${drName} has been added to your provider list. You can edit their full details (address, email, pricing) from the admin hub anytime.`,
+                );
+              }, 300);
+            };
+
+            const askIsNewProvider = () => {
+              Alert.alert(
+                "Add as new provider?",
+                `Is "${ensureDr(d.doctorName)}" a new provider?`,
+                [
+                  {
+                    text: "No — pick existing",
+                    onPress: () => {
+                      setProviderPickerSearch("");
+                      setProviderPickerOpen(true);
+                    },
+                  },
+                  {
+                    text: "Yes — add",
+                    onPress: addAsNew,
+                  },
+                ],
+              );
+            };
+
+            if (exactMatch) {
+              // Exact match — silently align the case to the on-file spelling.
+              assignToProvider(exactMatch);
+            } else if (bestSimilar) {
+              setTimeout(() => {
+                const label =
+                  bestSimilar.providerName +
+                  (bestSimilar.practiceName ? ` (${bestSimilar.practiceName})` : "");
+                Alert.alert(
+                  "Similar Provider Found",
+                  `The prescription says "${d.doctorName}". You already have "${label}" on file. Is this the same provider?`,
+                  [
+                    { text: "No", onPress: askIsNewProvider },
+                    {
+                      text: "Yes — assign",
+                      onPress: () => assignToProvider(bestSimilar),
+                    },
+                  ],
+                );
+              }, 600);
+            } else {
+              setTimeout(() => {
+                const drName = ensureDr(d.doctorName);
                 Alert.alert(
                   "New Provider Detected",
                   `"${drName}" is not in your provider list. Add them now so they appear in the admin hub and can be assigned to invoices?\n\nYou can fill in full details from the admin hub afterwards.`,
                   [
                     {
-                      text: "Not Now",
-                      style: "cancel",
-                      // No action — provider not added
-                    },
-                    {
-                      text: "Add Provider",
+                      text: "Pick Existing",
                       onPress: () => {
-                        // Immediately save the provider — no second step needed.
-                        addClient({
-                          practiceName: d.practiceName || drName,
-                          leadDoctor: drName,
-                          phone: d.practicePhone || "",
-                          email: "",
-                          address: d.practiceAddress || "",
-                          tier: "Standard",
-                          discountRate: 0,
-                        });
-                        // Let the user know it's done and editable in the admin hub.
-                        setTimeout(() => {
-                          Alert.alert(
-                            "Provider Added ✓",
-                            `${drName} has been added to your provider list. You can edit their full details (address, email, pricing) from the admin hub anytime.`
-                          );
-                        }, 300);
+                        setProviderPickerSearch("");
+                        setProviderPickerOpen(true);
                       },
                     },
-                  ]
+                    { text: "Not Now", style: "cancel" },
+                    { text: "Add Provider", onPress: addAsNew },
+                  ],
                 );
               }, 600);
             }
@@ -4553,6 +4653,91 @@ export default function ScanScreen() {
         onCancel={handleCropOverlayCancel}
         onCropped={handleCropOverlayCropped}
       />
+
+      <Modal
+        visible={providerPickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setProviderPickerOpen(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", padding: 20 }}>
+          <View style={{ backgroundColor: "#FFF", borderRadius: 16, maxHeight: "80%", overflow: "hidden" }}>
+            <View style={{ padding: 16, borderBottomWidth: 1, borderBottomColor: Colors.light.borderLight, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+              <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: Colors.light.text }}>
+                Select Existing Provider
+              </Text>
+              <Pressable onPress={() => setProviderPickerOpen(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={Colors.light.textSecondary} />
+              </Pressable>
+            </View>
+            <View style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: Colors.light.borderLight }}>
+              <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: Colors.light.surfaceSecondary, borderRadius: 10, paddingHorizontal: 12 }}>
+                <Ionicons name="search" size={16} color={Colors.light.textTertiary} />
+                <TextInput
+                  value={providerPickerSearch}
+                  onChangeText={setProviderPickerSearch}
+                  placeholder="Type to search providers…"
+                  placeholderTextColor={Colors.light.textTertiary}
+                  autoFocus
+                  style={{ flex: 1, paddingVertical: 10, paddingHorizontal: 8, fontSize: 15, fontFamily: "Inter_400Regular", color: Colors.light.text }}
+                  testID="provider-picker-search"
+                />
+                {providerPickerSearch.length > 0 && (
+                  <Pressable onPress={() => setProviderPickerSearch("")} hitSlop={8}>
+                    <Ionicons name="close-circle" size={16} color={Colors.light.textTertiary} />
+                  </Pressable>
+                )}
+              </View>
+            </View>
+            <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 400 }}>
+              {(() => {
+                const q = providerPickerSearch.trim().toLowerCase();
+                const list = q
+                  ? allProviderEntries.filter(
+                      (e) =>
+                        e.providerName.toLowerCase().includes(q) ||
+                        e.practiceName.toLowerCase().includes(q),
+                    )
+                  : allProviderEntries;
+                if (list.length === 0) {
+                  return (
+                    <View style={{ padding: 24, alignItems: "center" }}>
+                      <Text style={{ fontSize: 14, color: Colors.light.textSecondary, fontFamily: "Inter_400Regular" }}>
+                        No providers found
+                      </Text>
+                    </View>
+                  );
+                }
+                return list.map((e) => (
+                  <Pressable
+                    key={`${e.clientId}::${e.providerName}`}
+                    onPress={() => {
+                      setDoctorName(e.providerName);
+                      setProviderPickerOpen(false);
+                      setProviderPickerSearch("");
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }}
+                    style={({ pressed }) => [
+                      { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: Colors.light.borderLight },
+                      pressed && { backgroundColor: Colors.light.surfaceSecondary },
+                    ]}
+                    testID={`provider-picker-${e.clientId}`}
+                  >
+                    <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: Colors.light.text }}>
+                      {e.providerName}
+                    </Text>
+                    {!!e.practiceName && (
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 2 }}>
+                        {e.practiceName}
+                      </Text>
+                    )}
+                  </Pressable>
+                ));
+              })()}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
