@@ -2062,7 +2062,7 @@ function AdminDashboard() {
 
   function renderHub() {
     const totalOpenBalance = clients.reduce((sum, c) => {
-      const clientInvoices = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue"));
       return sum + clientInvoices.reduce((s, inv) => s + inv.amount, 0);
     }, 0);
 
@@ -2146,7 +2146,7 @@ function AdminDashboard() {
 
   function renderClientHub() {
     const totalOpenBalance = clients.reduce((sum, c) => {
-      const clientInvoices = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue"));
       return sum + clientInvoices.reduce((s, inv) => s + inv.amount, 0);
     }, 0);
     const activeClientCount = clients.filter(c => c.status !== "inactive").length;
@@ -4007,13 +4007,13 @@ function AdminDashboard() {
           {(() => {
             const allOpenInvoices = invoices.filter((inv) => inv.status === "open" || inv.status === "overdue");
             const totalOpenAmount = allOpenInvoices.reduce((s, inv) => s + inv.amount, 0);
-            const clientsWithOpen = clients.filter(c => allOpenInvoices.some(inv => inv.clientName === c.practiceName));
+            const clientsWithOpen = clients.filter(c => allOpenInvoices.some(inv => inv.clientId === c.id || inv.clientName === c.practiceName));
 
             function generatePreviewForClients(selectedClients: typeof clients) {
               const results: Array<{ clientName: string; email: string; address: string; leadDoctor: string; invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; qty: number; rate: number; amount: number }[] }[]; totalDue: number }> = [];
 
               for (const c of selectedClients) {
-                const clientInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
+                const clientInvs = allOpenInvoices.filter((inv) => inv.clientId === c.id || inv.clientName === c.practiceName);
                 clientInvs.sort((a, b) => a.issuedAt - b.issuedAt);
 
                 const mapInv = (inv: typeof allOpenInvoices[0]) => ({
@@ -4117,7 +4117,7 @@ function AdminDashboard() {
                 <Text style={[adm.formDesc, { marginBottom: 12 }]}>Or select a provider to generate their statement:</Text>
 
                 {clientsWithOpen.map((c) => {
-                  const clientOpenInvs = allOpenInvoices.filter((inv) => inv.clientName === c.practiceName);
+                  const clientOpenInvs = allOpenInvoices.filter((inv) => inv.clientId === c.id || inv.clientName === c.practiceName);
                   const clientTotal = clientOpenInvs.reduce((s, inv) => s + inv.amount, 0);
                   return (
                     <Pressable
@@ -4832,21 +4832,21 @@ function AdminDashboard() {
                 style={({ pressed }) => ({ flex: 1, paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const, borderRightWidth: 1, borderRightColor: "rgba(255,255,255,0.15)", backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)" })}
                 onPress={() => { setStatementFilter("open"); setAdminView("view-statements"); }}
               >
-                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => inv.clientName === c.practiceName && inv.status === "open")).length}</Text>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && inv.status === "open")).length}</Text>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>Open</Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => ({ flex: 1, paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const, borderRightWidth: 1, borderRightColor: "rgba(255,255,255,0.15)", backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)" })}
                 onPress={() => { setStatementFilter("pastdue"); setAdminView("view-statements"); }}
               >
-                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => inv.clientName === c.practiceName && inv.status === "overdue")).length}</Text>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && inv.status === "overdue")).length}</Text>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>Past Due</Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => ({ flex: 1, paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const, backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)" })}
                 onPress={() => { setStatementFilter("all"); setAdminView("view-statements"); }}
               >
-                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => inv.clientName === c.practiceName)).length}</Text>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => inv.clientId === c.id || inv.clientName === c.practiceName)).length}</Text>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>All</Text>
               </Pressable>
             </View>
@@ -4855,7 +4855,7 @@ function AdminDashboard() {
           <Pressable
             style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
             onPress={() => {
-              const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue")));
+              const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue")));
               if (clientsWithOpenInvs.length === 0) { Alert.alert("No Statements", "No clients have open invoices to send statements for."); return; }
               setAdminView("pick-statement-to-send");
             }}
@@ -5076,7 +5076,7 @@ function AdminDashboard() {
   }
 
   function renderPickStatementToSend() {
-    const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue")));
+    const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue")));
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
@@ -5095,7 +5095,7 @@ function AdminDashboard() {
             <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", paddingVertical: 20 }}>No clients with open invoices.</Text>
           )}
           {clientsWithOpenInvs.map(c => {
-            const cInvs = invoices.filter(inv => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+            const cInvs = invoices.filter(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue"));
             const total = cInvs.reduce((s, inv) => s + inv.amount, 0);
             return (
               <Pressable
@@ -5532,7 +5532,7 @@ function AdminDashboard() {
   function renderClients() {
     const activeClients = clients.filter(c => c.status !== "inactive");
     const clientsWithBalance = activeClients.map((c) => {
-      const clientInvoices = invoices.filter((inv) => inv.clientName === c.practiceName && (inv.status === "open" || inv.status === "overdue"));
+      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue"));
       const openBalance = clientInvoices.reduce((s, inv) => s + inv.amount, 0);
       const openCount = clientInvoices.length;
       return { ...c, openBalance, openCount };
