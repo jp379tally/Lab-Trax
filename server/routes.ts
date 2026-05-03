@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "./lib/onedrive";
+import { runOneDriveBackup } from "./lib/backup";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -2186,51 +2187,15 @@ Important rules:
       if (!reqUser || reqUser.role !== "admin") {
         return res.status(403).json({ error: "Admin access required." });
       }
-
-      const allUsers = await db.select().from(users);
-      const allCases = await db.select().from(labCases);
-      const safeUsers = allUsers.map(u => { const { password: _pw, ...rest } = u as any; return rest; });
-
-      const dateStr = new Date().toISOString().split("T")[0];
-      const fileName = `labtrax-backup-${dateStr}.zip`;
-      const manifest = {
-        version: "1.0",
-        appName: "LabTrax",
-        exportedAt: new Date().toISOString(),
-        exportedBy: reqUser.username || reqUser.id,
-        counts: { users: safeUsers.length, cases: allCases.length },
-        tables: ["users", "lab_cases"],
-        note: "Passwords excluded. Media files included in media/ directory.",
-      };
-
-      const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
-      const mediaExists = fs.existsSync(mediaDir);
-
-      // Collect ZIP into a buffer
-      const zipBuffer: Buffer = await new Promise((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        const archive = archiver("zip", { zlib: { level: 6 } });
-        archive.on("data", (chunk: Buffer) => chunks.push(chunk));
-        archive.on("end", () => resolve(Buffer.concat(chunks)));
-        archive.on("error", reject);
-        archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
-        archive.append(JSON.stringify(safeUsers, null, 2), { name: "data/users.json" });
-        archive.append(JSON.stringify(allCases, null, 2), { name: "data/cases.json" });
-        if (mediaExists) archive.directory(mediaDir, "media");
-        archive.finalize();
-      });
-
-      const result = await uploadToOneDrive(zipBuffer, fileName, "LabTrax Backups");
-      return res.json({
-        success: true,
-        fileName: result.name,
-        size: result.size,
-        webUrl: result.webUrl,
-        folder: "LabTrax Backups",
-      });
+      const result = await runOneDriveBackup(
+        `manual:${reqUser.username || reqUser.id}`,
+      );
+      return res.json({ success: true, ...result });
     } catch (e: any) {
       console.error("OneDrive backup error:", e?.message);
-      return res.status(500).json({ error: e?.message || "OneDrive backup failed." });
+      return res
+        .status(500)
+        .json({ error: e?.message || "OneDrive backup failed." });
     }
   });
 

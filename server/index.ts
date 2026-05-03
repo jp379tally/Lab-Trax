@@ -2,6 +2,7 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import compression from "compression";
 import { registerRoutes } from "./routes";
+import { startDailyOneDriveBackup } from "./lib/backup";
 import { hashPassword } from "./lib/crypto";
 import { db } from "./db";
 import { users } from "../shared/schema";
@@ -614,6 +615,7 @@ async function runStartupMigrations() {
     },
     () => {
       log(`express server serving on port ${port}`);
+      startDailyOneDriveBackup();
     },
   );
 })();
