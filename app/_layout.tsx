@@ -1,11 +1,12 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import { Stack, router } from "expo-router";
 import { ThemeProvider as NavThemeProvider } from "@react-navigation/native";
 import * as SplashScreen from "expo-splash-screen";
 import * as Linking from "expo-linking";
 import React, { useEffect, useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet, PanResponder, Platform } from "react-native";
 import { pushSharedFile } from "@/lib/shared-file-inbox";
+import { useShareIntent } from "expo-share-intent";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { LinearGradient } from "expo-linear-gradient";
@@ -174,6 +175,35 @@ export default function RootLayout() {
     Inter_600SemiBold,
     Inter_700Bold,
   });
+
+  // Capture content shared from the iOS/Android Share sheet (e.g. a screenshot)
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent({
+    debug: false,
+    resetOnBackground: true,
+  });
+
+  useEffect(() => {
+    if (!hasShareIntent || !shareIntent) return;
+    const files = shareIntent.files || [];
+    if (files.length === 0) {
+      resetShareIntent();
+      return;
+    }
+    Promise.all(
+      files
+        .filter((f) => !!f?.path)
+        .map((f) => pushSharedFile(f.path).catch(() => {})),
+    )
+      .catch(() => {})
+      .finally(() => {
+        resetShareIntent();
+        // Jump to the scan tab so the focus effect drains the inbox into the
+        // case media intake area.
+        try {
+          router.replace("/(tabs)/scan");
+        } catch {}
+      });
+  }, [hasShareIntent, shareIntent, resetShareIntent]);
 
   useEffect(() => {
     if (fontsLoaded || fontError) {

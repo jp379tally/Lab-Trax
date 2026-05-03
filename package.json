@@ -46,6 +46,7 @@
     "expo-print": "^55.0.9",
     "expo-router": "~6.0.17",
     "expo-secure-store": "^55.0.9",
+    "expo-share-intent": "^5.1.1",
     "expo-sharing": "~14.0.8",
     "expo-splash-screen": "~31.0.12",
     "expo-status-bar": "~3.0.9",

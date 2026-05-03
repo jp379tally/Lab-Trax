@@ -31,6 +31,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
+import { popSharedFiles } from "@/lib/shared-file-inbox";
 import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
@@ -481,8 +482,36 @@ export default function ScanScreen() {
         setPhase("camera");
         setCapturedUri(null);
       }
+      // Drain anything sent via the iOS/Android Share sheet into the
+      // case media intake area.
+      (async () => {
+        try {
+          const entries = await popSharedFiles();
+          if (entries.length === 0) return;
+          const newAttachments = entries.map((e) => {
+            const lower = e.url.toLowerCase();
+            const isVideo = /\.(mp4|mov|avi|m4v)(\?|$)/.test(lower);
+            return {
+              id: generateId(),
+              uri: e.url,
+              kind: (isVideo ? "video" : "image") as "image" | "video",
+            };
+          });
+          setCaseAttachments((prev) => [...prev, ...newAttachments]);
+          setPhase("form");
+          if (Platform.OS !== "web") {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+          setTimeout(() => {
+            Alert.alert(
+              "Photos Added",
+              `${newAttachments.length} item${newAttachments.length === 1 ? "" : "s"} attached to this new case. Fill in the patient and provider details to save.`,
+            );
+          }, 250);
+        } catch {}
+      })();
       return () => {};
-    }, [])
+    }, [phase])
   );
 
   const cropDoneRef = useRef(false);
