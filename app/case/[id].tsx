@@ -3785,9 +3785,8 @@ export default function CaseDetailScreen() {
             });
           } else {
             const { id: _id, ...invWithoutId } = updatedInv;
-            addInvoice(invWithoutId);
-            const newInv = invoices.find(i => i.invoiceNumber === updatedInv.invoiceNumber);
-            if (newInv) updateCase(caseItem.id, { invoiceId: newInv.id });
+            const createdId = addInvoice(invWithoutId);
+            updateCase(caseItem.id, { invoiceId: createdId });
           }
           const newTotal = updatedInv.lineItems.reduce((s, li) => s + li.amount, 0) - (updatedInv.credits || 0);
           const caseUpdates: Record<string, any> = { price: newTotal };

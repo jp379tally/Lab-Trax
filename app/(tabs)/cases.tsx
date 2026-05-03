@@ -54,7 +54,7 @@ function deriveDisplayInitials(input?: {
 }
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, refreshCases, fullRefreshCases } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, refreshCases, fullRefreshCases, setPendingInvoiceEditId } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
@@ -280,8 +280,42 @@ export default function CasesScreen() {
             <Pressable
               onPress={(e) => {
                 e.stopPropagation();
-                setInvoiceCase(item);
                 if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                let invId = item.invoiceId;
+                if (!invId) {
+                  const matched = invoices.find(inv => inv.caseIds.includes(item.id));
+                  if (matched) invId = matched.id;
+                }
+                if (!invId) {
+                  const virtual = getCaseInvoice(item);
+                  const matchedClient = clients.find(c => {
+                    const stripDr = (n: string) => (n || "").trim().toLowerCase().replace(/^dr\.?\s*/i, "");
+                    const drName = stripDr(item.doctorName || "");
+                    return stripDr(c.leadDoctor) === drName || (c.additionalProviders || []).some(p => stripDr(p) === drName);
+                  });
+                  const createdId = addInvoice({
+                    invoiceNumber: virtual.invoiceNumber,
+                    clientId: matchedClient?.id || "",
+                    clientName: matchedClient?.practiceName || virtual.clientName,
+                    caseIds: [item.id],
+                    amount: virtual.amount,
+                    credits: virtual.credits,
+                    status: virtual.status,
+                    issuedAt: virtual.issuedAt,
+                    dueAt: virtual.dueAt,
+                    lineItems: virtual.lineItems,
+                    patientName: item.patientName || "",
+                    billTo: matchedClient?.practiceName || "",
+                    caseType: item.caseType || "",
+                    teeth: item.toothIndices || "",
+                    shade: item.shade || "",
+                    caseNotes: "",
+                  } as any);
+                  invId = createdId;
+                  updateCase(item.id, { invoiceId: createdId } as any);
+                }
+                setPendingInvoiceEditId(invId);
+                router.navigate("/(tabs)");
               }}
               style={({ pressed }) => [
                 {
@@ -601,7 +635,8 @@ export default function CasesScreen() {
               });
             } else {
               const { id: _id, ...invWithoutId } = updatedInv;
-              addInvoice(invWithoutId);
+              const createdId = addInvoice(invWithoutId);
+              updateCase(invoiceCase.id, { invoiceId: createdId } as any);
             }
             const newTotal = updatedInv.lineItems.reduce((s, li) => s + li.amount, 0) - (updatedInv.credits || 0);
             const caseUpdates: Record<string, any> = { price: newTotal };

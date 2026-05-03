@@ -76,8 +76,10 @@ interface AppContextValue {
   updateUser: (id: string, u: Partial<LabUser>) => void;
   removeUser: (id: string) => void;
   invoices: Invoice[];
-  addInvoice: (inv: Omit<Invoice, "id">) => void;
+  addInvoice: (inv: Omit<Invoice, "id">) => string;
   updateInvoice: (id: string, inv: Partial<Invoice>) => void;
+  pendingInvoiceEditId: string | null;
+  setPendingInvoiceEditId: (id: string | null) => void;
   shippingAccounts: ShippingAccount[];
   addShippingAccount: (companyName: string, accountNumber: string) => void;
   removeShippingAccount: (id: string) => void;
@@ -251,6 +253,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [clients, setClients] = useState<Client[]>([]);
   const [users, setUsers] = useState<LabUser[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [pendingInvoiceEditId, setPendingInvoiceEditId] = useState<string | null>(null);
   const [shippingAccounts, setShippingAccounts] = useState<ShippingAccount[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -2227,11 +2230,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     AsyncStorage.setItem(USERS_KEY, JSON.stringify(updated));
   }
 
-  function addInvoice(inv: Omit<Invoice, "id">) {
+  function addInvoice(inv: Omit<Invoice, "id">): string {
     const newInv: Invoice = { ...inv, id: generateId() };
     const updated = [newInv, ...invoices];
     setInvoices(updated);
     AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
+    return newInv.id;
   }
 
   function updateInvoice(id: string, inv: Partial<Invoice>) {
@@ -2949,6 +2953,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       invoices,
       addInvoice,
       updateInvoice,
+      pendingInvoiceEditId,
+      setPendingInvoiceEditId,
       shippingAccounts,
       addShippingAccount,
       removeShippingAccount,
@@ -3003,7 +3009,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       hardRefresh,
       updateWorkStatus,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

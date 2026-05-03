@@ -24,7 +24,7 @@ import * as Sharing from "expo-sharing";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as LocalAuthentication from "expo-local-authentication";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import Animated, {
   useSharedValue,
@@ -1667,11 +1667,38 @@ type AdminView =
   | "backup";
 
 function AdminDashboard() {
-  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite } = useApp();
+  const { cases, clients, addClient, updateClient, addCase, users, addUser, updateUser, removeUser, invoices, updateInvoice, setRole, shippingAccounts, addShippingAccount, removeShippingAccount, pricingTiers, updateTierPricing, addPricingTier, inventory, addInventoryItem, updateInventoryItem, removeInventoryItem, addNotification, customStationLabels, updateStationLabel, removeCase, removeClient, deactivateClient, reactivateClient, deletedClientInvoices, inactiveClients, sendLabInvite, pendingInvoiceEditId, setPendingInvoiceEditId } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const insets = useSafeAreaInsets();
   const [adminView, setAdminView] = useState<AdminView>("hub");
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!pendingInvoiceEditId) return;
+      const inv = invoices.find(i => i.id === pendingInvoiceEditId);
+      if (!inv) { setPendingInvoiceEditId(null); return; }
+      setSelectedInvoice(inv);
+      setEditInvLineItems(inv.lineItems.map(li => ({ ...li })));
+      setEditInvPatientName(inv.patientName || "");
+      setEditInvBillTo(inv.billTo || "");
+      setEditInvCaseType(inv.caseType || "");
+      setEditInvTeeth(inv.teeth || "");
+      setEditInvShade(inv.shade || "");
+      setEditInvCaseNotes(inv.caseNotes || "");
+      setEditInvCreditsText(String(inv.credits || 0));
+      setEditInvClientId(inv.clientId || "");
+      setEditInvClientName(inv.clientName || "");
+      setEditInvBillToSearch(inv.billTo || "");
+      setEditInvShowProviderDrop(false);
+      setEditInvNumber(inv.invoiceNumber || "");
+      setEditInvIssuedAtStr(new Date(inv.issuedAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
+      setEditInvDueAtStr(new Date(inv.dueAt).toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }));
+      setEditInvCreditNote(inv.creditNote || "");
+      setAdminView("edit-invoice");
+      setPendingInvoiceEditId(null);
+    }, [pendingInvoiceEditId, invoices, setPendingInvoiceEditId])
+  );
 
   const totalRevenue = cases.reduce((sum, c) => sum + c.price, 0);
   const openInvoiceCount = invoices.filter((i) => i.status === "open" || i.status === "overdue").length;
@@ -2062,7 +2089,7 @@ function AdminDashboard() {
 
   function renderHub() {
     const totalOpenBalance = clients.reduce((sum, c) => {
-      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue"));
+      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && (inv.status === "open" || inv.status === "overdue"));
       return sum + clientInvoices.reduce((s, inv) => s + inv.amount, 0);
     }, 0);
 
@@ -2146,7 +2173,7 @@ function AdminDashboard() {
 
   function renderClientHub() {
     const totalOpenBalance = clients.reduce((sum, c) => {
-      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue"));
+      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && (inv.status === "open" || inv.status === "overdue"));
       return sum + clientInvoices.reduce((s, inv) => s + inv.amount, 0);
     }, 0);
     const activeClientCount = clients.filter(c => c.status !== "inactive").length;
@@ -4007,13 +4034,13 @@ function AdminDashboard() {
           {(() => {
             const allOpenInvoices = invoices.filter((inv) => inv.status === "open" || inv.status === "overdue");
             const totalOpenAmount = allOpenInvoices.reduce((s, inv) => s + inv.amount, 0);
-            const clientsWithOpen = clients.filter(c => allOpenInvoices.some(inv => inv.clientId === c.id || inv.clientName === c.practiceName));
+            const clientsWithOpen = clients.filter(c => allOpenInvoices.some(inv => inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()));
 
             function generatePreviewForClients(selectedClients: typeof clients) {
               const results: Array<{ clientName: string; email: string; address: string; leadDoctor: string; invoices: { invoiceNumber: string; amount: number; issuedAt: number; dueAt: number; patientName: string; lineItems: { item: string; description: string; qty: number; rate: number; amount: number }[] }[]; totalDue: number }> = [];
 
               for (const c of selectedClients) {
-                const clientInvs = allOpenInvoices.filter((inv) => inv.clientId === c.id || inv.clientName === c.practiceName);
+                const clientInvs = allOpenInvoices.filter((inv) => inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase());
                 clientInvs.sort((a, b) => a.issuedAt - b.issuedAt);
 
                 const mapInv = (inv: typeof allOpenInvoices[0]) => ({
@@ -4117,7 +4144,7 @@ function AdminDashboard() {
                 <Text style={[adm.formDesc, { marginBottom: 12 }]}>Or select a provider to generate their statement:</Text>
 
                 {clientsWithOpen.map((c) => {
-                  const clientOpenInvs = allOpenInvoices.filter((inv) => inv.clientId === c.id || inv.clientName === c.practiceName);
+                  const clientOpenInvs = allOpenInvoices.filter((inv) => inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase());
                   const clientTotal = clientOpenInvs.reduce((s, inv) => s + inv.amount, 0);
                   return (
                     <Pressable
@@ -4484,7 +4511,7 @@ function AdminDashboard() {
   }
 
   function renderSendInvoice() {
-    const client = sendInvoiceTarget ? clients.find(c => c.practiceName === sendInvoiceTarget.clientName) : null;
+    const client = sendInvoiceTarget ? clients.find(c => (c.practiceName || "").trim().toLowerCase() === (sendInvoiceTarget.clientName || "").trim().toLowerCase()) : null;
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
@@ -4727,7 +4754,7 @@ function AdminDashboard() {
               });
               addNotification({ title: "Invoice Texted", message: `Invoice ${sendInvoiceTarget ? formatInvNum(sendInvoiceTarget.invoiceNumber) : ""} texted to ${phones.join(", ")}`, type: "update" });
 
-              const client = sendInvoiceTarget ? clients.find(c => c.practiceName === sendInvoiceTarget.clientName) : null;
+              const client = sendInvoiceTarget ? clients.find(c => (c.practiceName || "").trim().toLowerCase() === (sendInvoiceTarget.clientName || "").trim().toLowerCase()) : null;
               const onFilePhone = client?.phone || "";
               const allEnteredPhones = phones.join("; ");
               const phoneChanged = onFilePhone.trim() !== allEnteredPhones.trim() && allEnteredPhones.length > 0;
@@ -4832,21 +4859,21 @@ function AdminDashboard() {
                 style={({ pressed }) => ({ flex: 1, paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const, borderRightWidth: 1, borderRightColor: "rgba(255,255,255,0.15)", backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)" })}
                 onPress={() => { setStatementFilter("open"); setAdminView("view-statements"); }}
               >
-                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && inv.status === "open")).length}</Text>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && inv.status === "open")).length}</Text>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>Open</Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => ({ flex: 1, paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const, borderRightWidth: 1, borderRightColor: "rgba(255,255,255,0.15)", backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)" })}
                 onPress={() => { setStatementFilter("pastdue"); setAdminView("view-statements"); }}
               >
-                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && inv.status === "overdue")).length}</Text>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && inv.status === "overdue")).length}</Text>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>Past Due</Text>
               </Pressable>
               <Pressable
                 style={({ pressed }) => ({ flex: 1, paddingVertical: 14, alignItems: "center" as const, justifyContent: "center" as const, backgroundColor: pressed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)" })}
                 onPress={() => { setStatementFilter("all"); setAdminView("view-statements"); }}
               >
-                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => inv.clientId === c.id || inv.clientName === c.practiceName)).length}</Text>
+                <Text style={{ fontSize: 16, fontFamily: "Inter_700Bold", color: "#fff" }}>{clients.filter(c => invoices.some(inv => inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase())).length}</Text>
                 <Text style={{ fontSize: 11, fontFamily: "Inter_500Medium", color: "rgba(255,255,255,0.85)", marginTop: 2 }}>All</Text>
               </Pressable>
             </View>
@@ -4855,7 +4882,7 @@ function AdminDashboard() {
           <Pressable
             style={({ pressed }) => ({ backgroundColor: "#16A34A", borderRadius: 14, paddingVertical: 16, paddingHorizontal: 20, marginBottom: 12, flexDirection: "row" as const, alignItems: "center" as const, gap: 12, opacity: pressed ? 0.85 : 1 })}
             onPress={() => {
-              const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue")));
+              const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && (inv.status === "open" || inv.status === "overdue")));
               if (clientsWithOpenInvs.length === 0) { Alert.alert("No Statements", "No clients have open invoices to send statements for."); return; }
               setAdminView("pick-statement-to-send");
             }}
@@ -4895,7 +4922,7 @@ function AdminDashboard() {
     const filterLabel = statementFilter === "open" ? "Open Statements" : statementFilter === "pastdue" ? "Past Due Statements" : "All Statements";
     const activeClients = clients.filter(c => c.status !== "inactive");
     const filteredClients = activeClients.filter(c => {
-      const cInvs = invoices.filter(inv => inv.clientName === c.practiceName || inv.clientId === c.id);
+      const cInvs = invoices.filter(inv => inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase());
       if (statementFilter === "open") return cInvs.some(inv => inv.status === "open" || inv.status === "overdue");
       if (statementFilter === "pastdue") return cInvs.some(inv => inv.status === "overdue");
       return cInvs.length > 0;
@@ -4920,10 +4947,10 @@ function AdminDashboard() {
           ) : (
             filteredClients.map(c => {
               const cInvs = statementFilter === "open"
-                ? invoices.filter(inv => (inv.clientName === c.practiceName || inv.clientId === c.id) && (inv.status === "open" || inv.status === "overdue"))
+                ? invoices.filter(inv => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && (inv.status === "open" || inv.status === "overdue"))
                 : statementFilter === "pastdue"
-                  ? invoices.filter(inv => (inv.clientName === c.practiceName || inv.clientId === c.id) && inv.status === "overdue")
-                  : invoices.filter(inv => inv.clientName === c.practiceName || inv.clientId === c.id);
+                  ? invoices.filter(inv => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && inv.status === "overdue")
+                  : invoices.filter(inv => inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase());
               const total = cInvs.reduce((s, inv) => s + inv.amount, 0);
               return (
                 <Pressable key={c.id} style={({ pressed }) => [adm.statementCard, pressed && { opacity: 0.7 }]} onPress={() => { setStatementViewClient(c); setAdminView("statement-detail-view"); }}>
@@ -4950,10 +4977,10 @@ function AdminDashboard() {
     const client = statementViewClient;
     if (!client) return renderViewStatements();
     const cInvs = statementFilter === "open"
-      ? invoices.filter(inv => (inv.clientName === client.practiceName || inv.clientId === client.id) && (inv.status === "open" || inv.status === "overdue"))
+      ? invoices.filter(inv => ((inv.clientName || "").trim().toLowerCase() === (client.practiceName || "").trim().toLowerCase() || inv.clientId === client.id) && (inv.status === "open" || inv.status === "overdue"))
       : statementFilter === "pastdue"
-        ? invoices.filter(inv => (inv.clientName === client.practiceName || inv.clientId === client.id) && inv.status === "overdue")
-        : invoices.filter(inv => inv.clientName === client.practiceName || inv.clientId === client.id);
+        ? invoices.filter(inv => ((inv.clientName || "").trim().toLowerCase() === (client.practiceName || "").trim().toLowerCase() || inv.clientId === client.id) && inv.status === "overdue")
+        : invoices.filter(inv => (inv.clientName || "").trim().toLowerCase() === (client.practiceName || "").trim().toLowerCase() || inv.clientId === client.id);
     const sortedCInvs = [...cInvs].sort((a, b) => a.issuedAt - b.issuedAt);
     const totalDue = sortedCInvs.reduce((s, inv) => s + inv.amount, 0);
     const today = new Date();
@@ -5076,7 +5103,7 @@ function AdminDashboard() {
   }
 
   function renderPickStatementToSend() {
-    const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue")));
+    const clientsWithOpenInvs = clients.filter(c => invoices.some(inv => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && (inv.status === "open" || inv.status === "overdue")));
     return (
       <ScrollView style={styles.container} contentContainerStyle={{ paddingTop: Platform.OS === "web" ? 67 + 16 : insets.top + 16, paddingBottom: Platform.OS === "web" ? 84 + 16 : 100 }} showsVerticalScrollIndicator={false}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 20, marginBottom: 16 }}>
@@ -5095,7 +5122,7 @@ function AdminDashboard() {
             <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: Colors.light.textTertiary, textAlign: "center", paddingVertical: 20 }}>No clients with open invoices.</Text>
           )}
           {clientsWithOpenInvs.map(c => {
-            const cInvs = invoices.filter(inv => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue"));
+            const cInvs = invoices.filter(inv => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && (inv.status === "open" || inv.status === "overdue"));
             const total = cInvs.reduce((s, inv) => s + inv.amount, 0);
             return (
               <Pressable
@@ -5158,7 +5185,7 @@ function AdminDashboard() {
 
               const client = sendStatementTarget;
               if (client) {
-                const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                const clientInvs = invoices.filter(inv => (inv.clientName || "").trim().toLowerCase() === (client.practiceName || "").trim().toLowerCase() && (inv.status === "open" || inv.status === "overdue"));
                 const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
                 const stmtData = [{
                   clientName: client.practiceName,
@@ -5261,7 +5288,7 @@ function AdminDashboard() {
               onPress={() => {
                 if (!sendEmailTo.trim()) { Alert.alert("Required", "Please enter an email address to preview."); return; }
                 if (client) {
-                  const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                  const clientInvs = invoices.filter(inv => (inv.clientName || "").trim().toLowerCase() === (client.practiceName || "").trim().toLowerCase() && (inv.status === "open" || inv.status === "overdue"));
                   const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
                   setEmailPreviewStmtData([{
                     clientName: client.practiceName,
@@ -5294,7 +5321,7 @@ function AdminDashboard() {
                   if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   const phones = sendPhoneTo.split(";").map(p => p.trim()).filter(p => p.length > 0);
                   if (client) {
-                    const clientInvs = invoices.filter(inv => inv.clientName === client.practiceName && (inv.status === "open" || inv.status === "overdue"));
+                    const clientInvs = invoices.filter(inv => (inv.clientName || "").trim().toLowerCase() === (client.practiceName || "").trim().toLowerCase() && (inv.status === "open" || inv.status === "overdue"));
                     const sortedInvs = [...clientInvs].sort((a, b) => a.issuedAt - b.issuedAt);
                     const stmtData = [{ clientName: client.practiceName, email: client.email || "", address: client.address || "", leadDoctor: client.leadDoctor || "", invoices: sortedInvs.map(inv => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, issuedAt: inv.issuedAt, dueAt: inv.dueAt, patientName: inv.patientName, lineItems: (inv.lineItems || []).map(li => ({ item: li.item, description: li.description, qty: li.qty, rate: li.rate, amount: li.amount })) })), totalDue: sortedInvs.reduce((s, inv) => s + inv.amount, 0) }];
                     await generateStatementPdfAndShare(stmtData, sendEmailMessage);
@@ -5532,7 +5559,7 @@ function AdminDashboard() {
   function renderClients() {
     const activeClients = clients.filter(c => c.status !== "inactive");
     const clientsWithBalance = activeClients.map((c) => {
-      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || inv.clientName === c.practiceName) && (inv.status === "open" || inv.status === "overdue"));
+      const clientInvoices = invoices.filter((inv) => (inv.clientId === c.id || (inv.clientName || "").trim().toLowerCase() === (c.practiceName || "").trim().toLowerCase()) && (inv.status === "open" || inv.status === "overdue"));
       const openBalance = clientInvoices.reduce((s, inv) => s + inv.amount, 0);
       const openCount = clientInvoices.length;
       return { ...c, openBalance, openCount };
@@ -5640,7 +5667,7 @@ function AdminDashboard() {
   function renderClientDetail() {
     if (!selectedClient) return renderClients();
 
-    const clientInvoices = invoices.filter((inv) => inv.clientName === selectedClient.practiceName);
+    const clientInvoices = invoices.filter((inv) => (inv.clientName || "").trim().toLowerCase() === (selectedClient.practiceName || "").trim().toLowerCase());
     const openInvoices = clientInvoices.filter((inv) => inv.status === "open" || inv.status === "overdue");
     const paidInvoices = clientInvoices.filter((inv) => inv.status === "paid");
     const openBalance = openInvoices.reduce((s, inv) => s + inv.amount, 0);
@@ -5920,7 +5947,7 @@ function AdminDashboard() {
   function renderClientStats() {
     if (!selectedClient) return renderClients();
 
-    const clientInvoices = invoices.filter((inv) => inv.clientName === selectedClient.practiceName);
+    const clientInvoices = invoices.filter((inv) => (inv.clientName || "").trim().toLowerCase() === (selectedClient.practiceName || "").trim().toLowerCase());
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
