@@ -14,6 +14,8 @@ import {
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 import type { Invoice, InvoiceLineItem } from "@/lib/data";
 import { formatInvNum } from "@/lib/data";
 
@@ -266,6 +268,129 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
     Alert.alert("Saved", "Invoice updated successfully.");
   }
 
+  function buildInvoiceHtml(): string {
+    if (!invoice) return "";
+    const items = invoice.lineItems || [];
+    const sub = items.reduce((s, li) => s + li.amount, 0);
+    const cr = invoice.credits || 0;
+    const tot = sub - cr;
+    const esc = (v: unknown) =>
+      String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    const rows = items
+      .map(
+        (li) => `
+          <tr>
+            <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;text-align:center;width:50px;">${esc(li.qty)}</td>
+            <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;">
+              <div style="font-weight:600;color:#0F172A;">${esc(li.item)}</div>
+              ${li.description ? `<div style="font-size:11px;color:#64748B;margin-top:2px;">${esc(li.description)}</div>` : ""}
+            </td>
+            <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:90px;color:#334155;">${formatCurrency(li.rate)}</td>
+            <td style="padding:10px 8px;border-bottom:1px solid #E5E7EB;text-align:right;width:100px;font-weight:600;color:#0F172A;">${formatCurrency(li.amount)}</td>
+          </tr>`,
+      )
+      .join("");
+    const logoHtml = companyLogo
+      ? `<img src="${esc(companyLogo)}" style="max-width:140px;max-height:60px;object-fit:contain;" />`
+      : `<div style="font-size:22px;font-weight:700;color:#0F172A;">${esc(labName || "LabTrax")}</div>`;
+    return `<!DOCTYPE html>
+<html><head><meta charset="utf-8" />
+<title>Invoice ${esc(formatInvNum(invoice.invoiceNumber))}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color:#0F172A; margin:0; padding:32px; }
+  .stripe { height:6px; background:#2563EB; border-radius:3px; margin-bottom:24px; }
+  .row { display:flex; justify-content:space-between; align-items:flex-start; }
+  .muted { color:#64748B; font-size:12px; }
+  table { width:100%; border-collapse:collapse; margin-top:16px; }
+  th { text-align:left; padding:8px; background:#F1F5F9; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#475569; }
+  th.right { text-align:right; }
+  th.center { text-align:center; }
+  .totals { margin-top:16px; margin-left:auto; width:280px; }
+  .totals .line { display:flex; justify-content:space-between; padding:6px 0; }
+  .totals .grand { border-top:2px solid #0F172A; margin-top:6px; padding-top:10px; font-size:16px; font-weight:700; }
+  .notes { margin-top:24px; padding:12px; background:#F8FAFC; border-left:3px solid #2563EB; font-size:12px; color:#334155; white-space:pre-wrap; }
+</style></head>
+<body>
+  <div class="stripe"></div>
+  <div class="row">
+    <div>
+      ${logoHtml}
+      ${labAddress ? `<div class="muted" style="margin-top:8px;">${esc(labAddress)}</div>` : ""}
+      ${labPhone ? `<div class="muted">${esc(labPhone)}</div>` : ""}
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:28px;font-weight:700;letter-spacing:1px;">INVOICE</div>
+      <div class="muted" style="margin-top:4px;">#${esc(formatInvNum(invoice.invoiceNumber))}</div>
+      <div class="muted">${esc(formatDate(invoice.issuedAt))}</div>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:24px;">
+    <div style="max-width:55%;">
+      <div class="muted" style="text-transform:uppercase;letter-spacing:0.5px;">Bill To</div>
+      <div style="margin-top:4px;font-weight:600;white-space:pre-wrap;">${esc(invoice.billTo || "")}</div>
+    </div>
+    <div style="text-align:right;">
+      <div class="muted" style="text-transform:uppercase;letter-spacing:0.5px;">Patient</div>
+      <div style="margin-top:4px;font-weight:600;">${esc(invoice.patientName || "")}</div>
+      ${invoice.teeth ? `<div class="muted" style="margin-top:6px;">Tooth ${esc(invoice.teeth)}</div>` : ""}
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="center" style="width:50px;">Qty</th>
+        <th>Item</th>
+        <th class="right" style="width:90px;">Rate</th>
+        <th class="right" style="width:100px;">Amount</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+
+  <div class="totals">
+    <div class="line"><span class="muted">Subtotal</span><span>${formatCurrency(sub)}</span></div>
+    ${cr > 0 ? `<div class="line"><span class="muted">Credits</span><span>-${formatCurrency(cr)}</span></div>` : ""}
+    <div class="line grand"><span>Total</span><span>${formatCurrency(tot)}</span></div>
+  </div>
+
+  ${invoice.caseNotes ? `<div class="notes"><strong>Notes:</strong>\n${esc(invoice.caseNotes)}</div>` : ""}
+</body></html>`;
+  }
+
+  async function handlePrint() {
+    if (!invoice) return;
+    if (editMode && hasChanges) {
+      Alert.alert("Save First", "Please save your changes before printing.");
+      return;
+    }
+    try {
+      const html = buildInvoiceHtml();
+      if (Platform.OS === "web") {
+        await Print.printAsync({ html });
+      } else {
+        const { uri } = await Print.printToFileAsync({ html, base64: false });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, {
+            mimeType: "application/pdf",
+            UTI: "com.adobe.pdf",
+            dialogTitle: `Invoice ${formatInvNum(invoice.invoiceNumber)}`,
+          });
+        } else {
+          await Print.printAsync({ uri });
+        }
+      }
+    } catch (err) {
+      console.warn("[InvoicePDFViewer] print error", err);
+      Alert.alert("Print Failed", "Could not generate the PDF. Please try again.");
+    }
+  }
+
   function handleCancelEdit() {
     if (hasChanges) {
       Alert.alert("Discard Changes?", "You have unsaved changes.", [
@@ -301,22 +426,32 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
               <Ionicons name="arrow-back" size={22} color="#1E293B" />
             </Pressable>
             <Text style={s.headerTitle}>{editMode ? "Edit Invoice" : "Invoice"}</Text>
-            {editable && !editMode ? (
-              <Pressable
-                onPress={() => setEditMode(true)}
-                style={s.editBtn}
-              >
-                <Ionicons name="create-outline" size={18} color="#2563EB" />
-                <Text style={s.editBtnText}>Edit</Text>
-              </Pressable>
-            ) : editMode ? (
-              <Pressable onPress={handleCancelEdit} style={s.editBtn}>
-                <Ionicons name="close" size={18} color="#EF4444" />
-                <Text style={[s.editBtnText, { color: "#EF4444" }]}>Cancel</Text>
-              </Pressable>
-            ) : (
-              <View style={{ width: 60 }} />
-            )}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              {!editMode && (
+                <Pressable
+                  onPress={handlePrint}
+                  style={s.editBtn}
+                  testID="invoice-print-btn"
+                >
+                  <Ionicons name="print-outline" size={18} color="#2563EB" />
+                  <Text style={s.editBtnText}>Print</Text>
+                </Pressable>
+              )}
+              {editable && !editMode ? (
+                <Pressable
+                  onPress={() => setEditMode(true)}
+                  style={s.editBtn}
+                >
+                  <Ionicons name="create-outline" size={18} color="#2563EB" />
+                  <Text style={s.editBtnText}>Edit</Text>
+                </Pressable>
+              ) : editMode ? (
+                <Pressable onPress={handleCancelEdit} style={s.editBtn}>
+                  <Ionicons name="close" size={18} color="#EF4444" />
+                  <Text style={[s.editBtnText, { color: "#EF4444" }]}>Cancel</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </View>
 
           <ScrollView
