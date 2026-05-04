@@ -28,6 +28,9 @@ import {
   ToothType,
   CaseTypeValue,
   MATERIAL_PRICES,
+} from "@/lib/data";
+import { resolvePriceForCase } from "@/lib/pricing";
+import {
   generateId,
   getStationInfo,
   formatAcctNum,
@@ -939,6 +942,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
+    const profileRole = currentUserProfile?.role;
+    if (profileRole === "admin" && role !== "admin") {
+      setRoleState("admin");
+      AsyncStorage.setItem(ROLE_KEY, "admin").catch(() => {});
+    }
+  }, [currentUserProfile?.role, role]);
+
+  useEffect(() => {
     loadData();
   }, [currentUserId]);
 
@@ -1504,7 +1515,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const lineItems: import("@/lib/data").InvoiceLineItem[] = [];
     if (materialStr) {
       const toothCount = c.toothMap?.length || toothStr.split(",").filter(Boolean).length || 1;
-      const perUnitPrice = MATERIAL_PRICES[materialStr] ?? 250;
+      const perUnitPrice = resolvePriceForCase(materialStr, c.caseType, c.doctorName, clients, pricingTiers);
       const totalPrice = c.price || (toothCount * perUnitPrice);
       const subtypeMatch = c.notes?.match(/^\[([^\]]+)\]/);
       const subtypeLabel = subtypeMatch ? ` - ${subtypeMatch[1]}` : "";
@@ -1822,7 +1833,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const normalCount = selectedTeeth.filter((t) => (toothTypesMap[t] || "normal") === "normal").length;
           const hasPontic = selectedTeeth.some((t) => (toothTypesMap[t] || "normal") === "bridge");
           const billable = normalCount + (hasPontic ? 1 : 0);
-          const unitPrice = MATERIAL_PRICES[mat] || 250;
+          const caseForPrice = cases.find(cc => cc.id === caseId);
+          const unitPrice = resolvePriceForCase(mat, caseType, caseForPrice?.doctorName || "", clients, pricingTiers);
           const price = unitPrice * Math.max(billable, 1);
 
           let descParts = [`Item added: ${caseType}`];

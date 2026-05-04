@@ -31,6 +31,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum } from "@/lib/data";
+import { resolvePriceForCase } from "@/lib/pricing";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { logAudit } from "@/lib/audit";
@@ -214,7 +215,7 @@ export default function CaseDetailScreen() {
     );
     if (matchedInv) return matchedInv;
     const toothCount = caseItem.toothMap?.length || caseItem.toothIndices.split(",").filter(Boolean).length || 1;
-    const rate = MATERIAL_PRICES[caseItem.material] || 250;
+    const rate = resolvePriceForCase(caseItem.material, caseItem.caseType, caseItem.doctorName, clients, pricingTiers);
     const lineItems = [
       { qty: toothCount, item: `${caseItem.material} ${caseItem.caseType || "Restoration"}`, description: `${caseItem.material} restoration - teeth ${caseItem.toothIndices}`, rate, amount: toothCount * rate },
     ];
@@ -858,9 +859,9 @@ export default function CaseDetailScreen() {
   }, [itemSelectedTeeth, itemToothTypes]);
 
   const itemCalculatedPrice = React.useMemo(() => {
-    const unitPrice = MATERIAL_PRICES[itemMaterial] || 250;
+    const unitPrice = resolvePriceForCase(itemMaterial, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers);
     return unitPrice * Math.max(itemBillableCount, 1);
-  }, [itemMaterial, itemBillableCount]);
+  }, [itemMaterial, itemCaseType, itemBillableCount, caseItem?.doctorName, clients, pricingTiers]);
 
   const itemToothDisplay = React.useMemo(() => {
     return itemUpdateToothDisplay(itemSelectedTeeth, itemToothTypes);
@@ -961,7 +962,7 @@ export default function CaseDetailScreen() {
 
     const linkedInvoice = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
     if (linkedInvoice) {
-      const unitPrice = MATERIAL_PRICES[mat] || 250;
+      const unitPrice = resolvePriceForCase(mat, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers);
       const toothCount = Math.max(itemSelectedTeeth.length, 1);
       const newLineItem = {
         qty: toothCount,
@@ -2822,7 +2823,7 @@ export default function CaseDetailScreen() {
                 {(itemCaseType === "Restorative" || itemCaseType === "Temporary") && itemSelectedTeeth.length > 0 && showPrice && (
                   <View style={styles.aiPricingRow}>
                     <Text style={styles.aiPricingLabel}>
-                      {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${MATERIAL_PRICES[itemMaterial] || 250}/{itemMaterial}
+                      {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${resolvePriceForCase(itemMaterial, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers)}/{itemMaterial}
                     </Text>
                     <Text style={styles.aiPricingTotal}>${itemCalculatedPrice.toLocaleString()}</Text>
                   </View>
@@ -2883,7 +2884,7 @@ export default function CaseDetailScreen() {
                 {itemSelectedTeeth.length > 0 && showPrice && (
                   <View style={styles.aiPricingRow}>
                     <Text style={styles.aiPricingLabel}>
-                      {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${MATERIAL_PRICES[itemMaterial] || 250}/{itemMaterial}
+                      {itemBillableCount} billable {itemBillableCount === 1 ? "tooth" : "teeth"} x ${resolvePriceForCase(itemMaterial, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers)}/{itemMaterial}
                     </Text>
                     <Text style={styles.aiPricingTotal}>${itemCalculatedPrice.toLocaleString()}</Text>
                   </View>
@@ -3697,7 +3698,7 @@ export default function CaseDetailScreen() {
                   if (caseUpdates.material || caseUpdates.toothIndices || caseUpdates.doctorName) {
                     const toothCount = (caseUpdates.toothIndices || caseItem.toothIndices).split(",").filter(Boolean).length || 1;
                     const mat = caseUpdates.material || caseItem.material;
-                    const rate = MATERIAL_PRICES[mat] || 250;
+                    const rate = resolvePriceForCase(mat, caseItem.caseType, caseUpdates.doctorName || caseItem.doctorName, clients, pricingTiers);
                     const newTotal = toothCount * rate + (caseItem.isRush ? 500 : 0);
                     updateCase(caseItem.id, { price: newTotal });
                     if (caseItem.invoiceId) {

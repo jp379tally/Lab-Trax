@@ -21,6 +21,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, MATERIAL_PRICES, Invoice } from "@/lib/data";
+import { resolvePriceForCase } from "@/lib/pricing";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 
@@ -54,7 +55,7 @@ function deriveDisplayInitials(input?: {
 }
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, refreshCases, fullRefreshCases, setPendingInvoiceEditId } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, refreshCases, fullRefreshCases, setPendingInvoiceEditId } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
@@ -94,7 +95,7 @@ export default function CasesScreen() {
     );
     if (matchedInv) return matchedInv;
     const toothCount = caseItem.toothMap?.length || caseItem.toothIndices.split(",").filter(Boolean).length || 1;
-    const rate = MATERIAL_PRICES[caseItem.material] || 250;
+    const rate = resolvePriceForCase(caseItem.material, caseItem.caseType, caseItem.doctorName, clients, pricingTiers);
     const lineItems = [
       { qty: toothCount, item: `${caseItem.material} ${caseItem.caseType || "Restoration"}`, description: `${caseItem.material} restoration - teeth ${caseItem.toothIndices}`, rate, amount: toothCount * rate },
     ];

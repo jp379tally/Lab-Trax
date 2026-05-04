@@ -31,6 +31,7 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
+import { resolvePriceForCase } from "@/lib/pricing";
 import { popSharedFiles } from "@/lib/shared-file-inbox";
 import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
@@ -137,7 +138,7 @@ export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const isFocused = useIsFocused();
-  const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode } = useApp();
+  const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -466,13 +467,13 @@ export default function ScanScreen() {
   }, [selectedTeeth, toothTypes]);
 
   const calculatedPrice = React.useMemo(() => {
-    const unitPrice = MATERIAL_PRICES[material] || 250;
+    const unitPrice = resolvePriceForCase(material, caseType, doctorName, clients, pricingTiers);
     if (caseType === "Removable") {
       const archCount = removableArch === "Both" ? 2 : removableArch ? 1 : 1;
       return unitPrice * archCount;
     }
     return unitPrice * Math.max(billableTeethCount, 1);
-  }, [material, billableTeethCount, caseType, removableArch]);
+  }, [material, billableTeethCount, caseType, removableArch, doctorName, clients, pricingTiers]);
 
   useFocusEffect(
     useCallback(() => {
@@ -3503,7 +3504,7 @@ export default function ScanScreen() {
               {removableArch && showPrice && (
                 <View style={[styles.toothPricingRow, { marginTop: 8 }]}>
                   <Text style={styles.toothPricingLabel}>
-                    {removableArch === "Both" ? "2 arches" : "1 arch"} × ${MATERIAL_PRICES[material] || 250}/{material}
+                    {removableArch === "Both" ? "2 arches" : "1 arch"} × ${resolvePriceForCase(material, caseType, doctorName, clients, pricingTiers)}/{material}
                   </Text>
                   <Text style={styles.toothPricingTotal}>${calculatedPrice.toLocaleString()}</Text>
                 </View>
@@ -3930,7 +3931,7 @@ export default function ScanScreen() {
                     {showPrice && (
                       <View style={styles.toothPricingRow}>
                         <Text style={styles.toothPricingLabel}>
-                          {billableTeethCount} billable {billableTeethCount === 1 ? "tooth" : "teeth"} × ${MATERIAL_PRICES[material] || 250}/{material}
+                          {billableTeethCount} billable {billableTeethCount === 1 ? "tooth" : "teeth"} × ${resolvePriceForCase(material, caseType, doctorName, clients, pricingTiers)}/{material}
                         </Text>
                         <Text style={styles.toothPricingTotal}>${calculatedPrice.toLocaleString()}</Text>
                       </View>
