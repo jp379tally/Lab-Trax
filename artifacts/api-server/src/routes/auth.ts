@@ -444,26 +444,65 @@ router.post(
     const fromBody = !!parsed.refreshToken;
     const refreshToken = parsed.refreshToken ?? getRefreshCookie(req);
     if (!refreshToken) {
+      if (!fromBody) clearAuthCookies(req, res);
       throw new HttpError(401, "Refresh token is invalid or expired.");
     }
     const payload = verifyRefreshToken(refreshToken);
-    const session = await db.query.userSessions.findFirst({
+
+    // Look up the session by id + user only, so we can distinguish "no such
+    // session" from "wrong token hash" (i.e. a reused / leaked refresh token).
+    const sessionRow = await db.query.userSessions.findFirst({
       where: and(
         eq(userSessions.id, payload.sid),
-        eq(userSessions.userId, payload.sub),
-        eq(userSessions.tokenHash, makeSessionHash(refreshToken)),
-        isNull(userSessions.revokedAt),
-        gt(userSessions.expiresAt, new Date())
+        eq(userSessions.userId, payload.sub)
       ),
     });
 
-    if (!session)
+    if (!sessionRow) {
+      if (!fromBody) clearAuthCookies(req, res);
       throw new HttpError(401, "Refresh token is invalid or expired.");
+    }
+
+    const presentedHash = makeSessionHash(refreshToken);
+    const sessionExpired = sessionRow.expiresAt.getTime() <= Date.now();
+    const tokenHashMismatch = sessionRow.tokenHash !== presentedHash;
+    const sessionRevoked = sessionRow.revokedAt !== null;
+
+    // Refresh-token reuse detection: the signature is valid and the session
+    // exists, but the presented token does not match the currently-active
+    // hash, or the session row has already been revoked. This is a strong
+    // signal that an old refresh token was replayed (likely leaked). Revoke
+    // this session chain (the sid is stable across rotations, so the row
+    // *is* the chain) to force a fresh login on the affected device. We
+    // intentionally do NOT revoke other sessions for this user, since a
+    // benign concurrent-refresh race could otherwise log a user out across
+    // every device.
+    if (tokenHashMismatch || sessionRevoked) {
+      const now = new Date();
+      await db
+        .update(userSessions)
+        .set({ revokedAt: sessionRow.revokedAt ?? now })
+        .where(eq(userSessions.id, payload.sid));
+      await writeAuditLog({
+        req,
+        userId: payload.sub,
+        action: "refresh_token_reuse_detected",
+        entityType: "session",
+        entityId: payload.sid,
+      });
+      if (!fromBody) clearAuthCookies(req, res);
+      throw new HttpError(401, "Refresh token is invalid or expired.");
+    }
+
+    if (sessionExpired) {
+      if (!fromBody) clearAuthCookies(req, res);
+      throw new HttpError(401, "Refresh token is invalid or expired.");
+    }
 
     // Rotate the refresh token: mint a new one, update the stored hash and
     // expiry, and invalidate the old refresh token. Re-using the previous
-    // refresh token after this point will fail the tokenHash check and
-    // force a re-login, which limits the blast radius of a leaked token.
+    // refresh token after this point will fail the tokenHash check above and
+    // trigger reuse detection, which limits the blast radius of a leak.
     const newRefreshToken = signRefreshToken(payload.sub, payload.sid);
     const newDecoded = verifyRefreshToken(newRefreshToken);
     await db
