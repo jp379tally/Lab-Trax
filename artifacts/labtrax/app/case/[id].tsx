@@ -3783,6 +3783,7 @@ export default function CaseDetailScreen() {
               credits: updatedInv.credits,
               billTo: updatedInv.billTo,
               caseNotes: updatedInv.caseNotes,
+              notes: updatedInv.notes,
             });
           } else {
             const { id: _id, ...invWithoutId } = updatedInv;

@@ -84,6 +84,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   const [hasChanges, setHasChanges] = useState(false);
   const [editBillTo, setEditBillTo] = useState("");
   const [editNotes, setEditNotes] = useState("");
+  const [editInvoiceNotes, setEditInvoiceNotes] = useState("");
 
   useEffect(() => {
     if (invoice && visible) {
@@ -91,6 +92,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
       setEditCredits(invoice.credits || 0);
       setEditBillTo(invoice.billTo || "");
       setEditNotes(invoice.caseNotes || "");
+      setEditInvoiceNotes(invoice.notes || "");
       setEditMode(false);
       setHasChanges(false);
       setShowAddItem(false);
@@ -262,6 +264,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
       credits: editCredits,
       billTo: editBillTo.trim() || invoice.billTo,
       caseNotes: editNotes,
+      notes: editInvoiceNotes,
     });
     setEditMode(false);
     setHasChanges(false);
@@ -405,6 +408,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
             setEditCredits(invoice.credits || 0);
             setEditBillTo(invoice.billTo || "");
             setEditNotes(invoice.caseNotes || "");
+            setEditInvoiceNotes(invoice.notes || "");
             setEditMode(false);
             setHasChanges(false);
           },
@@ -634,7 +638,19 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   </View>
                 ) : null}
 
-                {!editMode && invoice.notes ? (
+                {editMode ? (
+                  <View style={s.notesSection}>
+                    <Text style={s.notesLabel}>INVOICE NOTES</Text>
+                    <TextInput
+                      style={[s.notesText, { borderWidth: 1, borderColor: "#3B82F6", borderRadius: 8, padding: 10, minHeight: 80, textAlignVertical: "top" }]}
+                      value={editInvoiceNotes}
+                      onChangeText={(v) => { setEditInvoiceNotes(v); setHasChanges(true); }}
+                      placeholder="Add invoice notes..."
+                      placeholderTextColor="#94A3B8"
+                      multiline
+                    />
+                  </View>
+                ) : invoice.notes ? (
                   <View style={s.notesSection}>
                     <Text style={s.notesLabel}>INVOICE NOTES</Text>
                     <Text style={s.notesText}>{invoice.notes}</Text>
