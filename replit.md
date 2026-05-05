@@ -1,114 +1,55 @@
-# LabTrax
+# Workspace
 
 ## Overview
 
-LabTrax is a comprehensive dental laboratory case management application designed to streamline operations for dental labs and provide a dedicated portal for dental providers. Its core purpose is to track dental lab cases through various production stages, manage clients, handle invoicing, and facilitate communication via notifications and a global chat system. The application supports role-based access for standard users, administrators, and providers, offering tailored functionalities such as inventory tracking, client management, and detailed case workflow visualization. The business vision is to enhance efficiency, transparency, and communication within the dental lab ecosystem, ultimately improving service delivery and client satisfaction.
+pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
 
-## User Preferences
+## Stack
 
-Preferred communication style: Simple, everyday language.
+- **Monorepo tool**: pnpm workspaces
+- **Node.js version**: 24
+- **Package manager**: pnpm
+- **TypeScript version**: 5.9
+- **API framework**: Express 5
+- **Database**: PostgreSQL + Drizzle ORM
+- **Validation**: Zod (`zod/v4`), `drizzle-zod`
+- **API codegen**: Orval (from OpenAPI spec)
+- **Build**: esbuild (CJS bundle)
 
-## System Architecture
+## Artifacts
 
-### Frontend
-- **Framework**: Expo SDK with React Native, utilizing `expo-router` for file-based routing.
-- **Navigation**: Adaptive navigation with tab-based layouts for mobile and a `DesktopSidebar` for web, adjusting layouts based on screen size.
-- **State Management**: React Context with AsyncStorage for local persistence.
-- **Styling**: React Native StyleSheet with a centralized color theme.
-- **Data Fetching**: TanStack React Query.
-- **Authentication**: JWT tokens stored via AsyncStorage.
+### LabTrax (Mobile App) — `artifacts/labtrax`
+Dental laboratory case-tracking app. Expo (React Native) with expo-router.
+- Port: 19134 (Expo dev server)
+- Frontend-only; communicates with the API server via `EXPO_PUBLIC_DOMAIN`
+- Auth: JWT tokens stored in SecureStore; biometric lock via expo-local-authentication
+- Key libraries: expo-share-intent, expo-document-picker, expo-camera, expo-print
 
-### Backend
-- **Framework**: Express.js on Node.js with TypeScript.
-- **API Pattern**: RESTful API.
-- **Authentication**: JWT-based (access and refresh tokens) with sessions in the database.
-- **Password Security**: bcrypt hashing.
-- **Role-Based Access Control (RBAC)**: Organization membership-based roles (owner, admin, user, billing, read_only).
-- **Audit Logging**: Significant actions logged to the `audit_logs` table.
-- **CORS**: Dynamically configured.
-- **Static Serving**: Serves pre-built Expo web bundle in production.
-- **Landing Page**: Dynamic marketing page with placeholders for customization.
+### API Server — `artifacts/api-server`
+Express 5 backend serving all LabTrax routes under `/api/*`.
+- Port: 8080
+- Auth: JWT (`JWT_SECRET` env var — **must be set in production**)
+- File uploads: multer → stored in `uploads/case-media/`, served at `/uploads/case-media`
+- Key libraries: multer, archiver, openai (AI integrations), nodemailer, sharp, bcryptjs
 
-### Data Storage
-- **Server-side**: PostgreSQL via Drizzle ORM.
-- **Client-side**: AsyncStorage for local persistence.
-- **Database Schema**: Defined using Drizzle ORM with Zod schemas.
+### DB Schema — `lib/db`
+Drizzle ORM schema for PostgreSQL. Source of truth: `lib/db/src/schema/schema.ts`.
+Run `pnpm --filter @workspace/db run push` to apply schema changes.
 
-### Key Features and Design Patterns
-- **3-Portal Architecture**: Differentiated access for Master Admin, Lab Portal, and Provider Portal.
-- **Case Workflow**: Tracks cases through predefined stations and includes remake detection.
-- **Barcode System**: Supports scanning for case intake and processing.
-- **Lab-Based Membership & Sharing**: Users belong to a lab, and cases/data are synced across lab members. Includes join request and invite mechanisms.
-- **Multi-Device Sync**: Ensures consistent data across user devices.
-- **Data Isolation (HIPAA)**: Cases filtered by lab membership for privacy.
-- **Client Management**: Tools for managing provider accounts, including addition and deactivation.
-- **Security**: Inactivity timeouts, biometric/password lock screens, and robust password recovery.
-- **Work Status**: Persistent per-user work status displayed across the application.
-- **Lab Channel Chat**: Group chat scoped to each lab for real-time communication.
-- **File Drop Zone**: Enables drag-and-drop file uploads for patient files, with admin review and assignment to cases.
-- **Invoices Hub**: Centralized management for generating, editing, and sending invoices, with detailed line-item editing and provider reassignment.
-- **Financial Hub (QB-Style)**: Dashboard with key financial metrics (AR, Overdue, Collected YTD) and reports (Receive Payment, A/R Aging Summary, P&L Report, Sales by Item).
-- **Statements Hub**: Centralized management for generating and sending client statements.
-- **AI Integration**:
-    - **Prescription Scanning**: Uses GPT-5.1 vision to extract data from prescriptions, including client-side image processing and PDF conversion. Automatically adds new providers even if dismissed.
-    - **Document Scanning**: Uses GPT-5.1 vision and `sharp` for document boundary detection, rotation correction, and enhancement.
-    - **Smile Preview**: AI-powered feature for teeth whitening and symmetry restoration using OpenAI's gpt-image-1 model.
-    - **AI Proxy**: Replit AI integration proxy is used for all OpenAI API calls.
-- **Admin Backup**: Admin-only endpoints for local and OneDrive backups, streaming a ZIP archive of data and files.
-- **Appliance Subcategories & Pricing**: Multi-step wizard for adding appliance types with dynamic pricing based on client custom pricing or tier pricing.
+## Key Commands
 
-### Server Route Modules
-- `auth.ts`: Handles registration, login, user management, and organization creation/joining.
-- `organizations.ts`: Manages organizations, members, invites, join requests, and connections.
-- `cases.ts`: Provides CRUD operations for normalized case data.
-- `invoices.ts`: Manages invoice generation, CRUD, payments, and sales reports.
+- `pnpm run typecheck` — full typecheck across all packages
+- `pnpm run build` — typecheck + build all packages
+- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from OpenAPI spec
+- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
+- `pnpm --filter @workspace/api-server run dev` — run API server locally
 
-### Server Utility Modules
-- `http.ts`: HTTP error handling and response helpers.
-- `crypto.ts`: Cryptographic utilities for hashing and token generation.
-- `auth.ts`: JWT signing, verification, and token extraction.
-- `audit.ts`: Functionality for writing audit logs.
-- `rbac.ts`: Role-based access control checks.
-- `case.ts`: Case-related calculation helpers.
-- `async-handler.ts`: Express async error wrapper.
-- `auth.ts`: JWT authentication middleware.
+## Environment Variables
 
-## External Dependencies
+- `JWT_SECRET` — required in production; defaults to an insecure value in dev
+- `EXPO_PUBLIC_DOMAIN` — set in the labtrax dev script automatically from `$REPLIT_DEV_DOMAIN`
+- `AI_INTEGRATIONS_OPENAI_API_KEY` — optional; enables AI features (tooth chart detection, etc.)
+- `LABTRAX_ENABLE_DEMO_SEEDS` — set to `"true"` to seed demo users on startup
+- `ONEDRIVE_*` — optional OneDrive backup integration credentials
 
-### Database
-- **PostgreSQL**: Primary data store, managed with Drizzle ORM.
-
-### Key NPM Packages
-- **expo**: Core framework for the frontend.
-- **express**: Backend HTTP server framework.
-- **drizzle-orm** & **drizzle-kit**: Object-Relational Mapper for database interaction.
-- **@tanstack/react-query**: For server state management and data fetching.
-- **pg**: PostgreSQL client.
-- **zod** & **drizzle-zod**: For schema validation.
-- **sharp**: Server-side image processing library.
-- **jsonwebtoken**: For JWT token handling.
-- **bcryptjs**: For password hashing.
-- **archiver**: For ZIP archive generation during backups.
-
-### Environment Variables
-- `DATABASE_URL`: PostgreSQL connection string.
-- `JWT_SECRET`: Secret for JWT signing.
-- `REPLIT_DEV_DOMAIN`, `EXPO_PUBLIC_DOMAIN`, `REPLIT_INTERNAL_APP_DOMAIN`: For deployment and domain configuration.
-- SMTP credentials (optional): For email recovery.
-- Twilio credentials (optional): For SMS notifications.
-
-### AI Services
-- **OpenAI API**: Utilized for GPT-5.1 vision (prescription/document scanning), chat, and gpt-image-1 (smile preview). Accessed via the Replit AI integration proxy at `localhost:1106/modelfarm/openai`.
-## Multi-Lab Visibility (April 2026)
-A user can be a member of more than one lab (e.g. an owner who runs two practices). The case list and the lab-shared file inbox both surface content from EVERY active lab the user belongs to, not just one "active" lab. The `LabFileDropZone` component omits `organizationId` on the `GET /api/lab-pending-files` request so the server returns files from every lab the caller belongs to. Memberships returned by `GET /api/auth/me` are sorted deterministically by lab id so the singular "active" lab (used as the target for new uploads) is the same on every device and across reloads.
-
-### Server-Authoritative Case Visibility (April 30, 2026)
-Earlier iterations relied on a long chain of client-supplied scope keys (`?scopeKeys=`, `?viewerUserId=`) plus a server-side "repair" pass that tried to back-fill missing affiliations on every request. That chain broke repeatedly across many fix attempts, so visibility is now decided entirely on the server from the authenticated user's lab memberships:
-
-- **Domain rule (member-only writes)**: A case tagged for a lab IS the lab's data. Only active members of that lab may create or modify cases in it. Non-members who attempt to write a case with `affiliationKey: "org:<UUID>"` for a lab they don't belong to have the org tag silently stripped — the case becomes private to them. Updates to a lab case require active membership in that lab; being the original scanner (owner) is not enough. Updates to a private case still require ownership.
-- **Source of truth**: `lab_cases.organization_id` (indexed). A startup migration in `server/index.ts` backfills this column from the `affiliationKey`/`affiliationName` JSON fields for legacy rows where it is still NULL. The migration is a **one-time legacy data restoration** — it does NOT require the case owner to be an active member, because before strict member-gating was enforced the loose code allowed non-members to tag cases for a lab. The only safety rail at the migration level is that the target lab must exist as `type='lab'`. New writes are gated at the route layer, so going forward only members can put cases in a lab.
-- **Migration safety**: A PL/pgSQL helper `try_to_jsonb(text)` returns NULL on parse failure so a single malformed legacy row cannot abort the backfill. A REMEDIATION pass also runs first, NULLing any organization_id that points to a non-existent or non-lab org so true corruption self-heals on next boot. The UUID extraction trims whitespace from substring results so whitespace-padded keys still match.
-- **`GET /api/legacy/cases`** ignores all client-supplied scope/viewer/owner parameters. It returns rows where `(organization_id IS NULL AND owner_id = me) OR organization_id IN (my active lab ids)`, with `deleted_at IS NULL`. The response also normalizes the JSON: lab-shared rows get `affiliationKey: "org:<UUID>"` and `affiliationName` mirrored from the column; private rows have any stale `affiliationKey: "org:..."` cleared. So the client filter (defense-in-depth) cannot disagree with the server's decision.
-- **`POST /api/legacy/cases`** wraps the entire authz check + upsert in a single transaction with `SELECT ... FOR UPDATE` row lock to close the check-then-write TOCTOU window. Auth check on UPDATE: lab cases require active lab membership; private cases require ownership. Inserts force `ownerId = caller`; updates keep the existing owner so the body's ownerId cannot be hijacked. The `affiliationKey` is parsed by `server/lib/case-visibility.ts → parseOrganizationIdFromAffiliationKey` (a pure parser). The route then enforces both safety rails: caller must be an active member of the target lab AND that lab must exist as `type='lab'`. If either check fails, the org tag is stripped from the JSON and `organization_id` is set to NULL — the case becomes private to the caller. This means non-members can never silently introduce data into a lab they don't belong to.
-- **Client (`lib/app-context.tsx`)**: `fetchCasesFromServer()` no longer sends scope/viewer params. The `cases` derived view applies the same rule as the server (own private cases + cases in my labs) as defense-in-depth so the UI stays consistent even with stale local AsyncStorage. The legacy "purge cases when active lab clears" effect was removed — it was the root cause of cases disappearing across devices.
-- **Tests**: `server/__tests__/case-visibility.test.ts` (vitest, 14 tests) covers the visibility rule and the parser. Run with `npx vitest run server/__tests__/case-visibility.test.ts`.
+See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

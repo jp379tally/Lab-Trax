@@ -1,0 +1,149 @@
+Add this section to the Replit write-up:
+
+---
+
+# Desktop Web Version Requirement
+
+The current web version at:
+
+**[https://lab-tracks.replit.app](https://lab-tracks.replit.app)**
+
+looks like the mobile app stretched onto a desktop screen. This is not what we want.
+
+## Required Change
+
+Replit needs to create a true **desktop web version** of Lab Tracks.
+
+The desktop version should:
+
+* Use the same database as the mobile/app version
+* Show the same case, doctor, invoice, billing, and admin data
+* Have a completely different desktop interface
+* Have a desktop-style heads-up display
+* Not look like the mobile app layout
+
+## Important Requirement
+
+The mobile/app version and desktop/web version should share the same backend and database, but they should have different front-end layouts.
+
+In other words:
+
+* Same data
+* Same accounts
+* Same cases
+* Same invoices
+* Same doctors/practices/groups
+* Different user interface for desktop
+
+---
+
+# Desktop Interface Goals
+
+The desktop version should be designed for larger screens and admin-style workflows.
+
+It should include:
+
+* A full-width desktop dashboard
+* Sidebar navigation
+* Top navigation/header bar
+* Larger tables and list views
+* Faster access to cases, invoices, doctors, practices, and billing
+* Better admin visibility
+* More information shown at one time
+* Desktop-friendly invoice editing
+* Desktop-friendly case management
+* Desktop-friendly financial reporting
+
+---
+
+# Suggested Desktop Layout
+
+## Left Sidebar
+
+Include main navigation such as:
+
+* Dashboard
+* Cases
+* Doctors
+* Practices
+* Groups
+* Invoices
+* Statements
+* Pricing
+* Reports
+* Admin Settings
+
+## Top Header
+
+Include:
+
+* Search bar
+* Logged-in user
+* Current role/permissions
+* Notifications
+* Quick actions
+
+## Main Dashboard Area
+
+Show desktop-style cards and tables, such as:
+
+* Cases logged today
+* Cases in progress
+* Cases ready for delivery
+* Unpaid invoices
+* Recent payments
+* Billing issues
+* Doctor/practice activity
+* AI prescription review queue
+
+---
+
+# Responsive Layout Requirement
+
+The app should detect screen size and use the correct interface.
+
+## Mobile / App View
+
+Use the existing mobile-style layout for:
+
+* Phones
+* Small tablets
+* App-like usage
+
+## Desktop Web View
+
+Use the new desktop layout for:
+
+* Laptops
+* Desktops
+* Large tablets, if appropriate
+
+The desktop version should not simply scale up the mobile interface.
+
+---
+
+# Technical Direction for Replit
+
+Please refactor the front end so Lab Tracks supports separate layouts:
+
+1. **Mobile/App Layout**
+2. **Desktop/Web Layout**
+
+Both layouts should connect to the same backend services and database.
+
+Recommended approach:
+
+* Keep shared business logic
+* Keep shared API/database calls
+* Create separate desktop components
+* Create separate mobile components where needed
+* Use responsive routing or layout detection
+* Preserve all existing data and functionality
+
+---
+
+# Expected Result
+
+When users visit **lab-tracks.replit.app** on a desktop computer, they should see a professional desktop dashboard, not the mobile app interface.
+
+The desktop web version should feel like a lab management/admin system, while the mobile version can continue to feel like a quick app-style workflow.

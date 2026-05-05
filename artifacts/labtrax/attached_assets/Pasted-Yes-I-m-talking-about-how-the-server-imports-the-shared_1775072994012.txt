@@ -1,0 +1,99 @@
+Yes — I’m talking about how the server imports the shared schema, because that is the specific issue the logs are showing.
+
+The important clue is this exact runtime error:
+
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@shared/schema' imported from /home/runner/workspace/server_dist/index.js
+
+That means when your deployed server starts, the built file server_dist/index.js is still trying to load @shared/schema. So even if you do not see that exact text in the file you were looking at, some source file or build step is producing it.
+
+What I’d look for next:
+
+1. Search for more than the exact full string
+
+Search your whole project for all of these:
+
+@shared/schema
+@shared/
+shared/schema
+from "@shared
+from '@shared
+2. Check server source files, not just client files
+
+Focus on:
+
+server/
+api/
+src/server/
+anything that builds into server_dist/index.js
+3. Check your alias config
+
+Look in:
+
+tsconfig.json
+vite.config.*
+package.json
+esbuild config
+any Replit build config
+
+You may have something like:
+
+"paths": {
+  "@shared/*": ["shared/*"]
+}
+
+That can work during development, but plain Node in production will not resolve it unless your build rewrites it.
+
+4. Check the built output directly
+
+Open:
+
+server_dist/index.js
+
+and search for:
+
+@shared/schema
+
+If it is there, that confirms the build output still contains the alias and Node is failing on that line.
+
+5. Check whether the real file exists
+
+Look for one of these:
+
+shared/schema.ts
+shared/schema.js
+shared/schema/index.ts
+shared/schema/index.js
+
+If the file exists, the fix is usually to import it by a relative path from the server source, not by the alias.
+
+For example, change this:
+
+import { something } from "@shared/schema";
+
+to something like:
+
+import { something } from "../shared/schema.js";
+
+The exact relative path depends on where the server file lives.
+
+6. If you truly cannot find it in source
+
+Then one of these is happening:
+
+an older cached build is being reused
+a generated file is injecting that import
+a dependency or template file still references it
+
+In that case:
+
+do a full clean rebuild
+delete build output folders like server_dist, dist, .cache if your setup allows
+rebuild from scratch
+
+The key point is: the issue is not the app.listen(...) code. The crash is happening before the server can fully start, because Node cannot resolve @shared/schema.
+
+Paste these three things and I can pinpoint the exact line to change:
+
+your tsconfig.json
+the import section of your main server entry file
+the first 30–50 lines of server_dist/index.js where @shared/schema appears

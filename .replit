@@ -1,84 +1,28 @@
-entrypoint = "README.md"
-modules = ["nodejs-22", "python-3.11", "postgresql-16"]
-
-[nix]
-channel = "stable-24_05"
+modules = ["nodejs-24", "python-3.11"]
 
 [deployment]
+router = "application"
 deploymentTarget = "autoscale"
-build = ["bash", "scripts/deploy-build.sh"]
-run = ["node", "server_dist/index.js"]
 
-[[ports]]
-localPort = 5000
-externalPort = 5000
-
-[[ports]]
-localPort = 5904
-externalPort = 3000
-
-[[ports]]
-localPort = 8081
-externalPort = 80
-
-[[ports]]
-localPort = 8082
-externalPort = 3002
-
-[env]
-PORT = "5000"
-
-[agent]
-stack = "EXPO"
-integrations = ["javascript_openai_ai_integrations:2.0.0", "onedrive:1.0.0"]
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
 
 [workflows]
 runButton = "Project"
 
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Start App"
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
 
-[[workflows.workflow]]
-name = "Start App"
-author = "agent"
-mode = "parallel"
+[[ports]]
+localPort = 8080
+externalPort = 80
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Start Backend"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Start Frontend"
-
-[[workflows.workflow]]
-name = "Start Backend"
-author = "agent"
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "npm run server:dev"
-waitForPort = 5000
-
-[[workflows.workflow]]
-name = "Start Frontend"
-author = "agent"
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "npm run expo:dev"
-waitForPort = 8081
-ensurePreviewReachable = "/status"
-
-[userenv]
-
-[userenv.shared]
-JWT_SECRET = "5c87a1e20b5f1f84bfd79880be8e46070c31ee6f50d67c395deae937297a15d2922190d0ec982df0a175ca20895766a913371892eb6e69781dfcc793bd3a36d8"
+[[ports]]
+localPort = 19134
+externalPort = 3000

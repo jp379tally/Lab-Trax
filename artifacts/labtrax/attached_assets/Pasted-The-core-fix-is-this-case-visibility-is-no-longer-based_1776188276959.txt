@@ -1,0 +1,28 @@
+The core fix is this: case visibility is no longer based on who currently shares the same practiceName. It is now based on a case-level lab snapshot taken when the case is created.
+That changes the behavior the way you asked:
+1.	A pending invite or pending join request does not pull that user’s cases into the lab.
+2.	Cases created before someone joins a lab stay personal and do not carry over.
+3.	Cases created while someone is in a lab are stamped to that lab and stay with the lab even if that user leaves later.
+4.	Leaving a lab no longer drags those shared cases away.
+5.	The home screen “Recent Cases” now sorts newest cases first and shows the actual case owner’s initials, so phone A and phone B render the same shared cases.
+6.	Pull-to-refresh now refreshes the user’s lab membership context before refetching cases, so mobile refresh is more reliable.
+I packaged the patch here:
+Patched files zip
+Unified diff
+Fix notes + test checklist
+The six files changed are:
+•	lib/data.ts
+•	lib/app-context.tsx
+•	app/(tabs)/index.tsx
+•	server/routes.ts
+•	server/routes/auth.ts
+•	server/routes/organizations.ts
+A few important details from the patch:
+•	Pending join requests no longer set practiceName during registration. That prevents the premature active-case jump before approval.
+•	Join approval / invite acceptance now set practiceName only after membership is active.
+•	I added POST /api/organizations/:organizationId/leave so leaving a lab removes the actual membership instead of just blanking a profile string.
+•	Shared cases are now fetched by lab key, not just by “current member ownerIds,” so cases remain with the lab after someone leaves.
+•	The dashboard already had pull-to-refresh UI, but I tightened the refresh logic so it refreshes the lab context first, then case data.
+I also syntax-checked the modified files with the TypeScript parser here. I did not run a full Expo/Replit build in this container because the project dependencies are not installed in this environment.
+The fastest path on Replit is to replace those six files with the versions from the patch zip, restart the server, and republish.
+

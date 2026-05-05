@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/"
+title = "LabTrax"
+version = "1.0.0"
+id = "artifacts/labtrax"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/" ]
+localPort = 19134
+
+[services.development]
+run = "pnpm --filter @workspace/labtrax run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/labtrax", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/labtrax", "run", "serve" ]
+
+[services.env]
+PORT = "19134"
+BASE_PATH = "/"

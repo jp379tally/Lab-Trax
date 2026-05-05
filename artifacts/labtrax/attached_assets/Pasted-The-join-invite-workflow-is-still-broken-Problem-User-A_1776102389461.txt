@@ -1,0 +1,50 @@
+The join/invite workflow is still broken.
+
+Problem:
+
+* User A requests to join Lab A from device A, but User B/admin never receives it.
+* User B sends a request/invite to User A from device B, but User A never receives it.
+
+This means the app is treating join/invite actions like device-to-device messages instead of durable server-side records.
+
+Fix it by rebuilding the workflow around database-backed records, not local state, not AsyncStorage, and not client-only delivery.
+
+Required behavior:
+
+1. A user requesting to join a lab must create a persistent `join_requests` row on the server.
+2. A lab admin inviting a user must create a persistent `lab_invites` row on the server.
+3. Admin dashboards must load pending join requests from the server every time.
+4. User dashboards must load pending invites from the server every time.
+5. Approve/reject actions must update the server record and create/update a lab membership row.
+6. No part of this workflow can depend on one device being online when the other device acts.
+7. Join requests are sent to the lab/org, not to a specific phone session.
+8. Invites are sent to the target user account or target phone/email on the server, not directly to a device.
+9. Add proper logging and error handling so failed sends do not silently disappear.
+
+Implement these tables if missing:
+
+* labs
+* users
+* lab_memberships
+* join_requests
+* lab_invites
+* notifications
+
+Use this model:
+
+* join_requests: user_id, lab_id, status(pending/approved/rejected), created_at, reviewed_by, reviewed_at
+* lab_invites: lab_id, invited_user_id or invited_phone, role, status(pending/accepted/rejected/expired), created_by, created_at
+* lab_memberships: user_id, lab_id, role, status(active)
+
+API endpoints needed:
+
+* POST /api/labs/:labId/join-requests
+* GET /api/labs/:labId/join-requests
+* POST /api/join-requests/:id/approve
+* POST /api/join-requests/:id/reject
+* POST /api/labs/:labId/invites
+* GET /api/users/me/invites
+* POST /api/invites/:id/accept
+* POST /api/invites/:id/reject
+
+Use server-side truth only. Do not rely on local device state for request delivery.

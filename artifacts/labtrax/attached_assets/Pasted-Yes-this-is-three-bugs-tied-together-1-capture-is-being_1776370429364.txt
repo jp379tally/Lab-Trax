@@ -1,0 +1,317 @@
+Yes — this is three bugs tied together:
+
+1. **capture is being zoomed / cropped wrong**
+2. **manual crop is broken or fake**
+3. **AI intake is failing on HEIC uploads**
+
+The safest fix is to separate the workflow into **capture → optional manual crop → normalize to JPEG → AI intake**. That way the crop UI works, the camera respects the visible frame, and AI always receives a readable file format. Expo’s docs also matter here: `expo-image-picker` has a known iOS cropping issue for some high-resolution images, and `expo-image-manipulator` saves to `jpeg`, `png`, or `webp` rather than HEIC, which makes it the right place to normalize uploads before AI analysis. ([Expo Documentation][1])
+
+## What is likely wrong now
+
+### 1. The app is “zooming in”
+
+That usually happens because the app is not actually cropping to the on-screen guide box. Instead, it is either:
+
+* using a preview image that is visually scaled differently from the saved image, or
+* doing an automatic crop after capture with the wrong coordinates.
+
+If you want the image to match the four borders on screen, the app must **compute a crop rectangle from the overlay frame** and apply that crop to the captured photo. Do not rely on visual preview size alone.
+
+### 2. The current crop button is not really cropping
+
+If the crop button only changes UI state or opens a fake editor without saving a new image file, then the user sees no real result. The fix is to run a real crop operation and replace the attachment URI with the cropped output URI.
+
+### 3. AI intake is choking on HEIC
+
+That one is straightforward: the AI pipeline is getting HEIC files from iPhone uploads, and your current intake path is rejecting them instead of converting them first. `expo-image-manipulator` can re-save those images as JPEG or PNG before the OCR/AI step, which is exactly what you need here. ([Expo Documentation][2])
+
+---
+
+# The fix pattern
+
+## A. Stop auto-cropping with `allowsEditing`
+
+Do **not** use `expo-image-picker`’s built-in editing for this prescription flow. On iOS, Expo documents a known issue where cropped results can report incorrect crop rectangles for some high-resolution images because of an underlying Apple tool bug. ([Expo Documentation][1])
+
+Use:
+
+```ts
+allowsEditing: false
+```
+
+for both camera capture and library upload in the prescription intake path.
+
+Example:
+
+```ts
+const result = await ImagePicker.launchCameraAsync({
+  mediaTypes: ["images"],
+  allowsEditing: false,
+  quality: 1,
+  exif: false,
+});
+```
+
+and:
+
+```ts
+const result = await ImagePicker.launchImageLibraryAsync({
+  mediaTypes: ["images"],
+  allowsEditing: false,
+  quality: 1,
+});
+```
+
+That removes the buggy built-in crop path from the equation. ([Expo Documentation][1])
+
+---
+
+## B. Capture full image, then crop to the overlay frame yourself
+
+The camera should capture the full photo first. Then, if the prescription intake screen shows a four-border frame, calculate the crop rectangle from that frame and apply a crop operation using `expo-image-manipulator`.
+
+### Good rule
+
+* **No silent zoom**
+* **No hidden auto-crop**
+* **Only crop to the visible frame**
+* **Optional manual adjustment after that**
+
+### Example crop utility
+
+```ts
+import * as ImageManipulator from "expo-image-manipulator";
+
+type CropRect = {
+  originX: number;
+  originY: number;
+  width: number;
+  height: number;
+};
+
+async function cropImageToFrame(uri: string, crop: CropRect) {
+  const context = ImageManipulator.manipulate(uri);
+  context.crop(crop);
+
+  const rendered = await context.renderAsync();
+  const saved = await rendered.saveAsync({
+    format: ImageManipulator.SaveFormat.JPEG,
+    compress: 0.95,
+  });
+
+  return saved.uri;
+}
+```
+
+This is the right place to force JPEG output too. Expo documents JPEG and PNG save formats for the manipulator, which is what solves your HEIC issue downstream. ([Expo Documentation][2])
+
+---
+
+## C. Add a real manual crop screen
+
+After auto-cropping to the frame, give the user a manual crop option that actually writes a new file.
+
+### Recommended flow
+
+1. user takes or uploads prescription photo
+2. app normalizes image to JPEG
+3. app shows preview with crop handles
+4. user taps **Crop Photo**
+5. app saves new cropped JPEG
+6. app sends the cropped JPEG to AI intake
+
+That means the crop button must call a real function like:
+
+```ts
+async function handleCropPhoto() {
+  if (!selectedImageUri || !cropRect) return;
+
+  try {
+    const croppedUri = await cropImageToFrame(selectedImageUri, cropRect);
+
+    setSelectedImageUri(croppedUri);
+    setPrescriptionAttachment((prev) =>
+      prev ? { ...prev, uri: croppedUri, mimeType: "image/jpeg" } : prev
+    );
+  } catch (error) {
+    console.error("[handleCropPhoto] failed", error);
+    Alert.alert("Crop Error", "Could not crop the photo.");
+  }
+}
+```
+
+If the current crop button does not replace the original URI with the cropped output, that is why “nothing happens.”
+
+---
+
+## D. Normalize every prescription image to JPEG before AI
+
+This is the important repair for the HEIC problem.
+
+### Add a normalizer
+
+```ts
+import * as ImageManipulator from "expo-image-manipulator";
+
+async function normalizePrescriptionImage(uri: string) {
+  const context = ImageManipulator.manipulate(uri);
+  const rendered = await context.renderAsync();
+
+  const saved = await rendered.saveAsync({
+    format: ImageManipulator.SaveFormat.JPEG,
+    compress: 0.95,
+  });
+
+  return {
+    uri: saved.uri,
+    mimeType: "image/jpeg",
+  };
+}
+```
+
+Since Expo’s image manipulator saves to JPEG/PNG/WebP and not HEIC, this is the cleanest way to convert iPhone HEIC uploads into something your AI/OCR path can read. ([Expo Documentation][3])
+
+### Use it immediately after capture or upload
+
+```ts
+async function preparePrescriptionImage(asset: any) {
+  const normalized = await normalizePrescriptionImage(asset.uri);
+
+  return {
+    id: `${Date.now()}`,
+    uri: normalized.uri,
+    mimeType: normalized.mimeType,
+    originalName: asset.fileName || asset.name || "prescription.jpg",
+  };
+}
+```
+
+Then always send `normalized.uri` to your AI intake.
+
+---
+
+## E. Make AI intake use the cropped/normalized image only
+
+Your intake path should not care whether the user cropped the image first. It should just consume the **final processed URI**.
+
+### Correct logic
+
+```ts
+async function runPrescriptionAiIntake(finalImageUri: string) {
+  const base64 = await FileSystem.readAsStringAsync(finalImageUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  return api.post("/prescription-intake/analyze", {
+    mimeType: "image/jpeg",
+    imageBase64: base64,
+  });
+}
+```
+
+This ensures:
+
+* cropped image works
+* uncropped image works
+* HEIC source still works after conversion
+* AI always receives JPEG
+
+So yes: **cropping should not affect AI intake at all** because AI should receive the post-processed final file, not the original source file.
+
+---
+
+# The behavior you want
+
+## Prescription camera flow
+
+* show border frame
+* capture full image
+* crop to the visible frame
+* allow manual crop adjustment
+* save result as JPEG
+* run AI on the final JPEG
+* fill intake fields
+
+## Prescription upload flow from iPhone
+
+* user selects screenshot / photo / HEIC
+* app converts it to JPEG automatically
+* user can crop it if needed
+* AI reads the final JPEG
+* no “HEIC not supported” message anymore
+
+---
+
+# Practical implementation outline
+
+## 1. Camera capture
+
+```ts
+const cameraResult = await ImagePicker.launchCameraAsync({
+  mediaTypes: ["images"],
+  allowsEditing: false,
+  quality: 1,
+});
+```
+
+## 2. Library upload
+
+```ts
+const uploadResult = await ImagePicker.launchImageLibraryAsync({
+  mediaTypes: ["images"],
+  allowsEditing: false,
+  quality: 1,
+});
+```
+
+## 3. Normalize to JPEG
+
+```ts
+const normalized = await normalizePrescriptionImage(asset.uri);
+```
+
+## 4. Auto-crop to guide box
+
+```ts
+const frameCroppedUri = await cropImageToFrame(normalized.uri, overlayCropRect);
+```
+
+## 5. Optional manual crop
+
+```ts
+const finalUri = userAdjustedCrop ? await cropImageToFrame(frameCroppedUri, manualCropRect) : frameCroppedUri;
+```
+
+## 6. AI intake
+
+```ts
+await runPrescriptionAiIntake(finalUri);
+```
+
+---
+
+# One more thing to remove
+
+Do not show this error to the user anymore:
+
+> “HEIC format is not supported, please convert to JPEG or PNG first.”
+
+The app should do that conversion automatically. The user should never have to think about file formats for prescription intake.
+
+---
+
+# The cleanest repair summary
+
+Change the prescription intake path so it:
+
+* disables built-in picker crop on iOS because that crop path is unreliable for some high-res images ([Expo Documentation][1])
+* crops to the visible border box using your own crop coordinates
+* makes the crop button perform a real file-saving crop
+* converts every iPhone prescription upload to JPEG before AI intake using `expo-image-manipulator` ([Expo Documentation][2])
+* always sends the final cropped/normalized JPEG to AI
+
+If you upload the prescription capture screen file, I’ll turn this into the exact patched code path instead of the repair pattern.
+
+[1]: https://docs.expo.dev/versions/latest/sdk/imagepicker/?utm_source=chatgpt.com "ImagePicker - Expo Documentation"
+[2]: https://docs.expo.dev/versions/latest/sdk/imagemanipulator/?utm_source=chatgpt.com "ImageManipulator - Expo Documentation"
+[3]: https://docs.expo.dev/versions/latest/sdk/imagemanipulator?utm_source=chatgpt.com "ImageManipulator - Expo Documentation"

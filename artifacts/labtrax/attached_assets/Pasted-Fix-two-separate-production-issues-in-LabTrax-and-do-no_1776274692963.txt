@@ -1,0 +1,95 @@
+Fix two separate production issues in LabTrax and do not treat them as one bug.
+
+Issue 1: join request rejection bug
+
+Current behavior:
+Rejecting a join request sometimes throws Postgres error 23505:
+duplicate key value violates unique constraint "join_requests_lab_user_status_unique"
+Key (lab_id, user_id, status) = (..., ..., rejected) already exists.
+
+Root cause:
+The schema currently enforces uniqueness on (lab_id, user_id, status), which is too strict for a workflow that keeps historical rows for approved/rejected/cancelled requests.
+
+Required fix:
+1. Change the uniqueness rule so only one pending join request can exist per (lab_id, user_id).
+2. Allow multiple historical approved/rejected/cancelled rows.
+3. Make approve/reject endpoints idempotent:
+   - if already rejected, return success instead of error
+   - if already approved, return a controlled 409 or clear no-op response
+4. Safely deduplicate existing rows before applying the new index/constraint.
+5. Update UI refresh/click handling so repeated clicks do not create duplicate state transitions.
+
+Preferred DB solution:
+- Drop the current unique constraint/index on (lab_id, user_id, status)
+- Replace it with a partial unique index enforcing only one pending request per (lab_id, user_id)
+
+Desired endpoint behavior when rejecting:
+- fetch row by id
+- if not found -> 404
+- if status === 'rejected' -> return ok true / already rejected
+- if status !== 'pending' -> return controlled validation response
+- otherwise update to rejected
+
+Also test:
+- reject same request twice
+- approve same request twice
+- reject after approve
+- approve after reject
+- rapid repeated button taps from UI
+
+Issue 2: iOS App Store archive build is still broken
+
+Current behavior:
+The App Store archive still fails during:
+Bundle React Native code and images
+
+The native bundle still contains:
+- import("fs")
+- import("http")
+- import("https")
+- import("url")
+- import(workerSrc)
+
+This means a web/server-only dependency is still being bundled into the native Expo/React Native app, likely from PDF handling or another worker-based dependency.
+
+Required fix:
+1. Search the frontend/native bundle path for:
+   - pdfjs-dist
+   - workerSrc
+   - fs
+   - http
+   - https
+   - url
+   - node:fs
+   - node:http
+   - node:https
+   - node:url
+2. Identify the exact dependency chain causing those imports to reach the native bundle.
+3. Make PDF conversion or worker-based logic web-only using platform-specific files:
+   - *.web.ts for the real web implementation
+   - *.native.ts for a safe no-op/native-safe stub
+4. Remove all direct and indirect native imports of browser/Node worker modules.
+5. Re-run the iOS App Store archive after that dependency chain is fully removed.
+
+Important:
+- This is not a signing problem.
+- This is not an App Store Connect upload problem.
+- This is a native JavaScript bundling/dependency-boundary problem.
+
+Work order:
+1. Fix join-request schema and endpoint idempotency first
+2. Add migration replacing the current uniqueness rule with pending-only uniqueness
+3. Then fix the Expo native bundling problem by isolating web-only PDF/worker code
+4. Then rerun:
+   - join request reject test
+   - join request approve test
+   - iOS App Store archive
+
+What I want back:
+1. Exact files changed
+2. Exact root cause for each issue
+3. Migration summary
+4. Confirmation that join-request edge cases were tested
+5. Confirmation that the iOS archive was re-run after removing the offending dependency chain
+
+Do not make surface-level fixes. Fix the underlying schema invariant for join requests and the underlying dependency boundary for the iOS bundle.

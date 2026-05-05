@@ -1,0 +1,689 @@
+
+Alright just head into your replay project and open the main file where your app handles video recording if you know the file name maybe something like a component for the video capture or the form submission open that up once you're there you can read through the function where the done button is handled or where the video gets saved then you can either share that function use me or describe what it's doing then I'll help you refine the logic just take it step by step
+
+
+
+OK now when I go to add a video and attach notes to a video to a case, I hit the submit button with no response several times eventually there is a response in all these notes get generated and the video never appears. Once again you fix one thing and another thing breaks. Tighten this up with code.
+Bug 1: repeated taps are creating duplicate notes
+That is almost certainly a missing submit lock / idempotency guard.
+Bug 2: videos are being stored like photos
+In the code you uploaded, videos get pushed into casePhotos, and the UI renders every item with <Image />. That makes videos show up as blank gray placeholders or disappear entirely.
+I can prove the second one from your current code:
+•	handleCustomShadeCapture() allows mediaTypes: ["images", "videos"] 
+•	if it is a video, it still does setCasePhotos(prev => [...prev, asset.uri]) 
+•	later, the photo strip renders every casePhotos item like this:
+<Image source={{ uri }} style={styles.photoThumb} contentFit="cover" />
+
+What to tighten up
+1) Stop duplicate submits immediately
+Add a real submit guard.
+Add state near the top of scan.tsx
+
+const [isSubmittingCase, setIsSubmittingCase] = useState(false);
+Replace handleSubmit() with this
+
+function handleSubmit() {
+  if (isSubmittingCase) return;
+
+  if (!doctorName.trim()) {
+    Alert.alert("Required", "Doctor name is required");
+    return;
+  }
+
+  if (!patientName.trim()) {
+    Alert.alert("Required", "Patient name is required");
+    return;
+  }
+
+  setIsSubmittingCase(true);
+
+  const finish = () => setIsSubmittingCase(false);
+
+  try {
+    const matchingCases = cases.filter(
+      (c) => (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase()
+    );
+
+    if (matchingCases.length > 0) {
+      const caseNums = matchingCases.map((c) => c.caseNumber).join(", ");
+      Alert.alert(
+        "Patient Already on File",
+        `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
+        [
+          {
+            text: "Cancel",
+            style: "cancel",
+            onPress: finish,
+          },
+          {
+            text: "View Chart",
+            onPress: () => {
+              finish();
+              router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`);
+            },
+          },
+          {
+            text: "Add Case",
+            onPress: () => {
+              try {
+                createCase(true);
+              } finally {
+                finish();
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    try {
+      createCase(false);
+    } finally {
+      finish();
+    }
+  } catch (err) {
+    finish();
+    console.error("[handleSubmit] ERROR:", err);
+    Alert.alert("Error", "Could not submit case.");
+  }
+}
+
+Disable the submit button while it is running
+Change the header submit button to:
+<Pressable
+  onPress={handleSubmit}
+  disabled={isSubmittingCase}
+  style={({ pressed }) => [
+    styles.submitBtn,
+    isSubmittingCase && { opacity: 0.55 },
+    pressed && !isSubmittingCase && { opacity: 0.8 },
+  ]}
+  testID="submit-case-btn"
+  accessibilityLabel="Submit Case"
+>
+  <View pointerEvents="none">
+    {isSubmittingCase ? (
+      <ActivityIndicator color="#FFF" />
+    ) : (
+      <Ionicons name="checkmark" size={22} color="#FFF" />
+    )}
+  </View>
+</Pressable>
+
+2) Stop storing videos in casePhotos
+Right now casePhotos is doing too much.
+Instead of storing plain strings, store typed attachments.
+Replace:
+const [casePhotos, setCasePhotos] = useState<string[]>([]);
+with:  type CaseAttachment = {
+  id: string;
+  uri: string;
+  kind: "image" | "video" | "pdf";
+  name?: string;
+};
+
+const [caseAttachments, setCaseAttachments] = useState<CaseAttachment[]>([]);
+
+3) Fix custom shade capture so video stays a video
+Replace your current handleCustomShadeCapture() with this:
+
+
+async function handleCustomShadeCapture() {
+  const result = await ImagePicker.launchCameraAsync({
+    mediaTypes: ["images", "videos"],
+    quality: 0.8,
+    videoMaxDuration: 30,
+  });
+
+  if (result.canceled || !result.assets[0]) return;
+
+  const asset = result.assets[0];
+  const isVideo = asset.type === "video";
+
+  const attachment: CaseAttachment = {
+    id: generateId(),
+    uri: asset.uri,
+    kind: isVideo ? "video" : "image",
+    name: asset.fileName || undefined,
+  };
+
+  if (isVideo) {
+    setCustomShadeVideos((prev) => [...prev, asset.uri]);
+  } else {
+    setCustomShadePhotos((prev) => [...prev, asset.uri]);
+  }
+
+  setCaseAttachments((prev) => [...prev, attachment]);
+
+  const entry: ActivityEntry = {
+    id: generateId(),
+    type: isVideo ? "photo" : "photo",
+    timestamp: Date.now(),
+    description: `Custom shading ${isVideo ? "video" : "photo"} captured`,
+    imageUri: isVideo ? undefined : asset.uri,
+    user: userInitials,
+  };
+
+  setActivityEntries((prev) => [...prev, entry]);
+
+  if (Platform.OS !== "web") {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }
+
+  Alert.alert(
+    "Media Added",
+    `Custom shade ${isVideo ? "video" : "photo"} added. Would you like to add more?`,
+    [
+      { text: "Done", style: "cancel" },
+      { text: "Add More", onPress: () => handleCustomShadeCapture() },
+    ]
+  );
+}
+
+4) Fix all attach-file paths to classify media correctly
+Anywhere you currently do things like:
+setCasePhotos((prev) => [...prev, asset.uri]);
+
+change it to:  const attachment: CaseAttachment = {
+  id: generateId(),
+  uri: asset.uri,
+  kind: asset.mimeType?.startsWith("video/")
+    ? "video"
+    : asset.mimeType === "application/pdf"
+    ? "pdf"
+    : "image",
+  name: asset.name,
+};
+
+setCaseAttachments((prev) => [...prev, attachment]);
+
+That includes:
+•	handleAttachFiles() 
+•	handlePickImage() 
+•	handleTakePhotoPrompt() 
+•	any “add file” / “gallery” / “camera” path
+
+
+5) Render videos as videos, not images
+Your current strip does this:
+
+
+{casePhotos.map((uri, idx) => (
+  <View key={idx} style={styles.photoThumbWrap}>
+    <Image source={{ uri }} style={styles.photoThumb} contentFit="cover" />
+  </View>
+))}
+
+That is why the gray empty tiles show up.
+Replace with typed rendering:
+{caseAttachments.map((item, idx) => (
+  <View key={item.id} style={styles.photoThumbWrap}>
+    {item.kind === "image" ? (
+      <Image source={{ uri: item.uri }} style={styles.photoThumb} contentFit="cover" />
+    ) : item.kind === "video" ? (
+      <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#CBD5E1" }]}>
+        <Ionicons name="play-circle" size={34} color="#1E293B" />
+        <Text style={{ fontSize: 11, marginTop: 4, color: "#1E293B", fontFamily: "Inter_600SemiBold" }}>
+          Video
+        </Text>
+      </View>
+    ) : (
+      <View style={[styles.photoThumb, { justifyContent: "center", alignItems: "center", backgroundColor: "#E2E8F0" }]}>
+        <Ionicons name="document-text-outline" size={28} color="#334155" />
+        <Text style={{ fontSize: 11, marginTop: 4, color: "#334155", fontFamily: "Inter_600SemiBold" }}>
+          PDF
+        </Text>
+      </View>
+    )}
+
+    <Pressable
+      onPress={() => {
+        setCaseAttachments((prev) => prev.filter((x) => x.id !== item.id));
+        setActivityEntries((prev) => prev.filter((e) => e.imageUri !== item.uri));
+      }}
+      style={styles.photoRemoveBtn}
+    >
+      <Ionicons name="close-circle" size={20} color="#EF4444" />
+    </Pressable>
+  </View>
+))}
+
+6) Save attachments into the case correctly
+In createCase() you currently pass:
+photos: casePhotos,
+
+Change that to either:
+Better
+attachments: caseAttachments,
+
+or, if your case model cannot change yet, do this transitional split: photos: caseAttachments.filter((x) => x.kind === "image").map((x) => x.uri),
+videos: caseAttachments.filter((x) => x.kind === "video").map((x) => x.uri),
+documents: caseAttachments.filter((x) => x.kind === "pdf").map((x) => x.uri),
+
+Because right now videos are being shoved into the photos bucket, which is exactly the wrong model.
+
+7) Add one more hard stop against duplicate activity entries
+Before adding a note/photo/video entry, reject near-duplicates created within a short window.
+Example:
+function appendActivityEntry(entry: ActivityEntry) {
+  setActivityEntries((prev) => {
+    const duplicate = prev.some((e) =>
+      e.description === entry.description &&
+      e.user === entry.user &&
+      Math.abs(e.timestamp - entry.timestamp) < 2000
+    );
+
+    if (duplicate) return prev;
+    return [...prev, entry];
+  });
+}
+
+Then replace direct setActivityEntries((prev) => [...prev, entry]) calls with: appendActivityEntry(entry);
+
+What this fixes
+These changes directly fix the behavior in your screenshots:
+•	repeated taps no longer spam duplicate submissions 
+•	videos no longer get mis-rendered as blank image placeholders 
+•	notes stop getting duplicated from rapid taps 
+•	media handling becomes explicit instead of “everything is a photo string”
+Next problem:
+There's a problem now where one device takes a courtesy text and sends a courtesy text as one of the buttons at the bottom of the case, and it shows up in the case history for that phone, but not on another phone, even though both phones are affiliated with accounts within the same lab environment. You need to fix this.Now the courtesy text isn't even showing up in the case history of the phone that actually sent the courtesy text. This is ridiculous. This is a glitch that needs to be fixed. It was fixed before. This is so stupid. You fix one thing and another thing breaks.
+
+What is probably broken
+A courtesy text should never be “just append to local case history.”
+Bad pattern: setActivityEntries((prev) => [
+  ...prev,
+  {
+    id: generateId(),
+    type: "courtesy_text",
+    description: "Courtesy text sent",
+    timestamp: Date.now(),
+    user: userInitials,
+  },
+]);
+
+If that happens without a shared write, one phone sees it and another phone does not. Then after refresh, even the original phone loses it too, which matches what you’re seeing now. That means the event is likely being:
+•	shown optimistically 
+•	not persisted correctly 
+•	or overwritten by a later case reload 
+The fix
+1. Make courtesy text a real persisted case-history event
+When the button is tapped, do not rely on local state as the source of truth.
+Use a single function like:
+type CaseHistoryEvent = {
+  id: string;
+  caseId: string;
+  organizationId: string;
+  type: "note" | "photo" | "video" | "courtesy_text";
+  body: string;
+  createdAt: string;
+  createdByUserId: string;
+  createdByInitials: string;
+  metadata?: Record<string, any>;
+};
+
+Then: async function sendCourtesyTextAndLog({
+  caseId,
+  organizationId,
+  message,
+  createdByUserId,
+  createdByInitials,
+}: {
+  caseId: string;
+  organizationId: string;
+  message: string;
+  createdByUserId: string;
+  createdByInitials: string;
+}) {
+  const event: CaseHistoryEvent = {
+    id: generateId(),
+    caseId,
+    organizationId,
+    type: "courtesy_text",
+    body: message,
+    createdAt: new Date().toISOString(),
+    createdByUserId,
+    createdByInitials,
+    metadata: {
+      deliveryStatus: "sent",
+    },
+  };
+
+  await api.post(`/cases/${caseId}/history`, event);
+
+  return event;
+}
+
+The case-history list on every device should load from that persisted endpoint, not from button state.
+________________________________________
+2. Do not show “sent” until both actions succeed
+If the courtesy text has two steps:
+•	send the text 
+•	write the history entry 
+then both must succeed, or you get ghost behavior.
+Use this:
+const [isSendingCourtesyText, setIsSendingCourtesyText] = useState(false);
+
+async function handleCourtesyText(message: string) {
+  if (isSendingCourtesyText) return;
+  setIsSendingCourtesyText(true);
+
+  try {
+    await api.post(`/cases/${caseId}/courtesy-text`, {
+      message,
+      organizationId: activeOrganizationId,
+    });
+
+    const persistedEvent = await api.post(`/cases/${caseId}/history`, {
+      type: "courtesy_text",
+      body: message,
+      organizationId: activeOrganizationId,
+      createdByUserId: currentUser.id,
+      createdByInitials: currentUser.initials,
+      createdAt: new Date().toISOString(),
+    });
+
+    setActivityEntries((prev) => mergeHistoryEvents(prev, [persistedEvent.data]));
+  } catch (error) {
+    console.error("[courtesy-text] failed", error);
+    Alert.alert("Error", "Courtesy text was not saved to case history.");
+  } finally {
+    setIsSendingCourtesyText(false);
+  }
+}
+
+3. Reload case history after sending
+Optimistic UI is fine, but you need a forced refresh from shared storage right after save.
+async function refreshCaseHistory() {
+  const res = await api.get(`/cases/${caseId}/history`, {
+    params: { organizationId: activeOrganizationId },
+  });
+
+  setActivityEntries(normalizeHistory(res.data.events || []));
+}
+
+Then after send: await handleCourtesyText(message);
+await refreshCaseHistory();
+
+That removes the “one phone sees it, one doesn’t” race.
+
+4. Merge instead of overwrite
+A lot of these regressions happen because one code path does:
+setActivityEntries(serverEvents);
+
+and wipes out locally-added items, or a stale fetch wipes out newer ones.
+Use a merge helper:
+function mergeHistoryEvents(
+  existing: CaseHistoryEvent[],
+  incoming: CaseHistoryEvent[]
+): CaseHistoryEvent[] {
+  const map = new Map<string, CaseHistoryEvent>();
+
+  for (const item of existing) {
+    map.set(item.id, item);
+  }
+
+  for (const item of incoming) {
+    map.set(item.id, item);
+  }
+
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+}
+
+Then: setActivityEntries((prev) => mergeHistoryEvents(prev, fetchedEvents));
+
+Never blindly replace with stale data unless you know it is authoritative and complete.
+
+5. Make sure all devices query the same org-scoped history
+Because you mentioned both phones are in the same lab environment, this may also be an org-scoping bug.
+A common bad query looks like:
+GET /cases/:caseId/history
+but the server may need: GET /cases/:caseId/history?organizationId=currentLabId
+
+If one phone has a different selected org context, it may miss the event.
+So every courtesy-text write and every history read should include the same:
+•	caseId 
+•	organizationId 
+•	authenticated user membership context 
+________________________________________
+6. Add a server-side history entry for courtesy text
+If your backend sends the text but does not log the event in the database, fix that there too.
+Pattern:
+router.post("/cases/:caseId/courtesy-text", requireAuth, async (req, res, next) => {
+  try {
+    const caseId = req.params.caseId;
+    const { message, organizationId } = req.body;
+
+    // validate membership for this org here
+
+    // send SMS here
+
+    const historyResult = await query(
+      `
+        INSERT INTO case_history
+        (case_id, organization_id, type, body, created_by_user_id, created_at)
+        VALUES ($1, $2, 'courtesy_text', $3, $4, NOW())
+        RETURNING *
+      `,
+      [caseId, organizationId, message, req.user.id]
+    );
+
+    return res.json({ ok: true, historyEvent: historyResult.rows[0] });
+  } catch (error) {
+    next(error);
+  }
+});
+
+That is stronger than trying to do SMS and history as two unrelated frontend actions.
+________________________________________
+What I think is happening in your app
+Based on the pattern of regressions you’ve been hitting, the courtesy text feature was likely “fixed” by making it appear immediately in one place, but the write path became detached from the shared case-history source. So:
+•	tap button 
+•	local card appears 
+•	another phone does not see it 
+•	later refresh reloads from backend 
+•	the local-only courtesy text disappears 
+That matches your exact symptom.
+What to change right now
+In the courtesy text button flow:
+•	add a submit lock 
+•	persist courtesy text as a real case-history record 
+•	refresh history from shared storage after success 
+•	merge fetched history instead of replacing with stale data 
+•	ensure the same organizationId is used on write and read
+
+
+Here's another problem. When a user goes into a case and they want to reprint the lab slip, they hit the button that says print lab slip, and a window pops up that says the lab slip is displayed above. Use your device's print feature to print this document. That's so stupid. When you hit to print something, it should look for devices within the area that are saved on the account or saved on the phone, just like any other device. JP's printer, do you wanna use JP's printer or do you wanna use this printer? It's not doing that here. This needs to be fixed too.
+
+What you have now sounds like a preview/share flow, not a real native print flow. In Expo, the correct path is Print.printAsync(...), which opens the native print window on iOS and Android. Expo also supports Print.selectPrinterAsync() on iOS only so a user can choose and reuse a specific AirPrint printer; Android relies on the native print window to show available printers. 
+So the fix is:
+1.	stop showing “lab slip is displayed above” as the primary print behavior 
+2.	generate the slip as HTML or PDF 
+3.	call the native print dialog immediately 
+4.	on iPhone, optionally let the user pick and save a preferred printer for later reuse via selectPrinterAsync() and printerUrl 
+What is probably broken now
+You likely have something like:
+•	render slip preview on screen 
+•	maybe create a PDF 
+•	show an alert telling the user to use the phone’s print feature manually 
+That is not a print workflow. It should be:
+await Print.printAsync({ html });
+
+or if you already generate a PDF:
+await Print.printAsync({ uri: pdfUri });
+
+Expo’s docs are explicit that printAsync() is the method that opens native printing, while printToFileAsync() creates a PDF file instead. 
+What to implement
+1. Replace the alert-driven flow with real printing
+Use a single handler like this:
+import { Alert, Platform } from "react-native";
+import * as Print from "expo-print";
+
+type SavedPrinter = {
+  name: string;
+  url: string;
+} | null;
+
+let selectedPrinter: SavedPrinter = null;
+
+export async function handlePrintLabSlip({
+  html,
+  pdfUri,
+}: {
+  html?: string;
+  pdfUri?: string;
+}) {
+  try {
+    if (!html && !pdfUri) {
+      Alert.alert("Error", "No lab slip available to print.");
+      return;
+    }
+
+    if (pdfUri) {
+      await Print.printAsync({
+        uri: pdfUri,
+        ...(Platform.OS === "ios" && selectedPrinter?.url
+          ? { printerUrl: selectedPrinter.url }
+          : {}),
+      });
+      return;
+    }
+
+    await Print.printAsync({
+      html: html!,
+      ...(Platform.OS === "ios" && selectedPrinter?.url
+        ? { printerUrl: selectedPrinter.url }
+        : {}),
+    });
+  } catch (error) {
+    console.error("[print-lab-slip] failed", error);
+    Alert.alert("Print Error", "Could not open the print dialog.");
+  }
+}
+
+That gets rid of the dumb “displayed above” message and opens actual printing.
+________________________________________
+2. Add printer selection on iPhone
+On iOS, let the user choose a printer once and reuse it later.
+import { Platform, Alert } from "react-native";
+import * as Print from "expo-print";
+
+export async function choosePrinter() {
+  if (Platform.OS !== "ios") return null;
+
+  try {
+    const printer = await Print.selectPrinterAsync();
+    if (!printer?.url) return null;
+
+    selectedPrinter = {
+      name: printer.name,
+      url: printer.url,
+    };
+
+    return selectedPrinter;
+  } catch (error) {
+    console.error("[choose-printer] failed", error);
+    Alert.alert("Printer Error", "Could not open printer selection.");
+    return null;
+  }
+}
+
+Expo documents that selectPrinterAsync() is available on iOS and returns name and url, which can then be passed back into printAsync({ printerUrl }). 
+________________________________________
+3. Save printer preference per user/device
+If you want “JP’s printer” style behavior, store the chosen iPhone printer URL locally and optionally also save the printer name in account settings for display.
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+const PRINTER_KEY = "preferred_lab_slip_printer";
+
+export async function loadSavedPrinter() {
+  const raw = await AsyncStorage.getItem(PRINTER_KEY);
+  selectedPrinter = raw ? JSON.parse(raw) : null;
+  return selectedPrinter;
+}
+
+export async function savePrinter(printer: { name: string; url: string }) {
+  selectedPrinter = printer;
+  await AsyncStorage.setItem(PRINTER_KEY, JSON.stringify(printer));
+} Then your flow becomes:
+•	first print on iPhone: ask whether to use saved printer or choose another 
+•	later prints: default to saved printer, with a “Change Printer” option 
+________________________________________
+4. Use a sane button flow
+For iPhone:
+async function onPressPrintLabSlip(html: string) {
+  if (Platform.OS === "ios") {
+    const printer = await loadSavedPrinter();
+
+    if (!printer) {
+      const picked = await choosePrinter();
+      if (picked) await savePrinter(picked);
+    }
+
+    await handlePrintLabSlip({ html });
+    return;
+  }
+
+  await handlePrintLabSlip({ html });
+}
+
+For Android, do not try to fake your own printer picker. Let the native print dialog handle it. Expo’s Android flow opens the native print window directly. Better UX
+Change the current button behavior to this:
+•	Print Lab Slip → immediately opens native print UI 
+•	Printer or Change Printer → iPhone only, opens printer chooser 
+•	Share PDF → separate action, not mixed into Print 
+Do not bundle preview, PDF export, and printing into one confusing button.
+The likely root cause
+The code probably drifted into this pattern:
+const { uri } = await Print.printToFileAsync({ html });
+setPreviewUri(uri);
+Alert.alert("Lab slip is displayed above. Use your device's print feature...");
+
+That is a PDF-generation workflow, not a print workflow. printToFileAsync() creates a file; printAsync() opens printing. 
+What to tighten up in code
+Use this exact decision tree:
+async function printLabSlip(labSlipHtml: string) {
+  try {
+    if (Platform.OS === "ios") {
+      const saved = await loadSavedPrinter();
+
+      await Print.printAsync({
+        html: labSlipHtml,
+        ...(saved?.url ? { printerUrl: saved.url } : {}),
+      });
+      return;
+    }
+
+    await Print.printAsync({ html: labSlipHtml });
+  } catch (error) {
+    console.error(error);
+    Alert.alert("Print Error", "Unable to open the print dialog.");
+  }
+}
+
+And a separate iPhone-only printer chooser: async function setPreferredPrinter() {
+  if (Platform.OS !== "ios") return;
+
+  const printer = await Print.selectPrinterAsync();
+  await savePrinter(printer);
+  Alert.alert("Printer Saved", `${printer.name} will be used for future lab slips.`);
+}
+
+That is the cleanest repair.
+One important reality check
+If you want the app itself to enumerate all printers on every platform in a custom list, Expo does not give you a cross-platform printer inventory API. The supported native path is:
+•	iOS: optional selectPrinterAsync() + printerUrl 
+•	Android: native print dialog via printAsync() 
+So the right fix is not “build your own fake printer browser.” The right fix is “use native printing correctly.”
+
+
+
+
+
+
+
+
+
