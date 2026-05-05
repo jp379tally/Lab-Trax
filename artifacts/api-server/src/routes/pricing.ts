@@ -229,6 +229,7 @@ router.get(
         doctorName: r.doctorName,
         practiceName: r.practiceName,
         providerOrganizationId: r.providerOrganizationId,
+        tierName: r.tierName,
         prices: r.pricesJson ?? {},
         notes: r.notes,
         createdAt: r.createdAt,
@@ -247,6 +248,7 @@ router.post(
         doctorName: z.string().min(1).max(120),
         practiceName: z.string().max(160).optional(),
         providerOrganizationId: z.string().optional(),
+        tierName: z.string().max(80).optional(),
         prices: pricesSchema.optional(),
         notes: z.string().max(500).optional(),
       })
@@ -275,6 +277,7 @@ router.post(
         doctorName: input.doctorName,
         practiceName: input.practiceName ?? null,
         providerOrganizationId: input.providerOrganizationId ?? null,
+        tierName: input.tierName?.trim() || null,
         pricesJson: sanitizePrices(input.prices ?? {}),
         notes: input.notes ?? null,
         createdByUserId: (req as any).auth.userId,
@@ -314,6 +317,7 @@ router.patch(
         doctorName: z.string().min(1).max(120).optional(),
         practiceName: z.string().max(160).nullable().optional(),
         providerOrganizationId: z.string().nullable().optional(),
+        tierName: z.string().max(80).nullable().optional(),
         prices: pricesSchema.optional(),
         notes: z.string().max(500).nullable().optional(),
       })
@@ -330,6 +334,11 @@ router.patch(
       update.practiceName = input.practiceName;
     if (input.providerOrganizationId !== undefined)
       update.providerOrganizationId = input.providerOrganizationId;
+    if (input.tierName !== undefined) {
+      const tn =
+        typeof input.tierName === "string" ? input.tierName.trim() : null;
+      update.tierName = tn && tn.length > 0 ? tn : null;
+    }
     if (input.prices !== undefined)
       update.pricesJson = sanitizePrices(input.prices);
     if (input.notes !== undefined) update.notes = input.notes;

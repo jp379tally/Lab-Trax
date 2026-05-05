@@ -211,6 +211,7 @@ export const organizationConnections = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     status: text("status").default("pending").notNull(),
+    tierName: text("tier_name"),
     requestedByOrgId: varchar("requested_by_org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
@@ -537,6 +538,7 @@ export const pricingOverrides = pgTable(
       () => organizations.id,
       { onDelete: "set null" }
     ),
+    tierName: text("tier_name"),
     pricesJson: jsonb("prices_json").default({}).notNull(),
     notes: text("notes"),
     createdByUserId: varchar("created_by_user_id").references(() => users.id, {

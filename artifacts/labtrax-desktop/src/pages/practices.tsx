@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Loader2, Mail, Search, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Building2, Loader2, Mail, Search, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, Organization } from "@/lib/types";
@@ -381,6 +381,13 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
             </FormField>
           </section>
 
+          {org.type === "provider" && (
+            <ConnectionTierSection
+              providerOrg={org}
+              currentUserId={currentUser?.id}
+            />
+          )}
+
           <MembershipSection
             org={org}
             members={membersQuery.data ?? []}
@@ -661,6 +668,173 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
           </form>
         </>
       )}
+    </section>
+  );
+}
+
+interface ConnectionRecord {
+  id: string;
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  status: string;
+  tierName?: string | null;
+  labOrganization?: { id: string; name: string; displayName?: string | null } | null;
+}
+
+interface PricingTierRecord {
+  id: string;
+  labOrganizationId: string;
+  name: string;
+}
+
+interface PricingTiersResponse {
+  labOrganizationId: string;
+  tiers: PricingTierRecord[];
+}
+
+function ConnectionTierSection({
+  providerOrg,
+  currentUserId,
+}: {
+  providerOrg: Organization;
+  currentUserId?: string;
+}) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+
+  const connectionsQuery = useQuery({
+    queryKey: ["organization-connections", providerOrg.id, currentUserId],
+    queryFn: () =>
+      apiFetch<ConnectionRecord[]>(
+        `/organizations/connections?providerOrganizationId=${encodeURIComponent(providerOrg.id)}`
+      ),
+    enabled: !!currentUserId,
+  });
+
+  const connections = connectionsQuery.data ?? [];
+  const labIds = useMemo(
+    () => [...new Set(connections.map((c) => c.labOrganizationId))],
+    [connections]
+  );
+
+  const tiersByLabQueries = useQuery({
+    queryKey: ["pricing-tiers-for-labs", labIds.sort().join(",")],
+    enabled: labIds.length > 0,
+    queryFn: async () => {
+      const results = await Promise.all(
+        labIds.map((labId) =>
+          apiFetch<PricingTiersResponse>(
+            `/pricing/tiers?labOrganizationId=${encodeURIComponent(labId)}`
+          ).catch(() => null)
+        )
+      );
+      const map: Record<string, PricingTierRecord[]> = {};
+      results.forEach((r, i) => {
+        if (r) map[labIds[i]] = r.tiers ?? [];
+      });
+      return map;
+    },
+  });
+
+  const tierMutation = useMutation({
+    mutationFn: ({
+      connectionId,
+      tierName,
+    }: {
+      connectionId: string;
+      tierName: string | null;
+    }) =>
+      apiFetch<ConnectionRecord>(`/organizations/connections/${connectionId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ tierName }),
+      }),
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({
+        queryKey: ["organization-connections", providerOrg.id],
+      });
+    },
+    onError: (err: Error) =>
+      setError(err.message || "Could not update default tier."),
+  });
+
+  if (!currentUserId) return null;
+
+  return (
+    <section className="space-y-3">
+      <h3 className="text-sm font-semibold flex items-center gap-2">
+        <Tag size={14} /> Default pricing tier
+      </h3>
+      <p className="text-xs text-muted-foreground">
+        Pick which tier this practice is on. New cases use this tier's prices
+        when there is no per-doctor override.
+      </p>
+
+      {error && (
+        <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+          {error}
+        </div>
+      )}
+
+      {connectionsQuery.isLoading && (
+        <div className="text-sm text-muted-foreground">Loading connections…</div>
+      )}
+
+      {!connectionsQuery.isLoading && connections.length === 0 && (
+        <div className="text-sm text-muted-foreground border border-border rounded-md px-3 py-3">
+          No connection between this practice and one of your labs yet.
+        </div>
+      )}
+
+      <div className="border border-border rounded-md divide-y divide-border">
+        {connections.map((c) => {
+          const tiers = tiersByLabQueries.data?.[c.labOrganizationId] ?? [];
+          const labName =
+            c.labOrganization?.displayName ||
+            c.labOrganization?.name ||
+            "Your lab";
+          const isBusy =
+            tierMutation.isPending &&
+            tierMutation.variables?.connectionId === c.id;
+          return (
+            <div
+              key={c.id}
+              className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="font-medium truncate">{labName}</div>
+                <div className="text-xs text-muted-foreground">
+                  Status: {c.status}
+                </div>
+              </div>
+              <select
+                value={c.tierName ?? ""}
+                disabled={isBusy || tiersByLabQueries.isLoading}
+                onChange={(e) =>
+                  tierMutation.mutate({
+                    connectionId: c.id,
+                    tierName: e.target.value === "" ? null : e.target.value,
+                  })
+                }
+                className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
+              >
+                <option value="">— No default tier —</option>
+                {tiers.map((t) => (
+                  <option key={t.id} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+                {c.tierName &&
+                  !tiers.some((t) => t.name === c.tierName) && (
+                    <option value={c.tierName}>
+                      {c.tierName} (missing)
+                    </option>
+                  )}
+              </select>
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }

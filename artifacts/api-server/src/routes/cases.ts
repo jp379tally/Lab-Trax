@@ -115,6 +115,7 @@ router.post(
               {
                 labOrganizationId: input.labOrganizationId,
                 doctorName: input.doctorName,
+                providerOrganizationId: input.providerOrganizationId,
               },
               r.material,
               r.restorationType
@@ -579,6 +580,7 @@ router.post(
         {
           labOrganizationId: found.labOrganizationId,
           doctorName: found.doctorName,
+          providerOrganizationId: found.providerOrganizationId,
         },
         input.material,
         input.restorationType

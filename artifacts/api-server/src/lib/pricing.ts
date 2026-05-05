@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { pricingOverrides, pricingTiers } from "@workspace/db";
+import {
+  organizationConnections,
+  pricingOverrides,
+  pricingTiers,
+} from "@workspace/db";
 
 export const DEFAULT_TIER_ITEMS = [
   { key: "zirconia_crown", label: "Zirconia Crown" },
@@ -68,6 +72,7 @@ function normalizeDoctor(name?: string | null) {
 export interface ResolvedPriceContext {
   labOrganizationId: string;
   doctorName?: string | null;
+  providerOrganizationId?: string | null;
   tierName?: string | null;
 }
 
@@ -78,6 +83,8 @@ export async function resolveServerPrice(
 ): Promise<number | null> {
   const key = materialToPriceKey(material, restorationType);
   if (!key) return null;
+
+  let doctorTierName: string | null = null;
 
   // Per-doctor override beats tier
   const doctor = normalizeDoctor(ctx.doctorName);
@@ -92,22 +99,66 @@ export async function resolveServerPrice(
       const prices = (match.pricesJson ?? {}) as Record<string, unknown>;
       const value = Number(prices[key]);
       if (Number.isFinite(value) && value > 0) return value;
+      if (match.tierName) doctorTierName = match.tierName;
     }
   }
 
-  // Tier lookup (by tier name on the override row, else first tier)
+  // Practice-level tier from the lab/provider connection.
+  let connectionTierName: string | null = null;
+  if (ctx.providerOrganizationId) {
+    const connection = await db.query.organizationConnections.findFirst({
+      where: and(
+        eq(
+          organizationConnections.labOrganizationId,
+          ctx.labOrganizationId
+        ),
+        eq(
+          organizationConnections.providerOrganizationId,
+          ctx.providerOrganizationId
+        )
+      ),
+    });
+    if (connection?.tierName) connectionTierName = connection.tierName;
+  }
+
+  // Tier lookup priority:
+  //   1. doctor's assigned tier (from override.tierName)
+  //   2. practice's assigned tier (from organization_connections.tierName)
+  //   3. caller-provided ctx.tierName (legacy)
+  //   4. first tier on the lab (legacy fallback so unconfigured labs still
+  //      resolve a price exactly as before this feature)
   const tiers = await db.query.pricingTiers.findMany({
     where: eq(pricingTiers.labOrganizationId, ctx.labOrganizationId),
   });
-  const tier = ctx.tierName
-    ? tiers.find(
-        (t) => t.name.trim().toLowerCase() === ctx.tierName!.trim().toLowerCase()
-      )
-    : null;
-  if (tier) {
+  const sortedTiers = [...tiers].sort((a, b) => {
+    const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return at - bt;
+  });
+
+  const candidateNames = [
+    doctorTierName,
+    connectionTierName,
+    ctx.tierName ?? null,
+  ].filter((n): n is string => !!n);
+
+  const findByName = (name: string) =>
+    sortedTiers.find(
+      (t) => t.name.trim().toLowerCase() === name.trim().toLowerCase()
+    );
+
+  const tryTier = (tier: typeof sortedTiers[number] | undefined) => {
+    if (!tier) return null;
     const prices = (tier.pricesJson ?? {}) as Record<string, unknown>;
     const value = Number(prices[key]);
-    if (Number.isFinite(value) && value > 0) return value;
+    return Number.isFinite(value) && value > 0 ? value : null;
+  };
+
+  for (const name of candidateNames) {
+    const v = tryTier(findByName(name));
+    if (v !== null) return v;
   }
-  return null;
+
+  // Legacy fallback: first tier on the lab.
+  return tryTier(sortedTiers[0]);
 }

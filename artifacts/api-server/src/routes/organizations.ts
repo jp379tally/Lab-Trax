@@ -324,6 +324,70 @@ router.get(
   })
 );
 
+// NOTE: must be declared before the dynamic GET /:organizationId route below,
+// otherwise Express will match "/connections" as an organization id.
+router.get(
+  "/connections",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const labFilter = req.query.labOrganizationId as string | undefined;
+    const providerFilter = req.query.providerOrganizationId as
+      | string
+      | undefined;
+
+    const memberships = await db.query.organizationMemberships.findMany({
+      where: and(
+        eq(organizationMemberships.userId, userId),
+        eq(organizationMemberships.status, "active")
+      ),
+    });
+    const memberOrgIds = memberships.map((m) => m.labId);
+    if (memberOrgIds.length === 0) return ok(res, []);
+
+    const allConnections =
+      await db.query.organizationConnections.findMany({});
+    let connections = allConnections.filter(
+      (c) =>
+        memberOrgIds.includes(c.labOrganizationId) ||
+        memberOrgIds.includes(c.providerOrganizationId)
+    );
+    if (labFilter)
+      connections = connections.filter(
+        (c) => c.labOrganizationId === labFilter
+      );
+    if (providerFilter)
+      connections = connections.filter(
+        (c) => c.providerOrganizationId === providerFilter
+      );
+
+    const orgIds = [
+      ...new Set(
+        connections.flatMap((c) => [
+          c.labOrganizationId,
+          c.providerOrganizationId,
+        ])
+      ),
+    ];
+    const orgs = orgIds.length
+      ? await db
+          .select()
+          .from(organizations)
+          .where(inArray(organizations.id, orgIds))
+      : [];
+    const orgsById = new Map(orgs.map((o) => [o.id, o]));
+
+    return ok(
+      res,
+      connections.map((c) => ({
+        ...c,
+        labOrganization: orgsById.get(c.labOrganizationId) ?? null,
+        providerOrganization:
+          orgsById.get(c.providerOrganizationId) ?? null,
+      }))
+    );
+  })
+);
+
 router.get(
   "/:organizationId",
   asyncHandler(async (req, res) => {
@@ -1012,6 +1076,60 @@ router.post(
       entityId: connection.id,
       afterJson: updated,
     });
+    return ok(res, updated);
+  })
+);
+
+router.patch(
+  "/connections/:connectionId",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({
+        tierName: z.string().max(80).nullable().optional(),
+        status: z
+          .enum(["pending", "active", "suspended", "rejected"])
+          .optional(),
+      })
+      .parse(req.body);
+
+    const connection = await db.query.organizationConnections.findFirst({
+      where: eq(organizationConnections.id, req.params.connectionId),
+    });
+    if (!connection) throw new HttpError(404, "Connection not found.");
+
+    // Only an admin in the lab side can change the assigned tier or status.
+    await requireAnyRole(
+      (req as any).auth.userId,
+      connection.labOrganizationId,
+      ADMIN_ROLES
+    );
+
+    const update: Partial<typeof organizationConnections.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (input.tierName !== undefined) {
+      const tn =
+        typeof input.tierName === "string" ? input.tierName.trim() : null;
+      update.tierName = tn && tn.length > 0 ? tn : null;
+    }
+    if (input.status !== undefined) update.status = input.status;
+
+    const [updated] = await db
+      .update(organizationConnections)
+      .set(update)
+      .where(eq(organizationConnections.id, connection.id))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      organizationId: connection.labOrganizationId,
+      action: "organization_connection_updated",
+      entityType: "organization_connection",
+      entityId: connection.id,
+      beforeJson: connection,
+      afterJson: updated,
+    });
+
     return ok(res, updated);
   })
 );

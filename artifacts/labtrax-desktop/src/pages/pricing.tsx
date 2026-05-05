@@ -34,6 +34,7 @@ interface PricingOverride {
   practiceName: string | null;
   providerOrganizationId: string | null;
   prices: Record<string, number>;
+  tierName: string | null;
   notes: string | null;
 }
 
@@ -1417,7 +1418,14 @@ function OverrideEditor({
   const [practiceName, setPracticeName] = useState(
     override?.practiceName ?? ""
   );
+  const [tierName, setTierName] = useState<string>(override?.tierName ?? "");
   const [notes, setNotes] = useState(override?.notes ?? "");
+
+  const tiersQuery = useQuery({
+    queryKey: ["pricing", "tiers"],
+    queryFn: () => apiFetch<TiersResponse>("/pricing/tiers"),
+  });
+  const availableTiers = tiersQuery.data?.tiers ?? [];
   const [prices, setPrices] = useState<Record<string, string>>(() => {
     const out: Record<string, string> = {};
     for (const k of keys) {
@@ -1471,6 +1479,7 @@ function OverrideEditor({
       const payload: Record<string, unknown> = {
         doctorName: doctorName.trim(),
         practiceName: practiceName.trim() || null,
+        tierName: tierName.trim() ? tierName.trim() : null,
         notes: notes.trim() || null,
         prices: nextPrices,
       };
@@ -1572,6 +1581,28 @@ function OverrideEditor({
           placeholder="Elite Dental Group"
           className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
         />
+      </div>
+
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Assigned tier (optional)
+        </label>
+        <select
+          value={tierName}
+          onChange={(e) => setTierName(e.target.value)}
+          className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+        >
+          <option value="">— Use practice default / first tier —</option>
+          {availableTiers.map((t) => (
+            <option key={t.id} value={t.name}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-muted-foreground mt-1">
+          Per-item prices below still take precedence. Use this to put a doctor
+          on a specific tier without setting every price.
+        </p>
       </div>
 
       <div>
