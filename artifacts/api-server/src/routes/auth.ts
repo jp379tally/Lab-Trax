@@ -27,6 +27,7 @@ import { HttpError, ok } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { writeAuditLog } from "../lib/audit";
+import { notifications } from "@workspace/db";
 
 const router = Router();
 
@@ -490,6 +491,28 @@ router.post(
         entityType: "session",
         entityId: payload.sid,
       });
+      try {
+        await db.insert(notifications).values({
+          userId: payload.sub,
+          type: "security_session_revoked",
+          title: "Suspicious sign-in activity detected",
+          body: "We detected a reused sign-in token from one of your devices and signed that device out as a precaution. If this wasn't you, please reset your password and review your active sessions.",
+          dataJson: {
+            reason: "refresh_token_reuse_detected",
+            sessionId: payload.sid,
+            detectedAt: now.toISOString(),
+            ipAddress: req.ip ?? null,
+            userAgent: req.get("user-agent") ?? null,
+            passwordResetPath: "/settings/security/password",
+            deviceReviewPath: "/settings/security/sessions",
+          },
+        });
+      } catch (err) {
+        console.error(
+          "[AUTH] Failed to write reuse-detection notification:",
+          err
+        );
+      }
       if (!fromBody) clearAuthCookies(req, res);
       throw new HttpError(401, "Refresh token is invalid or expired.");
     }
