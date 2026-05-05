@@ -1,0 +1,339 @@
+Below is a Replit-ready feature writeup you can paste into Replit AI.
+
+---
+
+# Labtrax Financial Register, Bank Sync, Cash Flow, and Memorized Transactions Feature Spec
+
+## Goal
+
+Add a financial module to Labtrax that works like a QuickBooks-style bank/checkbook register. The user should be able to:
+
+1. View and manage a checking account register.
+2. Reconcile the bank account through the website.
+3. Connect a real bank account so transactions are imported automatically.
+4. Show pending and actual cash flow by month.
+5. Automatically create recurring or “memorized” transactions.
+6. Display the financial dashboard in a familiar QuickBooks-like register layout.
+
+Use a bank connection provider such as Plaid. Plaid supports bank transaction syncing and webhooks, so the app can receive updates when transactions change instead of manually entering everything. ([Plaid][1]) Replit scheduled deployments can be used for monthly jobs like generating recurring transactions. ([Replit Docs][2])
+
+---
+
+## Main Features
+
+### 1. Bank / Checkbook Register
+
+Create a register screen similar to a QuickBooks bank register.
+
+Each row should show:
+
+* Date
+* Transaction type
+* Check number or reference number
+* Payee / vendor
+* Memo
+* Category / account
+* Debit
+* Credit / deposit
+* Cleared status
+* Reconciled status
+* Running balance
+* Source: manual, bank import, recurring, adjustment
+
+The register should allow:
+
+* Add manual transaction
+* Edit transaction
+* Delete or void transaction
+* Mark as cleared
+* Mark as reconciled
+* Match imported bank transaction to existing manual or recurring transaction
+* Filter by date, status, payee, category, or amount
+* Search transactions
+* Export CSV
+
+---
+
+### 2. Bank Connection
+
+Add a bank connection workflow.
+
+Recommended flow:
+
+1. User clicks “Connect Bank Account.”
+2. App opens bank-linking flow using Plaid Link.
+3. Store the bank item and account IDs securely.
+4. Store access tokens only in server-side environment variables or encrypted database fields.
+5. Import historical transactions.
+6. Listen for Plaid transaction webhooks.
+7. When new bank activity is available, call the transaction sync endpoint.
+8. Insert new transactions into the register.
+9. Update modified or removed bank transactions.
+
+Important: Do not store bank login credentials. The app should only store secure tokens from the provider.
+
+Bank sync behavior:
+
+* Imported bank transactions should default to `cleared = true`.
+* Imported transactions should not automatically be `reconciled`.
+* If an imported transaction matches a projected recurring transaction, mark the recurring transaction as matched.
+* If no match exists, create a new register entry.
+
+Matching rules:
+
+* Same amount
+* Similar date, within configurable range such as 3 to 5 days
+* Similar payee/vendor name
+* Same bank account
+* Same transaction direction: debit or credit
+
+---
+
+### 3. Reconciliation
+
+Create a reconciliation screen where the user can reconcile the checking account.
+
+Fields:
+
+* Bank account
+* Statement start date
+* Statement end date
+* Beginning balance
+* Ending statement balance
+* Cleared deposits
+* Cleared payments
+* Calculated cleared balance
+* Difference
+
+Workflow:
+
+1. User enters statement ending balance and date.
+2. App shows all unreconciled transactions up to that date.
+3. User checks off transactions that appear on the statement.
+4. App calculates the difference.
+5. If difference is zero, allow “Finish Reconciliation.”
+6. Mark selected transactions as reconciled.
+7. Save reconciliation history.
+
+---
+
+### 4. Cash Flow Analysis
+
+Create a cash flow dashboard by month.
+
+Formula:
+
+Revenue for month - Expenses for month = Net cash flow
+
+Show:
+
+* Total revenue
+* Total expenses
+* Net cash flow
+* Starting cash balance
+* Ending cash balance
+* Projected future balance
+* Actual vs projected cash flow
+* Category breakdown
+* Payroll forecast
+* Loan/payment forecast
+* Upcoming large expenses
+
+Views:
+
+* Current month
+* Prior month
+* Next 30 days
+* Next 60 days
+* Next 90 days
+* Custom date range
+
+Use actual posted transactions plus projected recurring transactions.
+
+---
+
+### 5. Memorized / Recurring Transactions
+
+Build a recurring transaction engine similar to QuickBooks memorized transactions. QuickBooks lets users memorize repeating transactions and optionally enter them automatically. ([QuickBooks][3])
+
+Recurring transaction examples:
+
+* Payroll on the 1st and 15th
+* Car payment on the 12th
+* Loan payment monthly
+* Rent
+* Insurance
+* Utilities
+* Subscriptions
+* Regular vendor payments
+
+Each recurring rule should include:
+
+* Name
+* Payee
+* Amount or estimated amount
+* Transaction type: debit or credit
+* Category/account
+* Memo
+* Start date
+* End date, optional
+* Frequency: weekly, biweekly, monthly, semi-monthly, quarterly, yearly
+* Day of month
+* Auto-create setting
+* Estimate from last matching transaction setting
+* Active/inactive status
+
+Automation behavior:
+
+* On the first day of each month, generate projected transactions for the rest of the month.
+* Example: if payroll usually occurs on the 1st and 15th, create projected payroll entries for both dates.
+* If the amount varies, estimate based on the last actual transaction or average of the last 3 matching transactions.
+* When the real bank transaction imports, match it against the projected transaction.
+* Replace the projected amount with the actual amount.
+* Mark it as cleared once imported from the bank.
+
+---
+
+## Suggested Database Tables
+
+### `bank_accounts`
+
+```sql
+id
+name
+institution_name
+account_type
+last_four
+current_balance
+available_balance
+plaid_item_id
+plaid_account_id
+is_active
+created_at
+updated_at
+```
+
+### `transactions`
+
+```sql
+id
+bank_account_id
+date
+posted_date
+payee
+memo
+category_id
+type
+debit_amount
+credit_amount
+net_amount
+running_balance
+source
+external_transaction_id
+check_number
+is_cleared
+is_reconciled
+is_projected
+matched_transaction_id
+created_at
+updated_at
+```
+
+### `recurring_transactions`
+
+```sql
+id
+bank_account_id
+name
+payee
+memo
+category_id
+type
+amount
+estimate_method
+frequency
+day_of_month
+second_day_of_month
+start_date
+end_date
+auto_create
+is_active
+created_at
+updated_at
+```
+
+### `reconciliations`
+
+```sql
+id
+bank_account_id
+statement_start_date
+statement_end_date
+beginning_balance
+ending_balance
+cleared_debits
+cleared_credits
+difference
+status
+completed_at
+created_at
+updated_at
+```
+
+### `reconciliation_items`
+
+```sql
+id
+reconciliation_id
+transaction_id
+cleared_amount
+created_at
+```
+
+---
+
+## Replit AI Prompt
+
+Paste this into Replit:
+
+```text
+Add a financial register module to Labtrax.
+
+Build a QuickBooks-style bank/checkbook register with transactions, running balance, cleared status, reconciled status, debits, credits, payee, memo, category, check number, source, and search/filter tools.
+
+Add bank account connection support using Plaid or a similar bank API provider. Implement a secure server-side integration where users can connect their bank account, import transactions, and receive webhook updates. Imported bank transactions should be added to the register automatically. Do not store bank login credentials. Store only secure provider tokens server-side.
+
+Add a reconciliation screen where the user can enter a statement ending date and ending balance, check off cleared transactions, calculate the difference, and finish reconciliation only when the difference is zero. Save reconciliation history.
+
+Add a cash flow dashboard that calculates:
+monthly revenue - monthly expenses = net cash flow.
+Show actual cash flow, projected cash flow, starting balance, ending balance, category breakdown, and upcoming projected payments.
+
+Add memorized/recurring transactions. The system should support payroll on the 1st and 15th, loan payments, car payments, rent, subscriptions, and other recurring expenses. On the first day of every month, automatically generate projected transactions for the rest of the month. If the recurring amount varies, estimate it using the last matching transaction or the average of the last 3 matching transactions. When the actual bank transaction imports, match it to the projected transaction and replace the estimate with the real amount.
+
+Use a familiar QuickBooks-style layout:
+- register table
+- date, type, number, payee, memo, category, payment, deposit, cleared, reconciled, balance
+- top summary cards for bank balance, book balance, uncleared transactions, unreconciled difference, monthly revenue, monthly expenses, and net cash flow
+
+Create the needed database tables:
+bank_accounts, transactions, recurring_transactions, reconciliations, reconciliation_items, categories.
+
+Include backend API routes for:
+- connecting bank account
+- handling bank webhooks
+- syncing transactions
+- creating/editing/deleting transactions
+- creating/editing/deleting recurring rules
+- generating monthly projected transactions
+- reconciling an account
+- getting monthly cash flow
+
+Make sure the design is clean, businesslike, and easy to use.
+```
+
+---
+
+[1]: https://plaid.com/docs/api/webhooks/?utm_source=chatgpt.com "API - Webhooks | Plaid Docs"
+[2]: https://docs.replit.com/cloud-services/deployments/scheduled-deployments?utm_source=chatgpt.com "Scheduled Deployments - Replit Docs"
+[3]: https://quickbooks.intuit.com/learn-support/en-us/help-article/memorize-transactions/create-edit-delete-memorized-transactions/L9kERjiUf_US_en_US?utm_source=chatgpt.com "Create, edit, or delete memorized transactions - QuickBooks"
