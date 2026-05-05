@@ -32,6 +32,7 @@ const createOrgSchema = z.object({
   city: z.string().optional(),
   state: z.string().optional(),
   zip: z.string().optional(),
+  isActive: z.boolean().optional(),
 });
 
 function mapMembershipRoleToUserRole(role?: string | null): "admin" | "user" {

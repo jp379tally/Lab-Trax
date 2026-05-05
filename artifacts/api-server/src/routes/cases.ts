@@ -150,6 +150,11 @@ router.get(
   "/",
   asyncHandler(async (req, res) => {
     const organizationId = req.query.organizationId as string | undefined;
+    const include = String(req.query.include ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const includeRestorations = include.includes("restorations");
     const membershipOrgIds = organizationId
       ? [organizationId]
       : (
@@ -203,6 +208,7 @@ router.get(
         restorationMaterials: materials || null,
         teeth: teeth || null,
         totalPrice: price.toFixed(2),
+        ...(includeRestorations ? { restorations: items } : {}),
       };
     });
     return ok(res, enriched);
@@ -447,6 +453,84 @@ router.post(
     });
 
     return ok(res, location, 201);
+  })
+);
+
+router.patch(
+  "/restorations/pricing",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({
+        restorationType: z.string().min(1),
+        material: z.string().nullable().optional(),
+        unitPrice: z.coerce.number().min(0),
+      })
+      .parse(req.body);
+
+    const memberships = await db.query.organizationMemberships.findMany({
+      where: eq(organizationMemberships.userId, (req as any).auth.userId),
+    });
+    const labOrgIds = memberships
+      .filter(
+        (m: any) =>
+          m.status === "active" &&
+          (m.role === "owner" || m.role === "admin" || m.role === "billing")
+      )
+      .map((m: any) => m.labId);
+
+    if (labOrgIds.length === 0) {
+      throw new HttpError(403, "You don't have permission to update pricing.");
+    }
+
+    const accessibleCases = await db.query.cases.findMany({
+      where: inArray(cases.labOrganizationId, labOrgIds),
+    });
+    const accessibleCaseIds = accessibleCases.map((c) => c.id);
+    if (accessibleCaseIds.length === 0) {
+      return ok(res, { updated: 0 });
+    }
+
+    const candidates = await db.query.caseRestorations.findMany({
+      where: and(
+        inArray(caseRestorations.caseId, accessibleCaseIds),
+        eq(caseRestorations.restorationType, input.restorationType)
+      ),
+    });
+    const matchMaterial = (input.material ?? "").trim();
+    const matching = candidates.filter((r) => {
+      const m = (r.material ?? "").trim();
+      if (!matchMaterial) return !m;
+      return m === matchMaterial;
+    });
+
+    if (matching.length === 0) {
+      return ok(res, { updated: 0 });
+    }
+
+    await db
+      .update(caseRestorations)
+      .set({ unitPrice: input.unitPrice.toFixed(2) })
+      .where(
+        inArray(
+          caseRestorations.id,
+          matching.map((r) => r.id)
+        )
+      );
+
+    await writeAuditLog({
+      req,
+      action: "restoration_pricing_updated",
+      entityType: "case_restoration",
+      entityId: input.restorationType,
+      metadataJson: {
+        restorationType: input.restorationType,
+        material: input.material ?? null,
+        unitPrice: input.unitPrice.toFixed(2),
+        updated: matching.length,
+      },
+    });
+
+    return ok(res, { updated: matching.length });
   })
 );
 

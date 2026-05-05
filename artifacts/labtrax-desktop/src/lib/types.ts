@@ -31,6 +31,7 @@ export interface LabCase {
   restorationMaterials?: string | null;
   teeth?: string | null;
   totalPrice?: string | number | null;
+  restorations?: CaseRestoration[];
 }
 
 export interface CaseRestoration {
@@ -119,6 +120,15 @@ export interface Organization {
   displayName?: string | null;
   phone?: string | null;
   billingEmail?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  isActive?: boolean;
+  createdByUserId?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface Membership {
@@ -127,4 +137,17 @@ export interface Membership {
   status: string;
   organizationId: string;
   organization: Organization | null;
+}
+
+export interface MeResponse {
+  user: {
+    id: string;
+    username: string;
+    email?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    role?: string | null;
+    practiceName?: string | null;
+  };
+  memberships: Membership[];
 }

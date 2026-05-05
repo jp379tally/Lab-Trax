@@ -5,7 +5,12 @@ import LoginPage from "@/pages/login";
 import DashboardPage from "@/pages/dashboard";
 import CasesPage from "@/pages/cases";
 import InvoicesPage from "@/pages/invoices";
-import ComingSoonPage from "@/pages/coming-soon";
+import DoctorsPage from "@/pages/doctors";
+import PracticesPage from "@/pages/practices";
+import StatementsPage from "@/pages/statements";
+import PricingPage from "@/pages/pricing";
+import ReportsPage from "@/pages/reports";
+import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/AppLayout";
 
@@ -26,42 +31,12 @@ function AuthedRoutes() {
         <Route path="/" component={DashboardPage} />
         <Route path="/cases" component={CasesPage} />
         <Route path="/invoices" component={InvoicesPage} />
-        <Route path="/doctors">
-          <ComingSoonPage
-            title="Doctors"
-            description="Doctor directory and per-doctor billing live here. Coming soon to the desktop view."
-          />
-        </Route>
-        <Route path="/practices">
-          <ComingSoonPage
-            title="Practices"
-            description="Manage practice groups and provider organizations from the desktop view. Coming soon."
-          />
-        </Route>
-        <Route path="/statements">
-          <ComingSoonPage
-            title="Statements"
-            description="Combined practice and group statements are on the way."
-          />
-        </Route>
-        <Route path="/pricing">
-          <ComingSoonPage
-            title="Pricing"
-            description="Tier and per-doctor pricing controls coming soon to the desktop."
-          />
-        </Route>
-        <Route path="/reports">
-          <ComingSoonPage
-            title="Reports"
-            description="Production, revenue, and turnaround reports are coming soon."
-          />
-        </Route>
-        <Route path="/settings">
-          <ComingSoonPage
-            title="Admin Settings"
-            description="Workspace administration is being built for the desktop view."
-          />
-        </Route>
+        <Route path="/doctors" component={DoctorsPage} />
+        <Route path="/practices" component={PracticesPage} />
+        <Route path="/statements" component={StatementsPage} />
+        <Route path="/pricing" component={PricingPage} />
+        <Route path="/reports" component={ReportsPage} />
+        <Route path="/settings" component={SettingsPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>
