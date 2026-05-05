@@ -171,7 +171,41 @@ router.get(
         })
       : [];
 
-    return ok(res, rows);
+    if (!rows.length) return ok(res, []);
+    const caseIds = rows.map((r: any) => r.id);
+    const restorations = await db.query.caseRestorations.findMany({
+      where: inArray(caseRestorations.caseId, caseIds),
+    });
+    const byCase = new Map<string, typeof restorations>();
+    for (const r of restorations) {
+      const list = byCase.get(r.caseId) ?? [];
+      list.push(r);
+      byCase.set(r.caseId, list);
+    }
+    const enriched = rows.map((row: any) => {
+      const items = byCase.get(row.id) ?? [];
+      const teeth = items.map((i: any) => i.toothNumber).join(", ");
+      const types = Array.from(
+        new Set(items.map((i: any) => i.restorationType).filter(Boolean))
+      ).join(", ");
+      const materials = Array.from(
+        new Set(items.map((i: any) => i.material).filter(Boolean))
+      ).join(", ");
+      const price = items.reduce(
+        (sum: number, i: any) =>
+          sum + Number(i.quantity ?? 0) * Number(i.unitPrice ?? 0),
+        0
+      );
+      return {
+        ...row,
+        restorationCount: items.length,
+        restorationTypes: types || null,
+        restorationMaterials: materials || null,
+        teeth: teeth || null,
+        totalPrice: price.toFixed(2),
+      };
+    });
+    return ok(res, enriched);
   })
 );
 

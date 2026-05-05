@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Search, X } from "lucide-react";
+import { Loader2, Plus, Search, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import type { Invoice } from "@/lib/types";
+import type { Invoice, InvoiceLineItem, Organization } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 
@@ -12,11 +12,9 @@ const STATUS_FILTERS = [
   { value: "open", label: "Open" },
   { value: "partially_paid", label: "Partial" },
   { value: "paid", label: "Paid" },
-  { value: "overdue", label: "Overdue" },
   { value: "void", label: "Void" },
 ];
 
-// Backend PATCH /invoices/:id only accepts these statuses (see api-server/src/routes/invoices.ts).
 const EDITABLE_STATUSES = [
   "draft",
   "open",
@@ -24,6 +22,13 @@ const EDITABLE_STATUSES = [
   "paid",
   "void",
 ] as const;
+
+type DraftLine = {
+  id?: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+};
 
 export default function InvoicesPage() {
   const { data, isLoading, error } = useQuery({
@@ -42,7 +47,10 @@ export default function InvoicesPage() {
       .filter((i) => {
         if (status !== "all" && i.status !== status) return false;
         if (!q) return true;
-        return i.invoiceNumber.toLowerCase().includes(q);
+        return (
+          i.invoiceNumber.toLowerCase().includes(q) ||
+          (i.providerOrganization?.name || "").toLowerCase().includes(q)
+        );
       })
       .sort((a, b) =>
         (b.createdAt || b.issuedAt || "").localeCompare(a.createdAt || a.issuedAt || ""),
@@ -74,7 +82,7 @@ export default function InvoicesPage() {
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search invoice #…"
+              placeholder="Search invoice # or client…"
               className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
             />
           </div>
@@ -96,6 +104,7 @@ export default function InvoicesPage() {
             <thead>
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                 <th className="text-left font-medium px-5 py-2.5">Invoice #</th>
+                <th className="text-left font-medium py-2.5">Client</th>
                 <th className="text-left font-medium py-2.5">Issued</th>
                 <th className="text-left font-medium py-2.5">Due</th>
                 <th className="text-left font-medium py-2.5">Status</th>
@@ -106,7 +115,7 @@ export default function InvoicesPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={6} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading invoices…
                   </td>
@@ -114,14 +123,14 @@ export default function InvoicesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={6} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={7} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
                     No invoices match the current filters.
                   </td>
                 </tr>
@@ -133,8 +142,15 @@ export default function InvoicesPage() {
                   className="border-t border-border cursor-pointer hover:bg-secondary/40"
                 >
                   <td className="px-5 py-3 font-mono text-xs">{i.invoiceNumber}</td>
+                  <td className="py-3">
+                    {i.providerOrganization?.name || (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
                   <td className="py-3 text-muted-foreground">{formatDate(i.issuedAt)}</td>
-                  <td className="py-3 text-muted-foreground">{formatDate(i.dueDate)}</td>
+                  <td className="py-3 text-muted-foreground">
+                    {formatDate(i.dueAt ?? i.dueDate)}
+                  </td>
                   <td className="py-3"><StatusBadge status={i.status} /></td>
                   <td className="py-3 text-right tabular-nums font-medium">
                     {formatMoney(i.total)}
@@ -167,41 +183,58 @@ function InvoiceEditor({
 
   const detailQuery = useQuery({
     queryKey: ["invoice", invoice.id],
-    queryFn: () =>
-      apiFetch<Invoice & { tax?: string | number; discount?: string | number; dueAt?: string }>(
-        `/invoices/${invoice.id}`,
-      ),
+    queryFn: () => apiFetch<Invoice>(`/invoices/${invoice.id}`),
   });
 
-  const [status, setStatus] = useState<string>(
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+  });
+
+  const [invoiceNumber, setInvoiceNumber] = useState(invoice.invoiceNumber);
+  const [statusValue, setStatusValue] = useState<string>(
     EDITABLE_STATUSES.includes(invoice.status as (typeof EDITABLE_STATUSES)[number])
       ? invoice.status
       : "open",
   );
-  const [dueAt, setDueAt] = useState<string>(toInputDate(invoice.dueDate));
+  const [providerId, setProviderId] = useState(invoice.providerOrganizationId);
+  const [issuedAt, setIssuedAt] = useState<string>(toInputDate(invoice.issuedAt));
+  const [dueAt, setDueAt] = useState<string>(
+    toInputDate(invoice.dueAt ?? invoice.dueDate),
+  );
   const [tax, setTax] = useState<number>(0);
   const [discount, setDiscount] = useState<number>(0);
+  const [items, setItems] = useState<DraftLine[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const d = detailQuery.data;
     if (!d) return;
-    const nextStatus = EDITABLE_STATUSES.includes(
-      d.status as (typeof EDITABLE_STATUSES)[number],
-    )
-      ? d.status
-      : "open";
-    setStatus(nextStatus);
-    setDueAt(toInputDate((d as { dueAt?: string }).dueAt ?? d.dueDate));
-    setTax(Number((d as { tax?: string | number }).tax ?? 0));
-    setDiscount(Number((d as { discount?: string | number }).discount ?? 0));
+    setInvoiceNumber(d.invoiceNumber);
+    setStatusValue(
+      EDITABLE_STATUSES.includes(d.status as (typeof EDITABLE_STATUSES)[number])
+        ? d.status
+        : "open",
+    );
+    setProviderId(d.providerOrganizationId);
+    setIssuedAt(toInputDate(d.issuedAt));
+    setDueAt(toInputDate(d.dueAt ?? d.dueDate));
+    setTax(Number(d.tax ?? 0));
+    setDiscount(Number(d.discount ?? 0));
+    setItems(
+      (d.items ?? []).map((it: InvoiceLineItem) => ({
+        id: it.id,
+        description: it.description,
+        quantity: Number(it.quantity ?? 0),
+        unitPrice: Number(it.unitPrice ?? 0),
+      })),
+    );
   }, [detailQuery.data]);
 
-  const items = detailQuery.data?.items ?? [];
   const subtotal = useMemo(
     () =>
       items.reduce(
-        (sum, it) => sum + Number(it.quantity ?? 0) * Number(it.unitPrice ?? 0),
+        (sum, it) => sum + Number(it.quantity || 0) * Number(it.unitPrice || 0),
         0,
       ),
     [items],
@@ -210,10 +243,23 @@ function InvoiceEditor({
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const payload: Record<string, unknown> = { status };
-      if (Number.isFinite(tax)) payload.tax = tax;
-      if (Number.isFinite(discount)) payload.discount = discount;
-      if (dueAt) payload.dueAt = new Date(dueAt).toISOString();
+      if (!invoiceNumber.trim()) {
+        throw new Error("Invoice number is required.");
+      }
+      const payload: Record<string, unknown> = {
+        status: statusValue,
+        invoiceNumber: invoiceNumber.trim(),
+        tax,
+        discount,
+        items: items.map((it, idx) => ({
+          description: it.description,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          sortOrder: idx,
+        })),
+      };
+      payload.dueAt = dueAt ? new Date(dueAt).toISOString() : null;
+      payload.issuedAt = issuedAt ? new Date(issuedAt).toISOString() : null;
       return apiFetch<Invoice>(`/invoices/${invoice.id}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
@@ -226,6 +272,18 @@ function InvoiceEditor({
     },
     onError: (err: Error) => setError(err.message || "Save failed."),
   });
+
+  function updateItem(idx: number, patch: Partial<DraftLine>) {
+    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  }
+
+  function removeItem(idx: number) {
+    setItems((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function addItem() {
+    setItems((prev) => [...prev, { description: "", quantity: 1, unitPrice: 0 }]);
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-foreground/30">
@@ -272,14 +330,25 @@ function InvoiceEditor({
             </div>
           )}
 
-          <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <section className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <div className="md:col-span-1">
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                Invoice #
+              </label>
+              <input
+                type="text"
+                value={invoiceNumber}
+                onChange={(e) => setInvoiceNumber(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm font-mono"
+              />
+            </div>
             <div>
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                 Status
               </label>
               <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
+                value={statusValue}
+                onChange={(e) => setStatusValue(e.target.value)}
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
               >
                 {EDITABLE_STATUSES.map((s) => (
@@ -288,6 +357,44 @@ function InvoiceEditor({
                   </option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                Client / Provider
+              </label>
+              <select
+                value={providerId}
+                onChange={(e) => setProviderId(e.target.value)}
+                disabled={orgsQuery.isLoading}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm disabled:opacity-60"
+              >
+                <option value={providerId}>
+                  {detailQuery.data?.providerOrganization?.name ||
+                    invoice.providerOrganization?.name ||
+                    providerId}
+                </option>
+                {(orgsQuery.data ?? [])
+                  .filter((o) => o.id !== providerId)
+                  .map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.displayName || o.name}
+                    </option>
+                  ))}
+              </select>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                Provider can only be reassigned via the case until backend support is added.
+              </p>
+            </div>
+            <div>
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                Issued
+              </label>
+              <input
+                type="date"
+                value={issuedAt}
+                onChange={(e) => setIssuedAt(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+              />
             </div>
             <div>
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
@@ -300,36 +407,19 @@ function InvoiceEditor({
                 className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
               />
             </div>
-            <div>
-              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                Tax
-              </label>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={tax}
-                onChange={(e) => setTax(Number(e.target.value) || 0)}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                Discount
-              </label>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={discount}
-                onChange={(e) => setDiscount(Number(e.target.value) || 0)}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
-              />
-            </div>
           </section>
 
           <section>
-            <h3 className="text-sm font-semibold mb-3">Line items</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold">Line items</h3>
+              <button
+                type="button"
+                onClick={addItem}
+                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+              >
+                <Plus size={13} /> Add line
+              </button>
+            </div>
             <div className="border border-border rounded-md overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
@@ -338,23 +428,66 @@ function InvoiceEditor({
                     <th className="text-right font-medium px-3 py-2 w-20">Qty</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Unit price</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Total</th>
+                    <th className="px-2 py-2 w-10" />
                   </tr>
                 </thead>
                 <tbody>
                   {items.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
-                        No line items on this invoice.
+                      <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                        No line items. Click "Add line" to add one.
                       </td>
                     </tr>
                   )}
-                  {items.map((it) => (
-                    <tr key={it.id} className="border-t border-border">
-                      <td className="px-3 py-2">{it.description}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{Number(it.quantity)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{formatMoney(it.unitPrice)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums font-medium">
-                        {formatMoney(Number(it.quantity) * Number(it.unitPrice))}
+                  {items.map((it, idx) => (
+                    <tr key={idx} className="border-t border-border">
+                      <td className="px-3 py-1.5">
+                        <input
+                          type="text"
+                          value={it.description}
+                          onChange={(e) =>
+                            updateItem(idx, { description: e.target.value })
+                          }
+                          placeholder="Description"
+                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
+                        />
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={it.quantity}
+                          onChange={(e) =>
+                            updateItem(idx, { quantity: Number(e.target.value) || 0 })
+                          }
+                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                        />
+                      </td>
+                      <td className="px-3 py-1.5">
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={it.unitPrice}
+                          onChange={(e) =>
+                            updateItem(idx, { unitPrice: Number(e.target.value) || 0 })
+                          }
+                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                        />
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums font-medium">
+                        {formatMoney(Number(it.quantity || 0) * Number(it.unitPrice || 0))}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <button
+                          type="button"
+                          onClick={() => removeItem(idx)}
+                          className="h-7 w-7 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center"
+                          aria-label="Remove line"
+                        >
+                          <Trash2 size={13} />
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -367,22 +500,39 @@ function InvoiceEditor({
                     <td className="px-3 py-2 text-right tabular-nums">
                       {formatMoney(subtotal)}
                     </td>
+                    <td />
                   </tr>
                   <tr className="border-t border-border">
                     <td colSpan={3} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Tax
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatMoney(tax)}
+                    <td className="px-3 py-2 text-right">
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={tax}
+                        onChange={(e) => setTax(Number(e.target.value) || 0)}
+                        className="w-24 h-7 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                      />
                     </td>
+                    <td />
                   </tr>
                   <tr className="border-t border-border">
                     <td colSpan={3} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Discount
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      −{formatMoney(discount)}
+                    <td className="px-3 py-2 text-right">
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={discount}
+                        onChange={(e) => setDiscount(Number(e.target.value) || 0)}
+                        className="w-24 h-7 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                      />
                     </td>
+                    <td />
                   </tr>
                   <tr className="border-t border-border bg-secondary/30">
                     <td colSpan={3} className="px-3 py-2.5 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
@@ -391,32 +541,22 @@ function InvoiceEditor({
                     <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
                       {formatMoney(total)}
                     </td>
+                    <td />
                   </tr>
                 </tfoot>
               </table>
             </div>
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              Line items are managed from the originating case. Adjust tax or discount above to change the total.
-            </p>
           </section>
-
-          {detailQuery.data?.notes && (
-            <section>
-              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                Notes
-              </h3>
-              <div className="text-sm whitespace-pre-wrap bg-secondary/40 rounded-md px-3 py-2 border border-border">
-                {detailQuery.data.notes}
-              </div>
-            </section>
-          )}
 
           {detailQuery.data?.payments && detailQuery.data.payments.length > 0 && (
             <section>
               <h3 className="text-sm font-semibold mb-2">Payments</h3>
               <div className="border border-border rounded-md divide-y divide-border">
                 {detailQuery.data.payments.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <div
+                    key={p.id}
+                    className="flex items-center justify-between px-3 py-2 text-sm"
+                  >
                     <div>
                       <div className="font-medium">{formatMoney(p.amount)}</div>
                       <div className="text-xs text-muted-foreground">

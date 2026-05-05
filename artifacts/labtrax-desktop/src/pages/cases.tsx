@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type { LabCase } from "@/lib/types";
-import { formatDate, relativeTime, statusLabel } from "@/lib/format";
+import { formatDate, formatMoney, relativeTime, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
@@ -26,7 +26,13 @@ const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "remake", label: "Remake" },
 ];
 
-type SortKey = "caseNumber" | "doctorName" | "status" | "dueDate" | "createdAt";
+type SortKey =
+  | "caseNumber"
+  | "doctorName"
+  | "status"
+  | "dueDate"
+  | "createdAt"
+  | "totalPrice";
 
 export default function CasesPage() {
   const { data, isLoading, error } = useQuery({
@@ -56,6 +62,11 @@ export default function CasesPage() {
         );
       })
       .sort((a, b) => {
+        if (sortKey === "totalPrice") {
+          const va = Number(a.totalPrice ?? 0);
+          const vb = Number(b.totalPrice ?? 0);
+          return sortDir === "asc" ? va - vb : vb - va;
+        }
         const va = (a[sortKey] || "") as string;
         const vb = (b[sortKey] || "") as string;
         return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
@@ -145,16 +156,20 @@ export default function CasesPage() {
                 <th className="text-left px-5 py-2.5"><SortHeader k="caseNumber">Case #</SortHeader></th>
                 <th className="text-left py-2.5">Patient</th>
                 <th className="text-left py-2.5"><SortHeader k="doctorName">Doctor</SortHeader></th>
+                <th className="text-left py-2.5">Type</th>
+                <th className="text-left py-2.5">Material</th>
+                <th className="text-left py-2.5">Teeth</th>
                 <th className="text-left py-2.5">Priority</th>
                 <th className="text-left py-2.5"><SortHeader k="status">Status</SortHeader></th>
                 <th className="text-left py-2.5"><SortHeader k="dueDate">Due</SortHeader></th>
+                <th className="text-right py-2.5"><SortHeader k="totalPrice">Price</SortHeader></th>
                 <th className="text-left px-5 py-2.5"><SortHeader k="createdAt">Created</SortHeader></th>
               </tr>
             </thead>
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading cases…
                   </td>
@@ -162,14 +177,14 @@ export default function CasesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={11} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={11} className="px-5 py-12 text-center text-muted-foreground">
                     No cases match the current filters.
                   </td>
                 </tr>
@@ -185,6 +200,15 @@ export default function CasesPage() {
                     {c.patientFirstName} {c.patientLastName}
                   </td>
                   <td className="py-3 text-muted-foreground">{c.doctorName}</td>
+                  <td className="py-3 text-muted-foreground truncate max-w-[140px]" title={c.restorationTypes ?? ""}>
+                    {c.restorationTypes || "—"}
+                  </td>
+                  <td className="py-3 text-muted-foreground truncate max-w-[120px]" title={c.restorationMaterials ?? ""}>
+                    {c.restorationMaterials || "—"}
+                  </td>
+                  <td className="py-3 text-muted-foreground truncate max-w-[100px]" title={c.teeth ?? ""}>
+                    {c.teeth || "—"}
+                  </td>
                   <td className="py-3">
                     {c.priority === "rush" ? (
                       <span className="text-[11px] font-semibold uppercase tracking-wide text-destructive bg-destructive/10 px-2 py-0.5 rounded-full">
@@ -196,6 +220,9 @@ export default function CasesPage() {
                   </td>
                   <td className="py-3"><StatusBadge status={c.status} /></td>
                   <td className="py-3 text-muted-foreground">{formatDate(c.dueDate)}</td>
+                  <td className="py-3 text-right tabular-nums">
+                    {Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}
+                  </td>
                   <td className="px-5 py-3 text-muted-foreground">{relativeTime(c.createdAt)}</td>
                 </tr>
               ))}

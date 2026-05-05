@@ -9,8 +9,10 @@ import {
   invoiceLineItems,
   invoices,
   organizationMemberships,
+  organizations,
   payments,
 } from "@workspace/db";
+import { inArray } from "drizzle-orm";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { HttpError, ok } from "../lib/http";
@@ -150,7 +152,36 @@ router.get(
         })
       : [];
 
-    return ok(res, rows);
+    if (!rows.length) return ok(res, []);
+    const orgIdsToFetch = Array.from(
+      new Set(
+        rows.flatMap((r: any) => [r.providerOrganizationId, r.labOrganizationId])
+      )
+    );
+    const orgRows = orgIdsToFetch.length
+      ? await db.select().from(organizations).where(inArray(organizations.id, orgIdsToFetch))
+      : [];
+    const orgsById = new Map(orgRows.map((o: any) => [o.id, o]));
+    const enriched = rows.map((r: any) => ({
+      ...r,
+      providerOrganization: orgsById.get(r.providerOrganizationId)
+        ? {
+            id: r.providerOrganizationId,
+            name:
+              orgsById.get(r.providerOrganizationId)!.displayName ||
+              orgsById.get(r.providerOrganizationId)!.name,
+          }
+        : null,
+      labOrganization: orgsById.get(r.labOrganizationId)
+        ? {
+            id: r.labOrganizationId,
+            name:
+              orgsById.get(r.labOrganizationId)!.displayName ||
+              orgsById.get(r.labOrganizationId)!.name,
+          }
+        : null,
+    }));
+    return ok(res, enriched);
   })
 );
 
@@ -205,46 +236,96 @@ router.patch(
           .optional(),
         tax: z.coerce.number().min(0).optional(),
         discount: z.coerce.number().min(0).optional(),
-        dueAt: z.string().datetime().optional(),
+        dueAt: z.string().datetime().nullable().optional(),
+        issuedAt: z.string().datetime().nullable().optional(),
+        invoiceNumber: z.string().min(1).optional(),
+        items: z
+          .array(
+            z.object({
+              id: z.string().optional(),
+              description: z.string().min(1),
+              quantity: z.coerce.number().min(0),
+              unitPrice: z.coerce.number().min(0),
+              sortOrder: z.coerce.number().int().optional(),
+            })
+          )
+          .optional(),
       })
       .parse(req.body);
 
-    const items = await db.query.invoiceLineItems.findMany({
-      where: eq(invoiceLineItems.invoiceId, invoice.id),
+    const updated = await db.transaction(async (tx) => {
+      if (input.items) {
+        await tx
+          .delete(invoiceLineItems)
+          .where(eq(invoiceLineItems.invoiceId, invoice.id));
+        if (input.items.length) {
+          await tx.insert(invoiceLineItems).values(
+            input.items.map((it, idx) => ({
+              invoiceId: invoice.id,
+              description: it.description,
+              quantity: Math.max(0, Math.round(Number(it.quantity))),
+              unitPrice: Number(it.unitPrice).toFixed(2),
+              lineTotal: calculateLineTotal(
+                Math.max(0, Math.round(Number(it.quantity))),
+                Number(it.unitPrice).toFixed(2)
+              ),
+              sortOrder: it.sortOrder ?? idx,
+            }))
+          );
+        }
+      }
+
+      const items = await tx.query.invoiceLineItems.findMany({
+        where: eq(invoiceLineItems.invoiceId, invoice.id),
+      });
+      const subtotal = sumMoney(items.map((item) => item.lineTotal));
+      const tax =
+        input.tax !== undefined ? input.tax.toFixed(2) : invoice.tax;
+      const discount =
+        input.discount !== undefined
+          ? input.discount.toFixed(2)
+          : invoice.discount;
+      const total = (
+        Number(subtotal) +
+        Number(tax) -
+        Number(discount)
+      ).toFixed(2);
+
+      const paidSum = await tx
+        .select({ value: sum(payments.amount) })
+        .from(payments)
+        .where(eq(payments.invoiceId, invoice.id));
+      const paid = Number(paidSum[0]?.value ?? 0);
+      const balanceDue = (Number(total) - paid).toFixed(2);
+
+      const [row] = await tx
+        .update(invoices)
+        .set({
+          status: input.status ?? invoice.status,
+          tax,
+          discount,
+          subtotal,
+          total,
+          balanceDue,
+          dueAt:
+            input.dueAt === null
+              ? null
+              : input.dueAt
+                ? new Date(input.dueAt)
+                : invoice.dueAt,
+          issuedAt:
+            input.issuedAt === null
+              ? null
+              : input.issuedAt
+                ? new Date(input.issuedAt)
+                : invoice.issuedAt,
+          invoiceNumber: input.invoiceNumber ?? invoice.invoiceNumber,
+          updatedByUserId: (req as any).auth.userId,
+        })
+        .where(eq(invoices.id, invoice.id))
+        .returning();
+      return row;
     });
-    const subtotal = sumMoney(items.map((item) => item.lineTotal));
-    const tax =
-      input.tax !== undefined ? input.tax.toFixed(2) : invoice.tax;
-    const discount =
-      input.discount !== undefined
-        ? input.discount.toFixed(2)
-        : invoice.discount;
-    const total = (
-      Number(subtotal) +
-      Number(tax) -
-      Number(discount)
-    ).toFixed(2);
-
-    const paidSum = await db
-      .select({ value: sum(payments.amount) })
-      .from(payments)
-      .where(eq(payments.invoiceId, invoice.id));
-    const paid = Number(paidSum[0]?.value ?? 0);
-    const balanceDue = (Number(total) - paid).toFixed(2);
-
-    const [updated] = await db
-      .update(invoices)
-      .set({
-        status: input.status ?? invoice.status,
-        tax,
-        discount,
-        total,
-        balanceDue,
-        dueAt: input.dueAt ? new Date(input.dueAt) : invoice.dueAt,
-        updatedByUserId: (req as any).auth.userId,
-      })
-      .where(eq(invoices.id, invoice.id))
-      .returning();
 
     await writeAuditLog({
       req,

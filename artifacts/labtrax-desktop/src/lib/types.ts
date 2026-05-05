@@ -26,6 +26,11 @@ export interface LabCase {
   dueDate?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  restorationCount?: number;
+  restorationTypes?: string | null;
+  restorationMaterials?: string | null;
+  teeth?: string | null;
+  totalPrice?: string | number | null;
 }
 
 export type InvoiceStatus =
@@ -65,15 +70,20 @@ export interface Invoice {
   providerOrganizationId: string;
   status: InvoiceStatus;
   subtotal?: string | number | null;
+  tax?: string | number | null;
+  discount?: string | number | null;
   total?: string | number | null;
   balanceDue?: string | number | null;
   issuedAt?: string | null;
+  dueAt?: string | null;
   dueDate?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
   notes?: string | null;
   items?: InvoiceLineItem[];
   payments?: Payment[];
+  providerOrganization?: { id: string; name: string } | null;
+  labOrganization?: { id: string; name: string } | null;
 }
 
 export interface Organization {
