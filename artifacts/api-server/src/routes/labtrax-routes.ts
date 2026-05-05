@@ -470,19 +470,33 @@ export async function registerRoutes(): Promise<IRouter> {
     }
     try {
       const orgs = await db
-        .selectDistinct({ id: organizationMemberships.labId })
-        .from(organizationMemberships)
-        .where(eq(organizationMemberships.status, "active"));
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(
+          and(
+            eq(organizations.type, "lab"),
+            eq(organizations.isActive, true)
+          )
+        );
       let totalCreated = 0;
-      const perOrg: Array<{ organizationId: string; created: number }> = [];
+      const perOrg: Array<{ organizationId: string; created: number; ruleCount: number }> = [];
+      const failedOrgs: Array<{ organizationId: string; error: string }> = [];
       for (const o of orgs) {
-        const r = await generateForOrganization(o.id, null);
-        totalCreated += r.created;
-        perOrg.push({ organizationId: o.id, created: r.created });
+        try {
+          const r = await generateForOrganization(o.id, null);
+          totalCreated += r.created;
+          perOrg.push({ organizationId: o.id, created: r.created, ruleCount: r.ruleCount });
+        } catch (err: any) {
+          const message = err?.message || String(err);
+          console.error(`finance run-all: org ${o.id} failed:`, message);
+          failedOrgs.push({ organizationId: o.id, error: message });
+        }
       }
       return res.json({
         ok: true,
         organizations: perOrg.length,
+        failed: failedOrgs.length,
+        failedOrgs,
         totalCreated,
         perOrg,
       });
