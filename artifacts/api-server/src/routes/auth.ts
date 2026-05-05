@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -804,6 +804,105 @@ router.delete(
       details: { labName, membersRemoved: memberIds.length },
     });
     res.json({ success: true, membersRemoved: memberIds.length });
+  })
+);
+
+router.get(
+  "/sessions",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const currentSessionId = (req as any).auth.sessionId as string;
+    const rows = await db
+      .select()
+      .from(userSessions)
+      .where(
+        and(
+          eq(userSessions.userId, userId),
+          isNull(userSessions.revokedAt),
+          gt(userSessions.expiresAt, new Date())
+        )
+      );
+    const sessions = rows
+      .map((row) => ({
+        id: row.id,
+        deviceName: row.deviceName,
+        ipAddress: row.ipAddress,
+        userAgent: row.userAgent,
+        createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+        expiresAt: row.expiresAt.toISOString(),
+        current: row.id === currentSessionId,
+      }))
+      .sort((a, b) => {
+        if (a.current && !b.current) return -1;
+        if (!a.current && b.current) return 1;
+        return (b.createdAt || "").localeCompare(a.createdAt || "");
+      });
+    return res.json({ success: true, sessions });
+  })
+);
+
+router.delete(
+  "/sessions/:id",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const currentSessionId = (req as any).auth.sessionId as string;
+    const { id } = req.params;
+    const row = await db.query.userSessions.findFirst({
+      where: and(eq(userSessions.id, id), eq(userSessions.userId, userId)),
+    });
+    if (!row) {
+      throw new HttpError(404, "Session not found.");
+    }
+    if (row.revokedAt === null) {
+      await db
+        .update(userSessions)
+        .set({ revokedAt: new Date() })
+        .where(eq(userSessions.id, id));
+    }
+    await writeAuditLog({
+      req,
+      userId,
+      action: "session_revoked",
+      entityType: "session",
+      entityId: id,
+      details: { revokedSelf: id === currentSessionId },
+    });
+    if (id === currentSessionId) {
+      clearAuthCookies(req, res);
+    }
+    return res.json({ success: true, revokedCurrent: id === currentSessionId });
+  })
+);
+
+router.post(
+  "/sessions/revoke-others",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const currentSessionId = (req as any).auth.sessionId as string;
+    const now = new Date();
+    const result = await db
+      .update(userSessions)
+      .set({ revokedAt: now })
+      .where(
+        and(
+          eq(userSessions.userId, userId),
+          isNull(userSessions.revokedAt),
+          ne(userSessions.id, currentSessionId)
+        )
+      )
+      .returning({ id: userSessions.id });
+    await writeAuditLog({
+      req,
+      userId,
+      action: "sessions_revoked_others",
+      entityType: "user",
+      entityId: userId,
+      details: { revokedCount: result.length },
+    });
+    return res.json({ success: true, revokedCount: result.length });
   })
 );
 

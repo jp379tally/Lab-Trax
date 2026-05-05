@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Building2, KeyRound, Loader2, ShieldCheck, User as UserIcon } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { Building2, KeyRound, Loader2, LogOut, Monitor, ShieldCheck, User as UserIcon } from "lucide-react";
+import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
 
@@ -17,7 +17,7 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "organizations" | "users";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -25,6 +25,7 @@ export default function SettingsPage() {
   const tabs: Array<{ key: TabKey; label: string; icon: typeof UserIcon; show: boolean }> = [
     { key: "profile", label: "Profile", icon: UserIcon, show: true },
     { key: "password", label: "Password", icon: KeyRound, show: true },
+    { key: "sessions", label: "Active sessions", icon: Monitor, show: true },
     { key: "organizations", label: "Organizations", icon: Building2, show: true },
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
   ];
@@ -65,6 +66,7 @@ export default function SettingsPage() {
         <div className="flex-1 min-w-0 bg-card border border-border rounded-xl">
           {tab === "profile" && <ProfilePanel />}
           {tab === "password" && <PasswordPanel />}
+          {tab === "sessions" && <SessionsPanel />}
           {tab === "organizations" && <OrganizationsPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
         </div>
@@ -363,6 +365,201 @@ function UsersPanel() {
             ))}
           </tbody>
         </table>
+      </div>
+    </PanelShell>
+  );
+}
+
+interface SessionRow {
+  id: string;
+  deviceName: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string | null;
+  expiresAt: string;
+  current: boolean;
+}
+
+function describeUserAgent(ua: string | null): string {
+  if (!ua) return "Unknown device";
+  const browser = /Edg\//.test(ua)
+    ? "Edge"
+    : /Chrome\//.test(ua)
+      ? "Chrome"
+      : /Safari\//.test(ua) && !/Chrome\//.test(ua)
+        ? "Safari"
+        : /Firefox\//.test(ua)
+          ? "Firefox"
+          : "Browser";
+  const os = /Windows NT/.test(ua)
+    ? "Windows"
+    : /Mac OS X/.test(ua)
+      ? "macOS"
+      : /Android/.test(ua)
+        ? "Android"
+        : /iPhone|iPad|iOS/.test(ua)
+          ? "iOS"
+          : /Linux/.test(ua)
+            ? "Linux"
+            : "";
+  return os ? `${browser} on ${os}` : browser;
+}
+
+function formatRelative(iso: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const diff = t - Date.now();
+  const future = diff > 0;
+  const absMs = Math.abs(diff);
+  const min = Math.round(absMs / 60000);
+  const suffix = (label: string) => (future ? `in ${label}` : `${label} ago`);
+  if (min < 1) return future ? "in a moment" : "just now";
+  if (min < 60) return suffix(`${min} min`);
+  const hr = Math.round(min / 60);
+  if (hr < 24) return suffix(`${hr} hr`);
+  const day = Math.round(hr / 24);
+  if (day < 30) return suffix(`${day} day${day === 1 ? "" : "s"}`);
+  return new Date(iso).toLocaleDateString();
+}
+
+function SessionsPanel() {
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const sessionsQuery = useQuery({
+    queryKey: ["auth", "sessions"],
+    queryFn: () =>
+      apiFetch<{ success: boolean; sessions: SessionRow[] } | SessionRow[]>(
+        "/auth/sessions",
+      ),
+  });
+  const list: SessionRow[] = useMemo(() => {
+    const d = sessionsQuery.data;
+    if (!d) return [];
+    if (Array.isArray(d)) return d;
+    return d.sessions ?? [];
+  }, [sessionsQuery.data]);
+
+  const revokeOne = useMutation({
+    mutationFn: async (id: string) => {
+      return apiFetch<{ success: boolean; revokedCurrent?: boolean }>(
+        `/auth/sessions/${id}`,
+        { method: "DELETE" },
+      );
+    },
+    onSuccess: async (data) => {
+      setError(null);
+      setInfo("Sign-in revoked.");
+      if (data?.revokedCurrent) {
+        notifySessionCleared();
+        return;
+      }
+      await sessionsQuery.refetch();
+      setTimeout(() => setInfo(null), 2500);
+    },
+    onError: (err: Error) => {
+      setInfo(null);
+      setError(err.message || "Could not revoke that sign-in.");
+    },
+  });
+
+  const revokeOthers = useMutation({
+    mutationFn: async () => {
+      return apiFetch<{ success: boolean; revokedCount: number }>(
+        "/auth/sessions/revoke-others",
+        { method: "POST" },
+      );
+    },
+    onSuccess: async (data) => {
+      setError(null);
+      setInfo(
+        data?.revokedCount
+          ? `Signed out of ${data.revokedCount} other ${data.revokedCount === 1 ? "device" : "devices"}.`
+          : "No other sign-ins to revoke.",
+      );
+      await sessionsQuery.refetch();
+      setTimeout(() => setInfo(null), 2500);
+    },
+    onError: (err: Error) => {
+      setInfo(null);
+      setError(err.message || "Could not sign out of other devices.");
+    },
+  });
+
+  const otherCount = list.filter((s) => !s.current).length;
+
+  return (
+    <PanelShell
+      title="Active sign-ins"
+      subtitle="Devices currently signed in to your LabTrax account."
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+      {info && <Alert tone="success">{info}</Alert>}
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">
+          {sessionsQuery.isLoading ? (
+            <>
+              <Loader2 size={12} className="inline animate-spin mr-2" />
+              Loading…
+            </>
+          ) : (
+            <>
+              {list.length} active {list.length === 1 ? "session" : "sessions"}
+            </>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => revokeOthers.mutate()}
+          disabled={revokeOthers.isPending || otherCount === 0}
+          className="h-9 px-3 rounded-md bg-destructive/10 text-destructive text-xs font-semibold hover:bg-destructive/20 disabled:opacity-50 inline-flex items-center gap-1.5"
+        >
+          <LogOut size={12} />
+          {revokeOthers.isPending ? "Signing out…" : "Sign out everywhere else"}
+        </button>
+      </div>
+      <div className="border border-border rounded-md divide-y divide-border">
+        {!sessionsQuery.isLoading && list.length === 0 && (
+          <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+            No active sign-ins.
+          </div>
+        )}
+        {list.map((s) => (
+          <div
+            key={s.id}
+            className="px-3 py-3 flex items-center justify-between gap-3 text-sm"
+          >
+            <div className="min-w-0">
+              <div className="font-medium flex items-center gap-2">
+                {s.deviceName || describeUserAgent(s.userAgent)}
+                {s.current && (
+                  <span className="text-[10px] uppercase tracking-wide bg-success/15 text-success rounded-full px-2 py-0.5">
+                    This device
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-muted-foreground mt-0.5 truncate">
+                {describeUserAgent(s.userAgent)} · {s.ipAddress || "unknown IP"}
+              </div>
+              <div className="text-[11px] text-muted-foreground mt-0.5">
+                Signed in {formatRelative(s.createdAt)} · expires {formatRelative(s.expiresAt)}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (s.current) {
+                  if (!window.confirm("This is the device you're using right now. Revoking it will sign you out. Continue?")) return;
+                }
+                revokeOne.mutate(s.id);
+              }}
+              disabled={revokeOne.isPending}
+              className="h-8 px-3 rounded-md text-xs font-semibold border border-border hover:bg-destructive/10 hover:text-destructive hover:border-destructive/40 disabled:opacity-50"
+            >
+              {s.current ? "Sign out" : "Revoke"}
+            </button>
+          </div>
+        ))}
       </div>
     </PanelShell>
   );
