@@ -245,6 +245,43 @@ function getSmtpConfig() {
   return { host, user, pass, port, from };
 }
 
+export const DEFAULT_STATEMENT_SUBJECT =
+  "Statement for {{practiceName}} — {{periodLabel}}";
+export const DEFAULT_STATEMENT_BODY =
+  "Hello,\n\nPlease find attached the statement for {{practiceName}} covering {{periodLabel}}.\n\nTotal billed: {{totalBilled}}\nOpen balance: {{openBalance}}\n\nThank you,\n{{labName}}";
+
+export interface StatementEmailVars {
+  practiceName: string;
+  labName: string;
+  periodLabel: string;
+  totalBilled: string;
+  openBalance: string;
+}
+
+export function renderStatementTemplate(
+  template: string,
+  vars: StatementEmailVars
+): string {
+  return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_m, key: string) => {
+    const v = (vars as unknown as Record<string, string>)[key];
+    return v ?? `{{${key}}}`;
+  });
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function bodyToHtml(body: string): string {
+  const escaped = escapeHtml(body).replace(/\n/g, "<br/>");
+  return `<div style="font-family: Arial, sans-serif; max-width: 600px; white-space: normal;">${escaped}</div>`;
+}
+
 export async function sendStatementEmail(opts: {
   to: string;
   fromName: string;
@@ -253,6 +290,11 @@ export async function sendStatementEmail(opts: {
   pdfBuffer: Buffer;
   pdfFilename: string;
   totals: { billed: number; open: number };
+  template?: {
+    subject?: string | null;
+    body?: string | null;
+    replyTo?: string | null;
+  } | null;
 }): Promise<{ delivered: boolean; reason?: string }> {
   const smtp = getSmtpConfig();
   if (!smtp) {
@@ -264,17 +306,28 @@ export async function sendStatementEmail(opts: {
     secure: smtp.port === "465",
     auth: { user: smtp.user, pass: smtp.pass },
   });
+  const vars: StatementEmailVars = {
+    practiceName: opts.practiceName,
+    labName: opts.fromName,
+    periodLabel: opts.periodLabel,
+    totalBilled: fmtMoney(opts.totals.billed),
+    openBalance: fmtMoney(opts.totals.open),
+  };
+  const subjectTemplate =
+    (opts.template?.subject?.trim() || "") || DEFAULT_STATEMENT_SUBJECT;
+  const bodyTemplate =
+    (opts.template?.body?.trim() || "") || DEFAULT_STATEMENT_BODY;
+  const subject = renderStatementTemplate(subjectTemplate, vars);
+  const bodyText = renderStatementTemplate(bodyTemplate, vars);
+  const replyTo = opts.template?.replyTo?.trim() || undefined;
+
   await transporter.sendMail({
     from: `${opts.fromName} <${smtp.from}>`,
     to: opts.to,
-    subject: `Statement for ${opts.practiceName} — ${opts.periodLabel}`,
-    html: `<div style="font-family: Arial, sans-serif; max-width: 600px;">
-        <p>Hello,</p>
-        <p>Please find attached the statement for <strong>${opts.practiceName}</strong> covering ${opts.periodLabel}.</p>
-        <p>Total billed: <strong>${fmtMoney(opts.totals.billed)}</strong><br/>
-           Open balance: <strong>${fmtMoney(opts.totals.open)}</strong></p>
-        <p>Thank you,<br/>${opts.fromName}</p>
-      </div>`,
+    ...(replyTo ? { replyTo } : {}),
+    subject,
+    text: bodyText,
+    html: bodyToHtml(bodyText),
     attachments: [
       { filename: opts.pdfFilename, content: opts.pdfBuffer, contentType: "application/pdf" },
     ],
@@ -310,6 +363,17 @@ export async function runMonthlyStatementsForLab(opts: {
   });
   const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
 
+  const sched = await db.query.statementSchedules.findFirst({
+    where: eq(statementSchedules.labOrganizationId, opts.labOrganizationId),
+  });
+  const template = sched
+    ? {
+        subject: sched.emailSubject,
+        body: sched.emailBody,
+        replyTo: sched.emailReplyTo,
+      }
+    : null;
+
   const statements = await buildPracticeStatements(
     opts.labOrganizationId,
     start,
@@ -341,6 +405,7 @@ export async function runMonthlyStatementsForLab(opts: {
           pdfBuffer,
           pdfFilename: filename,
           totals: { billed: s.totalBilled, open: s.openBalance },
+          template,
         });
         if (!result.delivered) {
           status = "failed";

@@ -13,8 +13,23 @@ interface StatementSchedule {
   labOrganizationId: string;
   enabled: boolean;
   dayOfMonth: number;
+  emailSubject: string | null;
+  emailBody: string | null;
+  emailReplyTo: string | null;
   lastSentForMonth: string | null;
   lastRunAt: string | null;
+}
+
+const DEFAULT_STATEMENT_SUBJECT =
+  "Statement for {{practiceName}} — {{periodLabel}}";
+const DEFAULT_STATEMENT_BODY =
+  "Hello,\n\nPlease find attached the statement for {{practiceName}} covering {{periodLabel}}.\n\nTotal billed: {{totalBilled}}\nOpen balance: {{openBalance}}\n\nThank you,\n{{labName}}";
+
+function renderTemplate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_m, key: string) => {
+    const v = vars[key];
+    return v ?? `{{${key}}}`;
+  });
 }
 
 interface StatementSendRun {
@@ -344,6 +359,10 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
 
   const [enabled, setEnabled] = useState(false);
   const [dayOfMonth, setDayOfMonth] = useState(1);
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [emailReplyTo, setEmailReplyTo] = useState("");
+  const [showPreview, setShowPreview] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
@@ -351,11 +370,20 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
     if (scheduleQuery.data) {
       setEnabled(scheduleQuery.data.enabled);
       setDayOfMonth(scheduleQuery.data.dayOfMonth);
+      setEmailSubject(scheduleQuery.data.emailSubject ?? "");
+      setEmailBody(scheduleQuery.data.emailBody ?? "");
+      setEmailReplyTo(scheduleQuery.data.emailReplyTo ?? "");
     }
   }, [scheduleQuery.data]);
 
   const saveMutation = useMutation({
-    mutationFn: (input: { enabled: boolean; dayOfMonth: number }) =>
+    mutationFn: (input: {
+      enabled: boolean;
+      dayOfMonth: number;
+      emailSubject: string | null;
+      emailBody: string | null;
+      emailReplyTo: string | null;
+    }) =>
       apiFetch<StatementSchedule>(`/lab-orgs/${orgId}/statement-schedule`, {
         method: "PUT",
         body: JSON.stringify(input),
@@ -392,14 +420,41 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
   });
 
   function save() {
-    saveMutation.mutate({ enabled, dayOfMonth });
+    saveMutation.mutate({
+      enabled,
+      dayOfMonth,
+      emailSubject: emailSubject.trim() || null,
+      emailBody: emailBody.trim() ? emailBody : null,
+      emailReplyTo: emailReplyTo.trim() || null,
+    });
   }
 
   const sched = scheduleQuery.data;
+  const previewVars = useMemo<Record<string, string>>(
+    () => ({
+      practiceName: "Sample Family Dental",
+      labName: orgName,
+      periodLabel: new Date(Date.now() - 30 * 86400_000).toLocaleString("en-US", {
+        month: "long",
+        year: "numeric",
+      }),
+      totalBilled: formatMoney(2480),
+      openBalance: formatMoney(640),
+    }),
+    [orgName],
+  );
+  const previewSubject = renderTemplate(
+    emailSubject.trim() || DEFAULT_STATEMENT_SUBJECT,
+    previewVars,
+  );
+  const previewBody = renderTemplate(
+    emailBody.trim() || DEFAULT_STATEMENT_BODY,
+    previewVars,
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-foreground/40" onClick={onClose}>
-      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
         <header className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div>
             <div className="text-xs text-muted-foreground">Auto-send statements</div>
@@ -409,7 +464,7 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
             <X size={16} />
           </button>
         </header>
-        <div className="px-5 py-5 space-y-4">
+        <div className="px-5 py-5 space-y-4 overflow-y-auto">
           {scheduleQuery.isLoading && (
             <div className="py-6 text-center text-sm text-muted-foreground">
               <Loader2 size={16} className="inline animate-spin mr-2" /> Loading schedule…
@@ -455,6 +510,95 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
                 </p>
               </div>
 
+              <div className="border-t border-border pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <div className="text-sm font-medium">Email template</div>
+                    <div className="text-xs text-muted-foreground">
+                      Used by auto-send and "Send last month now". Leave fields blank to use the defaults.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPreview((v) => !v)}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    {showPreview ? "Hide preview" : "Show preview"}
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                      Subject
+                    </label>
+                    <input
+                      type="text"
+                      value={emailSubject}
+                      onChange={(e) => setEmailSubject(e.target.value)}
+                      placeholder={DEFAULT_STATEMENT_SUBJECT}
+                      className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                      Message body
+                    </label>
+                    <textarea
+                      value={emailBody}
+                      onChange={(e) => setEmailBody(e.target.value)}
+                      rows={7}
+                      placeholder={DEFAULT_STATEMENT_BODY}
+                      className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y font-mono"
+                    />
+                    <p className="text-[11px] text-muted-foreground mt-1.5">
+                      Available placeholders:{" "}
+                      <code>{"{{practiceName}}"}</code>, <code>{"{{labName}}"}</code>,{" "}
+                      <code>{"{{periodLabel}}"}</code>, <code>{"{{totalBilled}}"}</code>,{" "}
+                      <code>{"{{openBalance}}"}</code>.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                      Reply-to address (optional)
+                    </label>
+                    <input
+                      type="email"
+                      value={emailReplyTo}
+                      onChange={(e) => setEmailReplyTo(e.target.value)}
+                      placeholder="billing@yourlab.com"
+                      className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                    />
+                    <p className="text-[11px] text-muted-foreground mt-1.5">
+                      When set, replies from practices go to this address instead of the default sender.
+                    </p>
+                  </div>
+
+                  {showPreview && (
+                    <div className="rounded-md border border-border bg-secondary/30 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">
+                        Preview (sample data)
+                      </div>
+                      <div className="text-xs">
+                        <div className="mb-2">
+                          <span className="text-muted-foreground">Subject: </span>
+                          <span className="font-medium">{previewSubject}</span>
+                        </div>
+                        {emailReplyTo.trim() && (
+                          <div className="mb-2">
+                            <span className="text-muted-foreground">Reply-to: </span>
+                            <span>{emailReplyTo.trim()}</span>
+                          </div>
+                        )}
+                        <div className="whitespace-pre-wrap border-t border-border pt-2 text-foreground">
+                          {previewBody}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {sched.lastSentForMonth && (
                 <div className="text-xs text-muted-foreground border border-border rounded-md p-2.5 bg-secondary/30">
                   Last automatic run sent statements for <strong>{sched.lastSentForMonth}</strong>
@@ -474,7 +618,7 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
             </>
           )}
         </div>
-        <footer className="flex items-center justify-between px-5 py-3 border-t border-border bg-secondary/30 rounded-b-xl">
+        <footer className="flex items-center justify-between px-5 py-3 border-t border-border bg-secondary/30 rounded-b-xl shrink-0">
           <button
             type="button"
             onClick={() => {

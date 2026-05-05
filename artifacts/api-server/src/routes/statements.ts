@@ -38,6 +38,15 @@ router.get(
 const updateSchema = z.object({
   enabled: z.boolean(),
   dayOfMonth: z.coerce.number().int().min(1).max(31),
+  emailSubject: z.string().max(998).nullish(),
+  emailBody: z.string().max(20000).nullish(),
+  emailReplyTo: z
+    .string()
+    .max(320)
+    .refine((v) => !v || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()), {
+      message: "Reply-to must be a valid email address",
+    })
+    .nullish(),
 });
 
 router.put(
@@ -53,6 +62,20 @@ router.put(
       .set({
         enabled: input.enabled,
         dayOfMonth: input.dayOfMonth,
+        emailSubject:
+          input.emailSubject === undefined
+            ? undefined
+            : (input.emailSubject?.trim() || null),
+        emailBody:
+          input.emailBody === undefined
+            ? undefined
+            : (input.emailBody ?? "").length > 0
+              ? input.emailBody
+              : null,
+        emailReplyTo:
+          input.emailReplyTo === undefined
+            ? undefined
+            : (input.emailReplyTo?.trim() || null),
         updatedByUserId: userId,
         updatedAt: new Date(),
       })
