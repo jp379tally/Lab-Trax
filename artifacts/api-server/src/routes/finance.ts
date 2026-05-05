@@ -469,6 +469,75 @@ router.delete(
   })
 );
 
+// ─────────────────────────────── Transfers ───────────────────────────────
+
+const transferSchema = z.object({
+  fromAccountId: z.string().min(1),
+  toAccountId: z.string().min(1),
+  amount: z.coerce.number().positive(),
+  txnDate: z.string().min(1),
+  memo: z.string().nullable().optional(),
+});
+
+router.post(
+  "/transactions/transfer",
+  asyncHandler(async (req, res) => {
+    const input = transferSchema.parse(req.body);
+    if (input.fromAccountId === input.toAccountId) {
+      throw new HttpError(400, "From and to accounts must differ.");
+    }
+    const fromAcct = await loadAccountOrThrow(uid(req), input.fromAccountId);
+    const toAcct = await loadAccountOrThrow(uid(req), input.toAccountId);
+    if (fromAcct.labOrganizationId !== toAcct.labOrganizationId) {
+      throw new HttpError(400, "Both accounts must belong to the same organization.");
+    }
+    await requireAnyRole(uid(req), fromAcct.labOrganizationId, BILLING_ROLES);
+    const amount = Number(input.amount);
+    const txnDate = new Date(input.txnDate);
+    const groupId = `xfer-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const memo = input.memo || null;
+    const userId = uid(req);
+    const rows = await db.transaction(async (tx) => {
+      const [outRow] = await tx
+        .insert(bankTransactions)
+        .values({
+          labOrganizationId: fromAcct.labOrganizationId,
+          bankAccountId: fromAcct.id,
+          txnDate,
+          type: "transfer",
+          payee: `Transfer to ${toAcct.name}`,
+          memo,
+          debitAmount: amount.toFixed(2),
+          creditAmount: "0.00",
+          netAmount: (-amount).toFixed(2),
+          source: "transfer",
+          transferGroupId: groupId,
+          createdByUserId: userId,
+        })
+        .returning();
+      const [inRow] = await tx
+        .insert(bankTransactions)
+        .values({
+          labOrganizationId: toAcct.labOrganizationId,
+          bankAccountId: toAcct.id,
+          txnDate,
+          type: "transfer",
+          payee: `Transfer from ${fromAcct.name}`,
+          memo,
+          debitAmount: "0.00",
+          creditAmount: amount.toFixed(2),
+          netAmount: amount.toFixed(2),
+          source: "transfer",
+          transferGroupId: groupId,
+          createdByUserId: userId,
+        })
+        .returning();
+      return { outRow, inRow };
+    });
+    return ok(res, { transferGroupId: groupId, ...rows }, 201);
+  })
+);
+
 // ─────────────────────────── CSV Import & Matching ───────────────────────
 
 const importSchema = z.object({
@@ -1173,9 +1242,18 @@ router.get(
     let expenses = 0;
     let projectedRevenue = 0;
     let projectedExpenses = 0;
+    let net = 0;
     const byCategory = new Map<string, { id: string | null; income: number; expense: number }>();
     for (const r of rows as any[]) {
       if (r.status === "void") continue;
+      // Net change tracks the actual movement on every non-void entry,
+      // including transfers — so account-scoped views still reflect the
+      // amount moved in or out of the selected account.
+      net += Number(r.netAmount);
+      // Inter-account transfers are excluded from revenue/expense totals
+      // and from the category breakdown so they don't double-count as
+      // earned income or paid expense at the organization level.
+      if (r.transferGroupId) continue;
       const credit = Number(r.creditAmount);
       const debit = Number(r.debitAmount);
       if (r.status === "projected") {
@@ -1203,7 +1281,6 @@ router.get(
       .from(bankTransactions)
       .where(and(...startConds));
     const startingBalance = Number(startRows[0]?.v ?? 0);
-    const net = revenue + projectedRevenue - expenses - projectedExpenses;
     const endingBalance = startingBalance + net;
 
     const cats = (await db.query.transactionCategories.findMany({

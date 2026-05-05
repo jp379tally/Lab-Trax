@@ -175,6 +175,7 @@ export interface BankTransaction {
   runningBalance?: string;
   importBatchId?: string | null;
   recurringRuleId?: string | null;
+  transferGroupId?: string | null;
   createdAt?: string | null;
 }
 

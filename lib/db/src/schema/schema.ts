@@ -830,6 +830,7 @@ export const bankTransactions = pgTable(
       { onDelete: "set null" }
     ),
     importBatchId: text("import_batch_id"),
+    transferGroupId: varchar("transfer_group_id"),
     createdByUserId: varchar("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -844,6 +845,9 @@ export const bankTransactions = pgTable(
       table.bankAccountId
     ),
     bankTxnDateIdx: index("bank_transactions_date_idx").on(table.txnDate),
+    bankTxnTransferIdx: index("bank_transactions_transfer_idx").on(
+      table.transferGroupId
+    ),
   })
 );
 

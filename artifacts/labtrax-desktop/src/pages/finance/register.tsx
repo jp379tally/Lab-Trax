@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, CheckCircle2, Download, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount, BankTransaction, TransactionCategory } from "@/lib/types";
@@ -38,6 +38,7 @@ function RegisterTable({
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<BankTransaction | null>(null);
   const [importing, setImporting] = useState(false);
+  const [transferring, setTransferring] = useState(false);
 
   const account = accounts.find((a) => a.id === accountId);
 
@@ -218,6 +219,15 @@ function RegisterTable({
           </button>
           <button
             type="button"
+            onClick={() => setTransferring(true)}
+            disabled={accounts.length < 2}
+            title={accounts.length < 2 ? "Add a second bank account to transfer between accounts." : undefined}
+            className="h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/80 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ArrowLeftRight size={14} /> New transfer
+          </button>
+          <button
+            type="button"
             onClick={() => setAdding(true)}
             className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
           >
@@ -371,6 +381,179 @@ function RegisterTable({
           onComplete={() => qc.invalidateQueries({ queryKey: ["finance"] })}
         />
       )}
+
+      {transferring && (
+        <TransferDialog
+          accounts={accounts}
+          defaultFromAccountId={accountId}
+          onClose={() => setTransferring(false)}
+          onComplete={() => qc.invalidateQueries({ queryKey: ["finance"] })}
+        />
+      )}
+    </div>
+  );
+}
+
+function TransferDialog({
+  accounts,
+  defaultFromAccountId,
+  onClose,
+  onComplete,
+}: {
+  accounts: BankAccount[];
+  defaultFromAccountId: string;
+  onClose: () => void;
+  onComplete: () => void;
+}) {
+  const [fromAccountId, setFromAccountId] = useState(defaultFromAccountId);
+  const [toAccountId, setToAccountId] = useState(
+    accounts.find((a) => a.id !== defaultFromAccountId)?.id || ""
+  );
+  const [amount, setAmount] = useState("0");
+  const [txnDate, setTxnDate] = useState(new Date().toISOString().slice(0, 10));
+  const [memo, setMemo] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: () =>
+      apiFetch("/finance/transactions/transfer", {
+        method: "POST",
+        body: JSON.stringify({
+          fromAccountId,
+          toAccountId,
+          amount: Number(amount),
+          txnDate: new Date(txnDate).toISOString(),
+          memo: memo || null,
+        }),
+      }),
+    onSuccess: () => {
+      onComplete();
+      onClose();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  function submit() {
+    setError(null);
+    if (!fromAccountId || !toAccountId) {
+      setError("Pick both a source and destination account.");
+      return;
+    }
+    if (fromAccountId === toAccountId) {
+      setError("From and to accounts must differ.");
+      return;
+    }
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setError("Enter an amount greater than zero.");
+      return;
+    }
+    save.mutate();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-foreground/30">
+      <div className="w-full max-w-md bg-card border-l border-border h-full overflow-y-auto scrollbar-thin">
+        <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-4 flex items-center justify-between">
+          <h2 className="text-base font-semibold">New transfer</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 w-9 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="px-6 py-5 space-y-4">
+          {error && (
+            <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+              {error}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Creates two linked register entries — a withdrawal from the source
+            account and a matching deposit to the destination — in a single
+            atomic operation. Transfers are excluded from cash flow revenue and
+            expense totals.
+          </p>
+          <Field label="From account">
+            <select
+              value={fromAccountId}
+              onChange={(e) => setFromAccountId(e.target.value)}
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+            >
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="To account">
+            <select
+              value={toAccountId}
+              onChange={(e) => setToAccountId(e.target.value)}
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+            >
+              <option value="">— Select —</option>
+              {accounts
+                .filter((a) => a.id !== fromAccountId)
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Amount">
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
+              />
+            </Field>
+            <Field label="Date">
+              <input
+                type="date"
+                value={txnDate}
+                onChange={(e) => setTxnDate(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+              />
+            </Field>
+          </div>
+          <Field label="Memo">
+            <input
+              type="text"
+              value={memo}
+              onChange={(e) => setMemo(e.target.value)}
+              placeholder="Optional"
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+            />
+          </Field>
+          <div className="flex items-center gap-2 pt-2">
+            <button
+              type="button"
+              onClick={submit}
+              disabled={save.isPending}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+            >
+              <ArrowLeftRight size={14} />
+              {save.isPending ? "Recording…" : "Record transfer"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 px-4 rounded-md text-sm hover:bg-secondary"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
