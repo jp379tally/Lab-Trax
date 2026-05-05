@@ -443,6 +443,7 @@ export const invoices = pgTable(
     issuedAt: timestamp("issued_at", { withTimezone: true }),
     dueAt: timestamp("due_at", { withTimezone: true }),
     notes: text("notes"),
+    displayMetadataJson: jsonb("display_metadata_json"),
     createdByUserId: varchar("created_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),

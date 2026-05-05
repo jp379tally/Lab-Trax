@@ -55,7 +55,7 @@ function deriveDisplayInitials(input?: {
 }
 
 export default function CasesScreen() {
-  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, refreshCases, fullRefreshCases, setPendingInvoiceEditId } = useApp();
+  const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, refreshCases, fullRefreshCases, setPendingInvoiceEditId, hydrateInvoiceFromServer } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { userType, currentUser, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
@@ -74,6 +74,11 @@ export default function CasesScreen() {
   const locateCase = locateCaseId ? cases.find(c => c.id === locateCaseId) : null;
   const [permission, requestPermission] = useCameraPermissions();
   const [invoiceCase, setInvoiceCase] = useState<LabCase | null>(null);
+  useEffect(() => {
+    if (invoiceCase?.invoiceId) {
+      void hydrateInvoiceFromServer(invoiceCase.invoiceId);
+    }
+  }, [invoiceCase?.invoiceId, hydrateInvoiceFromServer]);
   const isAdmin = role === "admin";
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()

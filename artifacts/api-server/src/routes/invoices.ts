@@ -438,6 +438,7 @@ router.patch(
             })
           )
           .optional(),
+        displayMetadata: z.record(z.any()).nullable().optional(),
       })
       .parse(req.body);
 
@@ -511,6 +512,10 @@ router.patch(
           invoiceNumber: input.invoiceNumber ?? invoice.invoiceNumber,
           notes:
             input.notes === undefined ? invoice.notes : input.notes,
+          displayMetadataJson:
+            input.displayMetadata === undefined
+              ? invoice.displayMetadataJson
+              : input.displayMetadata,
           updatedByUserId: (req as any).auth.userId,
         })
         .where(eq(invoices.id, invoice.id))

@@ -140,6 +140,7 @@ interface AppContextValue {
   refreshCases: () => Promise<void>;
   fullRefreshCases: () => Promise<void>;
   hardRefresh: () => Promise<void>;
+  hydrateInvoiceFromServer: (invoiceId: string) => Promise<void>;
   updateWorkStatus: (status: "available" | "break" | "out_of_office") => Promise<{ success: boolean; error?: string }>;
 }
 
@@ -1097,6 +1098,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  type ServerInvoiceLineItem = {
+    id?: string;
+    description?: string | null;
+    quantity?: string | number | null;
+    unitPrice?: string | number | null;
+    lineTotal?: string | number | null;
+    sortOrder?: number | null;
+  };
+
   type ServerInvoiceRow = {
     id: string;
     invoiceNumber?: string | null;
@@ -1109,7 +1119,80 @@ export function AppProvider({ children }: { children: ReactNode }) {
     createdAt?: string | null;
     caseId?: string | null;
     providerOrganization?: { id: string; name: string } | null;
+    displayMetadata?: Record<string, any> | null;
+    displayMetadataJson?: Record<string, any> | null;
+    items?: ServerInvoiceLineItem[];
   };
+
+  function readServerDisplayMetadata(
+    server: ServerInvoiceRow
+  ): Record<string, any> | null {
+    return (server.displayMetadata ?? server.displayMetadataJson ?? null) as
+      | Record<string, any>
+      | null;
+  }
+
+  function lineItemsFromServer(
+    server: ServerInvoiceRow
+  ): InvoiceLineItem[] | null {
+    if (!Array.isArray(server.items)) return null;
+    const meta = readServerDisplayMetadata(server);
+    const metaItems = Array.isArray(meta?.lineItems)
+      ? (meta!.lineItems as InvoiceLineItem[])
+      : [];
+    return server.items.map((it, idx) => {
+      const qty = Math.max(0, Math.round(Number(it.quantity ?? 0)));
+      const rate = Number(it.unitPrice ?? 0) || 0;
+      const amount =
+        it.lineTotal !== null && it.lineTotal !== undefined
+          ? Number(it.lineTotal) || 0
+          : qty * rate;
+      const meta = metaItems[idx];
+      const description = String(it.description ?? "");
+      return {
+        qty,
+        item: meta?.item || description || "Item",
+        description: meta?.description ?? description,
+        rate,
+        amount,
+      };
+    });
+  }
+
+  function applyServerDisplayMetadata(
+    target: Invoice,
+    meta: Record<string, any> | null | undefined
+  ): Invoice {
+    if (!meta || typeof meta !== "object") return target;
+    const next = { ...target };
+    if (typeof meta.billTo === "string") next.billTo = meta.billTo;
+    if (typeof meta.patientName === "string")
+      next.patientName = meta.patientName;
+    if (typeof meta.teeth === "string") next.teeth = meta.teeth;
+    if (typeof meta.shade === "string") next.shade = meta.shade;
+    if (typeof meta.caseNotes === "string") next.caseNotes = meta.caseNotes;
+    if (typeof meta.caseType === "string") next.caseType = meta.caseType;
+    if (typeof meta.clientName === "string") next.clientName = meta.clientName;
+    if (typeof meta.credits === "number") next.credits = meta.credits;
+    return next;
+  }
+
+  function buildDisplayMetadataPayload(inv: Invoice): Record<string, any> {
+    return {
+      billTo: inv.billTo ?? "",
+      patientName: inv.patientName ?? "",
+      teeth: inv.teeth ?? "",
+      shade: inv.shade ?? "",
+      caseNotes: inv.caseNotes ?? "",
+      caseType: inv.caseType ?? "",
+      clientName: inv.clientName ?? "",
+      credits: Number(inv.credits) || 0,
+      lineItems: (inv.lineItems || []).map((li) => ({
+        item: li.item,
+        description: li.description,
+      })),
+    };
+  }
 
   function applyServerInvoiceToLocal(
     local: Invoice,
@@ -1119,7 +1202,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       server.total !== null && server.total !== undefined
         ? Number(server.total)
         : NaN;
-    const merged: Invoice = {
+    let merged: Invoice = {
       ...local,
       serverId: server.id,
       serverUpdatedAt: Date.now(),
@@ -1138,6 +1221,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const t = Date.parse(server.dueAt);
       if (!Number.isNaN(t)) merged.dueAt = t;
     }
+    merged = applyServerDisplayMetadata(merged, readServerDisplayMetadata(server));
+    const serverItems = lineItemsFromServer(server);
+    if (serverItems) {
+      merged.lineItems = serverItems;
+    }
     return merged;
   }
 
@@ -1154,7 +1242,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const dueAt = server.dueAt
       ? Date.parse(server.dueAt) || issuedAt + 30 * 24 * 60 * 60 * 1000
       : issuedAt + 30 * 24 * 60 * 60 * 1000;
-    return {
+    const base: Invoice = {
       id: generateId(),
       invoiceNumber: server.invoiceNumber || "",
       clientId: "",
@@ -1176,6 +1264,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       serverId: server.id,
       serverUpdatedAt: Date.now(),
     };
+    const withMeta = applyServerDisplayMetadata(
+      base,
+      readServerDisplayMetadata(server)
+    );
+    const serverItems = lineItemsFromServer(server);
+    if (serverItems && serverItems.length > 0) withMeta.lineItems = serverItems;
+    return withMeta;
   }
 
   function mergeServerInvoices(serverRows: ServerInvoiceRow[]) {
@@ -1197,14 +1292,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         if (idx !== undefined) {
           const merged = applyServerInvoiceToLocal(next[idx], server);
+          const cur = next[idx];
+          const lineItemsChanged =
+            JSON.stringify(merged.lineItems || []) !==
+            JSON.stringify(cur.lineItems || []);
           if (
-            merged.notes !== next[idx].notes ||
-            merged.status !== next[idx].status ||
-            merged.amount !== next[idx].amount ||
-            merged.serverId !== next[idx].serverId ||
-            merged.invoiceNumber !== next[idx].invoiceNumber ||
-            merged.issuedAt !== next[idx].issuedAt ||
-            merged.dueAt !== next[idx].dueAt
+            merged.notes !== cur.notes ||
+            merged.status !== cur.status ||
+            merged.amount !== cur.amount ||
+            merged.serverId !== cur.serverId ||
+            merged.invoiceNumber !== cur.invoiceNumber ||
+            merged.issuedAt !== cur.issuedAt ||
+            merged.dueAt !== cur.dueAt ||
+            merged.billTo !== cur.billTo ||
+            merged.patientName !== cur.patientName ||
+            merged.teeth !== cur.teeth ||
+            merged.shade !== cur.shade ||
+            merged.caseNotes !== cur.caseNotes ||
+            merged.caseType !== cur.caseType ||
+            merged.clientName !== cur.clientName ||
+            merged.credits !== cur.credits ||
+            lineItemsChanged
           ) {
             next[idx] = merged;
             changed = true;
@@ -1287,6 +1395,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.log("Could not generate server invoice:", e);
     } finally {
       inFlightInvoiceGenIdsRef.current.delete(localInvoiceId);
+    }
+  }
+
+  async function hydrateInvoiceFromServer(invoiceId: string) {
+    const target = invoicesRef.current.find((i) => i.id === invoiceId);
+    if (!target?.serverId) return;
+    try {
+      const res = await resilientFetch(`/api/invoices/${target.serverId}`);
+      if (!res.ok) return;
+      const payload = await res.json();
+      const row = (payload?.data ?? payload) as ServerInvoiceRow | null;
+      if (!row?.id) return;
+      mergeServerInvoices([row]);
+    } catch (e) {
+      console.log("Could not hydrate invoice from server:", e);
     }
   }
 
@@ -2564,6 +2687,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (Object.prototype.hasOwnProperty.call(inv, "dueAt") && typeof inv.dueAt === "number") {
           body.dueAt = new Date(inv.dueAt).toISOString();
         }
+        if (Object.prototype.hasOwnProperty.call(inv, "lineItems") && Array.isArray(inv.lineItems)) {
+          body.items = inv.lineItems.map((li, idx) => ({
+            description:
+              (li.description && li.description.trim()) ||
+              li.item ||
+              "Item",
+            quantity: Math.max(0, Math.round(Number(li.qty) || 0)),
+            unitPrice: Number(li.rate) || 0,
+            sortOrder: idx,
+          }));
+        }
+        const metaTouchKeys = [
+          "lineItems",
+          "credits",
+          "billTo",
+          "patientName",
+          "teeth",
+          "shade",
+          "caseNotes",
+          "caseType",
+          "clientName",
+        ];
+        const metaTouched = metaTouchKeys.some((k) =>
+          Object.prototype.hasOwnProperty.call(inv, k)
+        );
+        if (metaTouched) {
+          body.displayMetadata = buildDisplayMetadataPayload(target);
+        }
         if (Object.keys(body).length > 0) {
           void patchInvoiceOnServer(target.serverId, body);
         }
@@ -3332,6 +3483,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       inactiveClients: clients.filter(c => c.status === "inactive"),
       refreshCases,
       fullRefreshCases,
+      hydrateInvoiceFromServer,
       hardRefresh,
       updateWorkStatus,
     }),

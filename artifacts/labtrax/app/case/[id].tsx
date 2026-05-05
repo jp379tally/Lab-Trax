@@ -72,7 +72,7 @@ function deriveDisplayInitials(input?: {
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh } = useApp();
+  const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh, hydrateInvoiceFromServer } = useApp();
   const { currentUser, userType, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -166,7 +166,13 @@ export default function CaseDetailScreen() {
   const [activeCourtesyId, setActiveCourtesyId] = useState("");
   const [declineNote, setDeclineNote] = useState("");
   const [showDeclineModal, setShowDeclineModal] = useState(false);
-  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [showInvoiceModal, setShowInvoiceModalRaw] = useState(false);
+  const setShowInvoiceModal = (v: boolean) => {
+    setShowInvoiceModalRaw(v);
+    if (v && caseItem?.invoiceId) {
+      void hydrateInvoiceFromServer(caseItem.invoiceId);
+    }
+  };
   const [showLabSlipModal, setShowLabSlipModal] = useState(false);
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
   const [photoNotes, setPhotoNotes] = useState("");
