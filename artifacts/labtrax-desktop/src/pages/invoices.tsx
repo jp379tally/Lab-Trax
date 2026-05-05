@@ -586,6 +586,37 @@ function InvoiceEditor({
             />
           </section>
 
+          {detailQuery.data?.linkedTransactions && detailQuery.data.linkedTransactions.length > 0 && (
+            <section>
+              <h3 className="text-sm font-semibold mb-2">Linked register entries</h3>
+              <div className="border border-border rounded-md divide-y divide-border">
+                {detailQuery.data.linkedTransactions.map((t) => (
+                  <div
+                    key={t.id}
+                    className="flex items-center justify-between px-3 py-2 text-sm"
+                  >
+                    <div>
+                      <div className="font-medium">
+                        {formatMoney(
+                          Number(t.creditAmount) - Number(t.debitAmount)
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {t.accountName || "Bank"} · {formatDate(t.txnDate)}
+                        {t.payee ? ` · ${t.payee}` : ""}
+                      </div>
+                    </div>
+                    {t.source === "invoice" && (
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        auto
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {detailQuery.data?.payments && detailQuery.data.payments.length > 0 && (
             <section>
               <h3 className="text-sm font-semibold mb-2">Payments</h3>

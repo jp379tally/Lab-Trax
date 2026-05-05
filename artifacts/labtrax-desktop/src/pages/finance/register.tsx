@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
-import type { BankAccount, BankTransaction, TransactionCategory } from "@/lib/types";
+import type { BankAccount, BankTransaction, Invoice, TransactionCategory } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 
 export default function RegisterPage() {
@@ -615,7 +615,26 @@ function TxnEditor({
     existing ? Number(existing.creditAmount).toString() : "0"
   );
   const [cleared, setCleared] = useState(existing?.cleared ?? false);
+  const [invoiceIds, setInvoiceIds] = useState<string[]>(
+    (existing?.invoices ?? []).map((i) => i.invoiceId)
+  );
   const [error, setError] = useState<string | null>(null);
+
+  const invoicesQuery = useQuery({
+    queryKey: ["invoices"],
+    queryFn: () => apiFetch<Invoice[]>("/invoices"),
+  });
+  const orgInvoices = useMemo(
+    () =>
+      (invoicesQuery.data ?? []).filter(
+        (i) => i.labOrganizationId === organizationId
+      ),
+    [invoicesQuery.data, organizationId]
+  );
+  const invoiceById = useMemo(
+    () => new Map(orgInvoices.map((i) => [i.id, i])),
+    [orgInvoices]
+  );
 
   const save = useMutation({
     mutationFn: () => {
@@ -630,6 +649,7 @@ function TxnEditor({
         payment: Number(payment) || 0,
         deposit: Number(deposit) || 0,
         cleared,
+        invoiceIds,
       };
       const path = existing
         ? `/finance/transactions/${existing.id}`
@@ -766,6 +786,58 @@ function TxnEditor({
             />
             Mark as cleared
           </label>
+          <Field label="Linked invoices">
+            <div className="space-y-2">
+              {invoiceIds.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {invoiceIds.map((id) => {
+                    const inv = invoiceById.get(id);
+                    return (
+                      <span
+                        key={id}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-secondary text-xs font-mono"
+                      >
+                        {inv?.invoiceNumber || id}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setInvoiceIds((prev) =>
+                              prev.filter((x) => x !== id)
+                            )
+                          }
+                          className="text-muted-foreground hover:text-destructive"
+                          aria-label="Remove link"
+                        >
+                          <X size={11} />
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <select
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v && !invoiceIds.includes(v)) {
+                    setInvoiceIds((prev) => [...prev, v]);
+                  }
+                }}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+              >
+                <option value="">— Add an invoice link —</option>
+                {orgInvoices
+                  .filter((i) => !invoiceIds.includes(i.id))
+                  .map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {i.invoiceNumber} ·{" "}
+                      {i.providerOrganization?.name || "—"} ·{" "}
+                      {i.status}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </Field>
           <div className="flex items-center gap-2 pt-2">
             <button
               type="button"

@@ -94,6 +94,7 @@ export const organizations = pgTable("organizations", {
   state: text("state"),
   zip: text("zip"),
   isActive: boolean("is_active").default(true).notNull(),
+  defaultBankAccountId: varchar("default_bank_account_id"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id, {
     onDelete: "set null",
   }),
@@ -850,6 +851,31 @@ export const bankTransactions = pgTable(
     bankTxnTransferIdx: index("bank_transactions_transfer_idx").on(
       table.transferGroupId
     ),
+  })
+);
+
+export const bankTransactionInvoices = pgTable(
+  "bank_transaction_invoices",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    bankTransactionId: varchar("bank_transaction_id")
+      .notNull()
+      .references(() => bankTransactions.id, { onDelete: "cascade" }),
+    invoiceId: varchar("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    bankTxnInvoiceUnique: uniqueIndex("bank_transaction_invoices_unique").on(
+      table.bankTransactionId,
+      table.invoiceId
+    ),
+    bankTxnInvoiceInvoiceIdx: index(
+      "bank_transaction_invoices_invoice_idx"
+    ).on(table.invoiceId),
   })
 );
 

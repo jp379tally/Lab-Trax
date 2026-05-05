@@ -157,6 +157,23 @@ function ManageAccountsModal({
   const [catName, setCatName] = useState("");
   const [catKind, setCatKind] = useState<"income" | "expense" | "transfer">("expense");
 
+  const settingsQuery = useQuery({
+    queryKey: ["finance", "settings", organizationId],
+    queryFn: () =>
+      apiFetch<{ defaultBankAccountId: string | null }>(
+        `/finance/settings?organizationId=${organizationId}`
+      ),
+  });
+  const updateSettings = useMutation({
+    mutationFn: (defaultBankAccountId: string | null) =>
+      apiFetch("/finance/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ organizationId, defaultBankAccountId }),
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["finance", "settings", organizationId] }),
+  });
+
   const addAccount = useMutation({
     mutationFn: () =>
       apiFetch("/finance/accounts", {
@@ -308,6 +325,30 @@ function ManageAccountsModal({
                 <Plus size={14} /> Add account
               </button>
             </div>
+          </section>
+
+          <section>
+            <h3 className="text-sm font-semibold mb-3">Invoice payment deposits</h3>
+            <p className="text-xs text-muted-foreground mb-3">
+              When an invoice is marked paid, a deposit is auto-posted to this account.
+            </p>
+            <select
+              value={settingsQuery.data?.defaultBankAccountId || ""}
+              onChange={(e) =>
+                updateSettings.mutate(e.target.value || null)
+              }
+              className="h-9 px-2.5 rounded-md bg-background border border-input text-sm w-full max-w-sm"
+            >
+              <option value="">— No default (auto-deposits disabled) —</option>
+              {(accounts.data || [])
+                .filter((a) => !a.isArchived)
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {a.last4 ? ` ····${a.last4}` : ""}
+                  </option>
+                ))}
+            </select>
           </section>
 
           <section>

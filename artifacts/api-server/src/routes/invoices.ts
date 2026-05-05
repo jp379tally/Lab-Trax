@@ -3,6 +3,9 @@ import { and, desc, eq, gte, lte, or, sum } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
+  bankAccounts,
+  bankTransactionInvoices,
+  bankTransactions,
   caseEvents,
   caseRestorations,
   cases,
@@ -13,6 +16,7 @@ import {
   payments,
 } from "@workspace/db";
 import { inArray } from "drizzle-orm";
+import { ensureInvoiceDeposit } from "../lib/invoice-deposits";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { HttpError, ok } from "../lib/http";
@@ -367,7 +371,35 @@ router.get(
       where: eq(payments.invoiceId, invoice.id),
       orderBy: [desc(payments.paidAt)],
     });
-    return ok(res, { ...invoice, items, payments: paymentRows });
+    const linkedTxns = await db
+      .select({
+        id: bankTransactions.id,
+        bankAccountId: bankTransactions.bankAccountId,
+        txnDate: bankTransactions.txnDate,
+        debitAmount: bankTransactions.debitAmount,
+        creditAmount: bankTransactions.creditAmount,
+        source: bankTransactions.source,
+        status: bankTransactions.status,
+        memo: bankTransactions.memo,
+        payee: bankTransactions.payee,
+        accountName: bankAccounts.name,
+      })
+      .from(bankTransactionInvoices)
+      .innerJoin(
+        bankTransactions,
+        eq(bankTransactions.id, bankTransactionInvoices.bankTransactionId)
+      )
+      .innerJoin(
+        bankAccounts,
+        eq(bankAccounts.id, bankTransactions.bankAccountId)
+      )
+      .where(eq(bankTransactionInvoices.invoiceId, invoice.id));
+    return ok(res, {
+      ...invoice,
+      items,
+      payments: paymentRows,
+      linkedTransactions: linkedTxns,
+    });
   })
 );
 
@@ -454,10 +486,11 @@ router.patch(
       const paid = Number(paidSum[0]?.value ?? 0);
       const balanceDue = (Number(total) - paid).toFixed(2);
 
+      const newStatus = input.status ?? invoice.status;
       const [row] = await tx
         .update(invoices)
         .set({
-          status: input.status ?? invoice.status,
+          status: newStatus,
           tax,
           discount,
           subtotal,
@@ -494,6 +527,19 @@ router.patch(
       beforeJson: invoice,
       afterJson: updated,
     });
+
+    if (updated.status === "paid" && invoice.status !== "paid") {
+      await ensureInvoiceDeposit(
+        {
+          id: updated.id,
+          invoiceNumber: updated.invoiceNumber,
+          total: String(updated.total),
+          labOrganizationId: updated.labOrganizationId,
+        },
+        (req as any).auth.userId
+      );
+    }
+
     return ok(res, updated);
   })
 );
@@ -570,6 +616,21 @@ router.post(
           amount: payment.amount,
         },
       });
+    }
+
+    if (
+      updatedInvoice.status === "paid" &&
+      invoice.status !== "paid"
+    ) {
+      await ensureInvoiceDeposit(
+        {
+          id: updatedInvoice.id,
+          invoiceNumber: updatedInvoice.invoiceNumber,
+          total: String(updatedInvoice.total),
+          labOrganizationId: updatedInvoice.labOrganizationId,
+        },
+        (req as any).auth.userId
+      );
     }
 
     return ok(res, { payment, invoice: updatedInvoice }, 201);

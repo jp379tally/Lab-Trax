@@ -16,6 +16,7 @@ type CashFlow = {
   startingBalance: string;
   endingBalance: string;
   categoryBreakdown: Array<{
+    bucketKey: string;
     categoryId: string | null;
     name: string;
     income: string;
@@ -118,7 +119,7 @@ function CashFlow({
                 .map((c) => {
                   const net = Number(c.net);
                   return (
-                    <tr key={c.categoryId || "uncat"} className="border-t border-border">
+                    <tr key={c.bucketKey} className="border-t border-border">
                       <td className="px-4 py-2.5">{c.name}</td>
                       <td className="py-2.5 text-right tabular-nums text-emerald-600 dark:text-emerald-400">
                         {Number(c.income) > 0 ? formatMoney(c.income) : ""}

@@ -111,6 +111,17 @@ export interface Invoice {
   payments?: Payment[];
   providerOrganization?: { id: string; name: string } | null;
   labOrganization?: { id: string; name: string } | null;
+  linkedTransactions?: Array<{
+    id: string;
+    bankAccountId: string;
+    txnDate: string;
+    payee?: string | null;
+    memo?: string | null;
+    creditAmount: string | number;
+    debitAmount: string | number;
+    source: string;
+    accountName?: string | null;
+  }>;
 }
 
 export interface Organization {
@@ -177,6 +188,7 @@ export interface BankTransaction {
   recurringRuleId?: string | null;
   transferGroupId?: string | null;
   createdAt?: string | null;
+  invoices?: Array<{ invoiceId: string; invoiceNumber: string }>;
 }
 
 export interface RecurringRule {

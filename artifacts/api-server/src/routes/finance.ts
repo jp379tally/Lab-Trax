@@ -4,8 +4,11 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import {
   bankAccounts,
+  bankTransactionInvoices,
   bankTransactions,
+  invoices,
   organizationMemberships,
+  organizations,
   recurringTransactions,
   reconciliationItems,
   reconciliations,
@@ -47,6 +50,56 @@ async function loadAccountOrThrow(userId: string, accountId: string) {
 }
 
 const orgIdQuery = z.object({ organizationId: z.string().min(1) });
+
+// ───────────────────────────── Finance Settings ──────────────────────────
+
+router.get(
+  "/settings",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = orgIdQuery.parse(req.query);
+    await requireLabAccess(uid(req), organizationId);
+    const org = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    return ok(res, {
+      defaultBankAccountId: org?.defaultBankAccountId ?? null,
+    });
+  })
+);
+
+const updateSettingsSchema = z.object({
+  organizationId: z.string().min(1),
+  defaultBankAccountId: z.string().nullable(),
+});
+
+router.patch(
+  "/settings",
+  asyncHandler(async (req, res) => {
+    const input = updateSettingsSchema.parse(req.body);
+    await requireAnyRole(uid(req), input.organizationId, ADMIN_ROLES);
+    if (input.defaultBankAccountId) {
+      const acct = await db.query.bankAccounts.findFirst({
+        where: eq(bankAccounts.id, input.defaultBankAccountId),
+      });
+      if (!acct || acct.labOrganizationId !== input.organizationId) {
+        throw new HttpError(
+          400,
+          "Default bank account must belong to this organization."
+        );
+      }
+    }
+    await db
+      .update(organizations)
+      .set({
+        defaultBankAccountId: input.defaultBankAccountId,
+        updatedAt: new Date(),
+      })
+      .where(eq(organizations.id, input.organizationId));
+    return ok(res, {
+      defaultBankAccountId: input.defaultBankAccountId,
+    });
+  })
+);
 
 // ───────────────────────────── Bank Accounts ─────────────────────────────
 
@@ -308,13 +361,42 @@ router.get(
       .where(and(...conds))
       .orderBy(asc(bankTransactions.txnDate), asc(bankTransactions.createdAt));
 
+    const txnIds = rows.map((r: any) => r.id);
+    const linkRows = txnIds.length
+      ? await db
+          .select({
+            bankTransactionId: bankTransactionInvoices.bankTransactionId,
+            invoiceId: bankTransactionInvoices.invoiceId,
+            invoiceNumber: invoices.invoiceNumber,
+          })
+          .from(bankTransactionInvoices)
+          .innerJoin(
+            invoices,
+            eq(invoices.id, bankTransactionInvoices.invoiceId)
+          )
+          .where(inArray(bankTransactionInvoices.bankTransactionId, txnIds))
+      : [];
+    const linksByTxn = new Map<
+      string,
+      Array<{ invoiceId: string; invoiceNumber: string }>
+    >();
+    for (const l of linkRows) {
+      const arr = linksByTxn.get(l.bankTransactionId) ?? [];
+      arr.push({ invoiceId: l.invoiceId, invoiceNumber: l.invoiceNumber });
+      linksByTxn.set(l.bankTransactionId, arr);
+    }
+
     // Compute running balance per-account.
     const running = new Map<string, number>();
     const enriched = rows.map((r: any) => {
       const cur = running.get(r.bankAccountId) ?? 0;
       const next = r.status === "void" ? cur : cur + Number(r.netAmount || 0);
       running.set(r.bankAccountId, next);
-      return { ...r, runningBalance: next.toFixed(2) };
+      return {
+        ...r,
+        runningBalance: next.toFixed(2),
+        invoices: linksByTxn.get(r.id) ?? [],
+      };
     });
     enriched.reverse();
     return ok(res, enriched);
@@ -335,7 +417,44 @@ const txnSchema = z.object({
   deposit: z.coerce.number().min(0).default(0),
   cleared: z.boolean().optional(),
   status: z.enum(["posted", "projected", "void"]).default("posted"),
+  invoiceIds: z.array(z.string().min(1)).optional(),
 });
+
+async function syncTxnInvoiceLinks(
+  txnId: string,
+  labOrganizationId: string,
+  invoiceIds: string[] | undefined
+) {
+  if (!invoiceIds) return;
+  const unique = Array.from(new Set(invoiceIds));
+  if (unique.length) {
+    const found = await db.query.invoices.findMany({
+      where: inArray(invoices.id, unique),
+    });
+    if (found.length !== unique.length) {
+      throw new HttpError(400, "One or more invoices were not found.");
+    }
+    for (const inv of found) {
+      if (inv.labOrganizationId !== labOrganizationId) {
+        throw new HttpError(
+          400,
+          "Invoices must belong to the same lab as the transaction."
+        );
+      }
+    }
+  }
+  await db
+    .delete(bankTransactionInvoices)
+    .where(eq(bankTransactionInvoices.bankTransactionId, txnId));
+  if (unique.length) {
+    await db
+      .insert(bankTransactionInvoices)
+      .values(
+        unique.map((invoiceId) => ({ bankTransactionId: txnId, invoiceId }))
+      )
+      .onConflictDoNothing();
+  }
+}
 
 router.post(
   "/transactions",
@@ -376,6 +495,7 @@ router.post(
         input.payee || null
       );
     }
+    await syncTxnInvoiceLinks(row.id, acct.labOrganizationId, input.invoiceIds);
     return ok(res, row, 201);
   })
 );
@@ -414,6 +534,11 @@ router.patch(
       .set(updates)
       .where(eq(bankTransactions.id, txn.id))
       .returning();
+    await syncTxnInvoiceLinks(
+      row.id,
+      row.labOrganizationId,
+      input.invoiceIds
+    );
     return ok(res, row);
   })
 );
@@ -1238,12 +1363,33 @@ router.get(
       .select()
       .from(bankTransactions)
       .where(and(...conds));
+    const rowIds = (rows as any[]).map((r) => r.id);
+    const invoiceLinkedIds = new Set<string>();
+    if (rowIds.length) {
+      const links = await db
+        .select({
+          bankTransactionId: bankTransactionInvoices.bankTransactionId,
+        })
+        .from(bankTransactionInvoices)
+        .where(inArray(bankTransactionInvoices.bankTransactionId, rowIds));
+      for (const l of links) invoiceLinkedIds.add(l.bankTransactionId);
+    }
     let revenue = 0;
     let expenses = 0;
     let projectedRevenue = 0;
     let projectedExpenses = 0;
     let net = 0;
-    const byCategory = new Map<string, { id: string | null; income: number; expense: number }>();
+    const INVOICE_BUCKET = "__invoice_payments__";
+    const UNCATEGORIZED_BUCKET = "__uncategorized__";
+    const byCategory = new Map<
+      string,
+      {
+        id: string | null;
+        name: string | null;
+        income: number;
+        expense: number;
+      }
+    >();
     for (const r of rows as any[]) {
       if (r.status === "void") continue;
       // Net change tracks the actual movement on every non-void entry,
@@ -1263,8 +1409,24 @@ router.get(
         revenue += credit;
         expenses += debit;
       }
-      const key = r.categoryId || "__uncategorized__";
-      const cur = byCategory.get(key) || { id: r.categoryId, income: 0, expense: 0 };
+      let key: string;
+      let bucketName: string | null = null;
+      let bucketId: string | null = null;
+      if (r.categoryId) {
+        key = r.categoryId;
+        bucketId = r.categoryId;
+      } else if (invoiceLinkedIds.has(r.id) || r.source === "invoice") {
+        key = INVOICE_BUCKET;
+        bucketName = "Invoice payments";
+      } else {
+        key = UNCATEGORIZED_BUCKET;
+      }
+      const cur = byCategory.get(key) ?? {
+        id: bucketId,
+        name: bucketName,
+        income: 0,
+        expense: 0,
+      };
       cur.income += credit;
       cur.expense += debit;
       byCategory.set(key, cur);
@@ -1288,8 +1450,11 @@ router.get(
     })) as any[];
     const catNameById = new Map(cats.map((c) => [c.id, c.name]));
     const categoryBreakdown = Array.from(byCategory.entries()).map(([k, v]) => ({
+      bucketKey: k,
       categoryId: v.id,
-      name: v.id ? catNameById.get(v.id) || "Unknown" : "Uncategorized",
+      name:
+        v.name ||
+        (v.id ? catNameById.get(v.id) || "Unknown" : "Uncategorized"),
       income: v.income.toFixed(2),
       expense: v.expense.toFixed(2),
       net: (v.income - v.expense).toFixed(2),
