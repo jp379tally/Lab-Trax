@@ -255,7 +255,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [users, setUsers] = useState<LabUser[]>([]);
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const invoicesRef = useRef<Invoice[]>([]);
+  const [invoices, _setInvoices] = useState<Invoice[]>([]);
+  const setInvoices: typeof _setInvoices = (updater) => {
+    _setInvoices((prev) => {
+      const next =
+        typeof updater === "function"
+          ? (updater as (p: Invoice[]) => Invoice[])(prev)
+          : updater;
+      invoicesRef.current = next;
+      return next;
+    });
+  };
   const [pendingInvoiceEditId, setPendingInvoiceEditId] = useState<string | null>(null);
   const [shippingAccounts, setShippingAccounts] = useState<ShippingAccount[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -388,14 +399,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAllCases(updater);
   }
 
-  async function syncCaseToServer(labCase: LabCase) {
+  async function syncCaseToServer(labCase: LabCase): Promise<boolean> {
     try {
       const normalizedCase: LabCase = {
         ...labCase,
         ownerId: labCase.ownerId || currentUserId || undefined,
         affiliationName: labCase.affiliationName ?? null,
       };
-      await resilientFetch("/api/legacy/cases", {
+      const res = await resilientFetch("/api/legacy/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -404,8 +415,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           caseData: JSON.stringify(normalizedCase),
         }),
       });
+      return !!res?.ok;
     } catch (e) {
       console.log("Could not sync case to server:", e);
+      return false;
     }
   }
 
@@ -1032,14 +1045,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const syncReadyRef = useRef(false);
   const fetchingRef = useRef(false);
   const inFlightSyncIdsRef = useRef<Set<string>>(new Set());
+  const inFlightInvoiceGenIdsRef = useRef<Set<string>>(new Set());
 
   function pushCaseToServerOnce(c: LabCase) {
     if (!c.ownerId) return;
     if (inFlightSyncIdsRef.current.has(c.id)) return;
     inFlightSyncIdsRef.current.add(c.id);
-    Promise.resolve(syncCaseToServer(c)).finally(() => {
-      inFlightSyncIdsRef.current.delete(c.id);
-    });
+    void (async () => {
+      try {
+        const ok = await syncCaseToServer(c);
+        if (!ok) return;
+        const localInvoice = invoicesRef.current.find((inv) =>
+          inv.caseIds?.includes(c.id)
+        );
+        if (localInvoice && !localInvoice.serverId) {
+          await generateServerInvoiceForCase(c.id, localInvoice.id);
+        }
+      } finally {
+        inFlightSyncIdsRef.current.delete(c.id);
+      }
+    })();
   }
 
   function mapServerInvoiceStatus(
@@ -1218,6 +1243,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!currentUserId) return;
     const rows = await fetchInvoicesFromServer();
     if (rows) mergeServerInvoices(rows);
+  }
+
+  async function generateServerInvoiceForCase(
+    caseId: string,
+    localInvoiceId: string
+  ) {
+    const existing = invoicesRef.current.find((inv) => inv.id === localInvoiceId);
+    if (existing?.serverId) return;
+    if (inFlightInvoiceGenIdsRef.current.has(localInvoiceId)) return;
+    inFlightInvoiceGenIdsRef.current.add(localInvoiceId);
+    try {
+      const res = await resilientFetch(
+        `/api/invoices/cases/${caseId}/generate-invoice`,
+        { method: "POST" }
+      );
+      if (!res.ok) {
+        console.log(
+          "Generate invoice failed:",
+          caseId,
+          res.status,
+          await res.text().catch(() => "")
+        );
+        return;
+      }
+      const payload = await res.json().catch(() => null);
+      const serverInvoice = payload?.data ?? payload;
+      const serverInvoiceId: string | undefined = serverInvoice?.id;
+      if (!serverInvoiceId) return;
+      setInvoices((prev) => {
+        let changed = false;
+        const next = prev.map((inv) => {
+          if (inv.id !== localInvoiceId) return inv;
+          if (inv.serverId === serverInvoiceId) return inv;
+          changed = true;
+          return { ...inv, serverId: serverInvoiceId };
+        });
+        if (!changed) return prev;
+        AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(next));
+        return next;
+      });
+    } catch (e) {
+      console.log("Could not generate server invoice:", e);
+    } finally {
+      inFlightInvoiceGenIdsRef.current.delete(localInvoiceId);
+    }
   }
 
   async function patchInvoiceOnServer(
@@ -1765,7 +1835,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const updated = [newCase, ...allCases];
     setAllCases(updated);
     AsyncStorage.setItem(CASES_KEY, JSON.stringify(updated));
-    syncCaseToServer(newCase);
+    void (async () => {
+      const ok = await syncCaseToServer(newCase);
+      if (!ok) return;
+      await generateServerInvoiceForCase(newCase.id, newInvoice.id);
+    })();
 
     const newNotif: Notification = {
       id: generateId(),
