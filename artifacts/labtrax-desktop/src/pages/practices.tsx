@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Loader2, Mail, Search, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Building2, Loader2, Mail, Search, Send, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, Organization } from "@/lib/types";
@@ -485,6 +485,31 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
     onError: (err: Error) => setActionError(err.message || "Could not remove member."),
   });
 
+  const cancelInviteMutation = useMutation({
+    mutationFn: (inviteId: string) =>
+      apiFetch(`/organizations/invites/${inviteId}/cancel`, { method: "POST" }),
+    onSuccess: () => {
+      setActionError(null);
+      setInviteSuccess(null);
+      queryClient.invalidateQueries({ queryKey: inviteKey });
+    },
+    onError: (err: Error) => setActionError(err.message || "Could not cancel invite."),
+  });
+
+  const resendInviteMutation = useMutation({
+    mutationFn: (inviteId: string) =>
+      apiFetch<PracticeInvite>(`/organizations/invites/${inviteId}/resend`, { method: "POST" }),
+    onSuccess: (invite) => {
+      setActionError(null);
+      setInviteSuccess(`Invite resent to ${invite.email}.`);
+      queryClient.invalidateQueries({ queryKey: inviteKey });
+    },
+    onError: (err: Error) => {
+      setInviteSuccess(null);
+      setActionError(err.message || "Could not resend invite.");
+    },
+  });
+
   const pendingInvites = (invitesQuery.data ?? []).filter((i) => i.status === "pending");
 
   const ownerCount = members.filter((m) => m.role === "owner" && m.status === "active").length;
@@ -612,20 +637,48 @@ function MembershipSection({ org, members, membersLoading, currentUserId }: Memb
               {!invitesQuery.isLoading && pendingInvites.length === 0 && (
                 <div className="px-3 py-3 text-sm text-muted-foreground">No pending invites.</div>
               )}
-              {pendingInvites.map((inv) => (
-                <div key={inv.id} className="flex items-center justify-between px-3 py-2 text-sm gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium truncate">{inv.email}</div>
-                    <div className="text-xs text-muted-foreground">
-                      Invited {relativeTime(inv.createdAt)}
-                      {inv.expiresAt ? ` · expires ${relativeTime(inv.expiresAt)}` : ""}
+              {pendingInvites.map((inv) => {
+                const isResending =
+                  resendInviteMutation.isPending && resendInviteMutation.variables === inv.id;
+                const isCancelling =
+                  cancelInviteMutation.isPending && cancelInviteMutation.variables === inv.id;
+                const isBusy = isResending || isCancelling;
+                return (
+                  <div key={inv.id} className="flex items-center justify-between px-3 py-2 text-sm gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">{inv.email}</div>
+                      <div className="text-xs text-muted-foreground">
+                        Invited {relativeTime(inv.createdAt)}
+                        {inv.expiresAt ? ` · expires ${relativeTime(inv.expiresAt)}` : ""}
+                      </div>
                     </div>
+                    <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground text-xs">
+                      {roleLabel(inv.roleToAssign)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => resendInviteMutation.mutate(inv.id)}
+                      disabled={isBusy}
+                      title="Resend invite"
+                      className="h-8 w-8 rounded-md hover:bg-primary/10 text-muted-foreground hover:text-primary disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground flex items-center justify-center"
+                    >
+                      {isResending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!confirm(`Cancel the invite for ${inv.email}?`)) return;
+                        cancelInviteMutation.mutate(inv.id);
+                      }}
+                      disabled={isBusy}
+                      title="Cancel invite"
+                      className="h-8 w-8 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground flex items-center justify-center"
+                    >
+                      {isCancelling ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+                    </button>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground text-xs">
-                    {roleLabel(inv.roleToAssign)}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

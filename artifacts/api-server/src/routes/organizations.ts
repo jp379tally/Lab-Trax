@@ -602,6 +602,144 @@ router.get(
 );
 
 router.post(
+  "/invites/:inviteId/cancel",
+  asyncHandler(async (req, res) => {
+    const invite = await db.query.organizationInvites.findFirst({
+      where: eq(organizationInvites.id, req.params.inviteId),
+    });
+
+    if (!invite) {
+      throw new HttpError(404, "Invite not found.");
+    }
+    if (invite.status !== "pending") {
+      throw new HttpError(
+        409,
+        `Cannot cancel an invite that is already ${invite.status}.`
+      );
+    }
+
+    await requireAnyRole(
+      (req as any).auth.userId,
+      invite.labId,
+      ADMIN_ROLES
+    );
+
+    const [updatedInvite] = await db
+      .update(organizationInvites)
+      .set({ status: "revoked" })
+      .where(eq(organizationInvites.id, invite.id))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      organizationId: invite.labId,
+      action: "organization_invite_cancelled",
+      entityType: "organization_invite",
+      entityId: invite.id,
+      beforeJson: invite,
+      afterJson: updatedInvite,
+    });
+
+    return ok(res, { ...updatedInvite, organizationId: updatedInvite.labId });
+  })
+);
+
+router.post(
+  "/invites/:inviteId/resend",
+  asyncHandler(async (req, res) => {
+    const invite = await db.query.organizationInvites.findFirst({
+      where: eq(organizationInvites.id, req.params.inviteId),
+    });
+
+    if (!invite) {
+      throw new HttpError(404, "Invite not found.");
+    }
+    if (invite.status !== "pending") {
+      throw new HttpError(
+        409,
+        `Cannot resend an invite that is already ${invite.status}.`
+      );
+    }
+    if (!invite.email || !invite.roleToAssign) {
+      throw new HttpError(410, "Invite is invalid or incomplete.");
+    }
+
+    await requireAnyRole(
+      (req as any).auth.userId,
+      invite.labId,
+      ADMIN_ROLES
+    );
+
+    const expiresInDays = 7;
+    const newToken = generateInviteToken();
+    const newExpiresAt = new Date(
+      Date.now() + expiresInDays * 24 * 60 * 60 * 1000
+    );
+
+    const [updatedInvite] = await db
+      .update(organizationInvites)
+      .set({
+        token: newToken,
+        expiresAt: newExpiresAt,
+        invitedByUserId: (req as any).auth.userId,
+      })
+      .where(eq(organizationInvites.id, invite.id))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      organizationId: invite.labId,
+      action: "organization_invite_resent",
+      entityType: "organization_invite",
+      entityId: invite.id,
+      beforeJson: invite,
+      afterJson: updatedInvite,
+    });
+
+    try {
+      const [organization, inviter] = await Promise.all([
+        db.query.organizations.findFirst({
+          where: eq(organizations.id, invite.labId),
+        }),
+        db.query.users.findFirst({
+          where: eq(users.id, (req as any).auth.userId),
+        }),
+      ]);
+      const inviterName = inviter
+        ? [inviter.firstName, inviter.lastName]
+            .filter((part) => !!part && String(part).trim().length > 0)
+            .join(" ")
+            .trim() || inviter.username || inviter.email || null
+        : null;
+      const result = await sendInviteEmail({
+        to: updatedInvite.email!,
+        organizationName:
+          organization?.displayName?.trim() ||
+          organization?.name ||
+          "your organization",
+        roleToAssign: updatedInvite.roleToAssign!,
+        token: updatedInvite.token,
+        inviterName,
+        expiresAt: updatedInvite.expiresAt ?? null,
+      });
+      if (!result.sent) {
+        req.log.warn(
+          { inviteId: updatedInvite.id, reason: result.reason },
+          "invite resend email not sent"
+        );
+      }
+    } catch (err: any) {
+      req.log.error(
+        { err: err?.message || String(err), inviteId: updatedInvite.id },
+        "invite resend email failed"
+      );
+    }
+
+    return ok(res, { ...updatedInvite, organizationId: updatedInvite.labId });
+  })
+);
+
+router.post(
   "/invites/:inviteId/decline",
   asyncHandler(async (req, res) => {
     const invite = await db.query.organizationInvites.findFirst({
