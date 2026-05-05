@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Plus, Search, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import type { Invoice, InvoiceLineItem, Organization } from "@/lib/types";
+import type { Invoice, InvoiceLineItem } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 
@@ -186,11 +186,6 @@ function InvoiceEditor({
     queryFn: () => apiFetch<Invoice>(`/invoices/${invoice.id}`),
   });
 
-  const orgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
-  });
-
   const [invoiceNumber, setInvoiceNumber] = useState(invoice.invoiceNumber);
   const [statusValue, setStatusValue] = useState<string>(
     EDITABLE_STATUSES.includes(invoice.status as (typeof EDITABLE_STATUSES)[number])
@@ -362,27 +357,19 @@ function InvoiceEditor({
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                 Client / Provider
               </label>
-              <select
-                value={providerId}
-                onChange={(e) => setProviderId(e.target.value)}
-                disabled={orgsQuery.isLoading}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm disabled:opacity-60"
-              >
-                <option value={providerId}>
-                  {detailQuery.data?.providerOrganization?.name ||
-                    invoice.providerOrganization?.name ||
-                    providerId}
-                </option>
-                {(orgsQuery.data ?? [])
-                  .filter((o) => o.id !== providerId)
-                  .map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.displayName || o.name}
-                    </option>
-                  ))}
-              </select>
+              <input
+                type="text"
+                value={
+                  detailQuery.data?.providerOrganization?.name ||
+                  invoice.providerOrganization?.name ||
+                  providerId
+                }
+                disabled
+                readOnly
+                className="w-full h-9 px-2.5 rounded-md bg-secondary/40 border border-input text-sm text-muted-foreground cursor-not-allowed"
+              />
               <p className="mt-1 text-[10px] text-muted-foreground">
-                Provider can only be reassigned via the case until backend support is added.
+                Provider is set on the originating case and cannot be changed here.
               </p>
             </div>
             <div>
