@@ -647,6 +647,8 @@ export interface Invoice {
   notes?: string;
   lineItems: InvoiceLineItem[];
   creditNote?: string;
+  serverId?: string;
+  serverUpdatedAt?: number;
 }
 
 export const SAMPLE_CLIENTS: Client[] = [

@@ -1042,6 +1042,207 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function mapServerInvoiceStatus(
+    s: string | null | undefined
+  ): "open" | "sent" | "paid" | "overdue" {
+    switch (s) {
+      case "paid":
+        return "paid";
+      case "draft":
+      case "open":
+      case "partially_paid":
+      case "void":
+      default:
+        return "open";
+    }
+  }
+
+  function mapMobileInvoiceStatusToServer(
+    s: string | null | undefined
+  ): "draft" | "open" | "partially_paid" | "paid" | "void" | null {
+    switch (s) {
+      case "paid":
+        return "paid";
+      case "open":
+      case "sent":
+      case "overdue":
+        return "open";
+      default:
+        return null;
+    }
+  }
+
+  type ServerInvoiceRow = {
+    id: string;
+    invoiceNumber?: string | null;
+    status?: string | null;
+    notes?: string | null;
+    total?: string | number | null;
+    balanceDue?: string | number | null;
+    issuedAt?: string | null;
+    dueAt?: string | null;
+    createdAt?: string | null;
+    caseId?: string | null;
+    providerOrganization?: { id: string; name: string } | null;
+  };
+
+  function applyServerInvoiceToLocal(
+    local: Invoice,
+    server: ServerInvoiceRow
+  ): Invoice {
+    const totalNum =
+      server.total !== null && server.total !== undefined
+        ? Number(server.total)
+        : NaN;
+    const merged: Invoice = {
+      ...local,
+      serverId: server.id,
+      serverUpdatedAt: Date.now(),
+      notes: server.notes ?? local.notes,
+      status: mapServerInvoiceStatus(server.status) || local.status,
+      invoiceNumber: server.invoiceNumber || local.invoiceNumber,
+    };
+    if (Number.isFinite(totalNum) && totalNum > 0) {
+      merged.amount = totalNum;
+    }
+    if (server.issuedAt) {
+      const t = Date.parse(server.issuedAt);
+      if (!Number.isNaN(t)) merged.issuedAt = t;
+    }
+    if (server.dueAt) {
+      const t = Date.parse(server.dueAt);
+      if (!Number.isNaN(t)) merged.dueAt = t;
+    }
+    return merged;
+  }
+
+  function synthesizeLocalInvoiceFromServer(server: ServerInvoiceRow): Invoice {
+    const totalNum =
+      server.total !== null && server.total !== undefined
+        ? Number(server.total)
+        : 0;
+    const issuedAt = server.issuedAt
+      ? Date.parse(server.issuedAt) || Date.now()
+      : server.createdAt
+        ? Date.parse(server.createdAt) || Date.now()
+        : Date.now();
+    const dueAt = server.dueAt
+      ? Date.parse(server.dueAt) || issuedAt + 30 * 24 * 60 * 60 * 1000
+      : issuedAt + 30 * 24 * 60 * 60 * 1000;
+    return {
+      id: generateId(),
+      invoiceNumber: server.invoiceNumber || "",
+      clientId: "",
+      clientName: server.providerOrganization?.name || "",
+      caseIds: server.caseId ? [server.caseId] : [],
+      amount: Number.isFinite(totalNum) ? totalNum : 0,
+      credits: 0,
+      status: mapServerInvoiceStatus(server.status),
+      issuedAt,
+      dueAt,
+      billTo: "",
+      patientName: "",
+      caseType: "",
+      teeth: "",
+      shade: "",
+      caseNotes: "",
+      notes: server.notes ?? undefined,
+      lineItems: [],
+      serverId: server.id,
+      serverUpdatedAt: Date.now(),
+    };
+  }
+
+  function mergeServerInvoices(serverRows: ServerInvoiceRow[]) {
+    setInvoices((prev) => {
+      let changed = false;
+      const next = [...prev];
+      const byServerId = new Map<string, number>();
+      const byInvoiceNumber = new Map<string, number>();
+      next.forEach((inv, idx) => {
+        if (inv.serverId) byServerId.set(inv.serverId, idx);
+        if (inv.invoiceNumber) byInvoiceNumber.set(inv.invoiceNumber, idx);
+      });
+
+      for (const server of serverRows) {
+        if (!server?.id) continue;
+        let idx = byServerId.get(server.id);
+        if (idx === undefined && server.invoiceNumber) {
+          idx = byInvoiceNumber.get(server.invoiceNumber);
+        }
+        if (idx !== undefined) {
+          const merged = applyServerInvoiceToLocal(next[idx], server);
+          if (
+            merged.notes !== next[idx].notes ||
+            merged.status !== next[idx].status ||
+            merged.amount !== next[idx].amount ||
+            merged.serverId !== next[idx].serverId ||
+            merged.invoiceNumber !== next[idx].invoiceNumber ||
+            merged.issuedAt !== next[idx].issuedAt ||
+            merged.dueAt !== next[idx].dueAt
+          ) {
+            next[idx] = merged;
+            changed = true;
+          }
+        } else {
+          const synthesized = synthesizeLocalInvoiceFromServer(server);
+          next.unshift(synthesized);
+          changed = true;
+        }
+      }
+
+      if (!changed) return prev;
+      AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  async function fetchInvoicesFromServer(): Promise<ServerInvoiceRow[] | null> {
+    try {
+      const res = await resilientFetch("/api/invoices");
+      if (!res.ok) return null;
+      const data = await res.json();
+      const rows = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data)
+          ? data
+          : [];
+      return rows as ServerInvoiceRow[];
+    } catch (e) {
+      console.log("Could not fetch invoices from server:", e);
+      return null;
+    }
+  }
+
+  async function refreshInvoicesFromServer() {
+    if (!currentUserId) return;
+    const rows = await fetchInvoicesFromServer();
+    if (rows) mergeServerInvoices(rows);
+  }
+
+  async function patchInvoiceOnServer(
+    serverId: string,
+    body: Record<string, any>
+  ) {
+    try {
+      const res = await resilientFetch(`/api/invoices/${serverId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        console.log(
+          "Invoice PATCH failed:",
+          serverId,
+          res.status,
+          await res.text().catch(() => "")
+        );
+      }
+    } catch (e) {
+      console.log("Could not PATCH invoice:", e);
+    }
+  }
+
   async function refreshCases() {
     if (fetchingRef.current || !currentUserId) {
       return;
@@ -1101,6 +1302,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fullRefreshCases(),
       refreshCollaborationState(),
       refreshUsers(),
+      refreshInvoicesFromServer(),
     ]);
   }
 
@@ -1299,7 +1501,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         .finally(() => {
           fetchingRef.current = false;
         });
+      void refreshInvoicesFromServer();
     }, 15000);
+
+    void refreshInvoicesFromServer();
 
     return () => clearInterval(interval);
   }, [currentUserId]);
@@ -2254,6 +2459,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setInvoices((prev) => {
       const updated = prev.map((i) => (i.id === id ? { ...i, ...inv } : i));
       AsyncStorage.setItem(INVOICES_KEY, JSON.stringify(updated));
+
+      const target = updated.find((i) => i.id === id);
+      if (target?.serverId) {
+        const body: Record<string, any> = {};
+        if (Object.prototype.hasOwnProperty.call(inv, "notes")) {
+          body.notes = inv.notes ?? null;
+        }
+        if (Object.prototype.hasOwnProperty.call(inv, "status")) {
+          const mapped = mapMobileInvoiceStatusToServer(inv.status);
+          if (mapped) body.status = mapped;
+        }
+        if (Object.prototype.hasOwnProperty.call(inv, "invoiceNumber") && inv.invoiceNumber) {
+          body.invoiceNumber = inv.invoiceNumber;
+        }
+        if (Object.prototype.hasOwnProperty.call(inv, "issuedAt") && typeof inv.issuedAt === "number") {
+          body.issuedAt = new Date(inv.issuedAt).toISOString();
+        }
+        if (Object.prototype.hasOwnProperty.call(inv, "dueAt") && typeof inv.dueAt === "number") {
+          body.dueAt = new Date(inv.dueAt).toISOString();
+        }
+        if (Object.keys(body).length > 0) {
+          void patchInvoiceOnServer(target.serverId, body);
+        }
+      }
 
       if (inv.status === "paid") {
         const targetInvoice = prev.find(i => i.id === id);
