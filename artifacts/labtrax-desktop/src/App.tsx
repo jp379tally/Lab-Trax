@@ -1,4 +1,4 @@
-import { Switch, Route, Router as WouterRouter } from "wouter";
+import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import LoginPage from "@/pages/login";
@@ -11,6 +11,10 @@ import StatementsPage from "@/pages/statements";
 import PricingPage from "@/pages/pricing";
 import ReportsPage from "@/pages/reports";
 import SettingsPage from "@/pages/settings";
+import RegisterPage from "@/pages/finance/register";
+import ReconcilePage from "@/pages/finance/reconcile";
+import CashFlowPage from "@/pages/finance/cash-flow";
+import RecurringPage from "@/pages/finance/recurring";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/AppLayout";
 
@@ -37,6 +41,11 @@ function AuthedRoutes() {
         <Route path="/pricing" component={PricingPage} />
         <Route path="/reports" component={ReportsPage} />
         <Route path="/settings" component={SettingsPage} />
+        <Route path="/finance" component={() => <Redirect to="/finance/register" />} />
+        <Route path="/finance/register" component={RegisterPage} />
+        <Route path="/finance/reconcile" component={ReconcilePage} />
+        <Route path="/finance/cash-flow" component={CashFlowPage} />
+        <Route path="/finance/recurring" component={RecurringPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

@@ -131,6 +131,87 @@ export interface Organization {
   updatedAt?: string | null;
 }
 
+export interface BankAccount {
+  id: string;
+  labOrganizationId: string;
+  name: string;
+  institution?: string | null;
+  last4?: string | null;
+  openingBalance: string | number;
+  currency: string;
+  isArchived: boolean;
+  bookBalance?: string | number;
+  clearedBalance?: string | number;
+  unreconciledBalance?: string | number;
+  createdAt?: string | null;
+}
+
+export interface TransactionCategory {
+  id: string;
+  labOrganizationId: string;
+  name: string;
+  kind: "income" | "expense" | "transfer";
+  color?: string | null;
+  isArchived: boolean;
+}
+
+export interface BankTransaction {
+  id: string;
+  labOrganizationId: string;
+  bankAccountId: string;
+  txnDate: string;
+  type: string;
+  checkNumber?: string | null;
+  payee?: string | null;
+  memo?: string | null;
+  categoryId?: string | null;
+  debitAmount: string;
+  creditAmount: string;
+  netAmount: string;
+  cleared: boolean;
+  reconciled: boolean;
+  status: "posted" | "projected" | "void";
+  source: string;
+  runningBalance?: string;
+  importBatchId?: string | null;
+  recurringRuleId?: string | null;
+  createdAt?: string | null;
+}
+
+export interface RecurringRule {
+  id: string;
+  labOrganizationId: string;
+  bankAccountId: string;
+  name: string;
+  payee?: string | null;
+  memo?: string | null;
+  categoryId?: string | null;
+  direction: "debit" | "credit";
+  amount?: string | null;
+  estimateMethod: "fixed" | "avg_last_3";
+  frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "annual";
+  dayOfMonth: number;
+  startDate: string;
+  endDate?: string | null;
+  autoCreate: boolean;
+  isActive: boolean;
+  lastGeneratedFor?: string | null;
+}
+
+export interface Reconciliation {
+  id: string;
+  labOrganizationId: string;
+  bankAccountId: string;
+  statementDate: string;
+  startingBalance: string;
+  endingBalance: string;
+  clearedTotal: string;
+  difference: string;
+  status: string;
+  completedAt?: string | null;
+  createdAt?: string | null;
+}
+
 export interface Membership {
   id: string;
   role: string;

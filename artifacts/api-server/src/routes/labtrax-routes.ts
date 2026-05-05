@@ -44,6 +44,7 @@ import authRoutes from "./auth";
 import organizationRoutes from "./organizations";
 import caseRoutes from "./cases";
 import invoiceRoutes from "./invoices";
+import financeRoutes, { generateForOrganization } from "./finance";
 
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
@@ -451,6 +452,46 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/organizations", organizationRoutes);
   router.use("/cases", caseRoutes);
   router.use("/invoices", invoiceRoutes);
+  // Internal cron endpoint: token-protected; iterates active lab orgs and
+  // generates due projected entries from each org's recurring rules. Mounted
+  // BEFORE the auth-wrapped finance router so it does not require a user JWT.
+  router.post("/finance/jobs/run-all", async (req, res) => {
+    const expected = process.env.FINANCE_JOB_TOKEN;
+    if (!expected) {
+      return res.status(503).json({
+        error: "FINANCE_JOB_TOKEN is not configured on the server.",
+      });
+    }
+    const provided =
+      (req.headers["x-finance-job-token"] as string | undefined) || "";
+    if (provided !== expected) {
+      return res.status(401).json({ error: "Invalid job token." });
+    }
+    try {
+      const orgs = await db
+        .selectDistinct({ id: organizationMemberships.labId })
+        .from(organizationMemberships)
+        .where(eq(organizationMemberships.status, "active"));
+      let totalCreated = 0;
+      const perOrg: Array<{ organizationId: string; created: number }> = [];
+      for (const o of orgs) {
+        const r = await generateForOrganization(o.id, null);
+        totalCreated += r.created;
+        perOrg.push({ organizationId: o.id, created: r.created });
+      }
+      return res.json({
+        ok: true,
+        organizations: perOrg.length,
+        totalCreated,
+        perOrg,
+      });
+    } catch (err: any) {
+      console.error("finance run-all failed:", err?.message || err);
+      return res.status(500).json({ error: "Generation failed." });
+    }
+  });
+
+  router.use("/finance", financeRoutes);
 
   router.post("/audit-log", (_req, res) => {
     res.json({ ok: true });

@@ -1,11 +1,13 @@
-import express, { type Express } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import path from "node:path";
+import { ZodError } from "zod";
 import router from "./routes";
 import { corsOptions } from "./lib/cors";
 import { logger } from "./lib/logger";
+import { HttpError } from "./lib/http";
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -39,5 +41,22 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
+
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof ZodError) {
+    return res
+      .status(400)
+      .json({ ok: false, message: "Invalid request.", errors: err.issues });
+  }
+  if (err instanceof HttpError) {
+    return res
+      .status(err.statusCode)
+      .json({ ok: false, message: err.message, details: err.details });
+  }
+  logger.error({ err }, "Unhandled API error");
+  return res
+    .status(500)
+    .json({ ok: false, message: (err as Error)?.message || "Server error." });
+});
 
 export default app;

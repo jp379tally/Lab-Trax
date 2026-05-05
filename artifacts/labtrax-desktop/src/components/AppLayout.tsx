@@ -14,6 +14,7 @@ import {
   Stethoscope,
   Tag,
   Users,
+  Wallet,
   Wrench,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
@@ -32,6 +33,7 @@ const NAV: NavItem[] = [
   { label: "Doctors", path: "/doctors", icon: Stethoscope },
   { label: "Practices", path: "/practices", icon: Users },
   { label: "Invoices", path: "/invoices", icon: Receipt },
+  { label: "Finance", path: "/finance", icon: Wallet },
   { label: "Statements", path: "/statements", icon: CreditCard },
   { label: "Pricing", path: "/pricing", icon: Tag },
   { label: "Reports", path: "/reports", icon: FileBarChart2 },

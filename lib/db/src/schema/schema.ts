@@ -583,6 +583,234 @@ export const notifications = pgTable("notifications", {
   createdAt: createdAt(),
 });
 
+export const bankAccounts = pgTable(
+  "bank_accounts",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    institution: text("institution"),
+    last4: text("last4"),
+    openingBalance: decimal("opening_balance", { precision: 14, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    openingDate: timestamp("opening_date", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    currency: text("currency").default("USD").notNull(),
+    isArchived: boolean("is_archived").default(false).notNull(),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    bankAccountsLabIdx: index("bank_accounts_lab_idx").on(
+      table.labOrganizationId
+    ),
+  })
+);
+
+export const transactionCategories = pgTable(
+  "transaction_categories",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    kind: text("kind").default("expense").notNull(),
+    color: text("color"),
+    isArchived: boolean("is_archived").default(false).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    txnCatLabIdx: index("transaction_categories_lab_idx").on(
+      table.labOrganizationId
+    ),
+    txnCatUnique: uniqueIndex("transaction_categories_unique").on(
+      table.labOrganizationId,
+      table.name
+    ),
+  })
+);
+
+export const recurringTransactions = pgTable(
+  "recurring_transactions",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    bankAccountId: varchar("bank_account_id")
+      .notNull()
+      .references(() => bankAccounts.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    payee: text("payee"),
+    memo: text("memo"),
+    categoryId: varchar("category_id").references(
+      () => transactionCategories.id,
+      { onDelete: "set null" }
+    ),
+    direction: text("direction").notNull(),
+    amount: decimal("amount", { precision: 14, scale: 2 }),
+    estimateMethod: text("estimate_method").default("fixed").notNull(),
+    frequency: text("frequency").default("monthly").notNull(),
+    dayOfMonth: integer("day_of_month").default(1).notNull(),
+    startDate: timestamp("start_date", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    endDate: timestamp("end_date", { withTimezone: true }),
+    autoCreate: boolean("auto_create").default(true).notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    lastGeneratedFor: text("last_generated_for"),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    recurringLabIdx: index("recurring_transactions_lab_idx").on(
+      table.labOrganizationId
+    ),
+  })
+);
+
+export const reconciliations = pgTable(
+  "reconciliations",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    bankAccountId: varchar("bank_account_id")
+      .notNull()
+      .references(() => bankAccounts.id, { onDelete: "cascade" }),
+    statementDate: timestamp("statement_date", { withTimezone: true }).notNull(),
+    startingBalance: decimal("starting_balance", { precision: 14, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    endingBalance: decimal("ending_balance", { precision: 14, scale: 2 })
+      .notNull(),
+    clearedTotal: decimal("cleared_total", { precision: 14, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    difference: decimal("difference", { precision: 14, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    status: text("status").default("completed").notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    reconLabIdx: index("reconciliations_lab_idx").on(table.labOrganizationId),
+    reconAcctIdx: index("reconciliations_account_idx").on(table.bankAccountId),
+  })
+);
+
+export const bankTransactions = pgTable(
+  "bank_transactions",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    bankAccountId: varchar("bank_account_id")
+      .notNull()
+      .references(() => bankAccounts.id, { onDelete: "cascade" }),
+    txnDate: timestamp("txn_date", { withTimezone: true }).notNull(),
+    type: text("type").default("other").notNull(),
+    checkNumber: text("check_number"),
+    payee: text("payee"),
+    memo: text("memo"),
+    categoryId: varchar("category_id").references(
+      () => transactionCategories.id,
+      { onDelete: "set null" }
+    ),
+    debitAmount: decimal("debit_amount", { precision: 14, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    creditAmount: decimal("credit_amount", { precision: 14, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    netAmount: decimal("net_amount", { precision: 14, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    cleared: boolean("cleared").default(false).notNull(),
+    clearedAt: timestamp("cleared_at", { withTimezone: true }),
+    reconciled: boolean("reconciled").default(false).notNull(),
+    reconciliationId: varchar("reconciliation_id").references(
+      () => reconciliations.id,
+      { onDelete: "set null" }
+    ),
+    status: text("status").default("posted").notNull(),
+    source: text("source").default("manual").notNull(),
+    recurringRuleId: varchar("recurring_rule_id").references(
+      () => recurringTransactions.id,
+      { onDelete: "set null" }
+    ),
+    importBatchId: text("import_batch_id"),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    bankTxnLabIdx: index("bank_transactions_lab_idx").on(
+      table.labOrganizationId
+    ),
+    bankTxnAcctIdx: index("bank_transactions_account_idx").on(
+      table.bankAccountId
+    ),
+    bankTxnDateIdx: index("bank_transactions_date_idx").on(table.txnDate),
+  })
+);
+
+export const reconciliationItems = pgTable(
+  "reconciliation_items",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    reconciliationId: varchar("reconciliation_id")
+      .notNull()
+      .references(() => reconciliations.id, { onDelete: "cascade" }),
+    transactionId: varchar("transaction_id")
+      .notNull()
+      .references(() => bankTransactions.id, { onDelete: "cascade" }),
+    amount: decimal("amount", { precision: 14, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    reconItemUnique: uniqueIndex("reconciliation_items_unique").on(
+      table.reconciliationId,
+      table.transactionId
+    ),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
