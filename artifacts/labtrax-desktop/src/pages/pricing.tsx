@@ -8,6 +8,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Stethoscope,
   Tag,
@@ -200,9 +201,11 @@ function actionLabel(action: string): string {
 function HistoryPanel({
   endpoint,
   enabled,
+  onRestore,
 }: {
   endpoint: string;
   enabled: boolean;
+  onRestore?: (entry: AuditEntry) => void;
 }) {
   const query = useQuery({
     queryKey: ["pricing", "history", endpoint],
@@ -313,6 +316,18 @@ function HistoryPanel({
               <div className="text-[11px] text-muted-foreground">Deleted.</div>
             ) : (
               <PriceDiffList diff={diff} />
+            )}
+            {onRestore && e.afterPrices && !e.action.endsWith("_deleted") && (
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => onRestore(e)}
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                >
+                  <RotateCcw size={11} />
+                  Restore these prices
+                </button>
+              </div>
             )}
           </li>
         );
@@ -1033,6 +1048,7 @@ function TierEditor({
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [restoring, setRestoring] = useState<AuditEntry | null>(null);
 
   const nextPrices = useMemo(() => {
     const out: Record<string, number> = {};
@@ -1055,6 +1071,30 @@ function TierEditor({
     }
     return m;
   }, [mode, tier, name]);
+
+  const restoreTargetPrices = useMemo<Record<string, number>>(() => {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(restoring?.afterPrices ?? {})) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) out[k] = n;
+    }
+    return out;
+  }, [restoring]);
+
+  const restoreDiff = useMemo(
+    () => diffPrices(tier?.prices ?? {}, restoreTargetPrices),
+    [tier, restoreTargetPrices]
+  );
+
+  const restoreMetaChanges = useMemo(() => {
+    const m: { label: string; before: string; after: string }[] = [];
+    if (!restoring || !tier) return m;
+    const targetName = (restoring.afterName ?? tier.name).trim();
+    if (targetName && targetName !== tier.name) {
+      m.push({ label: "Name", before: tier.name, after: targetName });
+    }
+    return m;
+  }, [restoring, tier]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -1082,6 +1122,30 @@ function TierEditor({
     onError: (err: Error) => {
       setError(err.message || "Could not save tier.");
       setConfirming(false);
+    },
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: async () => {
+      if (!tier || !restoring) throw new Error("Nothing to restore.");
+      const payload: Record<string, unknown> = {
+        name: (restoring.afterName ?? tier.name).trim() || tier.name,
+        prices: restoreTargetPrices,
+      };
+      return apiFetch<PricingTier>(`/pricing/tiers/${tier.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pricing", "tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing", "history"] });
+      setRestoring(null);
+      onClose();
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Could not restore tier.");
+      setRestoring(null);
     },
   });
 
@@ -1190,6 +1254,10 @@ function TierEditor({
               <HistoryPanel
                 endpoint={`/pricing/tiers/${tier.id}/history`}
                 enabled={historyOpen}
+                onRestore={(entry) => {
+                  setError(null);
+                  setRestoring(entry);
+                }}
               />
             </div>
           )}
@@ -1210,6 +1278,17 @@ function TierEditor({
           isPending={mutation.isPending}
           onCancel={() => setConfirming(false)}
           onConfirm={() => mutation.mutate()}
+        />
+      )}
+
+      {restoring && tier && (
+        <ConfirmChangesDialog
+          title={`Restore ${tier.name} to ${formatRelativeDate(restoring.createdAt)}`}
+          diff={restoreDiff}
+          metaChanges={restoreMetaChanges}
+          isPending={restoreMutation.isPending}
+          onCancel={() => setRestoring(null)}
+          onConfirm={() => restoreMutation.mutate()}
         />
       )}
     </SidePanel>
@@ -1437,6 +1516,7 @@ function OverrideEditor({
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [restoring, setRestoring] = useState<AuditEntry | null>(null);
 
   const nextPrices = useMemo(() => {
     const out: Record<string, number> = {};
@@ -1474,6 +1554,43 @@ function OverrideEditor({
     return m;
   }, [mode, override, practiceName, notes]);
 
+  const restoreTargetPrices = useMemo<Record<string, number>>(() => {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(restoring?.afterPrices ?? {})) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) out[k] = n;
+    }
+    return out;
+  }, [restoring]);
+
+  const restoreDiff = useMemo(
+    () => diffPrices(override?.prices ?? {}, restoreTargetPrices),
+    [override, restoreTargetPrices]
+  );
+
+  const restoreMetaChanges = useMemo(() => {
+    const m: { label: string; before: string; after: string }[] = [];
+    if (!restoring || !override) return m;
+    const targetPractice =
+      restoring.afterPracticeName ?? override.practiceName ?? "";
+    if ((override.practiceName ?? "") !== (targetPractice ?? "")) {
+      m.push({
+        label: "Practice",
+        before: override.practiceName ?? "",
+        after: targetPractice ?? "",
+      });
+    }
+    const targetNotes = restoring.afterNotes ?? override.notes ?? "";
+    if ((override.notes ?? "") !== (targetNotes ?? "")) {
+      m.push({
+        label: "Notes",
+        before: override.notes ?? "",
+        after: targetNotes ?? "",
+      });
+    }
+    return m;
+  }, [restoring, override]);
+
   const mutation = useMutation({
     mutationFn: async () => {
       const payload: Record<string, unknown> = {
@@ -1503,6 +1620,33 @@ function OverrideEditor({
     onError: (err: Error) => {
       setError(err.message || "Could not save override.");
       setConfirming(false);
+    },
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: async () => {
+      if (!override || !restoring) throw new Error("Nothing to restore.");
+      const payload: Record<string, unknown> = {
+        practiceName:
+          (restoring.afterPracticeName ?? override.practiceName ?? null) ||
+          null,
+        notes: (restoring.afterNotes ?? override.notes ?? null) || null,
+        prices: restoreTargetPrices,
+      };
+      return apiFetch<PricingOverride>(`/pricing/overrides/${override.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pricing", "overrides"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing", "history"] });
+      setRestoring(null);
+      onClose();
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Could not restore override.");
+      setRestoring(null);
     },
   });
 
@@ -1670,6 +1814,10 @@ function OverrideEditor({
               <HistoryPanel
                 endpoint={`/pricing/overrides/${override.id}/history`}
                 enabled={historyOpen}
+                onRestore={(entry) => {
+                  setError(null);
+                  setRestoring(entry);
+                }}
               />
             </div>
           )}
@@ -1694,6 +1842,17 @@ function OverrideEditor({
           isPending={mutation.isPending}
           onCancel={() => setConfirming(false)}
           onConfirm={() => mutation.mutate()}
+        />
+      )}
+
+      {restoring && override && (
+        <ConfirmChangesDialog
+          title={`Restore ${override.doctorName} to ${formatRelativeDate(restoring.createdAt)}`}
+          diff={restoreDiff}
+          metaChanges={restoreMetaChanges}
+          isPending={restoreMutation.isPending}
+          onCancel={() => setRestoring(null)}
+          onConfirm={() => restoreMutation.mutate()}
         />
       )}
     </SidePanel>
