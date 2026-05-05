@@ -14,6 +14,7 @@ import {
 import { generateInviteToken } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
+import { sendInviteEmail } from "../lib/mail";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -540,6 +541,46 @@ router.post(
       entityId: invite.id,
       afterJson: invite,
     });
+
+    try {
+      const [organization, inviter] = await Promise.all([
+        db.query.organizations.findFirst({
+          where: eq(organizations.id, organizationId),
+        }),
+        db.query.users.findFirst({
+          where: eq(users.id, (req as any).auth.userId),
+        }),
+      ]);
+      const inviterName = inviter
+        ? [inviter.firstName, inviter.lastName]
+            .filter((part) => !!part && String(part).trim().length > 0)
+            .join(" ")
+            .trim() || inviter.username || inviter.email || null
+        : null;
+      const result = await sendInviteEmail({
+        to: invite.email,
+        organizationName:
+          organization?.displayName?.trim() ||
+          organization?.name ||
+          "your organization",
+        roleToAssign: invite.roleToAssign,
+        token: invite.token,
+        inviterName,
+        expiresAt: invite.expiresAt ?? null,
+      });
+      if (!result.sent) {
+        req.log.warn(
+          { inviteId: invite.id, reason: result.reason },
+          "invite email not sent"
+        );
+      }
+    } catch (err: any) {
+      req.log.error(
+        { err: err?.message || String(err), inviteId: invite.id },
+        "invite email failed"
+      );
+    }
+
     return ok(res, invite, 201);
   })
 );
