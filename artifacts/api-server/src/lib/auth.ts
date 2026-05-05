@@ -2,10 +2,15 @@ import jwt from "jsonwebtoken";
 import type { Request } from "express";
 import { randomToken, sha256 } from "./crypto";
 
-const JWT_SECRET = process.env.JWT_SECRET || "labtrax-jwt-secret-change-in-production";
-if (!process.env.JWT_SECRET) {
-  console.warn("[SECURITY] JWT_SECRET env var is not set. Using insecure default — set JWT_SECRET before deploying to production.");
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  if (process.env.NODE_ENV === "production") {
+    console.error("[SECURITY] JWT_SECRET env var is not set. Refusing to start in production.");
+    throw new Error("JWT_SECRET env var must be set in production");
+  }
+  console.warn("[SECURITY] JWT_SECRET env var is not set. Using an insecure development default — set JWT_SECRET before deploying to production.");
 }
+const RESOLVED_JWT_SECRET: string = JWT_SECRET ?? "labtrax-dev-only-jwt-secret-do-not-use-in-production";
 const ACCESS_TOKEN_TTL = "15m";
 const REFRESH_TOKEN_TTL = "7d";
 
@@ -23,19 +28,19 @@ export type RefreshTokenPayload = {
 };
 
 export function signAccessToken(userId: string, sessionId: string) {
-  return jwt.sign({ sub: userId, sid: sessionId, type: "access" }, JWT_SECRET, {
+  return jwt.sign({ sub: userId, sid: sessionId, type: "access" }, RESOLVED_JWT_SECRET, {
     expiresIn: ACCESS_TOKEN_TTL,
   });
 }
 
 export function signRefreshToken(userId: string, sessionId: string) {
-  return jwt.sign({ sub: userId, sid: sessionId, type: "refresh" }, JWT_SECRET, {
+  return jwt.sign({ sub: userId, sid: sessionId, type: "refresh" }, RESOLVED_JWT_SECRET, {
     expiresIn: REFRESH_TOKEN_TTL,
   });
 }
 
 export function verifyAccessToken(token: string) {
-  const payload = jwt.verify(token, JWT_SECRET) as AccessTokenPayload;
+  const payload = jwt.verify(token, RESOLVED_JWT_SECRET) as AccessTokenPayload;
   if (payload.type !== "access") {
     throw new Error("Invalid token type: expected access token");
   }
@@ -43,7 +48,7 @@ export function verifyAccessToken(token: string) {
 }
 
 export function verifyRefreshToken(token: string) {
-  const payload = jwt.verify(token, JWT_SECRET) as RefreshTokenPayload;
+  const payload = jwt.verify(token, RESOLVED_JWT_SECRET) as RefreshTokenPayload;
   if (payload.type !== "refresh") {
     throw new Error("Invalid token type: expected refresh token");
   }
