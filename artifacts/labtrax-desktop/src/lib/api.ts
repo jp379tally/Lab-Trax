@@ -40,16 +40,35 @@ export class ApiError extends Error {
   }
 }
 
+const CSRF_COOKIE_NAME = "lt_csrf";
+const CSRF_HEADER_NAME = "X-CSRF-Token";
+
+function readCsrfCookie(): string | null {
+  if (typeof document === "undefined" || !document.cookie) return null;
+  for (const part of document.cookie.split(";")) {
+    const [rawName, ...rest] = part.split("=");
+    if (rawName?.trim() === CSRF_COOKIE_NAME) {
+      return decodeURIComponent(rest.join("=").trim());
+    }
+  }
+  return null;
+}
+
 let refreshInFlight: Promise<boolean> | null = null;
 
 async function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
     try {
+      const refreshHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      const csrf = readCsrfCookie();
+      if (csrf) refreshHeaders[CSRF_HEADER_NAME] = csrf;
       const r = await fetch("/api/auth/refresh", {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: refreshHeaders,
         body: "{}",
       });
       if (!r.ok) {
@@ -78,6 +97,20 @@ export async function apiFetch<T = unknown>(
   };
   if (options.body && !(options.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
+  }
+  const method = (options.method ?? "GET").toUpperCase();
+  const isUnsafe = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+  if (isUnsafe && !headers[CSRF_HEADER_NAME]) {
+    let csrf = readCsrfCookie();
+    // Existing sessions from before CSRF was introduced won't have an
+    // lt_csrf cookie yet. Seed one by refreshing — the server mints a fresh
+    // CSRF token whenever auth cookies are reissued. Only do this once per
+    // call to avoid loops if refresh itself fails.
+    if (!csrf && !retried) {
+      const seeded = await refreshAccessToken();
+      if (seeded) csrf = readCsrfCookie();
+    }
+    if (csrf) headers[CSRF_HEADER_NAME] = csrf;
   }
   const url = path.startsWith("http") ? path : `/api${path.startsWith("/") ? path : `/${path}`}`;
   const res = await fetch(url, { ...options, headers, credentials: "include" });

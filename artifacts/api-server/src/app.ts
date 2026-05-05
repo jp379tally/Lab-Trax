@@ -6,6 +6,7 @@ import path from "node:path";
 import { ZodError } from "zod";
 import router from "./routes";
 import { corsOptions } from "./lib/cors";
+import { requireCsrf } from "./middlewares/csrf";
 import { logger } from "./lib/logger";
 import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
@@ -41,7 +42,7 @@ app.use(cookieParser());
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: true, limit: "12mb" }));
 
-app.use("/api", router);
+app.use("/api", requireCsrf, router);
 
 startStatementScheduler();
 
