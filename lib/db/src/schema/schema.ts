@@ -962,6 +962,9 @@ export const statementSendRuns = pgTable(
       () => users.id,
       { onDelete: "set null" }
     ),
+    attemptCount: integer("attempt_count").default(1).notNull(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
   (table) => ({
@@ -969,6 +972,9 @@ export const statementSendRuns = pgTable(
     labPeriodIdx: index("statement_send_runs_lab_period_idx").on(
       table.labOrganizationId,
       table.periodMonth
+    ),
+    nextAttemptIdx: index("statement_send_runs_next_attempt_idx").on(
+      table.nextAttemptAt
     ),
   })
 );

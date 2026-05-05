@@ -30,8 +30,13 @@ interface StatementSendRun {
   totalBilled: string;
   openBalance: string;
   triggeredBy: string;
+  attemptCount: number;
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
   createdAt: string;
 }
+
+const STATEMENT_MAX_ATTEMPTS = 3;
 
 interface StatementRow {
   practiceId: string;
@@ -507,11 +512,33 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
 }
 
 function HistoryModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
+  const qc = useQueryClient();
   const runsQuery = useQuery({
     queryKey: ["statement-runs", orgId],
     queryFn: () => apiFetch<StatementSendRun[]>(`/lab-orgs/${orgId}/statement-runs?limit=200`),
   });
   const rows = runsQuery.data ?? [];
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const retryMutation = useMutation({
+    mutationFn: (runId: string) =>
+      apiFetch<{ status: string; errorMessage?: string }>(
+        `/lab-orgs/${orgId}/statement-runs/${runId}/retry`,
+        { method: "POST" },
+      ),
+    onMutate: (runId: string) => {
+      setRetryingId(runId);
+      setRetryError(null);
+    },
+    onSettled: () => {
+      setRetryingId(null);
+      qc.invalidateQueries({ queryKey: ["statement-runs", orgId] });
+      qc.invalidateQueries({ queryKey: ["statement-schedule", orgId] });
+    },
+    onError: (err: unknown) => {
+      setRetryError(err instanceof ApiError ? err.message : (err as Error).message);
+    },
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex" onClick={onClose}>
@@ -540,34 +567,75 @@ function HistoryModal({ orgId, onClose }: { orgId: string; onClose: () => void }
               No statement send attempts yet. Enable auto-send or use “Send last month now” to record a run.
             </div>
           )}
+          {retryError && (
+            <div className="px-6 py-2 text-xs text-destructive border-b border-border bg-destructive/5">
+              {retryError}
+            </div>
+          )}
           <table className="w-full text-sm">
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-b border-border">
-                  <td className="px-6 py-3 align-top">
-                    <div className="font-medium">{r.practiceName}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {r.periodMonth} · {r.invoiceCount} invoice{r.invoiceCount === 1 ? "" : "s"} · {r.triggeredBy === "schedule" ? "Scheduled" : "Manual"}
-                    </div>
-                    {r.practiceEmail && (
-                      <div className="text-xs text-muted-foreground">{r.practiceEmail}</div>
-                    )}
-                    {r.errorMessage && (
-                      <div className="text-xs text-destructive mt-1">{r.errorMessage}</div>
-                    )}
-                  </td>
-                  <td className="px-3 py-3 align-top text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">
-                    Billed {formatMoney(r.totalBilled)}<br />
-                    Open {formatMoney(r.openBalance)}
-                  </td>
-                  <td className="px-6 py-3 align-top text-right whitespace-nowrap">
-                    <RunStatusBadge status={r.status} />
-                    <div className="text-[11px] text-muted-foreground mt-1">
-                      {new Date(r.createdAt).toLocaleString("en-US")}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                const attempts = r.attemptCount ?? 1;
+                const canRetry = r.status === "failed";
+                const autoRetryPending =
+                  r.status === "failed" &&
+                  attempts < STATEMENT_MAX_ATTEMPTS &&
+                  r.nextAttemptAt;
+                return (
+                  <tr key={r.id} className="border-b border-border">
+                    <td className="px-6 py-3 align-top">
+                      <div className="font-medium">{r.practiceName}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {r.periodMonth} · {r.invoiceCount} invoice{r.invoiceCount === 1 ? "" : "s"} · {r.triggeredBy === "schedule" ? "Scheduled" : "Manual"}
+                      </div>
+                      {r.practiceEmail && (
+                        <div className="text-xs text-muted-foreground">{r.practiceEmail}</div>
+                      )}
+                      {attempts > 1 && (
+                        <div className="text-xs text-muted-foreground mt-1">
+                          Attempt {attempts} of {STATEMENT_MAX_ATTEMPTS}
+                        </div>
+                      )}
+                      {r.errorMessage && (
+                        <div className="text-xs text-destructive mt-1">{r.errorMessage}</div>
+                      )}
+                      {autoRetryPending && (
+                        <div className="text-[11px] text-muted-foreground mt-1">
+                          Auto-retry scheduled for {new Date(r.nextAttemptAt as string).toLocaleString("en-US")}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 align-top text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">
+                      Billed {formatMoney(r.totalBilled)}<br />
+                      Open {formatMoney(r.openBalance)}
+                    </td>
+                    <td className="px-6 py-3 align-top text-right whitespace-nowrap">
+                      <RunStatusBadge status={r.status} />
+                      <div className="text-[11px] text-muted-foreground mt-1">
+                        {new Date(r.createdAt).toLocaleString("en-US")}
+                      </div>
+                      {canRetry && (
+                        <button
+                          type="button"
+                          onClick={() => retryMutation.mutate(r.id)}
+                          disabled={retryingId === r.id}
+                          className="mt-2 inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium border border-border hover:bg-secondary disabled:opacity-50"
+                        >
+                          {retryingId === r.id ? (
+                            <>
+                              <Loader2 size={11} className="animate-spin" /> Retrying…
+                            </>
+                          ) : (
+                            <>
+                              <Send size={11} /> Retry now
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

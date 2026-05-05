@@ -1,6 +1,6 @@
 import PDFDocument from "pdfkit";
 import nodemailer from "nodemailer";
-import { and, asc, eq, gte, inArray, lt, or, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt, or, isNull, ne, lte } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   invoices,
@@ -9,6 +9,24 @@ import {
   statementSendRuns,
 } from "@workspace/db";
 import { logger } from "./logger";
+
+// Automatic retry configuration for failed statement sends.
+// MAX_ATTEMPTS includes the initial attempt, so a value of 3 means
+// up to two automatic retries after the first failure.
+export const STATEMENT_MAX_ATTEMPTS = 3;
+// Backoff schedule (ms) per attempt number that just completed:
+// after attempt 1 → wait 30 min before attempt 2
+// after attempt 2 → wait 2 hours before attempt 3
+const STATEMENT_RETRY_BACKOFF_MS: number[] = [
+  30 * 60 * 1000,
+  2 * 60 * 60 * 1000,
+];
+
+function nextAttemptDelayMs(justCompletedAttempt: number): number | null {
+  const idx = justCompletedAttempt - 1;
+  if (idx < 0 || idx >= STATEMENT_RETRY_BACKOFF_MS.length) return null;
+  return STATEMENT_RETRY_BACKOFF_MS[idx]!;
+}
 
 export type SendTrigger = "schedule" | "manual";
 
@@ -338,6 +356,8 @@ export async function runMonthlyStatementsForLab(opts: {
       );
     }
 
+    const now = new Date();
+    const delay = status === "failed" ? nextAttemptDelayMs(1) : null;
     await db.insert(statementSendRuns).values({
       labOrganizationId: opts.labOrganizationId,
       practiceOrganizationId: s.practiceId,
@@ -351,6 +371,9 @@ export async function runMonthlyStatementsForLab(opts: {
       openBalance: s.openBalance.toFixed(2),
       triggeredBy: opts.triggeredBy,
       triggeredByUserId: opts.triggeredByUserId ?? null,
+      attemptCount: 1,
+      lastAttemptAt: now,
+      nextAttemptAt: delay !== null ? new Date(now.getTime() + delay) : null,
     });
 
     results.push({
@@ -363,6 +386,235 @@ export async function runMonthlyStatementsForLab(opts: {
   }
 
   return { periodMonth, results };
+}
+
+// ── Retry of individual failed sends ────────────────────────────────────────
+// statementSendRuns rows that ended in `failed` keep their `nextAttemptAt`
+// stamp until the configured maximum attempts is reached. The retry tick
+// (and the manual /retry route) re-builds the PDF from current invoice data
+// for the same period and re-sends to the same address.
+
+export interface RetryResult {
+  runId: string;
+  status: "sent" | "failed" | "skipped_no_email";
+  attemptCount: number;
+  errorMessage?: string;
+}
+
+async function attemptStatementSendForRun(runId: string): Promise<RetryResult> {
+  const run = await db.query.statementSendRuns.findFirst({
+    where: eq(statementSendRuns.id, runId),
+  });
+  if (!run) {
+    throw new Error(`statementSendRun ${runId} not found`);
+  }
+  if (run.status === "sent") {
+    return {
+      runId,
+      status: "sent",
+      attemptCount: run.attemptCount,
+    };
+  }
+
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, run.labOrganizationId),
+  });
+  const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
+
+  // Re-resolve the practice's billing email — it may have been corrected
+  // between the original failed attempt and the retry.
+  let practiceEmail = run.practiceEmail;
+  let practiceName = run.practiceName;
+  if (run.practiceOrganizationId) {
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, run.practiceOrganizationId),
+    });
+    if (practice) {
+      practiceEmail = practice.billingEmail || null;
+      practiceName = practice.displayName || practice.name || practiceName;
+    }
+  }
+
+  const [y, m] = run.periodMonth.split("-").map((s) => parseInt(s, 10));
+  const periodStart = new Date(Date.UTC(y!, m! - 1, 1, 0, 0, 0));
+  const periodEnd = new Date(Date.UTC(y!, m!, 1, 0, 0, 0));
+  const allForLab = await buildPracticeStatements(
+    run.labOrganizationId,
+    periodStart,
+    periodEnd
+  );
+  const data =
+    allForLab.find((p) => p.practiceId === run.practiceOrganizationId) || null;
+
+  let status: RetryResult["status"] = "sent";
+  let errorMessage: string | undefined;
+
+  try {
+    if (!practiceEmail) {
+      status = "skipped_no_email";
+      errorMessage = "Practice has no billing email on file";
+    } else if (!data) {
+      // No invoices remain for the period (perhaps all voided/deleted).
+      // Treat this as resolved so it stops being retried.
+      status = "sent";
+    } else {
+      const safeName = practiceName.replace(/[^a-z0-9-_]+/gi, "_");
+      const filename = `statement-${safeName}-${run.periodMonth}.pdf`;
+      const pdfBuffer = await generateStatementPdfBuffer(
+        labName,
+        data,
+        periodLabel(run.periodMonth)
+      );
+      const result = await sendStatementEmail({
+        to: practiceEmail,
+        fromName: labName,
+        practiceName,
+        periodLabel: periodLabel(run.periodMonth),
+        pdfBuffer,
+        pdfFilename: filename,
+        totals: { billed: data.totalBilled, open: data.openBalance },
+      });
+      if (!result.delivered) {
+        status = "failed";
+        errorMessage = result.reason || "Email send failed";
+      }
+    }
+  } catch (err: unknown) {
+    status = "failed";
+    errorMessage = err instanceof Error ? err.message : String(err);
+    logger.error(
+      { err, runId, practiceId: run.practiceOrganizationId },
+      "Statement retry send failed"
+    );
+  }
+
+  const now = new Date();
+  const newAttempt = run.attemptCount + 1;
+  const delay =
+    status === "failed" && newAttempt < STATEMENT_MAX_ATTEMPTS
+      ? nextAttemptDelayMs(newAttempt)
+      : null;
+
+  // Refresh the snapshot fields from the freshly recomputed data so the
+  // history row reflects current numbers after the retry.
+  const refreshedTotals = data
+    ? {
+        invoiceCount: data.invoiceCount,
+        totalBilled: data.totalBilled.toFixed(2),
+        openBalance: data.openBalance.toFixed(2),
+      }
+    : {
+        invoiceCount: run.invoiceCount,
+        totalBilled: run.totalBilled,
+        openBalance: run.openBalance,
+      };
+
+  await db
+    .update(statementSendRuns)
+    .set({
+      status,
+      errorMessage: errorMessage ?? null,
+      practiceEmail,
+      practiceName,
+      attemptCount: newAttempt,
+      lastAttemptAt: now,
+      nextAttemptAt: delay !== null ? new Date(now.getTime() + delay) : null,
+      invoiceCount: refreshedTotals.invoiceCount,
+      totalBilled: refreshedTotals.totalBilled,
+      openBalance: refreshedTotals.openBalance,
+    })
+    .where(eq(statementSendRuns.id, runId));
+
+  // On success, bump the parent schedule's lastRunAt. Only advance
+  // lastSentForMonth if this run's period is NOT older than what the
+  // schedule already has — otherwise retrying a stale failed row could
+  // rewind the marker and cause processDueSchedules to re-send a newer
+  // month that's already complete.
+  if (status === "sent") {
+    await db
+      .update(statementSchedules)
+      .set({
+        lastRunAt: now,
+        lastSentForMonth: run.periodMonth,
+      })
+      .where(
+        and(
+          eq(statementSchedules.labOrganizationId, run.labOrganizationId),
+          or(
+            isNull(statementSchedules.lastSentForMonth),
+            lte(statementSchedules.lastSentForMonth, run.periodMonth)
+          )
+        )
+      )
+      .catch(() => {
+        /* schedule may not exist for manually-triggered labs */
+      });
+    // If the conditional update above didn't match (because the schedule
+    // is already at a newer period), still bump lastRunAt without
+    // touching lastSentForMonth.
+    await db
+      .update(statementSchedules)
+      .set({ lastRunAt: now })
+      .where(eq(statementSchedules.labOrganizationId, run.labOrganizationId))
+      .catch(() => {
+        /* best effort */
+      });
+  }
+
+  return {
+    runId,
+    status,
+    attemptCount: newAttempt,
+    errorMessage,
+  };
+}
+
+export async function retryStatementSendRun(
+  runId: string
+): Promise<RetryResult> {
+  return attemptStatementSendForRun(runId);
+}
+
+export async function processDueRetries(asOf: Date = new Date()): Promise<{
+  attempted: number;
+  succeeded: number;
+  failed: number;
+}> {
+  const due = await db
+    .select({ id: statementSendRuns.id })
+    .from(statementSendRuns)
+    .where(
+      and(
+        eq(statementSendRuns.status, "failed"),
+        lt(statementSendRuns.attemptCount, STATEMENT_MAX_ATTEMPTS),
+        // nextAttemptAt is set when more retries remain
+        lte(statementSendRuns.nextAttemptAt, asOf)
+      )
+    )
+    .limit(100);
+
+  let succeeded = 0;
+  let failed = 0;
+  for (const row of due) {
+    try {
+      const r = await attemptStatementSendForRun(row.id);
+      if (r.status === "sent") succeeded += 1;
+      else if (r.status === "failed") failed += 1;
+    } catch (err: unknown) {
+      failed += 1;
+      logger.error(
+        { err, runId: row.id },
+        "Unexpected error while retrying statement send"
+      );
+    }
+  }
+  if (due.length) {
+    logger.info(
+      { attempted: due.length, succeeded, failed },
+      "Statement retry tick complete"
+    );
+  }
+  return { attempted: due.length, succeeded, failed };
 }
 
 // ── Daily scheduler ─────────────────────────────────────────────────────────
@@ -528,4 +780,29 @@ export function startStatementScheduler() {
     "Monthly statement scheduler armed"
   );
   setTimeout(tick, initial);
+
+  // Independent retry tick: runs every RETRY_INTERVAL_MS to pick up any
+  // failed sends whose backoff has elapsed. Decoupled from the once-a-day
+  // schedule tick so retries don't have to wait for tomorrow.
+  const RETRY_INTERVAL_MS = Math.max(
+    60 * 1000,
+    parseInt(process.env.STATEMENTS_RETRY_INTERVAL_MS || "", 10) ||
+      15 * 60 * 1000
+  );
+  const retryTick = async () => {
+    try {
+      await processDueRetries(new Date());
+    } catch (err: unknown) {
+      logger.error({ err }, "Statement retry tick failed");
+    } finally {
+      setTimeout(retryTick, RETRY_INTERVAL_MS);
+    }
+  };
+  // Stagger initial retry tick a bit after boot so we don't hammer SMTP
+  // at the same moment as the daily scheduler tick.
+  setTimeout(retryTick, Math.min(RETRY_INTERVAL_MS, 2 * 60 * 1000));
+  logger.info(
+    { intervalMs: RETRY_INTERVAL_MS },
+    "Statement retry scheduler armed"
+  );
 }

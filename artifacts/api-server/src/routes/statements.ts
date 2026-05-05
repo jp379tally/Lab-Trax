@@ -7,7 +7,7 @@ import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
-import { runMonthlyStatementsForLab } from "../lib/statements";
+import { retryStatementSendRun, runMonthlyStatementsForLab } from "../lib/statements";
 
 const router = Router();
 router.use(requireAuth);
@@ -79,6 +79,28 @@ router.post(
         "No invoices found in the prior month — nothing to send."
       );
     }
+    return ok(res, result);
+  })
+);
+
+router.post(
+  "/:orgId/statement-runs/:runId/retry",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const orgId = String(req.params.orgId);
+    const runId = String(req.params.runId);
+    await requireAnyRole(userId, orgId, ADMIN_ROLES);
+    const run = await db.query.statementSendRuns.findFirst({
+      where: and(
+        eq(statementSendRuns.id, runId),
+        eq(statementSendRuns.labOrganizationId, orgId)
+      ),
+    });
+    if (!run) throw new HttpError(404, "Send entry not found");
+    if (run.status === "sent") {
+      throw new HttpError(400, "This statement has already been sent.");
+    }
+    const result = await retryStatementSendRun(runId);
     return ok(res, result);
   })
 );
