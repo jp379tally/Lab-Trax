@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
   ChevronUp,
+  History,
   Layers,
   Loader2,
   Pencil,
@@ -69,6 +70,333 @@ function labelFor(key: string): string {
   return (
     PRICE_KEY_LABELS[key] ||
     key.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase())
+  );
+}
+
+interface PriceDiffEntry {
+  key: string;
+  before: number;
+  after: number;
+  kind: "added" | "removed" | "changed";
+}
+
+function diffPrices(
+  before: Record<string, number> | null | undefined,
+  after: Record<string, number> | null | undefined
+): PriceDiffEntry[] {
+  const out: PriceDiffEntry[] = [];
+  const keys = new Set<string>([
+    ...Object.keys(before ?? {}),
+    ...Object.keys(after ?? {}),
+  ]);
+  for (const k of keys) {
+    const b = Number(before?.[k] ?? 0);
+    const a = Number(after?.[k] ?? 0);
+    if (b === a) continue;
+    let kind: PriceDiffEntry["kind"] = "changed";
+    if (b <= 0 && a > 0) kind = "added";
+    else if (b > 0 && a <= 0) kind = "removed";
+    out.push({ key: k, before: b, after: a, kind });
+  }
+  out.sort((x, y) => labelFor(x.key).localeCompare(labelFor(y.key)));
+  return out;
+}
+
+function PriceDiffList({ diff }: { diff: PriceDiffEntry[] }) {
+  if (diff.length === 0) {
+    return (
+      <div className="text-xs text-muted-foreground italic">
+        No price changes.
+      </div>
+    );
+  }
+  return (
+    <ul className="space-y-1">
+      {diff.map((d) => (
+        <li
+          key={d.key}
+          className="flex items-center justify-between text-xs"
+        >
+          <span className="text-foreground">{labelFor(d.key)}</span>
+          <span className="tabular-nums">
+            {d.kind === "added" && (
+              <>
+                <span className="text-muted-foreground">— →</span>{" "}
+                <span className="text-success font-medium">
+                  {formatMoney(d.after)}
+                </span>
+              </>
+            )}
+            {d.kind === "removed" && (
+              <>
+                <span className="text-muted-foreground line-through">
+                  {formatMoney(d.before)}
+                </span>{" "}
+                <span className="text-muted-foreground">→ —</span>
+              </>
+            )}
+            {d.kind === "changed" && (
+              <>
+                <span className="text-muted-foreground line-through">
+                  {formatMoney(d.before)}
+                </span>{" "}
+                <span className="text-muted-foreground">→</span>{" "}
+                <span
+                  className={
+                    d.after > d.before
+                      ? "text-warning font-medium"
+                      : "text-success font-medium"
+                  }
+                >
+                  {formatMoney(d.after)}
+                </span>
+              </>
+            )}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+interface AuditEntry {
+  id: string;
+  action: string;
+  createdAt: string;
+  userId: string | null;
+  userName: string | null;
+  beforePrices: Record<string, number> | null;
+  afterPrices: Record<string, number> | null;
+  beforeName: string | null;
+  afterName: string | null;
+  beforeDoctorName: string | null;
+  afterDoctorName: string | null;
+  beforePracticeName: string | null;
+  afterPracticeName: string | null;
+  beforeNotes: string | null;
+  afterNotes: string | null;
+}
+
+function formatRelativeDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function actionLabel(action: string): string {
+  if (action.endsWith("_created")) return "Created";
+  if (action.endsWith("_updated")) return "Updated";
+  if (action.endsWith("_deleted")) return "Deleted";
+  return action;
+}
+
+function HistoryPanel({
+  endpoint,
+  enabled,
+}: {
+  endpoint: string;
+  enabled: boolean;
+}) {
+  const query = useQuery({
+    queryKey: ["pricing", "history", endpoint],
+    queryFn: () => apiFetch<{ entries: AuditEntry[] }>(endpoint),
+    enabled,
+    retry: false,
+  });
+
+  if (!enabled) return null;
+
+  if (query.isLoading) {
+    return (
+      <div className="text-xs text-muted-foreground py-3">
+        <Loader2 size={12} className="inline animate-spin mr-1.5" />
+        Loading history…
+      </div>
+    );
+  }
+  if (query.error) {
+    const err = query.error as ApiError;
+    return (
+      <div className="text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2">
+        {err.message}
+      </div>
+    );
+  }
+  const entries = query.data?.entries ?? [];
+  if (entries.length === 0) {
+    return (
+      <div className="text-xs text-muted-foreground py-3 italic">
+        No edits recorded yet.
+      </div>
+    );
+  }
+  return (
+    <ol className="space-y-3">
+      {entries.map((e) => {
+        const diff = diffPrices(e.beforePrices, e.afterPrices);
+        const renamed =
+          e.beforeName !== null &&
+          e.afterName !== null &&
+          e.beforeName !== e.afterName;
+        const practiceChanged =
+          e.beforePracticeName !== e.afterPracticeName &&
+          e.action.endsWith("_updated");
+        const notesChanged =
+          (e.beforeNotes ?? "") !== (e.afterNotes ?? "") &&
+          e.action.endsWith("_updated");
+        return (
+          <li
+            key={e.id}
+            className="border border-border rounded-md p-3 bg-secondary/20"
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-xs font-medium">
+                {actionLabel(e.action)}
+                {e.userName ? (
+                  <>
+                    {" "}
+                    by{" "}
+                    <span className="text-muted-foreground font-normal">
+                      {e.userName}
+                    </span>
+                  </>
+                ) : null}
+              </div>
+              <div className="text-[11px] text-muted-foreground tabular-nums">
+                {formatRelativeDate(e.createdAt)}
+              </div>
+            </div>
+            {renamed && (
+              <div className="text-[11px] text-muted-foreground mb-1">
+                Renamed{" "}
+                <span className="line-through">{e.beforeName}</span> →{" "}
+                <span className="text-foreground">{e.afterName}</span>
+              </div>
+            )}
+            {practiceChanged && (
+              <div className="text-[11px] text-muted-foreground mb-1">
+                Practice:{" "}
+                <span className="line-through">
+                  {e.beforePracticeName || "—"}
+                </span>{" "}
+                →{" "}
+                <span className="text-foreground">
+                  {e.afterPracticeName || "—"}
+                </span>
+              </div>
+            )}
+            {notesChanged && (
+              <div className="text-[11px] text-muted-foreground mb-1">
+                Notes updated.
+              </div>
+            )}
+            {e.action.endsWith("_created") && e.afterPrices ? (
+              <div className="text-[11px] text-muted-foreground">
+                Created with{" "}
+                {Object.values(e.afterPrices).filter((v) => Number(v) > 0)
+                  .length}{" "}
+                priced item
+                {Object.values(e.afterPrices).filter((v) => Number(v) > 0)
+                  .length === 1
+                  ? ""
+                  : "s"}
+                .
+              </div>
+            ) : e.action.endsWith("_deleted") ? (
+              <div className="text-[11px] text-muted-foreground">Deleted.</div>
+            ) : (
+              <PriceDiffList diff={diff} />
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function ConfirmChangesDialog({
+  title,
+  diff,
+  metaChanges,
+  isPending,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  diff: PriceDiffEntry[];
+  metaChanges: { label: string; before: string; after: string }[];
+  isPending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const hasAnyChange = diff.length > 0 || metaChanges.length > 0;
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40 px-4"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-md bg-card border border-border rounded-xl shadow-lg flex flex-col max-h-[80vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-border">
+          <div className="text-xs text-muted-foreground">Review changes</div>
+          <div className="text-sm font-semibold mt-0.5">{title}</div>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto space-y-4">
+          {!hasAnyChange && (
+            <div className="text-sm text-muted-foreground italic">
+              You haven't changed anything yet.
+            </div>
+          )}
+          {metaChanges.length > 0 && (
+            <div className="space-y-1.5">
+              {metaChanges.map((m) => (
+                <div key={m.label} className="text-xs">
+                  <span className="text-muted-foreground">{m.label}: </span>
+                  <span className="line-through text-muted-foreground">
+                    {m.before || "—"}
+                  </span>{" "}
+                  →{" "}
+                  <span className="text-foreground">{m.after || "—"}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {diff.length > 0 && (
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">
+                Price changes ({diff.length})
+              </div>
+              <PriceDiffList diff={diff} />
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            Keep editing
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isPending || !hasAnyChange}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+          >
+            {isPending ? "Saving…" : "Confirm save"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -702,16 +1030,36 @@ function TierEditor({
     return out;
   });
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const nextPrices = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(prices)) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) out[k] = n;
+    }
+    return out;
+  }, [prices]);
+
+  const diff = useMemo(
+    () => diffPrices(tier?.prices ?? {}, nextPrices),
+    [tier, nextPrices]
+  );
+
+  const metaChanges = useMemo(() => {
+    const m: { label: string; before: string; after: string }[] = [];
+    if (mode === "edit" && tier && tier.name !== name.trim()) {
+      m.push({ label: "Name", before: tier.name, after: name.trim() });
+    }
+    return m;
+  }, [mode, tier, name]);
 
   const mutation = useMutation({
     mutationFn: async () => {
       const payload: Record<string, unknown> = {
         name: name.trim(),
-        prices: Object.fromEntries(
-          Object.entries(prices)
-            .map(([k, v]) => [k, Number(v)])
-            .filter(([, v]) => Number.isFinite(v as number) && (v as number) > 0)
-        ),
+        prices: nextPrices,
       };
       if (mode === "create") {
         return apiFetch<PricingTier>("/pricing/tiers", {
@@ -726,10 +1074,28 @@ function TierEditor({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pricing", "tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing", "history"] });
+      setConfirming(false);
       onClose();
     },
-    onError: (err: Error) => setError(err.message || "Could not save tier."),
+    onError: (err: Error) => {
+      setError(err.message || "Could not save tier.");
+      setConfirming(false);
+    },
   });
+
+  function handleSaveClick() {
+    setError(null);
+    if (mode === "edit" && diff.length === 0 && metaChanges.length === 0) {
+      onClose();
+      return;
+    }
+    if (mode === "create") {
+      mutation.mutate();
+      return;
+    }
+    setConfirming(true);
+  }
 
   return (
     <SidePanel
@@ -747,11 +1113,15 @@ function TierEditor({
           </button>
           <button
             type="button"
-            onClick={() => mutation.mutate()}
+            onClick={handleSaveClick}
             disabled={mutation.isPending || !name.trim()}
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
           >
-            {mutation.isPending ? "Saving…" : "Save tier"}
+            {mutation.isPending
+              ? "Saving…"
+              : mode === "edit"
+                ? "Review & save"
+                : "Save tier"}
           </button>
         </>
       }
@@ -785,10 +1155,61 @@ function TierEditor({
         </div>
       </div>
 
+      {mode === "edit" && (diff.length > 0 || metaChanges.length > 0) && (
+        <div className="rounded-md border border-border bg-secondary/30 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">
+            Pending changes
+          </div>
+          {metaChanges.map((m) => (
+            <div key={m.label} className="text-xs mb-1">
+              <span className="text-muted-foreground">{m.label}: </span>
+              <span className="line-through text-muted-foreground">
+                {m.before || "—"}
+              </span>{" "}
+              → <span className="text-foreground">{m.after || "—"}</span>
+            </div>
+          ))}
+          <PriceDiffList diff={diff} />
+        </div>
+      )}
+
+      {mode === "edit" && tier && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((v) => !v)}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            <History size={12} />
+            {historyOpen ? "Hide history" : "Show history"}
+            {historyOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+          {historyOpen && (
+            <div className="mt-3">
+              <HistoryPanel
+                endpoint={`/pricing/tiers/${tier.id}/history`}
+                enabled={historyOpen}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {error && (
         <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
           {error}
         </div>
+      )}
+
+      {confirming && (
+        <ConfirmChangesDialog
+          title={tier ? `${tier.name} (pricing tier)` : "Pricing tier"}
+          diff={diff}
+          metaChanges={metaChanges}
+          isPending={mutation.isPending}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => mutation.mutate()}
+        />
       )}
     </SidePanel>
   );
@@ -1006,6 +1427,44 @@ function OverrideEditor({
     return out;
   });
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const nextPrices = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(prices)) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) out[k] = n;
+    }
+    return out;
+  }, [prices]);
+
+  const diff = useMemo(
+    () => diffPrices(override?.prices ?? {}, nextPrices),
+    [override, nextPrices]
+  );
+
+  const metaChanges = useMemo(() => {
+    const m: { label: string; before: string; after: string }[] = [];
+    if (mode !== "edit" || !override) return m;
+    const trimmedPractice = practiceName.trim();
+    if ((override.practiceName ?? "") !== trimmedPractice) {
+      m.push({
+        label: "Practice",
+        before: override.practiceName ?? "",
+        after: trimmedPractice,
+      });
+    }
+    const trimmedNotes = notes.trim();
+    if ((override.notes ?? "") !== trimmedNotes) {
+      m.push({
+        label: "Notes",
+        before: override.notes ?? "",
+        after: trimmedNotes,
+      });
+    }
+    return m;
+  }, [mode, override, practiceName, notes]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -1013,11 +1472,7 @@ function OverrideEditor({
         doctorName: doctorName.trim(),
         practiceName: practiceName.trim() || null,
         notes: notes.trim() || null,
-        prices: Object.fromEntries(
-          Object.entries(prices)
-            .map(([k, v]) => [k, Number(v)])
-            .filter(([, v]) => Number.isFinite(v as number) && (v as number) > 0)
-        ),
+        prices: nextPrices,
       };
       if (mode === "create") {
         return apiFetch<PricingOverride>("/pricing/overrides", {
@@ -1032,11 +1487,28 @@ function OverrideEditor({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pricing", "overrides"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing", "history"] });
+      setConfirming(false);
       onClose();
     },
-    onError: (err: Error) =>
-      setError(err.message || "Could not save override."),
+    onError: (err: Error) => {
+      setError(err.message || "Could not save override.");
+      setConfirming(false);
+    },
   });
+
+  function handleSaveClick() {
+    setError(null);
+    if (mode === "edit" && diff.length === 0 && metaChanges.length === 0) {
+      onClose();
+      return;
+    }
+    if (mode === "create") {
+      mutation.mutate();
+      return;
+    }
+    setConfirming(true);
+  }
 
   return (
     <SidePanel
@@ -1056,11 +1528,15 @@ function OverrideEditor({
           </button>
           <button
             type="button"
-            onClick={() => mutation.mutate()}
+            onClick={handleSaveClick}
             disabled={mutation.isPending || !doctorName.trim()}
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
           >
-            {mutation.isPending ? "Saving…" : "Save override"}
+            {mutation.isPending
+              ? "Saving…"
+              : mode === "edit"
+                ? "Review & save"
+                : "Save override"}
           </button>
         </>
       }
@@ -1129,10 +1605,65 @@ function OverrideEditor({
         </p>
       </div>
 
+      {mode === "edit" && (diff.length > 0 || metaChanges.length > 0) && (
+        <div className="rounded-md border border-border bg-secondary/30 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">
+            Pending changes
+          </div>
+          {metaChanges.map((m) => (
+            <div key={m.label} className="text-xs mb-1">
+              <span className="text-muted-foreground">{m.label}: </span>
+              <span className="line-through text-muted-foreground">
+                {m.before || "—"}
+              </span>{" "}
+              → <span className="text-foreground">{m.after || "—"}</span>
+            </div>
+          ))}
+          <PriceDiffList diff={diff} />
+        </div>
+      )}
+
+      {mode === "edit" && override && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((v) => !v)}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            <History size={12} />
+            {historyOpen ? "Hide history" : "Show history"}
+            {historyOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+          {historyOpen && (
+            <div className="mt-3">
+              <HistoryPanel
+                endpoint={`/pricing/overrides/${override.id}/history`}
+                enabled={historyOpen}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {error && (
         <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
           {error}
         </div>
+      )}
+
+      {confirming && (
+        <ConfirmChangesDialog
+          title={
+            override
+              ? `${override.doctorName} (per-doctor override)`
+              : "Per-doctor override"
+          }
+          diff={diff}
+          metaChanges={metaChanges}
+          isPending={mutation.isPending}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => mutation.mutate()}
+        />
       )}
     </SidePanel>
   );

@@ -1,11 +1,13 @@
 import { Router } from "express";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
+  auditLogs,
   organizationMemberships,
   pricingOverrides,
   pricingTiers,
+  users,
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
@@ -381,6 +383,106 @@ router.delete(
     });
 
     return ok(res, { deleted: true, id: row.id });
+  })
+);
+
+// ---- Audit history ----
+
+async function fetchHistory(
+  req: any,
+  entityType: "pricing_tier" | "pricing_override",
+  entityId: string,
+  labOrganizationId: string
+) {
+  await requireAnyRole((req as any).auth.userId, labOrganizationId, ADMIN_ROLES);
+
+  const rows = await db
+    .select({
+      id: auditLogs.id,
+      action: auditLogs.action,
+      createdAt: auditLogs.createdAt,
+      beforeJson: auditLogs.beforeJson,
+      afterJson: auditLogs.afterJson,
+      userId: auditLogs.userId,
+      userFirstName: users.firstName,
+      userLastName: users.lastName,
+      userUsername: users.username,
+      userEmail: users.email,
+    })
+    .from(auditLogs)
+    .leftJoin(users, eq(users.id, auditLogs.userId))
+    .where(
+      and(
+        eq(auditLogs.entityType, entityType),
+        eq(auditLogs.entityId, entityId),
+        eq(auditLogs.organizationId, labOrganizationId)
+      )
+    )
+    .orderBy(desc(auditLogs.createdAt))
+    .limit(100);
+
+  return rows.map((r: any) => {
+    const before = (r.beforeJson as any) ?? null;
+    const after = (r.afterJson as any) ?? null;
+    const beforePrices =
+      (before && (before.pricesJson ?? before.prices)) ?? null;
+    const afterPrices =
+      (after && (after.pricesJson ?? after.prices)) ?? null;
+    return {
+      id: r.id,
+      action: r.action,
+      createdAt: r.createdAt,
+      userId: r.userId,
+      userName:
+        [r.userFirstName, r.userLastName].filter(Boolean).join(" ").trim() ||
+        r.userUsername ||
+        r.userEmail ||
+        null,
+      beforePrices,
+      afterPrices,
+      beforeName: before?.name ?? null,
+      afterName: after?.name ?? null,
+      beforeDoctorName: before?.doctorName ?? null,
+      afterDoctorName: after?.doctorName ?? null,
+      beforePracticeName: before?.practiceName ?? null,
+      afterPracticeName: after?.practiceName ?? null,
+      beforeNotes: before?.notes ?? null,
+      afterNotes: after?.notes ?? null,
+    };
+  });
+}
+
+router.get(
+  "/tiers/:id/history",
+  asyncHandler(async (req, res) => {
+    const tier = await db.query.pricingTiers.findFirst({
+      where: eq(pricingTiers.id, req.params.id as string),
+    });
+    if (!tier) throw new HttpError(404, "Tier not found.");
+    const entries = await fetchHistory(
+      req,
+      "pricing_tier",
+      tier.id,
+      tier.labOrganizationId
+    );
+    return ok(res, { entries });
+  })
+);
+
+router.get(
+  "/overrides/:id/history",
+  asyncHandler(async (req, res) => {
+    const row = await db.query.pricingOverrides.findFirst({
+      where: eq(pricingOverrides.id, req.params.id as string),
+    });
+    if (!row) throw new HttpError(404, "Override not found.");
+    const entries = await fetchHistory(
+      req,
+      "pricing_override",
+      row.id,
+      row.labOrganizationId
+    );
+    return ok(res, { entries });
   })
 );
 
