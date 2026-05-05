@@ -1797,6 +1797,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCases((prevCases) => {
       const updated = prevCases.map((c) => {
         if (c.id === caseId) {
+          const shouldFreeBarcode = newStatus === "COMPLETE" && !!c.assignedBarcode;
+          const extraEntries: ActivityEntry[] = [stationEntry];
+          if (shouldFreeBarcode) {
+            extraEntries.push({
+              id: generateId(),
+              type: "barcode_unassigned",
+              timestamp: now,
+              description: `Barcode ${c.assignedBarcode} removed from case`,
+              user: user || undefined,
+            });
+          }
           const updatedCase = {
             ...c,
             status: newStatus,
@@ -1806,7 +1817,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               ...c.routeHistory,
               { station: newStatus, timestamp: now },
             ],
-            activityLog: [...(c.activityLog || []), stationEntry],
+            activityLog: [...(c.activityLog || []), ...extraEntries],
           };
           syncCaseToServer(updatedCase);
           return updatedCase;
