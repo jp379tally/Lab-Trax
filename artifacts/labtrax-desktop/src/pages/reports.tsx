@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, BarChart3, Clock, DollarSign, Loader2 } from "lucide-react";
+import { Activity, BarChart3, Clock, DollarSign, Download, Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type { Invoice, LabCase, MeResponse } from "@/lib/types";
 import { formatMoney, statusLabel } from "@/lib/format";
+import { downloadCsv } from "@/lib/export";
 
 const STATUS_ORDER: Array<LabCase["status"]> = [
   "received",
@@ -168,6 +169,41 @@ export default function ReportsPage() {
 
   const isLoading = casesQuery.isLoading || invoicesQuery.isLoading || meQuery.isLoading;
 
+  const rangeLabel = RANGE_OPTIONS.find((o) => o.value === range)?.label ?? range;
+  const filterDesc = `Range: ${rangeLabel}${dateRange ? ` (${dateRange.from.slice(0, 10)} → ${dateRange.to.slice(0, 10)})` : ""}`;
+  const dateStamp = new Date().toISOString().slice(0, 10);
+
+  function exportSalesByOrgCsv() {
+    const rows = (salesQuery.data ?? []).map((row) => ({
+      Organization: row.org.displayName || row.org.name,
+      Invoices: row.report?.invoices ?? "",
+      "Paid invoices": row.report?.paidInvoices ?? "",
+      "Open invoices": row.report?.openInvoices ?? "",
+      "Total sales": row.report ? Number(row.report.totalSales).toFixed(2) : "",
+      "Open balance": row.report ? Number(row.report.openBalance).toFixed(2) : "",
+      Filters: filterDesc,
+    }));
+    downloadCsv(`sales-by-organization-${dateStamp}.csv`, rows);
+  }
+
+  function exportMonthlyRevenueCsv() {
+    const rows = monthly.map((m) => ({
+      Month: m.label,
+      Revenue: m.revenue.toFixed(2),
+      Filters: filterDesc,
+    }));
+    downloadCsv(`monthly-revenue-${dateStamp}.csv`, rows);
+  }
+
+  function exportProductionByStatusCsv() {
+    const rows = statusCounts.map((s) => ({
+      Status: statusLabel(s.status),
+      Count: s.count,
+      Filters: filterDesc,
+    }));
+    downloadCsv(`production-by-status-${dateStamp}.csv`, rows);
+  }
+
   return (
     <div className="px-8 py-7 max-w-[1500px] mx-auto">
       <div className="flex items-start justify-between mb-6">
@@ -187,6 +223,7 @@ export default function ReportsPage() {
           ))}
         </select>
       </div>
+      <p className="text-xs text-muted-foreground -mt-4 mb-5">{filterDesc}</p>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <KpiCard label="Total sales" value={formatMoney(aggregateSales.totalSales)} icon={DollarSign} tone="success" />
@@ -202,7 +239,17 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
         <section className="lg:col-span-2 bg-card border border-border rounded-xl p-5">
-          <h2 className="text-sm font-semibold mb-4">Monthly revenue</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold">Monthly revenue</h2>
+            <button
+              type="button"
+              onClick={exportMonthlyRevenueCsv}
+              disabled={monthly.length === 0}
+              className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md text-xs font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              <Download size={12} /> CSV
+            </button>
+          </div>
           {isLoading && (
             <div className="text-sm text-muted-foreground py-10 text-center">
               <Loader2 size={16} className="inline animate-spin mr-2" />
@@ -232,7 +279,16 @@ export default function ReportsPage() {
         </section>
 
         <section className="bg-card border border-border rounded-xl p-5">
-          <h2 className="text-sm font-semibold mb-4">Production by status</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold">Production by status</h2>
+            <button
+              type="button"
+              onClick={exportProductionByStatusCsv}
+              className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md text-xs font-medium hover:bg-secondary"
+            >
+              <Download size={12} /> CSV
+            </button>
+          </div>
           <ul className="space-y-2.5">
             {statusCounts.map((s) => (
               <li key={s.status}>
@@ -253,8 +309,16 @@ export default function ReportsPage() {
       </div>
 
       <section className="bg-card border border-border rounded-xl overflow-hidden">
-        <header className="px-5 py-3 border-b border-border">
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
           <h2 className="text-sm font-semibold">Sales by organization</h2>
+          <button
+            type="button"
+            onClick={exportSalesByOrgCsv}
+            disabled={(salesQuery.data ?? []).length === 0}
+            className="inline-flex items-center gap-1.5 h-7 px-2 rounded-md text-xs font-medium hover:bg-secondary disabled:opacity-50"
+          >
+            <Download size={12} /> CSV
+          </button>
         </header>
         <table className="w-full text-sm">
           <thead>

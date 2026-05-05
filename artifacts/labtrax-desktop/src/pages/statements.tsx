@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, Loader2, Receipt, Search, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Loader2, Receipt, Search, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type { Invoice } from "@/lib/types";
-import { formatDate, formatMoney } from "@/lib/format";
+import { formatDate, formatMoney, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import { downloadCsv, downloadStatementPdf, safeFilename } from "@/lib/export";
 
 interface StatementRow {
   practiceId: string;
@@ -130,6 +131,22 @@ export default function StatementsPage() {
     );
   }
 
+  function exportSummaryCsv() {
+    const filterDesc = describeFilters({ search, agingFilter });
+    const filename = `statements-summary-${new Date().toISOString().slice(0, 10)}.csv`;
+    const data = filtered.map((r) => ({
+      Practice: r.practiceName,
+      Invoices: r.invoiceCount,
+      Billed: r.totalBilled.toFixed(2),
+      Paid: r.totalPaid.toFixed(2),
+      "Open balance": r.openBalance.toFixed(2),
+      Overdue: r.overdueBalance.toFixed(2),
+      "Oldest open": r.oldestOpen ? formatDate(r.oldestOpen) : "",
+      Filters: filterDesc,
+    }));
+    downloadCsv(filename, data);
+  }
+
   return (
     <div className="px-8 py-7">
       <div className="flex items-start justify-between mb-6">
@@ -139,6 +156,14 @@ export default function StatementsPage() {
             One row per practice with billed, paid, and open balance rolled up.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={exportSummaryCsv}
+          disabled={filtered.length === 0}
+          className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
+        >
+          <Download size={14} /> Export CSV
+        </button>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
@@ -233,11 +258,21 @@ export default function StatementsPage() {
         <StatementDrawer
           row={selected}
           invoices={invoices.filter((i) => i.providerOrganizationId === selected.practiceId)}
+          filtersDescription={describeFilters({ search, agingFilter })}
           onClose={() => setSelected(null)}
         />
       )}
     </div>
   );
+}
+
+function describeFilters({ search, agingFilter }: { search: string; agingFilter: "all" | "open" | "overdue" }): string {
+  const parts: string[] = [];
+  if (search.trim()) parts.push(`search: "${search.trim()}"`);
+  parts.push(
+    agingFilter === "all" ? "all practices" : agingFilter === "open" ? "with open balance" : "overdue only",
+  );
+  return `Filters: ${parts.join(" · ")}`;
 }
 
 function Stat({ label, value, tone }: { label: string; value: string; tone: "primary" | "success" | "warning" | "neutral" }) {
@@ -264,8 +299,58 @@ function Stat({ label, value, tone }: { label: string; value: string; tone: "pri
   );
 }
 
-function StatementDrawer({ row, invoices, onClose }: { row: StatementRow; invoices: Invoice[]; onClose: () => void }) {
+function StatementDrawer({
+  row,
+  invoices,
+  filtersDescription,
+  onClose,
+}: {
+  row: StatementRow;
+  invoices: Invoice[];
+  filtersDescription?: string;
+  onClose: () => void;
+}) {
   const sorted = [...invoices].sort((a, b) => (b.issuedAt || b.createdAt || "").localeCompare(a.issuedAt || a.createdAt || ""));
+
+  function exportPdf() {
+    downloadStatementPdf({
+      practiceName: row.practiceName,
+      generatedAt: new Date(),
+      filtersDescription,
+      totals: {
+        billed: row.totalBilled,
+        paid: row.totalPaid,
+        open: row.openBalance,
+        overdue: row.overdueBalance,
+      },
+      invoices: sorted.map((i) => ({
+        invoiceNumber: i.invoiceNumber,
+        issuedAt: formatDate(i.issuedAt),
+        dueAt: formatDate(i.dueAt ?? i.dueDate),
+        status: statusLabel(i.status),
+        total: String(i.total ?? 0),
+        balanceDue: String(i.balanceDue ?? 0),
+      })),
+    });
+  }
+
+  function exportCsv() {
+    const filename = `statement-${safeFilename(row.practiceName)}-${new Date().toISOString().slice(0, 10)}.csv`;
+    downloadCsv(
+      filename,
+      sorted.map((i) => ({
+        Invoice: i.invoiceNumber,
+        Issued: formatDate(i.issuedAt),
+        Due: formatDate(i.dueAt ?? i.dueDate),
+        Status: statusLabel(i.status),
+        Total: Number(i.total ?? 0).toFixed(2),
+        "Balance due": Number(i.balanceDue ?? 0).toFixed(2),
+        Practice: row.practiceName,
+        Filters: filtersDescription ?? "",
+      })),
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-foreground/30" onClick={onClose} />
@@ -275,9 +360,26 @@ function StatementDrawer({ row, invoices, onClose }: { row: StatementRow; invoic
             <div className="text-xs text-muted-foreground">Statement</div>
             <div className="text-sm font-semibold">{row.practiceName}</div>
           </div>
-          <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center">
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={exportCsv}
+              disabled={sorted.length === 0}
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              <Download size={13} /> CSV
+            </button>
+            <button
+              type="button"
+              onClick={exportPdf}
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Download size={13} /> PDF
+            </button>
+            <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center">
+              <X size={16} />
+            </button>
+          </div>
         </header>
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
           <div className="grid grid-cols-2 gap-3">
