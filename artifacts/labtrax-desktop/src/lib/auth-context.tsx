@@ -8,14 +8,10 @@ import {
   type ReactNode,
 } from "react";
 import {
-  clearSession,
   fetchMe,
-  loadSession,
   login as apiLogin,
   logout as apiLogout,
-  saveSession,
   subscribeSession,
-  type Session,
   type SessionUser,
 } from "./api";
 
@@ -30,71 +26,58 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(() => loadSession());
-  const [status, setStatus] = useState<"loading" | "authed" | "anonymous">(() =>
-    loadSession() ? "loading" : "anonymous",
-  );
+  const [user, setUser] = useState<SessionUser | null>(null);
+  const [status, setStatus] = useState<"loading" | "authed" | "anonymous">("loading");
 
   const verify = useCallback(async () => {
-    const current = loadSession();
-    if (!current) {
-      setSession(null);
-      setStatus("anonymous");
-      return;
-    }
     try {
       const me = await fetchMe();
-      const next: Session = { ...current, user: { ...current.user, ...me } };
-      saveSession(next);
-      setSession(next);
+      setUser(me);
       setStatus("authed");
     } catch {
-      clearSession();
-      setSession(null);
+      setUser(null);
       setStatus("anonymous");
     }
   }, []);
 
   useEffect(() => {
-    if (loadSession()) {
-      void verify();
-    }
+    void verify();
   }, [verify]);
 
   // React to session being cleared from anywhere (e.g. failed token refresh).
   useEffect(() => {
     return subscribeSession((next) => {
       if (next === null) {
-        setSession(null);
+        setUser(null);
         setStatus("anonymous");
       } else {
-        setSession(next);
+        setUser(next);
         setStatus("authed");
       }
     });
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    const next = await apiLogin(username, password);
-    setSession(next);
+    const me = await apiLogin(username, password);
+    setUser(me);
     setStatus("authed");
   }, []);
 
   const logout = useCallback(async () => {
     await apiLogout();
-    setSession(null);
+    setUser(null);
     setStatus("anonymous");
   }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      user: session?.user ?? null,
+      user,
       status,
       login,
       logout,
       refresh: verify,
     }),
-    [session, status, login, logout, verify],
+    [user, status, login, logout, verify],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

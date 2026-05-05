@@ -3,10 +3,11 @@ import type { NextFunction, Request, Response } from "express";
 import { db } from "@workspace/db";
 import { userSessions, users } from "@workspace/db";
 import { verifyAccessToken, extractBearerToken } from "../lib/auth";
+import { getAccessCookie } from "../lib/cookies";
 import { HttpError } from "../lib/http";
 
 export async function requireAuth(req: Request, _res: Response, next: NextFunction) {
-  const token = extractBearerToken(req);
+  const token = extractBearerToken(req) ?? getAccessCookie(req);
   if (!token) {
     return next(new HttpError(401, "Authentication required."));
   }
@@ -42,7 +43,7 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
 }
 
 export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
-  const token = extractBearerToken(req);
+  const token = extractBearerToken(req) ?? getAccessCookie(req);
   if (!token) {
     return next();
   }

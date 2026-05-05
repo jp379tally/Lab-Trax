@@ -1,5 +1,3 @@
-const STORAGE_KEY = "labtrax_desktop_session_v1";
-
 export type SessionUser = {
   id: string;
   username: string;
@@ -12,13 +10,7 @@ export type SessionUser = {
   practiceName?: string | null;
 };
 
-export type Session = {
-  accessToken: string;
-  refreshToken: string;
-  user: SessionUser;
-};
-
-type SessionListener = (session: Session | null) => void;
+type SessionListener = (user: SessionUser | null) => void;
 const listeners = new Set<SessionListener>();
 
 export function subscribeSession(fn: SessionListener): () => void {
@@ -26,33 +18,17 @@ export function subscribeSession(fn: SessionListener): () => void {
   return () => listeners.delete(fn);
 }
 
-function emit(session: Session | null) {
+function emit(user: SessionUser | null) {
   for (const fn of listeners) {
     try {
-      fn(session);
+      fn(user);
     } catch {
       /* ignore */
     }
   }
 }
 
-export function loadSession(): Session | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as Session;
-  } catch {
-    return null;
-  }
-}
-
-export function saveSession(s: Session) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-  emit(s);
-}
-
-export function clearSession() {
-  localStorage.removeItem(STORAGE_KEY);
+export function notifySessionCleared() {
   emit(null);
 }
 
@@ -64,37 +40,26 @@ export class ApiError extends Error {
   }
 }
 
-let refreshInFlight: Promise<string | null> | null = null;
+let refreshInFlight: Promise<boolean> | null = null;
 
-async function refreshAccessToken(): Promise<string | null> {
+async function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
-    const session = loadSession();
-    if (!session?.refreshToken) return null;
     try {
       const r = await fetch("/api/auth/refresh", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken: session.refreshToken }),
+        body: "{}",
       });
       if (!r.ok) {
-        clearSession();
-        return null;
+        emit(null);
+        return false;
       }
-      const data = await r.json();
-      const newToken: string | undefined = data?.data?.accessToken || data?.accessToken;
-      if (!newToken) {
-        clearSession();
-        return null;
-      }
-      // Re-read in case logout happened during the request.
-      const current = loadSession();
-      if (!current) return null;
-      saveSession({ ...current, accessToken: newToken });
-      return newToken;
+      return true;
     } catch {
-      clearSession();
-      return null;
+      emit(null);
+      return false;
     } finally {
       refreshInFlight = null;
     }
@@ -107,7 +72,6 @@ export async function apiFetch<T = unknown>(
   options: RequestInit = {},
   retried = false,
 ): Promise<T> {
-  const session = loadSession();
   const headers: Record<string, string> = {
     Accept: "application/json",
     ...(options.headers as Record<string, string> | undefined),
@@ -115,15 +79,12 @@ export async function apiFetch<T = unknown>(
   if (options.body && !(options.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  if (session?.accessToken) {
-    headers["Authorization"] = `Bearer ${session.accessToken}`;
-  }
   const url = path.startsWith("http") ? path : `/api${path.startsWith("/") ? path : `/${path}`}`;
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetch(url, { ...options, headers, credentials: "include" });
 
-  if (res.status === 401 && !retried && session?.refreshToken) {
-    const fresh = await refreshAccessToken();
-    if (fresh) return apiFetch<T>(path, options, true);
+  if (res.status === 401 && !retried) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) return apiFetch<T>(path, options, true);
     throw new ApiError("Your session has expired. Please sign in again.", 401);
   }
 
@@ -166,27 +127,24 @@ export async function apiFetch<T = unknown>(
   return parsed as T;
 }
 
-export async function login(username: string, password: string): Promise<Session> {
+export async function login(username: string, password: string): Promise<SessionUser> {
   const r = await fetch("/api/auth/login", {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       username,
       password,
       deviceName: "LabTrax Desktop Web",
+      clientType: "web",
     }),
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok || !body?.success) {
     throw new ApiError(body?.message || "Invalid username or password.", r.status);
   }
-  const session: Session = {
-    accessToken: body.accessToken,
-    refreshToken: body.refreshToken,
-    user: body.user,
-  };
-  saveSession(session);
-  return session;
+  emit(body.user);
+  return body.user as SessionUser;
 }
 
 export async function logout(): Promise<void> {
@@ -197,7 +155,7 @@ export async function logout(): Promise<void> {
   } catch {
     /* swallow */
   }
-  clearSession();
+  emit(null);
 }
 
 export async function fetchMe(): Promise<SessionUser> {
@@ -208,4 +166,14 @@ export async function fetchMe(): Promise<SessionUser> {
     return body.user;
   }
   return body as SessionUser;
+}
+
+// Legacy migration: clear any tokens that may have been written by a previous
+// version of the desktop app so they cannot be exfiltrated by XSS.
+try {
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem("labtrax_desktop_session_v1");
+  }
+} catch {
+  /* ignore */
 }

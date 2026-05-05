@@ -98,9 +98,22 @@ async function refreshAccessToken(): Promise<string | null> {
         return null;
       }
       const data = await res.json();
-      if (data.data?.accessToken) {
-        _accessToken = data.data.accessToken;
-        await AsyncStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken: _accessToken, refreshToken: _refreshToken }));
+      const newAccessToken: string | undefined =
+        data?.data?.accessToken ?? data?.accessToken;
+      if (newAccessToken) {
+        _accessToken = newAccessToken;
+        // The server rotates the refresh token on every refresh. Persist
+        // the new one if it was returned; otherwise keep the existing one
+        // for backward compatibility with older API versions.
+        const newRefreshToken: string | undefined =
+          data?.data?.refreshToken ?? data?.refreshToken;
+        if (newRefreshToken) {
+          _refreshToken = newRefreshToken;
+        }
+        await AsyncStorage.setItem(
+          TOKEN_KEY,
+          JSON.stringify({ accessToken: _accessToken, refreshToken: _refreshToken }),
+        );
         return _accessToken;
       }
       return null;

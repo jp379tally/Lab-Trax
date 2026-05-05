@@ -17,6 +17,12 @@ import {
   makeSessionHash,
 } from "../lib/auth";
 import { hashPassword, verifyPassword } from "../lib/crypto";
+import {
+  clearAuthCookies,
+  getRefreshCookie,
+  setAccessCookie,
+  setAuthCookies,
+} from "../lib/cookies";
 import { HttpError, ok } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -187,6 +193,7 @@ const registerSchema = z.object({
   wantsUpdates: z.boolean().optional(),
   joinOrganizationId: z.string().optional(),
   createOrganization: z.boolean().optional(),
+  clientType: z.enum(["web", "mobile"]).optional(),
 });
 
 router.post(
@@ -326,10 +333,12 @@ router.post(
 
     const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
 
+    setAuthCookies(req, res, accessToken, rawRefreshToken);
+
+    const useCookies = input.clientType === "web";
     return res.json({
       success: true,
-      accessToken,
-      refreshToken: rawRefreshToken,
+      ...(useCookies ? {} : { accessToken, refreshToken: rawRefreshToken }),
       user: hydratedUser || safeUser(user),
       message: responseMessage,
       pendingJoinRequest,
@@ -342,6 +351,7 @@ const loginSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
   deviceName: z.string().max(180).optional(),
+  clientType: z.enum(["web", "mobile"]).optional(),
 });
 
 router.post(
@@ -411,20 +421,31 @@ router.post(
 
     const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
 
+    setAuthCookies(req, res, accessToken, rawRefreshToken);
+
+    const useCookies = input.clientType === "web";
     return res.json({
       success: true,
-      accessToken,
-      refreshToken: rawRefreshToken,
+      ...(useCookies ? {} : { accessToken, refreshToken: rawRefreshToken }),
       user: hydratedUser || safeUser(user),
     });
   })
 );
 
-const refreshSchema = z.object({ refreshToken: z.string().min(1) });
+const refreshSchema = z.object({ refreshToken: z.string().min(1).optional() });
 router.post(
   "/refresh",
   asyncHandler(async (req, res) => {
-    const { refreshToken } = refreshSchema.parse(req.body);
+    const parsed = refreshSchema.parse(req.body ?? {});
+    // If the client supplied the refresh token in the request body it's a
+    // bearer-token client (mobile). If we read it from the cookie instead,
+    // it's the cookie-based desktop flow and we must not echo tokens back
+    // in JSON, since any XSS-controlled script could read them.
+    const fromBody = !!parsed.refreshToken;
+    const refreshToken = parsed.refreshToken ?? getRefreshCookie(req);
+    if (!refreshToken) {
+      throw new HttpError(401, "Refresh token is invalid or expired.");
+    }
     const payload = verifyRefreshToken(refreshToken);
     const session = await db.query.userSessions.findFirst({
       where: and(
@@ -438,8 +459,27 @@ router.post(
 
     if (!session)
       throw new HttpError(401, "Refresh token is invalid or expired.");
+
+    // Rotate the refresh token: mint a new one, update the stored hash and
+    // expiry, and invalidate the old refresh token. Re-using the previous
+    // refresh token after this point will fail the tokenHash check and
+    // force a re-login, which limits the blast radius of a leaked token.
+    const newRefreshToken = signRefreshToken(payload.sub, payload.sid);
+    const newDecoded = verifyRefreshToken(newRefreshToken);
+    await db
+      .update(userSessions)
+      .set({
+        tokenHash: makeSessionHash(newRefreshToken),
+        expiresAt: new Date((newDecoded.exp ?? 0) * 1000),
+      })
+      .where(eq(userSessions.id, payload.sid));
+
     const accessToken = signAccessToken(payload.sub, payload.sid);
-    return ok(res, { accessToken });
+    setAuthCookies(req, res, accessToken, newRefreshToken);
+    if (fromBody) {
+      return ok(res, { accessToken, refreshToken: newRefreshToken });
+    }
+    return ok(res, { refreshed: true });
   })
 );
 
@@ -457,6 +497,7 @@ router.post(
       entityType: "session",
       entityId: (req as any).auth.sessionId,
     });
+    clearAuthCookies(req, res);
     return ok(res, { loggedOut: true });
   })
 );
