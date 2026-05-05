@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Loader2, Search, Users, X } from "lucide-react";
+import { Building2, Loader2, Mail, Search, Trash2, UserPlus, Users, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, Organization } from "@/lib/types";
 import { formatMoney, relativeTime } from "@/lib/format";
 
@@ -9,6 +10,7 @@ interface PracticeMember {
   id: string;
   role: string;
   status: string;
+  userId: string;
   user: {
     id: string;
     username: string;
@@ -17,6 +19,35 @@ interface PracticeMember {
     lastName?: string | null;
     initials?: string | null;
   } | null;
+}
+
+interface PracticeInvite {
+  id: string;
+  email: string;
+  roleToAssign: string;
+  status: string;
+  expiresAt?: string | null;
+  createdAt?: string | null;
+}
+
+const ASSIGNABLE_ROLES = ["admin", "user", "billing", "read_only"] as const;
+const ADMIN_ROLES = new Set(["owner", "admin"]);
+
+function roleLabel(role: string): string {
+  switch (role) {
+    case "owner":
+      return "Owner";
+    case "admin":
+      return "Admin";
+    case "user":
+      return "Member";
+    case "billing":
+      return "Billing";
+    case "read_only":
+      return "Read only";
+    default:
+      return role;
+  }
 }
 
 export default function PracticesPage() {
@@ -218,6 +249,7 @@ interface PracticeFields {
 
 function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const { user: currentUser } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [fields, setFields] = useState<PracticeFields>({
     name: org.name || "",
@@ -349,35 +381,12 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
             </FormField>
           </section>
 
-          <section>
-            <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-              <Users size={14} /> Members
-            </h3>
-            <div className="border border-border rounded-md divide-y divide-border">
-              {membersQuery.isLoading && (
-                <div className="px-3 py-3 text-sm text-muted-foreground">Loading…</div>
-              )}
-              {!membersQuery.isLoading && (membersQuery.data ?? []).length === 0 && (
-                <div className="px-3 py-3 text-sm text-muted-foreground">No members yet.</div>
-              )}
-              {(membersQuery.data ?? []).map((m) => (
-                <div key={m.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <div className="min-w-0">
-                    <div className="font-medium">
-                      {[m.user?.firstName, m.user?.lastName].filter(Boolean).join(" ") || m.user?.username || "—"}
-                    </div>
-                    <div className="text-xs text-muted-foreground truncate">{m.user?.email || m.user?.username}</div>
-                  </div>
-                  <div className="text-xs flex items-center gap-2">
-                    <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground capitalize">{m.role}</span>
-                    <span className={`px-2 py-0.5 rounded-full ${m.status === "active" ? "bg-success/15 text-success" : "bg-warning/20 text-warning"}`}>
-                      {m.status}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
+          <MembershipSection
+            org={org}
+            members={membersQuery.data ?? []}
+            membersLoading={membersQuery.isLoading}
+            currentUserId={currentUser?.id}
+          />
 
           <section className="text-xs text-muted-foreground">
             Created {relativeTime(org.createdAt)} · Updated {relativeTime(org.updatedAt)}
@@ -398,5 +407,260 @@ function FormField({ label, children, full }: { label: string; children: React.R
       </label>
       {children}
     </div>
+  );
+}
+
+interface MembershipSectionProps {
+  org: Organization;
+  members: PracticeMember[];
+  membersLoading: boolean;
+  currentUserId?: string;
+}
+
+function MembershipSection({ org, members, membersLoading, currentUserId }: MembershipSectionProps) {
+  const queryClient = useQueryClient();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<(typeof ASSIGNABLE_ROLES)[number]>("user");
+  const [inviteSuccess, setInviteSuccess] = useState<string | null>(null);
+
+  const myMembership = members.find((m) => m.userId === currentUserId);
+  const isAdmin = !!myMembership && ADMIN_ROLES.has(myMembership.role);
+
+  const invitesQuery = useQuery({
+    queryKey: ["organization", org.id, "invites"],
+    queryFn: () => apiFetch<PracticeInvite[]>(`/organizations/${org.id}/invites`),
+    enabled: isAdmin,
+  });
+
+  const memberKey = ["organization", org.id, "members"] as const;
+  const inviteKey = ["organization", org.id, "invites"] as const;
+
+  const inviteMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<PracticeInvite>(`/organizations/${org.id}/invites`, {
+        method: "POST",
+        body: JSON.stringify({ email: inviteEmail.trim(), roleToAssign: inviteRole }),
+      }),
+    onSuccess: (invite) => {
+      setActionError(null);
+      setInviteSuccess(`Invite sent to ${invite.email}.`);
+      setInviteEmail("");
+      setInviteRole("user");
+      queryClient.invalidateQueries({ queryKey: inviteKey });
+    },
+    onError: (err: Error) => {
+      setInviteSuccess(null);
+      setActionError(err.message || "Could not send invite.");
+    },
+  });
+
+  const roleMutation = useMutation({
+    mutationFn: ({ membershipId, role }: { membershipId: string; role: string }) =>
+      apiFetch(`/organizations/memberships/${membershipId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role }),
+      }),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: memberKey });
+    },
+    onError: (err: Error) => setActionError(err.message || "Could not update role."),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (membershipId: string) =>
+      apiFetch(`/organizations/memberships/${membershipId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: memberKey });
+    },
+    onError: (err: Error) => setActionError(err.message || "Could not remove member."),
+  });
+
+  const pendingInvites = (invitesQuery.data ?? []).filter((i) => i.status === "pending");
+
+  const ownerCount = members.filter((m) => m.role === "owner" && m.status === "active").length;
+
+  function handleInviteSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setActionError(null);
+    setInviteSuccess(null);
+    if (!inviteEmail.trim()) {
+      setActionError("Enter an email address to invite.");
+      return;
+    }
+    inviteMutation.mutate();
+  }
+
+  function handleRoleChange(member: PracticeMember, role: string) {
+    if (role === member.role) return;
+    if (member.role === "owner" && ownerCount <= 1) {
+      setActionError("There must be at least one owner.");
+      return;
+    }
+    roleMutation.mutate({ membershipId: member.id, role });
+  }
+
+  function handleRemove(member: PracticeMember) {
+    if (member.role === "owner" && ownerCount <= 1) {
+      setActionError("Cannot remove the last owner.");
+      return;
+    }
+    const name =
+      [member.user?.firstName, member.user?.lastName].filter(Boolean).join(" ") ||
+      member.user?.username ||
+      "this member";
+    if (!confirm(`Remove ${name} from ${org.displayName || org.name}?`)) return;
+    removeMutation.mutate(member.id);
+  }
+
+  return (
+    <section className="space-y-4">
+      <h3 className="text-sm font-semibold flex items-center gap-2">
+        <Users size={14} /> Members
+      </h3>
+
+      {actionError && (
+        <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{actionError}</div>
+      )}
+
+      <div className="border border-border rounded-md divide-y divide-border">
+        {membersLoading && (
+          <div className="px-3 py-3 text-sm text-muted-foreground">Loading…</div>
+        )}
+        {!membersLoading && members.length === 0 && (
+          <div className="px-3 py-3 text-sm text-muted-foreground">No members yet.</div>
+        )}
+        {members.map((m) => {
+          const isSelf = m.userId === currentUserId;
+          const canEdit =
+            isAdmin && !(m.role === "owner" && ownerCount <= 1) && !(isSelf && myMembership?.role === "owner" && ownerCount <= 1);
+          const isBusy =
+            (roleMutation.isPending && roleMutation.variables?.membershipId === m.id) ||
+            (removeMutation.isPending && removeMutation.variables === m.id);
+          return (
+            <div key={m.id} className="flex items-center justify-between px-3 py-2 text-sm gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium truncate">
+                  {[m.user?.firstName, m.user?.lastName].filter(Boolean).join(" ") || m.user?.username || "—"}
+                  {isSelf && <span className="ml-2 text-xs text-muted-foreground">(you)</span>}
+                </div>
+                <div className="text-xs text-muted-foreground truncate">{m.user?.email || m.user?.username}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                {isAdmin ? (
+                  <select
+                    value={m.role}
+                    onChange={(e) => handleRoleChange(m, e.target.value)}
+                    disabled={!canEdit || isBusy}
+                    className="h-8 px-2 rounded-md bg-background border border-input text-xs"
+                  >
+                    {m.role === "owner" && <option value="owner">Owner</option>}
+                    {ASSIGNABLE_ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {roleLabel(r)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground text-xs">
+                    {roleLabel(m.role)}
+                  </span>
+                )}
+                <span
+                  className={`text-xs px-2 py-0.5 rounded-full ${
+                    m.status === "active" ? "bg-success/15 text-success" : "bg-warning/20 text-warning"
+                  }`}
+                >
+                  {m.status}
+                </span>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(m)}
+                    disabled={!canEdit || isBusy}
+                    title={isSelf ? "Leave this practice" : "Remove member"}
+                    className="h-8 w-8 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground flex items-center justify-center"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {isAdmin && (
+        <>
+          <div>
+            <h4 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2 flex items-center gap-1.5">
+              <Mail size={12} /> Pending invites
+            </h4>
+            <div className="border border-border rounded-md divide-y divide-border">
+              {invitesQuery.isLoading && (
+                <div className="px-3 py-3 text-sm text-muted-foreground">Loading…</div>
+              )}
+              {!invitesQuery.isLoading && pendingInvites.length === 0 && (
+                <div className="px-3 py-3 text-sm text-muted-foreground">No pending invites.</div>
+              )}
+              {pendingInvites.map((inv) => (
+                <div key={inv.id} className="flex items-center justify-between px-3 py-2 text-sm gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium truncate">{inv.email}</div>
+                    <div className="text-xs text-muted-foreground">
+                      Invited {relativeTime(inv.createdAt)}
+                      {inv.expiresAt ? ` · expires ${relativeTime(inv.expiresAt)}` : ""}
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground text-xs">
+                    {roleLabel(inv.roleToAssign)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <form onSubmit={handleInviteSubmit} className="border border-border rounded-md p-3 space-y-2">
+            <h4 className="text-xs uppercase tracking-wide text-muted-foreground font-medium flex items-center gap-1.5">
+              <UserPlus size={12} /> Invite a new member
+            </h4>
+            {inviteSuccess && (
+              <div className="text-xs text-success bg-success/10 px-2 py-1.5 rounded">{inviteSuccess}</div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <input
+                type="email"
+                required
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                placeholder="person@example.com"
+                className="flex-1 min-w-[200px] h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+              />
+              <select
+                value={inviteRole}
+                onChange={(e) => setInviteRole(e.target.value as (typeof ASSIGNABLE_ROLES)[number])}
+                className="h-9 px-2 rounded-md bg-background border border-input text-sm"
+              >
+                {ASSIGNABLE_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {roleLabel(r)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                disabled={inviteMutation.isPending}
+                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+              >
+                {inviteMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
+                Send invite
+              </button>
+            </div>
+          </form>
+        </>
+      )}
+    </section>
   );
 }
