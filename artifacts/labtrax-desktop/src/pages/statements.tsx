@@ -1,11 +1,37 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, Download, Loader2, Mail, Receipt, Search, X } from "lucide-react";
+import { useMemo, useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { CalendarClock, ChevronDown, ChevronUp, Download, History, Loader2, Mail, Receipt, Search, Send, X } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
+import { useLabOrganizations, useSelectedOrg } from "@/lib/finance";
 import type { Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { buildStatementPdf, downloadCsv, downloadStatementPdf, safeFilename } from "@/lib/export";
+
+interface StatementSchedule {
+  id: string;
+  labOrganizationId: string;
+  enabled: boolean;
+  dayOfMonth: number;
+  lastSentForMonth: string | null;
+  lastRunAt: string | null;
+}
+
+interface StatementSendRun {
+  id: string;
+  labOrganizationId: string;
+  practiceOrganizationId: string | null;
+  practiceName: string;
+  practiceEmail: string | null;
+  periodMonth: string;
+  status: string;
+  errorMessage: string | null;
+  invoiceCount: number;
+  totalBilled: string;
+  openBalance: string;
+  triggeredBy: string;
+  createdAt: string;
+}
 
 interface StatementRow {
   practiceId: string;
@@ -44,6 +70,9 @@ export default function StatementsPage() {
   const [sortKey, setSortKey] = useState<SortKey>("openBalance");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<StatementRow | null>(null);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [orgId] = useSelectedOrg();
 
   const invoices = invoicesQuery.data ?? [];
 
@@ -160,14 +189,32 @@ export default function StatementsPage() {
             One row per practice with billed, paid, and open balance rolled up.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={exportSummaryCsv}
-          disabled={filtered.length === 0}
-          className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
-        >
-          <Download size={14} /> Export CSV
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowHistory(true)}
+            disabled={!orgId}
+            className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
+          >
+            <History size={14} /> Send history
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowSchedule(true)}
+            disabled={!orgId}
+            className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
+          >
+            <CalendarClock size={14} /> Auto-send
+          </button>
+          <button
+            type="button"
+            onClick={exportSummaryCsv}
+            disabled={filtered.length === 0}
+            className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
+          >
+            <Download size={14} /> Export CSV
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
@@ -267,7 +314,279 @@ export default function StatementsPage() {
           onClose={() => setSelected(null)}
         />
       )}
+
+      {showSchedule && orgId && (
+        <ScheduleModal orgId={orgId} onClose={() => setShowSchedule(false)} />
+      )}
+      {showHistory && orgId && (
+        <HistoryModal orgId={orgId} onClose={() => setShowHistory(false)} />
+      )}
     </div>
+  );
+}
+
+function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const orgs = useLabOrganizations();
+  const orgName = orgs.data?.find((o) => o.id === orgId)?.displayName
+    || orgs.data?.find((o) => o.id === orgId)?.name
+    || "this lab";
+
+  const scheduleQuery = useQuery({
+    queryKey: ["statement-schedule", orgId],
+    queryFn: () => apiFetch<StatementSchedule>(`/lab-orgs/${orgId}/statement-schedule`),
+  });
+
+  const [enabled, setEnabled] = useState(false);
+  const [dayOfMonth, setDayOfMonth] = useState(1);
+  const [runResult, setRunResult] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (scheduleQuery.data) {
+      setEnabled(scheduleQuery.data.enabled);
+      setDayOfMonth(scheduleQuery.data.dayOfMonth);
+    }
+  }, [scheduleQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: (input: { enabled: boolean; dayOfMonth: number }) =>
+      apiFetch<StatementSchedule>(`/lab-orgs/${orgId}/statement-schedule`, {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["statement-schedule", orgId] });
+    },
+  });
+
+  const runNowMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ periodMonth: string; results: Array<{ status: string }> }>(
+        `/lab-orgs/${orgId}/statement-schedule/run-now`,
+        { method: "POST", body: "{}" },
+      ),
+    onSuccess: (data) => {
+      setRunError(null);
+      const sent = data.results.filter((r) => r.status === "sent").length;
+      const failed = data.results.filter((r) => r.status === "failed").length;
+      const skipped = data.results.filter((r) => r.status === "skipped_no_email").length;
+      setRunResult(
+        `Sent ${sent} statement${sent === 1 ? "" : "s"} for ${data.periodMonth}` +
+          (failed ? `, ${failed} failed` : "") +
+          (skipped ? `, ${skipped} skipped (no email on file)` : "") +
+          ".",
+      );
+      qc.invalidateQueries({ queryKey: ["statement-runs", orgId] });
+      qc.invalidateQueries({ queryKey: ["statement-schedule", orgId] });
+    },
+    onError: (err: unknown) => {
+      setRunResult(null);
+      setRunError(err instanceof ApiError ? err.message : (err as Error).message);
+    },
+  });
+
+  function save() {
+    saveMutation.mutate({ enabled, dayOfMonth });
+  }
+
+  const sched = scheduleQuery.data;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-foreground/40" onClick={onClose}>
+      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <header className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Auto-send statements</div>
+            <div className="text-sm font-semibold">{orgName}</div>
+          </div>
+          <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="px-5 py-5 space-y-4">
+          {scheduleQuery.isLoading && (
+            <div className="py-6 text-center text-sm text-muted-foreground">
+              <Loader2 size={16} className="inline animate-spin mr-2" /> Loading schedule…
+            </div>
+          )}
+          {scheduleQuery.error && (
+            <div className="text-sm text-destructive">{(scheduleQuery.error as Error).message}</div>
+          )}
+          {sched && (
+            <>
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(e) => setEnabled(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <span>
+                  <span className="block text-sm font-medium">Email statements automatically each month</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">
+                    On the chosen day, every practice with activity in the prior month will be emailed its statement PDF.
+                  </span>
+                </span>
+              </label>
+
+              <div>
+                <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Send on day of month
+                </label>
+                <select
+                  value={dayOfMonth}
+                  onChange={(e) => setDayOfMonth(parseInt(e.target.value, 10))}
+                  disabled={!enabled}
+                  className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none disabled:opacity-50"
+                >
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-muted-foreground mt-1.5">
+                  In months that don't have the chosen day (e.g. day 31 in February),
+                  statements are sent on the last day of that month instead.
+                </p>
+              </div>
+
+              {sched.lastSentForMonth && (
+                <div className="text-xs text-muted-foreground border border-border rounded-md p-2.5 bg-secondary/30">
+                  Last automatic run sent statements for <strong>{sched.lastSentForMonth}</strong>
+                  {sched.lastRunAt ? ` on ${new Date(sched.lastRunAt).toLocaleString("en-US")}` : ""}.
+                </div>
+              )}
+
+              {runResult && (
+                <div className="text-xs text-success border border-success/30 bg-success/10 rounded-md p-2.5">{runResult}</div>
+              )}
+              {runError && (
+                <div className="text-xs text-destructive border border-destructive/30 bg-destructive/10 rounded-md p-2.5">{runError}</div>
+              )}
+              {saveMutation.error && (
+                <div className="text-xs text-destructive">{(saveMutation.error as Error).message}</div>
+              )}
+            </>
+          )}
+        </div>
+        <footer className="flex items-center justify-between px-5 py-3 border-t border-border bg-secondary/30 rounded-b-xl">
+          <button
+            type="button"
+            onClick={() => {
+              setRunResult(null);
+              setRunError(null);
+              runNowMutation.mutate();
+            }}
+            disabled={runNowMutation.isPending || !sched}
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+          >
+            {runNowMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            Send last month now
+          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={saveMutation.isPending || !sched}
+              className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+            >
+              {saveMutation.isPending ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function HistoryModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
+  const runsQuery = useQuery({
+    queryKey: ["statement-runs", orgId],
+    queryFn: () => apiFetch<StatementSendRun[]>(`/lab-orgs/${orgId}/statement-runs?limit=200`),
+  });
+  const rows = runsQuery.data ?? [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex" onClick={onClose}>
+      <div className="flex-1 bg-foreground/30" />
+      <aside className="w-full max-w-[720px] bg-card border-l border-border h-full flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <header className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Statement send history</div>
+            <div className="text-sm font-semibold">Most recent 200 entries</div>
+          </div>
+          <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto">
+          {runsQuery.isLoading && (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              <Loader2 size={16} className="inline animate-spin mr-2" /> Loading…
+            </div>
+          )}
+          {runsQuery.error && (
+            <div className="px-6 py-6 text-sm text-destructive">{(runsQuery.error as Error).message}</div>
+          )}
+          {!runsQuery.isLoading && rows.length === 0 && (
+            <div className="px-6 py-12 text-center text-sm text-muted-foreground">
+              No statement send attempts yet. Enable auto-send or use “Send last month now” to record a run.
+            </div>
+          )}
+          <table className="w-full text-sm">
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-b border-border">
+                  <td className="px-6 py-3 align-top">
+                    <div className="font-medium">{r.practiceName}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {r.periodMonth} · {r.invoiceCount} invoice{r.invoiceCount === 1 ? "" : "s"} · {r.triggeredBy === "schedule" ? "Scheduled" : "Manual"}
+                    </div>
+                    {r.practiceEmail && (
+                      <div className="text-xs text-muted-foreground">{r.practiceEmail}</div>
+                    )}
+                    {r.errorMessage && (
+                      <div className="text-xs text-destructive mt-1">{r.errorMessage}</div>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 align-top text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">
+                    Billed {formatMoney(r.totalBilled)}<br />
+                    Open {formatMoney(r.openBalance)}
+                  </td>
+                  <td className="px-6 py-3 align-top text-right whitespace-nowrap">
+                    <RunStatusBadge status={r.status} />
+                    <div className="text-[11px] text-muted-foreground mt-1">
+                      {new Date(r.createdAt).toLocaleString("en-US")}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function RunStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    sent: { label: "Sent", cls: "bg-success/15 text-success" },
+    failed: { label: "Failed", cls: "bg-destructive/15 text-destructive" },
+    skipped_no_email: { label: "Skipped", cls: "bg-warning/20 text-warning" },
+  };
+  const m = map[status] || { label: status, cls: "bg-secondary text-foreground" };
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium ${m.cls}`}>
+      {m.label}
+    </span>
   );
 }
 

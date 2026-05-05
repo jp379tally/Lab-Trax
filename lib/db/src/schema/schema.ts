@@ -904,6 +904,75 @@ export const reconciliationItems = pgTable(
   })
 );
 
+export const statementSchedules = pgTable(
+  "statement_schedules",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    enabled: boolean("enabled").default(false).notNull(),
+    dayOfMonth: integer("day_of_month").default(1).notNull(),
+    lastSentForMonth: text("last_sent_for_month"),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    inProgressForMonth: text("in_progress_for_month"),
+    inProgressLeasedAt: timestamp("in_progress_leased_at", { withTimezone: true }),
+    updatedByUserId: varchar("updated_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    orgUnique: uniqueIndex("statement_schedules_org_unique").on(
+      table.labOrganizationId
+    ),
+  })
+);
+
+export const statementSendRuns = pgTable(
+  "statement_send_runs",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    practiceOrganizationId: varchar("practice_organization_id").references(
+      () => organizations.id,
+      { onDelete: "set null" }
+    ),
+    practiceName: text("practice_name").notNull(),
+    practiceEmail: text("practice_email"),
+    periodMonth: text("period_month").notNull(),
+    status: text("status").notNull(),
+    errorMessage: text("error_message"),
+    invoiceCount: integer("invoice_count").default(0).notNull(),
+    totalBilled: decimal("total_billed", { precision: 12, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    openBalance: decimal("open_balance", { precision: 12, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    triggeredBy: text("triggered_by").notNull(),
+    triggeredByUserId: varchar("triggered_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    labIdx: index("statement_send_runs_lab_idx").on(table.labOrganizationId),
+    labPeriodIdx: index("statement_send_runs_lab_period_idx").on(
+      table.labOrganizationId,
+      table.periodMonth
+    ),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

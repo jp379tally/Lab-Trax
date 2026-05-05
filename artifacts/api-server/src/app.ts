@@ -8,6 +8,7 @@ import router from "./routes";
 import { corsOptions } from "./lib/cors";
 import { logger } from "./lib/logger";
 import { HttpError } from "./lib/http";
+import { startStatementScheduler } from "./lib/statements";
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -41,6 +42,8 @@ app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: true, limit: "12mb" }));
 
 app.use("/api", router);
+
+startStatementScheduler();
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof ZodError) {
