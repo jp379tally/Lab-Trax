@@ -239,6 +239,7 @@ router.patch(
         dueAt: z.string().datetime().nullable().optional(),
         issuedAt: z.string().datetime().nullable().optional(),
         invoiceNumber: z.string().min(1).optional(),
+        notes: z.string().nullable().optional(),
         items: z
           .array(
             z.object({
@@ -320,6 +321,8 @@ router.patch(
                 ? new Date(input.issuedAt)
                 : invoice.issuedAt,
           invoiceNumber: input.invoiceNumber ?? invoice.invoiceNumber,
+          notes:
+            input.notes === undefined ? invoice.notes : input.notes,
           updatedByUserId: (req as any).auth.userId,
         })
         .where(eq(invoices.id, invoice.id))

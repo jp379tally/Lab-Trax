@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Loader2, Plus, Search, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type { Invoice, InvoiceLineItem } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -200,6 +200,7 @@ function InvoiceEditor({
   const [tax, setTax] = useState<number>(0);
   const [discount, setDiscount] = useState<number>(0);
   const [items, setItems] = useState<DraftLine[]>([]);
+  const [notes, setNotes] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -216,6 +217,7 @@ function InvoiceEditor({
     setDueAt(toInputDate(d.dueAt ?? d.dueDate));
     setTax(Number(d.tax ?? 0));
     setDiscount(Number(d.discount ?? 0));
+    setNotes(d.notes ?? "");
     setItems(
       (d.items ?? []).map((it: InvoiceLineItem) => ({
         id: it.id,
@@ -241,12 +243,20 @@ function InvoiceEditor({
       if (!invoiceNumber.trim()) {
         throw new Error("Invoice number is required.");
       }
+      const trimmedItems = items.map((it) => ({
+        ...it,
+        description: it.description.trim(),
+      }));
+      if (trimmedItems.some((it) => !it.description)) {
+        throw new Error("Each line item needs a description.");
+      }
       const payload: Record<string, unknown> = {
         status: statusValue,
         invoiceNumber: invoiceNumber.trim(),
         tax,
         discount,
-        items: items.map((it, idx) => ({
+        notes: notes.trim() ? notes.trim() : null,
+        items: trimmedItems.map((it, idx) => ({
           description: it.description,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
@@ -274,6 +284,16 @@ function InvoiceEditor({
 
   function removeItem(idx: number) {
     setItems((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function moveItem(idx: number, dir: -1 | 1) {
+    setItems((prev) => {
+      const target = idx + dir;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = prev.slice();
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next;
+    });
   }
 
   function addItem() {
@@ -415,7 +435,7 @@ function InvoiceEditor({
                     <th className="text-right font-medium px-3 py-2 w-20">Qty</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Unit price</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Total</th>
-                    <th className="px-2 py-2 w-10" />
+                    <th className="px-2 py-2 w-20" />
                   </tr>
                 </thead>
                 <tbody>
@@ -467,14 +487,34 @@ function InvoiceEditor({
                         {formatMoney(Number(it.quantity || 0) * Number(it.unitPrice || 0))}
                       </td>
                       <td className="px-2 py-1.5">
-                        <button
-                          type="button"
-                          onClick={() => removeItem(idx)}
-                          className="h-7 w-7 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center"
-                          aria-label="Remove line"
-                        >
-                          <Trash2 size={13} />
-                        </button>
+                        <div className="flex items-center gap-0.5 justify-end">
+                          <button
+                            type="button"
+                            onClick={() => moveItem(idx, -1)}
+                            disabled={idx === 0}
+                            className="h-7 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center disabled:opacity-30 disabled:hover:bg-transparent"
+                            aria-label="Move up"
+                          >
+                            <ArrowUp size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveItem(idx, 1)}
+                            disabled={idx === items.length - 1}
+                            className="h-7 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center disabled:opacity-30 disabled:hover:bg-transparent"
+                            aria-label="Move down"
+                          >
+                            <ArrowDown size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeItem(idx)}
+                            className="h-7 w-7 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center"
+                            aria-label="Remove line"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -533,6 +573,17 @@ function InvoiceEditor({
                 </tfoot>
               </table>
             </div>
+          </section>
+
+          <section>
+            <label className="block text-sm font-semibold mb-2">Notes</label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={4}
+              placeholder="Internal notes for this invoice (optional)"
+              className="w-full px-3 py-2 rounded-md bg-background border border-input text-sm resize-y"
+            />
           </section>
 
           {detailQuery.data?.payments && detailQuery.data.payments.length > 0 && (
