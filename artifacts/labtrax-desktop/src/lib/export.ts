@@ -70,7 +70,39 @@ function fmtMoney(n: number | string): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(v);
 }
 
+export interface BuiltStatementPdf {
+  blob: Blob;
+  filename: string;
+  /** Base64 string (no data URL prefix). */
+  base64: string;
+}
+
+export function buildStatementPdf(opts: StatementPdfOptions): BuiltStatementPdf {
+  const doc = buildStatementDoc(opts);
+  const filename = `statement-${safeFilename(opts.practiceName)}-${opts.generatedAt.toISOString().slice(0, 10)}.pdf`;
+  const arrayBuffer = doc.output("arraybuffer") as ArrayBuffer;
+  const blob = new Blob([arrayBuffer], { type: "application/pdf" });
+  const base64 = arrayBufferToBase64(arrayBuffer);
+  return { blob, filename, base64 };
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  return btoa(binary);
+}
+
 export function downloadStatementPdf(opts: StatementPdfOptions) {
+  const built = buildStatementPdf(opts);
+  triggerDownload(built.blob, built.filename);
+}
+
+function buildStatementDoc(opts: StatementPdfOptions) {
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const pageWidth = doc.internal.pageSize.getWidth();
   const margin = 40;
@@ -134,6 +166,5 @@ export function downloadStatementPdf(opts: StatementPdfOptions) {
     margin: { left: margin, right: margin },
   });
 
-  const filename = `statement-${safeFilename(opts.practiceName)}-${opts.generatedAt.toISOString().slice(0, 10)}.pdf`;
-  doc.save(filename);
+  return doc;
 }

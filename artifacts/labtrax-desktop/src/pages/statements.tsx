@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, Download, Loader2, Receipt, Search, X } from "lucide-react";
-import { apiFetch } from "@/lib/api";
-import type { Invoice } from "@/lib/types";
+import { ChevronDown, ChevronUp, Download, Loader2, Mail, Receipt, Search, X } from "lucide-react";
+import { ApiError, apiFetch } from "@/lib/api";
+import type { Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
-import { downloadCsv, downloadStatementPdf, safeFilename } from "@/lib/export";
+import { buildStatementPdf, downloadCsv, downloadStatementPdf, safeFilename } from "@/lib/export";
 
 interface StatementRow {
   practiceId: string;
@@ -33,6 +33,10 @@ export default function StatementsPage() {
   const invoicesQuery = useQuery({
     queryKey: ["invoices"],
     queryFn: () => apiFetch<Invoice[]>("/invoices"),
+  });
+  const organizationsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
   });
 
   const [search, setSearch] = useState("");
@@ -258,6 +262,7 @@ export default function StatementsPage() {
         <StatementDrawer
           row={selected}
           invoices={invoices.filter((i) => i.providerOrganizationId === selected.practiceId)}
+          practice={organizationsQuery.data?.find((o) => o.id === selected.practiceId) ?? null}
           filtersDescription={describeFilters({ search, agingFilter })}
           onClose={() => setSelected(null)}
         />
@@ -302,18 +307,21 @@ function Stat({ label, value, tone }: { label: string; value: string; tone: "pri
 function StatementDrawer({
   row,
   invoices,
+  practice,
   filtersDescription,
   onClose,
 }: {
   row: StatementRow;
   invoices: Invoice[];
+  practice: Organization | null;
   filtersDescription?: string;
   onClose: () => void;
 }) {
   const sorted = [...invoices].sort((a, b) => (b.issuedAt || b.createdAt || "").localeCompare(a.issuedAt || a.createdAt || ""));
+  const [emailOpen, setEmailOpen] = useState(false);
 
-  function exportPdf() {
-    downloadStatementPdf({
+  function buildPdfOptions() {
+    return {
       practiceName: row.practiceName,
       generatedAt: new Date(),
       filtersDescription,
@@ -331,7 +339,11 @@ function StatementDrawer({
         total: String(i.total ?? 0),
         balanceDue: String(i.balanceDue ?? 0),
       })),
-    });
+    };
+  }
+
+  function exportPdf() {
+    downloadStatementPdf(buildPdfOptions());
   }
 
   function exportCsv() {
@@ -372,9 +384,18 @@ function StatementDrawer({
             <button
               type="button"
               onClick={exportPdf}
-              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+              disabled={sorted.length === 0}
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium hover:bg-secondary disabled:opacity-50"
             >
               <Download size={13} /> PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => setEmailOpen(true)}
+              disabled={sorted.length === 0}
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              <Mail size={13} /> Email statement
             </button>
             <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center">
               <X size={16} />
@@ -419,6 +440,178 @@ function StatementDrawer({
           </section>
         </div>
       </aside>
+      {emailOpen && (
+        <EmailStatementDialog
+          row={row}
+          invoices={sorted}
+          practice={practice}
+          buildPdfOptions={buildPdfOptions}
+          onClose={() => setEmailOpen(false)}
+        />
+      )}
     </div>
+  );
+}
+
+function EmailStatementDialog({
+  row,
+  invoices,
+  practice,
+  buildPdfOptions,
+  onClose,
+}: {
+  row: StatementRow;
+  invoices: Invoice[];
+  practice: Organization | null;
+  buildPdfOptions: () => Parameters<typeof buildStatementPdf>[0];
+  onClose: () => void;
+}) {
+  const labOrganizationId = invoices[0]?.labOrganizationId ?? "";
+  const defaultEmail = (practice?.billingEmail ?? "").trim();
+  const [to, setTo] = useState(defaultEmail);
+  const [subject, setSubject] = useState(
+    `Statement for ${practice?.displayName || practice?.name || row.practiceName} — ${new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" })}`,
+  );
+  const [message, setMessage] = useState(
+    `Hi ${row.practiceName},\n\nPlease find your latest statement attached. Open balance: ${formatMoney(row.openBalance)}${row.overdueBalance > 0 ? ` (overdue: ${formatMoney(row.overdueBalance)})` : ""}.\n\nLet us know if you have any questions.\n\nThank you,`,
+  );
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sentAt, setSentAt] = useState<string | null>(null);
+
+  async function send() {
+    setError(null);
+    if (!labOrganizationId) {
+      setError("Could not determine your lab organization.");
+      return;
+    }
+    setSending(true);
+    try {
+      const built = buildStatementPdf(buildPdfOptions());
+      const trimmedTo = to.trim();
+      const res = await apiFetch<{ sentAt: string; to: string; invoiceCount: number }>(
+        "/invoices/statements/email",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            labOrganizationId,
+            practiceOrganizationId: row.practiceId,
+            invoiceIds: invoices.map((i) => i.id),
+            ...(trimmedTo ? { to: trimmedTo } : {}),
+            subject: subject.trim(),
+            message,
+            filename: built.filename,
+            pdfBase64: built.base64,
+          }),
+        },
+      );
+      setSentAt(res.sentAt);
+      setTo(res.to);
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : (e as Error)?.message || "Failed to send.";
+      setError(msg);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-foreground/40">
+      <div className="w-full max-w-lg bg-card border border-border rounded-xl shadow-xl flex flex-col max-h-[90vh]">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Email statement</div>
+            <div className="text-sm font-semibold">{row.practiceName}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          {sentAt ? (
+            <div className="rounded-md border border-success/40 bg-success/10 px-3 py-3 text-sm">
+              <div className="font-medium text-success">Statement sent.</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Delivered to {to} at {new Date(sentAt).toLocaleString("en-US")}.
+              </div>
+            </div>
+          ) : (
+            <>
+              <Field label="To">
+                <input
+                  type="email"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  placeholder={defaultEmail || "Leave blank to use the practice's billing email on file"}
+                  className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  {defaultEmail
+                    ? "Pre-filled from this practice's billing contact. Edit to override for this send only."
+                    : "Leave blank to use the practice's billing email on file. If none is on file, the server will let you know — enter an address here to override just for this send."}
+                </p>
+              </Field>
+              <Field label="Subject">
+                <input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                />
+              </Field>
+              <Field label="Message">
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  rows={8}
+                  className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y"
+                />
+              </Field>
+              <div className="text-xs text-muted-foreground">
+                The current statement PDF ({invoices.length} invoice{invoices.length === 1 ? "" : "s"}) will be attached.
+              </div>
+              {error && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            {sentAt ? "Close" : "Cancel"}
+          </button>
+          {!sentAt && (
+            <button
+              type="button"
+              onClick={send}
+              disabled={sending}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {sending ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
+              {sending ? "Sending…" : "Send email"}
+            </button>
+          )}
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <div className="text-xs font-medium text-muted-foreground mb-1">{label}</div>
+      {children}
+    </label>
   );
 }

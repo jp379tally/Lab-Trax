@@ -16,12 +16,167 @@ import { inArray } from "drizzle-orm";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { HttpError, ok } from "../lib/http";
+import { createTransport, getMailerConfig } from "../lib/mailer";
 import { BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 
 const router = Router();
 router.use(requireAuth);
+
+const emailStatementSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  practiceOrganizationId: z.string().min(1),
+  invoiceIds: z.array(z.string().min(1)).min(1).max(500),
+  to: z.string().email().optional(),
+  cc: z.array(z.string().email()).max(10).optional(),
+  subject: z.string().min(1).max(500),
+  message: z.string().min(1).max(20000),
+  filename: z.string().min(1).max(200),
+  pdfBase64: z.string().min(1).max(8 * 1024 * 1024),
+});
+
+router.post(
+  "/statements/email",
+  asyncHandler(async (req, res) => {
+    const input = emailStatementSchema.parse(req.body);
+    await requireAnyRole(
+      (req as any).auth.userId,
+      input.labOrganizationId,
+      BILLING_ROLES,
+    );
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, input.practiceOrganizationId),
+    });
+    if (!practice) throw new HttpError(404, "Practice not found.");
+
+    const recipient = (input.to ?? practice.billingEmail ?? "").trim();
+    if (!recipient) {
+      throw new HttpError(
+        400,
+        "This practice has no billing email on file. Add one first or enter a recipient.",
+      );
+    }
+
+    const invoiceRows = await db.query.invoices.findMany({
+      where: and(
+        inArray(invoices.id, input.invoiceIds),
+        eq(invoices.labOrganizationId, input.labOrganizationId),
+        eq(invoices.providerOrganizationId, input.practiceOrganizationId),
+      ),
+    });
+    if (invoiceRows.length === 0) {
+      throw new HttpError(
+        404,
+        "None of the selected invoices belong to this practice.",
+      );
+    }
+
+    const cfg = getMailerConfig();
+    if (!cfg) {
+      throw new HttpError(
+        503,
+        "Email is not configured on the server. Ask an administrator to set SMTP credentials.",
+      );
+    }
+
+    let pdfBuffer: Buffer;
+    try {
+      pdfBuffer = Buffer.from(input.pdfBase64, "base64");
+    } catch {
+      throw new HttpError(400, "Invalid PDF payload.");
+    }
+    if (pdfBuffer.length === 0) {
+      throw new HttpError(400, "Invalid PDF payload.");
+    }
+
+    const transporter = createTransport(cfg);
+    try {
+      await transporter.sendMail({
+        from: cfg.from,
+        to: recipient,
+        cc: input.cc?.length ? input.cc : undefined,
+        subject: input.subject,
+        text: input.message,
+        attachments: [
+          {
+            filename: input.filename.endsWith(".pdf")
+              ? input.filename
+              : `${input.filename}.pdf`,
+            content: pdfBuffer,
+            contentType: "application/pdf",
+          },
+        ],
+      });
+    } catch (err: any) {
+      req.log?.error?.({ err }, "[STATEMENT EMAIL] sendMail failed");
+      throw new HttpError(
+        502,
+        "Failed to send the email. Check SMTP settings and try again.",
+      );
+    }
+
+    const user = (req as any).user;
+    const actorInitials = user?.initials || "SYS";
+    const sentAt = new Date();
+    const metadata = {
+      practiceOrganizationId: practice.id,
+      practiceName: practice.displayName || practice.name,
+      to: recipient,
+      cc: input.cc ?? [],
+      subject: input.subject,
+      invoiceIds: invoiceRows.map((i: any) => i.id),
+      invoiceNumbers: invoiceRows.map((i: any) => i.invoiceNumber),
+      filename: input.filename,
+      sentAt: sentAt.toISOString(),
+    };
+
+    await writeAuditLog({
+      req,
+      organizationId: input.labOrganizationId,
+      action: "statement_emailed",
+      entityType: "organization",
+      entityId: practice.id,
+      metadataJson: metadata,
+    });
+
+    const caseIds = Array.from(
+      new Set(
+        invoiceRows
+          .map((i: any) => i.caseId as string | null)
+          .filter((id: string | null): id is string => !!id),
+      ),
+    );
+    if (caseIds.length) {
+      await db.insert(caseEvents).values(
+        invoiceRows
+          .filter((i: any) => i.caseId)
+          .map((i: any) => ({
+            caseId: i.caseId as string,
+            eventType: "statement_emailed",
+            actorUserId: (req as any).auth.userId,
+            actorOrganizationId: input.labOrganizationId,
+            actorInitials,
+            metadataJson: {
+              invoiceId: i.id,
+              invoiceNumber: i.invoiceNumber,
+              to: recipient,
+              subject: input.subject,
+              practiceOrganizationId: practice.id,
+            },
+          })),
+      );
+    }
+
+    return ok(res, {
+      sentAt: sentAt.toISOString(),
+      to: recipient,
+      cc: input.cc ?? [],
+      invoiceCount: invoiceRows.length,
+    });
+  }),
+);
 
 function nextInvoiceNumber(caseNumber: string) {
   return `INV-${caseNumber}`;
