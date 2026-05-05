@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import type { LabCase } from "@/lib/types";
+import type { CaseEvent, CaseRestoration, LabCase } from "@/lib/types";
 import { formatDate, formatMoney, relativeTime, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 
@@ -246,9 +246,13 @@ function CaseDrawer({
   const { data, isLoading } = useQuery({
     queryKey: ["case", labCase.id],
     queryFn: () =>
-      apiFetch<LabCase & { restorations: any[]; notes: any[]; events: any[] }>(
-        `/cases/${labCase.id}`,
-      ),
+      apiFetch<
+        LabCase & {
+          restorations: CaseRestoration[];
+          notes: Array<{ id: string; body?: string | null; createdAt?: string | null }>;
+          events: CaseEvent[];
+        }
+      >(`/cases/${labCase.id}`),
   });
 
   return (
@@ -287,7 +291,7 @@ function CaseDrawer({
               <div className="text-sm text-muted-foreground">No restorations on this case.</div>
             )}
             <div className="space-y-2">
-              {data?.restorations?.map((r: any) => (
+              {data?.restorations?.map((r) => (
                 <div
                   key={r.id}
                   className="border border-border rounded-md px-3 py-2 text-sm flex items-center justify-between"
@@ -318,7 +322,7 @@ function CaseDrawer({
               <div className="text-sm text-muted-foreground">No activity logged.</div>
             )}
             <ul className="space-y-1.5">
-              {data?.events?.slice(0, 8).map((e: any) => (
+              {data?.events?.slice(0, 8).map((e) => (
                 <li
                   key={e.id}
                   className="text-sm flex items-start justify-between gap-3 border-l-2 border-primary/40 pl-3"

@@ -33,6 +33,32 @@ export interface LabCase {
   totalPrice?: string | number | null;
 }
 
+export interface CaseRestoration {
+  id: string;
+  caseId: string;
+  toothNumber: string;
+  restorationType: string;
+  material?: string | null;
+  shade?: string | null;
+  notes?: string | null;
+  quantity: number;
+  unitPrice: string | number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface CaseEvent {
+  id: string;
+  caseId: string;
+  eventType: string;
+  actorUserId?: string | null;
+  actorOrganizationId?: string | null;
+  actorInitials?: string | null;
+  metadataJson?: Record<string, unknown> | null;
+  occurredAt?: string | null;
+  createdAt?: string | null;
+}
+
 export type InvoiceStatus =
   | "draft"
   | "open"
