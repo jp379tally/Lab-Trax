@@ -360,6 +360,7 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
   </div>
 
   ${invoice.caseNotes ? `<div class="notes"><strong>Notes:</strong>\n${esc(invoice.caseNotes)}</div>` : ""}
+  ${invoice.notes ? `<div class="notes"><strong>Invoice Notes:</strong>\n${esc(invoice.notes)}</div>` : ""}
 </body></html>`;
   }
 
@@ -630,6 +631,13 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                   <View style={s.notesSection}>
                     <Text style={s.notesLabel}>NOTES</Text>
                     <Text style={s.notesText}>{invoice.caseNotes}</Text>
+                  </View>
+                ) : null}
+
+                {!editMode && invoice.notes ? (
+                  <View style={s.notesSection}>
+                    <Text style={s.notesLabel}>INVOICE NOTES</Text>
+                    <Text style={s.notesText}>{invoice.notes}</Text>
                   </View>
                 ) : null}
 

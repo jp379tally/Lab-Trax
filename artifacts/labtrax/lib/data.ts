@@ -644,6 +644,7 @@ export interface Invoice {
   teeth: string;
   shade: string;
   caseNotes: string;
+  notes?: string;
   lineItems: InvoiceLineItem[];
   creditNote?: string;
 }
