@@ -15,6 +15,7 @@ import {
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
+import { resolveServerPrice } from "../lib/pricing";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -106,18 +107,33 @@ router.post(
       .returning();
 
     if (input.restorations && input.restorations.length > 0) {
-      await db.insert(caseRestorations).values(
-        input.restorations.map((r) => ({
-          caseId: createdCase.id,
-          toothNumber: r.toothNumber,
-          restorationType: r.restorationType,
-          material: r.material ?? null,
-          shade: r.shade ?? null,
-          notes: r.notes ?? null,
-          quantity: r.quantity,
-          unitPrice: r.unitPrice.toFixed(2),
-        }))
+      const resolved = await Promise.all(
+        input.restorations.map(async (r) => {
+          let unit = r.unitPrice;
+          if (!Number.isFinite(unit) || unit <= 0) {
+            const fallback = await resolveServerPrice(
+              {
+                labOrganizationId: input.labOrganizationId,
+                doctorName: input.doctorName,
+              },
+              r.material,
+              r.restorationType
+            );
+            if (fallback !== null) unit = fallback;
+          }
+          return {
+            caseId: createdCase.id,
+            toothNumber: r.toothNumber,
+            restorationType: r.restorationType,
+            material: r.material ?? null,
+            shade: r.shade ?? null,
+            notes: r.notes ?? null,
+            quantity: r.quantity,
+            unitPrice: unit.toFixed(2),
+          };
+        })
       );
+      await db.insert(caseRestorations).values(resolved);
     }
 
     const user = (req as any).user;
@@ -557,6 +573,19 @@ router.post(
       })
       .parse(req.body);
 
+    let unit = input.unitPrice;
+    if (!Number.isFinite(unit) || unit <= 0) {
+      const fallback = await resolveServerPrice(
+        {
+          labOrganizationId: found.labOrganizationId,
+          doctorName: found.doctorName,
+        },
+        input.material,
+        input.restorationType
+      );
+      if (fallback !== null) unit = fallback;
+    }
+
     const [restoration] = await db
       .insert(caseRestorations)
       .values({
@@ -567,7 +596,7 @@ router.post(
         shade: input.shade ?? null,
         notes: input.notes ?? null,
         quantity: input.quantity,
-        unitPrice: input.unitPrice.toFixed(2),
+        unitPrice: unit.toFixed(2),
       })
       .returning();
 

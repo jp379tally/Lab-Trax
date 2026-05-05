@@ -45,6 +45,7 @@ import organizationRoutes from "./organizations";
 import caseRoutes from "./cases";
 import invoiceRoutes from "./invoices";
 import financeRoutes, { generateForOrganization } from "./finance";
+import pricingRoutes from "./pricing";
 
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
@@ -492,6 +493,7 @@ export async function registerRoutes(): Promise<IRouter> {
   });
 
   router.use("/finance", financeRoutes);
+  router.use("/pricing", pricingRoutes);
 
   router.post("/audit-log", (_req, res) => {
     res.json({ ok: true });

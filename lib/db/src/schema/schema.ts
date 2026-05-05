@@ -494,6 +494,67 @@ export const payments = pgTable("payments", {
   createdAt: createdAt(),
 });
 
+export const pricingTiers = pgTable(
+  "pricing_tiers",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    pricesJson: jsonb("prices_json").default({}).notNull(),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    pricingTiersLabIdx: index("pricing_tiers_lab_idx").on(
+      table.labOrganizationId
+    ),
+    pricingTiersLabNameUnique: uniqueIndex("pricing_tiers_lab_name_unique").on(
+      table.labOrganizationId,
+      table.name
+    ),
+  })
+);
+
+export const pricingOverrides = pgTable(
+  "pricing_overrides",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    doctorName: text("doctor_name").notNull(),
+    practiceName: text("practice_name"),
+    providerOrganizationId: varchar("provider_organization_id").references(
+      () => organizations.id,
+      { onDelete: "set null" }
+    ),
+    pricesJson: jsonb("prices_json").default({}).notNull(),
+    notes: text("notes"),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    pricingOverridesLabIdx: index("pricing_overrides_lab_idx").on(
+      table.labOrganizationId
+    ),
+    pricingOverridesLabDoctorUnique: uniqueIndex(
+      "pricing_overrides_lab_doctor_unique"
+    ).on(table.labOrganizationId, table.doctorName),
+  })
+);
+
 export const auditLogs = pgTable(
   "audit_logs",
   {

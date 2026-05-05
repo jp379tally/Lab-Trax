@@ -1,9 +1,148 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, Loader2, Pencil, Search, Tag, X } from "lucide-react";
-import { apiFetch } from "@/lib/api";
-import type { LabCase } from "@/lib/types";
+import {
+  ChevronDown,
+  ChevronUp,
+  Layers,
+  Loader2,
+  Pencil,
+  Plus,
+  Search,
+  Stethoscope,
+  Tag,
+  Trash2,
+  X,
+} from "lucide-react";
+import { ApiError, apiFetch } from "@/lib/api";
+import type { LabCase, MeResponse } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
+
+type Section = "billed" | "tiers" | "overrides";
+
+interface PricingTier {
+  id: string;
+  labOrganizationId: string;
+  name: string;
+  prices: Record<string, number>;
+}
+
+interface PricingOverride {
+  id: string;
+  labOrganizationId: string;
+  doctorName: string;
+  practiceName: string | null;
+  providerOrganizationId: string | null;
+  prices: Record<string, number>;
+  notes: string | null;
+}
+
+interface TiersResponse {
+  labOrganizationId: string;
+  keys: string[];
+  tiers: PricingTier[];
+}
+
+interface OverridesResponse {
+  labOrganizationId: string;
+  keys: string[];
+  overrides: PricingOverride[];
+}
+
+const PRICE_KEY_LABELS: Record<string, string> = {
+  zirconia_crown: "Zirconia Crown",
+  emax_crown: "E.max Crown",
+  pfm_crown: "PFM Crown",
+  denture: "Denture",
+  partial: "Partial",
+  implant: "Implant",
+  night_guard_hard: "Night Guard - Hard",
+  night_guard_soft: "Night Guard - Soft",
+  night_guard_hard_soft: "Night Guard - Hard/Soft",
+  retainer_hawley: "Retainer - Hawley",
+  retainer_hard: "Retainer - Hard",
+  retainer_lingual: "Retainer - Lingual",
+  snore_guard: "Snore Guard",
+  sports_guard: "Sports Guard",
+};
+
+function labelFor(key: string): string {
+  return (
+    PRICE_KEY_LABELS[key] ||
+    key.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase())
+  );
+}
+
+export default function PricingPage() {
+  const [section, setSection] = useState<Section>("billed");
+
+  return (
+    <div className="px-8 py-7">
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Pricing</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Manage your lab's pricing tiers, per-doctor overrides, and what's
+            currently being billed across cases.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1 border-b border-border mb-5 text-sm">
+        <SectionTab
+          active={section === "billed"}
+          onClick={() => setSection("billed")}
+          icon={<Tag size={14} />}
+          label="Billed (live)"
+        />
+        <SectionTab
+          active={section === "tiers"}
+          onClick={() => setSection("tiers")}
+          icon={<Layers size={14} />}
+          label="Pricing tiers"
+        />
+        <SectionTab
+          active={section === "overrides"}
+          onClick={() => setSection("overrides")}
+          icon={<Stethoscope size={14} />}
+          label="Per-doctor overrides"
+        />
+      </div>
+
+      {section === "billed" && <BilledSection />}
+      {section === "tiers" && <TiersSection />}
+      {section === "overrides" && <OverridesSection />}
+    </div>
+  );
+}
+
+function SectionTab({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 px-3 py-2 -mb-px border-b-2 ${
+        active
+          ? "border-primary text-foreground font-medium"
+          : "border-transparent text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+// ---- Billed (existing read-only roll-up + bulk update) ----
 
 interface PriceRow {
   key: string;
@@ -17,9 +156,15 @@ interface PriceRow {
   maxPrice: number;
 }
 
-type SortKey = "restorationType" | "material" | "unitsBilled" | "caseCount" | "avgPrice" | "totalRevenue";
+type SortKey =
+  | "restorationType"
+  | "material"
+  | "unitsBilled"
+  | "caseCount"
+  | "avgPrice"
+  | "totalRevenue";
 
-export default function PricingPage() {
+function BilledSection() {
   const casesQuery = useQuery({
     queryKey: ["cases", { include: "restorations" }],
     queryFn: () => apiFetch<LabCase[]>("/cases?include=restorations"),
@@ -84,7 +229,10 @@ export default function PricingPage() {
     return rows
       .filter((r) => {
         if (!q) return true;
-        return r.restorationType.toLowerCase().includes(q) || r.material.toLowerCase().includes(q);
+        return (
+          r.restorationType.toLowerCase().includes(q) ||
+          r.material.toLowerCase().includes(q)
+        );
       })
       .sort((a, b) => {
         const va = a[sortKey];
@@ -105,15 +253,26 @@ export default function PricingPage() {
       setSortDir("desc");
     }
   }
-  function SortHeader({ k, children, align = "left" }: { k: SortKey; children: React.ReactNode; align?: "left" | "right" }) {
+  function SortHeader({
+    k,
+    children,
+    align = "left",
+  }: {
+    k: SortKey;
+    children: React.ReactNode;
+    align?: "left" | "right";
+  }) {
     return (
       <button
         type="button"
         onClick={() => toggleSort(k)}
-        className={`inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground font-medium hover:text-foreground ${align === "right" ? "justify-end" : ""}`}
+        className={`inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground font-medium hover:text-foreground ${
+          align === "right" ? "justify-end" : ""
+        }`}
       >
         {children}
-        {sortKey === k && (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />)}
+        {sortKey === k &&
+          (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />)}
       </button>
     );
   }
@@ -121,104 +280,139 @@ export default function PricingPage() {
   const isLoading = casesQuery.isLoading;
 
   return (
-    <div className="px-8 py-7">
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Pricing</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            What every restoration type & material is actually billing for, rolled up across cases.
-          </p>
+    <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[220px] max-w-md">
+          <Search
+            size={14}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+          />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search restoration or material…"
+            className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+          />
         </div>
-        <div className="text-sm text-muted-foreground">{filtered.length} of {rows.length}</div>
+        <p className="text-xs text-muted-foreground">
+          Click any row to retroactively set a unit price on every matching
+          restoration in your cases.
+        </p>
+        <div className="ml-auto text-sm text-muted-foreground">
+          {filtered.length} of {rows.length}
+        </div>
       </div>
 
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[220px] max-w-md">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search restoration or material…"
-              className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Click any row to set a new unit price across every matching restoration.
-          </p>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-secondary/40">
-                <th className="text-left px-5 py-2.5"><SortHeader k="restorationType">Restoration</SortHeader></th>
-                <th className="text-left py-2.5"><SortHeader k="material">Material</SortHeader></th>
-                <th className="text-right py-2.5"><SortHeader k="unitsBilled" align="right">Units</SortHeader></th>
-                <th className="text-right py-2.5"><SortHeader k="caseCount" align="right">Cases</SortHeader></th>
-                <th className="text-right py-2.5"><SortHeader k="avgPrice" align="right">Avg unit</SortHeader></th>
-                <th className="text-right py-2.5">Range</th>
-                <th className="text-right py-2.5"><SortHeader k="totalRevenue" align="right">Revenue</SortHeader></th>
-                <th className="px-5 py-2.5" />
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading && (
-                <tr>
-                  <td colSpan={8} className="px-5 py-12 text-center text-muted-foreground">
-                    <Loader2 size={16} className="inline animate-spin mr-2" />
-                    Loading pricing…
-                  </td>
-                </tr>
-              )}
-              {!isLoading && filtered.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-5 py-12 text-center text-muted-foreground">
-                    No restorations have been priced yet.
-                  </td>
-                </tr>
-              )}
-              {filtered.map((r) => (
-                <tr
-                  key={r.key}
-                  onClick={() => setEditing(r)}
-                  className="border-t border-border hover:bg-secondary/40 cursor-pointer"
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-secondary/40">
+              <th className="text-left px-5 py-2.5">
+                <SortHeader k="restorationType">Restoration</SortHeader>
+              </th>
+              <th className="text-left py-2.5">
+                <SortHeader k="material">Material</SortHeader>
+              </th>
+              <th className="text-right py-2.5">
+                <SortHeader k="unitsBilled" align="right">
+                  Units
+                </SortHeader>
+              </th>
+              <th className="text-right py-2.5">
+                <SortHeader k="caseCount" align="right">
+                  Cases
+                </SortHeader>
+              </th>
+              <th className="text-right py-2.5">
+                <SortHeader k="avgPrice" align="right">
+                  Avg unit
+                </SortHeader>
+              </th>
+              <th className="text-right py-2.5">Range</th>
+              <th className="text-right py-2.5">
+                <SortHeader k="totalRevenue" align="right">
+                  Revenue
+                </SortHeader>
+              </th>
+              <th className="px-5 py-2.5" />
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading && (
+              <tr>
+                <td
+                  colSpan={8}
+                  className="px-5 py-12 text-center text-muted-foreground"
                 >
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className="h-7 w-7 rounded-md bg-primary/10 text-primary flex items-center justify-center">
-                        <Tag size={13} />
-                      </div>
-                      <div className="font-medium">{r.restorationType}</div>
+                  <Loader2 size={16} className="inline animate-spin mr-2" />
+                  Loading pricing…
+                </td>
+              </tr>
+            )}
+            {!isLoading && filtered.length === 0 && (
+              <tr>
+                <td
+                  colSpan={8}
+                  className="px-5 py-12 text-center text-muted-foreground"
+                >
+                  No restorations have been priced yet.
+                </td>
+              </tr>
+            )}
+            {filtered.map((r) => (
+              <tr
+                key={r.key}
+                onClick={() => setEditing(r)}
+                className="border-t border-border hover:bg-secondary/40 cursor-pointer"
+              >
+                <td className="px-5 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-7 w-7 rounded-md bg-primary/10 text-primary flex items-center justify-center">
+                      <Tag size={13} />
                     </div>
-                  </td>
-                  <td className="py-3 text-muted-foreground">{r.material}</td>
-                  <td className="py-3 text-right tabular-nums">{r.unitsBilled}</td>
-                  <td className="py-3 text-right tabular-nums">{r.caseCount}</td>
-                  <td className="py-3 text-right tabular-nums font-medium">{formatMoney(r.avgPrice)}</td>
-                  <td className="py-3 text-right tabular-nums text-xs text-muted-foreground">
-                    {r.minPrice > 0 ? `${formatMoney(r.minPrice)} – ${formatMoney(r.maxPrice)}` : "—"}
-                  </td>
-                  <td className="py-3 text-right tabular-nums">{formatMoney(r.totalRevenue)}</td>
-                  <td className="px-5 py-3 text-right">
-                    <span className="inline-flex items-center gap-1 text-xs text-primary">
-                      <Pencil size={11} /> Edit
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    <div className="font-medium">{r.restorationType}</div>
+                  </div>
+                </td>
+                <td className="py-3 text-muted-foreground">{r.material}</td>
+                <td className="py-3 text-right tabular-nums">{r.unitsBilled}</td>
+                <td className="py-3 text-right tabular-nums">{r.caseCount}</td>
+                <td className="py-3 text-right tabular-nums font-medium">
+                  {formatMoney(r.avgPrice)}
+                </td>
+                <td className="py-3 text-right tabular-nums text-xs text-muted-foreground">
+                  {r.minPrice > 0
+                    ? `${formatMoney(r.minPrice)} – ${formatMoney(r.maxPrice)}`
+                    : "—"}
+                </td>
+                <td className="py-3 text-right tabular-nums">
+                  {formatMoney(r.totalRevenue)}
+                </td>
+                <td className="px-5 py-3 text-right">
+                  <span className="inline-flex items-center gap-1 text-xs text-primary">
+                    <Pencil size={11} /> Edit
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      {editing && <PricingEditor row={editing} onClose={() => setEditing(null)} />}
+      {editing && (
+        <BilledEditor row={editing} onClose={() => setEditing(null)} />
+      )}
     </div>
   );
 }
 
-function PricingEditor({ row, onClose }: { row: PriceRow; onClose: () => void }) {
+function BilledEditor({
+  row,
+  onClose,
+}: {
+  row: PriceRow;
+  onClose: () => void;
+}) {
   const queryClient = useQueryClient();
   const [unitPrice, setUnitPrice] = useState<string>(row.avgPrice.toFixed(2));
   const [error, setError] = useState<string | null>(null);
@@ -257,60 +451,12 @@ function PricingEditor({ row, onClose }: { row: PriceRow; onClose: () => void })
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-foreground/30" onClick={onClose} />
-      <aside className="w-full max-w-[460px] bg-card border-l border-border h-full flex flex-col">
-        <header className="flex items-center justify-between px-6 py-4 border-b border-border">
-          <div>
-            <div className="text-xs text-muted-foreground">Set unit price</div>
-            <div className="text-sm font-semibold">
-              {row.restorationType} · {row.material}
-            </div>
-          </div>
-          <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center" aria-label="Close">
-            <X size={16} />
-          </button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <Stat label="Current avg" value={formatMoney(row.avgPrice)} />
-            <Stat label="Range" value={row.minPrice > 0 ? `${formatMoney(row.minPrice)} – ${formatMoney(row.maxPrice)}` : "—"} />
-            <Stat label="Units" value={String(row.unitsBilled)} />
-            <Stat label="Cases" value={String(row.caseCount)} />
-          </div>
-
-          <div>
-            <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-              New unit price
-            </label>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">$</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={unitPrice}
-                onChange={(e) => setUnitPrice(e.target.value)}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm tabular-nums"
-              />
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              Updates every restoration with this type and material across every case in your lab(s) you administer.
-            </p>
-          </div>
-
-          {error && (
-            <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">{error}</div>
-          )}
-          {success !== null && (
-            <div className="text-sm rounded-md px-3 py-2 bg-success/15 text-success">
-              Updated {success} restoration{success === 1 ? "" : "s"}.
-            </div>
-          )}
-        </div>
-
-        <footer className="px-6 py-4 border-t border-border flex items-center justify-end gap-2">
+    <SidePanel
+      title={`${row.restorationType} · ${row.material}`}
+      subtitle="Set unit price"
+      onClose={onClose}
+      footer={
+        <>
           <button
             type="button"
             onClick={onClose}
@@ -326,6 +472,740 @@ function PricingEditor({ row, onClose }: { row: PriceRow; onClose: () => void })
           >
             {mutation.isPending ? "Updating…" : "Update price"}
           </button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <Stat label="Current avg" value={formatMoney(row.avgPrice)} />
+        <Stat
+          label="Range"
+          value={
+            row.minPrice > 0
+              ? `${formatMoney(row.minPrice)} – ${formatMoney(row.maxPrice)}`
+              : "—"
+          }
+        />
+        <Stat label="Units" value={String(row.unitsBilled)} />
+        <Stat label="Cases" value={String(row.caseCount)} />
+      </div>
+
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          New unit price
+        </label>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">$</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={unitPrice}
+            onChange={(e) => setUnitPrice(e.target.value)}
+            className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm tabular-nums"
+          />
+        </div>
+        <p className="text-xs text-muted-foreground mt-2">
+          Updates every restoration with this type and material across every
+          case in your lab(s) you administer.
+        </p>
+      </div>
+
+      {error && (
+        <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
+          {error}
+        </div>
+      )}
+      {success !== null && (
+        <div className="text-sm rounded-md px-3 py-2 bg-success/15 text-success">
+          Updated {success} restoration{success === 1 ? "" : "s"}.
+        </div>
+      )}
+    </SidePanel>
+  );
+}
+
+// ---- Tiers ----
+
+function TiersSection() {
+  const queryClient = useQueryClient();
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<PricingTier | null>(null);
+
+  const tiersQuery = useQuery({
+    queryKey: ["pricing", "tiers"],
+    queryFn: () => apiFetch<TiersResponse>("/pricing/tiers"),
+    retry: false,
+  });
+
+  const tiers = tiersQuery.data?.tiers ?? [];
+  const keys = tiersQuery.data?.keys ?? [];
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/pricing/tiers/${id}`, { method: "DELETE" }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["pricing", "tiers"] }),
+  });
+
+  if (tiersQuery.isLoading) {
+    return (
+      <div className="text-sm text-muted-foreground py-12 text-center">
+        <Loader2 size={16} className="inline animate-spin mr-2" />
+        Loading tiers…
+      </div>
+    );
+  }
+  if (tiersQuery.error) {
+    const err = tiersQuery.error as ApiError;
+    return (
+      <div className="text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">
+        {err.message}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">
+          Tiers are price lists you can assign to client practices. Per-doctor
+          overrides take precedence over tiers.
+        </div>
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold inline-flex items-center gap-1.5 hover:bg-primary/90"
+        >
+          <Plus size={14} /> New tier
+        </button>
+      </div>
+
+      {tiers.length === 0 ? (
+        <div className="bg-card border border-border rounded-xl py-14 text-center">
+          <Layers
+            size={28}
+            className="inline text-muted-foreground/50 mb-3"
+          />
+          <div className="text-sm font-medium">No pricing tiers yet</div>
+          <div className="text-xs text-muted-foreground mt-1">
+            Create your first tier (e.g. Standard, Premium) and set per-item
+            prices.
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {tiers.map((t) => (
+            <div
+              key={t.id}
+              className="bg-card border border-border rounded-xl p-4"
+            >
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <div className="font-semibold">{t.name}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    {Object.values(t.prices).filter((v) => Number(v) > 0).length}{" "}
+                    of {keys.length} items priced
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditing(t)}
+                    className="h-8 w-8 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+                    aria-label="Edit tier"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Delete the "${t.name}" tier? Practices on this tier will fall back to defaults.`,
+                        )
+                      ) {
+                        deleteMutation.mutate(t.id);
+                      }
+                    }}
+                    className="h-8 w-8 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center"
+                    aria-label="Delete tier"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1 text-xs">
+                {keys.slice(0, 6).map((k) => (
+                  <div key={k} className="flex items-center justify-between">
+                    <span className="text-muted-foreground">{labelFor(k)}</span>
+                    <span className="tabular-nums">
+                      {Number(t.prices[k]) > 0
+                        ? formatMoney(Number(t.prices[k]))
+                        : "—"}
+                    </span>
+                  </div>
+                ))}
+                {keys.length > 6 && (
+                  <button
+                    type="button"
+                    onClick={() => setEditing(t)}
+                    className="text-primary text-xs mt-1"
+                  >
+                    +{keys.length - 6} more
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {creating && (
+        <TierEditor
+          mode="create"
+          keys={keys}
+          tier={null}
+          onClose={() => setCreating(false)}
+        />
+      )}
+      {editing && (
+        <TierEditor
+          mode="edit"
+          keys={keys}
+          tier={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function TierEditor({
+  mode,
+  keys,
+  tier,
+  onClose,
+}: {
+  mode: "create" | "edit";
+  keys: string[];
+  tier: PricingTier | null;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(tier?.name ?? "");
+  const [prices, setPrices] = useState<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const k of keys) {
+      const v = Number(tier?.prices?.[k] ?? 0);
+      out[k] = v > 0 ? v.toFixed(2) : "";
+    }
+    return out;
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const payload: Record<string, unknown> = {
+        name: name.trim(),
+        prices: Object.fromEntries(
+          Object.entries(prices)
+            .map(([k, v]) => [k, Number(v)])
+            .filter(([, v]) => Number.isFinite(v as number) && (v as number) > 0)
+        ),
+      };
+      if (mode === "create") {
+        return apiFetch<PricingTier>("/pricing/tiers", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+      return apiFetch<PricingTier>(`/pricing/tiers/${tier!.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pricing", "tiers"] });
+      onClose();
+    },
+    onError: (err: Error) => setError(err.message || "Could not save tier."),
+  });
+
+  return (
+    <SidePanel
+      title={mode === "create" ? "New pricing tier" : `Edit ${tier?.name}`}
+      subtitle="Pricing tier"
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => mutation.mutate()}
+            disabled={mutation.isPending || !name.trim()}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+          >
+            {mutation.isPending ? "Saving…" : "Save tier"}
+          </button>
+        </>
+      }
+    >
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Tier name
+        </label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Standard, Premium, Corporate…"
+          className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+        />
+      </div>
+
+      <div>
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Item prices
+        </div>
+        <div className="space-y-2">
+          {keys.map((k) => (
+            <PriceField
+              key={k}
+              label={labelFor(k)}
+              value={prices[k] ?? ""}
+              onChange={(v) => setPrices((p) => ({ ...p, [k]: v }))}
+            />
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
+          {error}
+        </div>
+      )}
+    </SidePanel>
+  );
+}
+
+// ---- Overrides ----
+
+function OverridesSection() {
+  const queryClient = useQueryClient();
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<PricingOverride | null>(null);
+  const [search, setSearch] = useState("");
+
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+  });
+  const overridesQuery = useQuery({
+    queryKey: ["pricing", "overrides"],
+    queryFn: () => apiFetch<OverridesResponse>("/pricing/overrides"),
+    retry: false,
+  });
+
+  const items = overridesQuery.data?.overrides ?? [];
+  const keys = overridesQuery.data?.keys ?? [];
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(
+      (o) =>
+        o.doctorName.toLowerCase().includes(q) ||
+        (o.practiceName || "").toLowerCase().includes(q)
+    );
+  }, [items, search]);
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/pricing/overrides/${id}`, { method: "DELETE" }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["pricing", "overrides"] }),
+  });
+
+  // role check via memberships
+  const isAdmin = (meQuery.data?.memberships ?? []).some(
+    (m) =>
+      m.status === "active" &&
+      m.organization?.type === "lab" &&
+      (m.role === "owner" || m.role === "admin")
+  );
+
+  if (overridesQuery.isLoading) {
+    return (
+      <div className="text-sm text-muted-foreground py-12 text-center">
+        <Loader2 size={16} className="inline animate-spin mr-2" />
+        Loading overrides…
+      </div>
+    );
+  }
+  if (overridesQuery.error) {
+    const err = overridesQuery.error as ApiError;
+    return (
+      <div className="text-sm text-destructive bg-destructive/10 rounded-md px-3 py-2">
+        {err.message}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[220px] max-w-md">
+          <Search
+            size={14}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+          />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by doctor or practice…"
+            className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+          />
+        </div>
+        <div className="text-xs text-muted-foreground flex-1">
+          Per-doctor prices override your tiers when new restorations are
+          billed.
+        </div>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold inline-flex items-center gap-1.5 hover:bg-primary/90"
+          >
+            <Plus size={14} /> New override
+          </button>
+        )}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="bg-card border border-border rounded-xl py-14 text-center">
+          <Stethoscope
+            size={28}
+            className="inline text-muted-foreground/50 mb-3"
+          />
+          <div className="text-sm font-medium">
+            {items.length === 0 ? "No overrides yet" : "No matches"}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1">
+            {items.length === 0
+              ? "Add a per-doctor override to give a specific doctor or practice their own pricing."
+              : "Try a different search."}
+          </div>
+        </div>
+      ) : (
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                <th className="text-left px-5 py-2.5 font-medium">Doctor</th>
+                <th className="text-left py-2.5 font-medium">Practice</th>
+                <th className="text-right py-2.5 font-medium">Items priced</th>
+                <th className="px-5 py-2.5" />
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((o) => (
+                <tr
+                  key={o.id}
+                  onClick={() => setEditing(o)}
+                  className="border-t border-border hover:bg-secondary/40 cursor-pointer"
+                >
+                  <td className="px-5 py-3 font-medium">{o.doctorName}</td>
+                  <td className="py-3 text-muted-foreground">
+                    {o.practiceName || "—"}
+                  </td>
+                  <td className="py-3 text-right tabular-nums">
+                    {Object.values(o.prices).filter((v) => Number(v) > 0).length}{" "}
+                    / {keys.length}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    <div className="inline-flex items-center gap-1">
+                      <span className="text-xs text-primary">
+                        <Pencil size={11} className="inline mr-1" />
+                        Edit
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (
+                            window.confirm(
+                              `Remove override for ${o.doctorName}?`,
+                            )
+                          ) {
+                            deleteMutation.mutate(o.id);
+                          }
+                        }}
+                        className="h-7 w-7 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center ml-1"
+                        aria-label="Delete override"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {creating && (
+        <OverrideEditor
+          mode="create"
+          keys={keys}
+          override={null}
+          onClose={() => setCreating(false)}
+        />
+      )}
+      {editing && (
+        <OverrideEditor
+          mode="edit"
+          keys={keys}
+          override={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function OverrideEditor({
+  mode,
+  keys,
+  override,
+  onClose,
+}: {
+  mode: "create" | "edit";
+  keys: string[];
+  override: PricingOverride | null;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [doctorName, setDoctorName] = useState(override?.doctorName ?? "");
+  const [practiceName, setPracticeName] = useState(
+    override?.practiceName ?? ""
+  );
+  const [notes, setNotes] = useState(override?.notes ?? "");
+  const [prices, setPrices] = useState<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const k of keys) {
+      const v = Number(override?.prices?.[k] ?? 0);
+      out[k] = v > 0 ? v.toFixed(2) : "";
+    }
+    return out;
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const payload: Record<string, unknown> = {
+        doctorName: doctorName.trim(),
+        practiceName: practiceName.trim() || null,
+        notes: notes.trim() || null,
+        prices: Object.fromEntries(
+          Object.entries(prices)
+            .map(([k, v]) => [k, Number(v)])
+            .filter(([, v]) => Number.isFinite(v as number) && (v as number) > 0)
+        ),
+      };
+      if (mode === "create") {
+        return apiFetch<PricingOverride>("/pricing/overrides", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+      return apiFetch<PricingOverride>(`/pricing/overrides/${override!.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pricing", "overrides"] });
+      onClose();
+    },
+    onError: (err: Error) =>
+      setError(err.message || "Could not save override."),
+  });
+
+  return (
+    <SidePanel
+      title={
+        mode === "create" ? "New per-doctor override" : `Edit ${override?.doctorName}`
+      }
+      subtitle="Per-doctor pricing"
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => mutation.mutate()}
+            disabled={mutation.isPending || !doctorName.trim()}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+          >
+            {mutation.isPending ? "Saving…" : "Save override"}
+          </button>
+        </>
+      }
+    >
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Doctor name
+        </label>
+        <input
+          type="text"
+          value={doctorName}
+          onChange={(e) => setDoctorName(e.target.value)}
+          placeholder="Dr. Aris"
+          className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+          disabled={mode === "edit"}
+        />
+        {mode === "edit" && (
+          <p className="text-xs text-muted-foreground mt-1">
+            Doctor name can't be changed once an override exists. Delete and
+            recreate to reassign.
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Practice (optional)
+        </label>
+        <input
+          type="text"
+          value={practiceName}
+          onChange={(e) => setPracticeName(e.target.value)}
+          placeholder="Elite Dental Group"
+          className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Notes (optional)
+        </label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          className="w-full px-2.5 py-2 rounded-md bg-background border border-input text-sm"
+        />
+      </div>
+
+      <div>
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+          Item prices
+        </div>
+        <div className="space-y-2">
+          {keys.map((k) => (
+            <PriceField
+              key={k}
+              label={labelFor(k)}
+              value={prices[k] ?? ""}
+              onChange={(v) => setPrices((p) => ({ ...p, [k]: v }))}
+            />
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground mt-2">
+          Leave a row blank to fall back to this doctor's tier (or the default).
+        </p>
+      </div>
+
+      {error && (
+        <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
+          {error}
+        </div>
+      )}
+    </SidePanel>
+  );
+}
+
+// ---- Shared UI ----
+
+function PriceField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="text-sm text-muted-foreground flex-1">{label}</div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-muted-foreground">$</span>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="0.00"
+          className="w-28 h-8 px-2 rounded-md bg-background border border-input text-sm text-right tabular-nums"
+        />
+      </div>
+    </div>
+  );
+}
+
+function SidePanel({
+  title,
+  subtitle,
+  onClose,
+  children,
+  footer,
+}: {
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  footer: React.ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="flex-1 bg-foreground/30" onClick={onClose} />
+      <aside className="w-full max-w-[480px] bg-card border-l border-border h-full flex flex-col">
+        <header className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div>
+            {subtitle && (
+              <div className="text-xs text-muted-foreground">{subtitle}</div>
+            )}
+            <div className="text-sm font-semibold">{title}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          {children}
+        </div>
+        <footer className="px-6 py-4 border-t border-border flex items-center justify-end gap-2">
+          {footer}
         </footer>
       </aside>
     </div>
@@ -335,7 +1215,9 @@ function PricingEditor({ row, onClose }: { row: PriceRow; onClose: () => void })
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="bg-secondary/40 rounded-md px-3 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">{label}</div>
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+        {label}
+      </div>
       <div className="text-sm font-medium tabular-nums mt-0.5">{value}</div>
     </div>
   );
