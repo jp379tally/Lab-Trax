@@ -15,7 +15,7 @@ import {
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
-import { resolveServerPrice } from "../lib/pricing";
+import { resolveServerPriceWithSource } from "../lib/pricing";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -110,8 +110,13 @@ router.post(
       const resolved = await Promise.all(
         input.restorations.map(async (r) => {
           let unit = r.unitPrice;
-          if (!Number.isFinite(unit) || unit <= 0) {
-            const fallback = await resolveServerPrice(
+          const userSupplied = Number.isFinite(unit) && unit > 0;
+          let priceSource: string | null = userSupplied ? "manual" : null;
+          let priceSourceId: string | null = null;
+          let priceSourceName: string | null = null;
+          let priceKey: string | null = null;
+          if (!userSupplied) {
+            const fallback = await resolveServerPriceWithSource(
               {
                 labOrganizationId: input.labOrganizationId,
                 doctorName: input.doctorName,
@@ -120,7 +125,13 @@ router.post(
               r.material,
               r.restorationType
             );
-            if (fallback !== null) unit = fallback;
+            if (fallback) {
+              unit = fallback.amount;
+              priceSource = fallback.source;
+              priceSourceId = fallback.sourceId;
+              priceSourceName = fallback.sourceName;
+              priceKey = fallback.key;
+            }
           }
           return {
             caseId: createdCase.id,
@@ -131,6 +142,10 @@ router.post(
             notes: r.notes ?? null,
             quantity: r.quantity,
             unitPrice: unit.toFixed(2),
+            priceSource,
+            priceSourceId,
+            priceSourceName,
+            priceKey,
           };
         })
       );
@@ -526,7 +541,13 @@ router.patch(
 
     await db
       .update(caseRestorations)
-      .set({ unitPrice: input.unitPrice.toFixed(2) })
+      .set({
+        unitPrice: input.unitPrice.toFixed(2),
+        priceSource: "manual",
+        priceSourceId: null,
+        priceSourceName: null,
+        priceKey: null,
+      })
       .where(
         inArray(
           caseRestorations.id,
@@ -575,8 +596,13 @@ router.post(
       .parse(req.body);
 
     let unit = input.unitPrice;
-    if (!Number.isFinite(unit) || unit <= 0) {
-      const fallback = await resolveServerPrice(
+    const userSupplied = Number.isFinite(unit) && unit > 0;
+    let priceSource: string | null = userSupplied ? "manual" : null;
+    let priceSourceId: string | null = null;
+    let priceSourceName: string | null = null;
+    let priceKey: string | null = null;
+    if (!userSupplied) {
+      const fallback = await resolveServerPriceWithSource(
         {
           labOrganizationId: found.labOrganizationId,
           doctorName: found.doctorName,
@@ -585,7 +611,13 @@ router.post(
         input.material,
         input.restorationType
       );
-      if (fallback !== null) unit = fallback;
+      if (fallback) {
+        unit = fallback.amount;
+        priceSource = fallback.source;
+        priceSourceId = fallback.sourceId;
+        priceSourceName = fallback.sourceName;
+        priceKey = fallback.key;
+      }
     }
 
     const [restoration] = await db
@@ -599,6 +631,10 @@ router.post(
         notes: input.notes ?? null,
         quantity: input.quantity,
         unitPrice: unit.toFixed(2),
+        priceSource,
+        priceSourceId,
+        priceSourceName,
+        priceKey,
       })
       .returning();
 

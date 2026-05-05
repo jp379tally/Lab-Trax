@@ -76,11 +76,34 @@ export interface ResolvedPriceContext {
   tierName?: string | null;
 }
 
+export type PriceSource = "default" | "tier" | "override" | "manual";
+
+export interface ResolvedPriceDetails {
+  amount: number;
+  source: Exclude<PriceSource, "manual">;
+  sourceId: string | null;
+  sourceName: string | null;
+  key: string;
+}
+
 export async function resolveServerPrice(
   ctx: ResolvedPriceContext,
   material?: string | null,
   restorationType?: string | null
 ): Promise<number | null> {
+  const details = await resolveServerPriceWithSource(
+    ctx,
+    material,
+    restorationType
+  );
+  return details ? details.amount : null;
+}
+
+export async function resolveServerPriceWithSource(
+  ctx: ResolvedPriceContext,
+  material?: string | null,
+  restorationType?: string | null
+): Promise<ResolvedPriceDetails | null> {
   const key = materialToPriceKey(material, restorationType);
   if (!key) return null;
 
@@ -98,7 +121,15 @@ export async function resolveServerPrice(
     if (match) {
       const prices = (match.pricesJson ?? {}) as Record<string, unknown>;
       const value = Number(prices[key]);
-      if (Number.isFinite(value) && value > 0) return value;
+      if (Number.isFinite(value) && value > 0) {
+        return {
+          amount: value,
+          source: "override",
+          sourceId: match.id,
+          sourceName: match.doctorName,
+          key,
+        };
+      }
       if (match.tierName) doctorTierName = match.tierName;
     }
   }
@@ -147,18 +178,28 @@ export async function resolveServerPrice(
       (t) => t.name.trim().toLowerCase() === name.trim().toLowerCase()
     );
 
-  const tryTier = (tier: typeof sortedTiers[number] | undefined) => {
+  const tryTier = (
+    tier: typeof sortedTiers[number] | undefined,
+    source: Exclude<PriceSource, "manual">
+  ): ResolvedPriceDetails | null => {
     if (!tier) return null;
     const prices = (tier.pricesJson ?? {}) as Record<string, unknown>;
     const value = Number(prices[key]);
-    return Number.isFinite(value) && value > 0 ? value : null;
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return {
+      amount: value,
+      source,
+      sourceId: tier.id,
+      sourceName: tier.name,
+      key,
+    };
   };
 
   for (const name of candidateNames) {
-    const v = tryTier(findByName(name));
+    const v = tryTier(findByName(name), "tier");
     if (v !== null) return v;
   }
 
   // Legacy fallback: first tier on the lab.
-  return tryTier(sortedTiers[0]);
+  return tryTier(sortedTiers[0], "default");
 }

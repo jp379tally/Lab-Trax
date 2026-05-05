@@ -9,7 +9,15 @@ import {
   X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import type { CaseEvent, CaseRestoration, LabCase } from "@/lib/types";
+import type {
+  CaseEvent,
+  CaseRestoration,
+  LabCase,
+  PricingHistoryEntry,
+  PricingOverride,
+  PricingTier,
+  RestorationPriceSource,
+} from "@/lib/types";
 import { formatDate, formatMoney, relativeTime, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 
@@ -292,23 +300,11 @@ function CaseDrawer({
             )}
             <div className="space-y-2">
               {data?.restorations?.map((r) => (
-                <div
+                <RestorationRow
                   key={r.id}
-                  className="border border-border rounded-md px-3 py-2 text-sm flex items-center justify-between"
-                >
-                  <div>
-                    <div className="font-medium">
-                      {r.restorationType}
-                      <span className="text-muted-foreground"> · Tooth {r.toothNumber}</span>
-                    </div>
-                    {r.material && (
-                      <div className="text-xs text-muted-foreground">{r.material}</div>
-                    )}
-                  </div>
-                  <div className="text-xs text-muted-foreground tabular-nums">
-                    Qty {r.quantity}
-                  </div>
-                </div>
+                  restoration={r}
+                  labOrganizationId={labCase.labOrganizationId}
+                />
               ))}
             </div>
           </section>
@@ -342,6 +338,242 @@ function CaseDrawer({
           </section>
         </div>
       </aside>
+    </div>
+  );
+}
+
+const PRICE_SOURCE_STYLES: Record<
+  RestorationPriceSource,
+  { label: string; className: string; title: string }
+> = {
+  manual: {
+    label: "Manual",
+    className: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+    title: "Price was entered manually on this case.",
+  },
+  override: {
+    label: "Override",
+    className: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+    title: "Came from a per-doctor pricing override.",
+  },
+  tier: {
+    label: "Tier",
+    className: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+    title: "Came from the practice's assigned pricing tier.",
+  },
+  default: {
+    label: "Default tier",
+    className: "bg-secondary text-muted-foreground",
+    title: "Fell back to the lab's default tier.",
+  },
+};
+
+function RestorationRow({
+  restoration: r,
+  labOrganizationId,
+}: {
+  restoration: CaseRestoration;
+  labOrganizationId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const source = (r.priceSource ?? null) as RestorationPriceSource | null;
+  const style = source ? PRICE_SOURCE_STYLES[source] : null;
+  const hasHistorySource =
+    source === "tier" || source === "override" || source === "default";
+
+  return (
+    <div className="border border-border rounded-md px-3 py-2 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-medium">
+            {r.restorationType}
+            <span className="text-muted-foreground"> · Tooth {r.toothNumber}</span>
+          </div>
+          {r.material && (
+            <div className="text-xs text-muted-foreground">{r.material}</div>
+          )}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {style && (
+              <span
+                title={style.title}
+                className={`text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded ${style.className}`}
+              >
+                {style.label}
+                {source !== "manual" && r.priceSourceName
+                  ? ` · ${r.priceSourceName}`
+                  : ""}
+              </span>
+            )}
+            {!style && (
+              <span className="text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-secondary text-muted-foreground">
+                Unknown source
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="text-right whitespace-nowrap">
+          <div className="text-xs text-muted-foreground tabular-nums">
+            Qty {r.quantity}
+          </div>
+          <div className="text-sm tabular-nums">
+            {formatMoney(r.unitPrice)}
+          </div>
+        </div>
+      </div>
+      {hasHistorySource && r.priceSourceId && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setExpanded((x) => !x)}
+            className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+          >
+            {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+            Price history
+          </button>
+          {expanded && (
+            <PriceHistoryPanel
+              labOrganizationId={labOrganizationId}
+              source={source as "tier" | "override" | "default"}
+              sourceId={r.priceSourceId}
+              priceKey={r.priceKey ?? null}
+              capturedUnitPrice={Number(r.unitPrice ?? 0)}
+              capturedAt={r.createdAt ?? null}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PriceHistoryPanel({
+  labOrganizationId,
+  source,
+  sourceId,
+  priceKey,
+  capturedUnitPrice,
+  capturedAt,
+}: {
+  labOrganizationId: string;
+  source: "tier" | "override" | "default";
+  sourceId: string;
+  priceKey: string | null;
+  capturedUnitPrice: number;
+  capturedAt: string | null;
+}) {
+  const endpointType = source === "override" ? "overrides" : "tiers";
+
+  const history = useQuery({
+    queryKey: ["pricing-history", endpointType, sourceId],
+    queryFn: () =>
+      apiFetch<{ entries: PricingHistoryEntry[] }>(
+        `/pricing/${endpointType}/${sourceId}/history`
+      ),
+  });
+
+  const currentList = useQuery({
+    queryKey: ["pricing-current", endpointType, labOrganizationId],
+    queryFn: async () => {
+      if (endpointType === "tiers") {
+        return apiFetch<{ tiers: PricingTier[] }>(
+          `/pricing/tiers?labOrganizationId=${encodeURIComponent(labOrganizationId)}`
+        );
+      }
+      return apiFetch<{ overrides: PricingOverride[] }>(
+        `/pricing/overrides?labOrganizationId=${encodeURIComponent(labOrganizationId)}`
+      );
+    },
+  });
+
+  if (history.isLoading || currentList.isLoading) {
+    return (
+      <div className="mt-1.5 text-[11px] text-muted-foreground">Loading price history…</div>
+    );
+  }
+  if (history.error) {
+    return (
+      <div className="mt-1.5 text-[11px] text-muted-foreground">
+        Couldn't load price history.
+      </div>
+    );
+  }
+
+  const capturedTs = capturedAt ? new Date(capturedAt).getTime() : 0;
+  const entries = (history.data?.entries ?? []).filter((e) => {
+    if (!priceKey) return true;
+    const before = e.beforePrices?.[priceKey];
+    const after = e.afterPrices?.[priceKey];
+    return Number(before ?? 0) !== Number(after ?? 0);
+  });
+  const changesSinceCase = entries.filter((e) => {
+    const t = e.createdAt ? new Date(e.createdAt).getTime() : 0;
+    return t > capturedTs;
+  });
+
+  let currentPrice: number | null = null;
+  if (priceKey) {
+    if (endpointType === "tiers") {
+      const tier = (currentList.data as { tiers?: PricingTier[] } | undefined)
+        ?.tiers?.find((t) => t.id === sourceId);
+      const v = Number(tier?.prices?.[priceKey]);
+      if (Number.isFinite(v) && v > 0) currentPrice = v;
+    } else {
+      const ov = (
+        currentList.data as { overrides?: PricingOverride[] } | undefined
+      )?.overrides?.find((o) => o.id === sourceId);
+      const v = Number(ov?.prices?.[priceKey]);
+      if (Number.isFinite(v) && v > 0) currentPrice = v;
+    }
+  }
+
+  const sourceLabel = source === "override" ? "Override" : "Tier";
+
+  return (
+    <div className="mt-2 border border-border rounded bg-secondary/30 p-2 space-y-1.5">
+      {currentPrice !== null && Math.abs(currentPrice - capturedUnitPrice) > 0.005 && (
+        <div className="text-[11px] text-foreground">
+          {sourceLabel} price changed{" "}
+          <span className="tabular-nums">
+            {formatMoney(capturedUnitPrice)} → {formatMoney(currentPrice)}
+          </span>{" "}
+          since this case was billed.
+        </div>
+      )}
+      {currentPrice !== null && Math.abs(currentPrice - capturedUnitPrice) <= 0.005 && (
+        <div className="text-[11px] text-muted-foreground">
+          {sourceLabel} price hasn't changed since this case was billed.
+        </div>
+      )}
+      {changesSinceCase.length === 0 && entries.length > 0 && (
+        <div className="text-[11px] text-muted-foreground">
+          No edits since this case was created.
+        </div>
+      )}
+      {changesSinceCase.length > 0 && (
+        <ul className="space-y-1">
+          {changesSinceCase.slice(0, 5).map((e) => {
+            const before = priceKey ? e.beforePrices?.[priceKey] : undefined;
+            const after = priceKey ? e.afterPrices?.[priceKey] : undefined;
+            const beforeNum = Number(before ?? 0);
+            const afterNum = Number(after ?? 0);
+            return (
+              <li key={e.id} className="text-[11px] text-muted-foreground">
+                <span className="text-foreground tabular-nums">
+                  {beforeNum > 0 ? formatMoney(beforeNum) : "—"} →{" "}
+                  {afterNum > 0 ? formatMoney(afterNum) : "—"}
+                </span>
+                <span> · {relativeTime(e.createdAt)}</span>
+                {e.userName && <span> · {e.userName}</span>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {entries.length === 0 && currentPrice === null && (
+        <div className="text-[11px] text-muted-foreground">
+          No pricing changes recorded.
+        </div>
+      )}
     </div>
   );
 }

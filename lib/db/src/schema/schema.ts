@@ -291,6 +291,10 @@ export const caseRestorations = pgTable("case_restorations", {
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 })
     .default("0.00")
     .notNull(),
+  priceSource: text("price_source"),
+  priceSourceId: varchar("price_source_id"),
+  priceSourceName: text("price_source_name"),
+  priceKey: text("price_key"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

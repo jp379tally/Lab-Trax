@@ -34,6 +34,8 @@ export interface LabCase {
   restorations?: CaseRestoration[];
 }
 
+export type RestorationPriceSource = "default" | "tier" | "override" | "manual";
+
 export interface CaseRestoration {
   id: string;
   caseId: string;
@@ -44,8 +46,52 @@ export interface CaseRestoration {
   notes?: string | null;
   quantity: number;
   unitPrice: string | number;
+  priceSource?: RestorationPriceSource | null;
+  priceSourceId?: string | null;
+  priceSourceName?: string | null;
+  priceKey?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+}
+
+export interface PricingTier {
+  id: string;
+  labOrganizationId: string;
+  name: string;
+  prices: Record<string, number>;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface PricingOverride {
+  id: string;
+  labOrganizationId: string;
+  doctorName: string;
+  practiceName?: string | null;
+  providerOrganizationId?: string | null;
+  tierName?: string | null;
+  prices: Record<string, number>;
+  notes?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface PricingHistoryEntry {
+  id: string;
+  action: string;
+  createdAt?: string | null;
+  userId?: string | null;
+  userName?: string | null;
+  beforePrices?: Record<string, number | string> | null;
+  afterPrices?: Record<string, number | string> | null;
+  beforeName?: string | null;
+  afterName?: string | null;
+  beforeDoctorName?: string | null;
+  afterDoctorName?: string | null;
+  beforePracticeName?: string | null;
+  afterPracticeName?: string | null;
+  beforeNotes?: string | null;
+  afterNotes?: string | null;
 }
 
 export interface CaseEvent {
