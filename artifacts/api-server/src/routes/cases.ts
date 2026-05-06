@@ -993,6 +993,39 @@ router.post(
   })
 );
 
+router.delete(
+  "/:caseId/restorations/:restorationId",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccess(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+    const restoration = await db.query.caseRestorations.findFirst({
+      where: and(
+        eq(caseRestorations.id, req.params.restorationId),
+        eq(caseRestorations.caseId, found.id)
+      ),
+    });
+    if (!restoration) throw new HttpError(404, "Restoration not found.");
+    await db
+      .delete(caseRestorations)
+      .where(eq(caseRestorations.id, restoration.id));
+    await writeAuditLog({
+      req,
+      organizationId: found.labOrganizationId,
+      action: "restoration_deleted",
+      entityType: "case_restoration",
+      entityId: restoration.id,
+      beforeJson: restoration,
+    });
+    return ok(res, { deleted: true });
+  })
+);
+
 router.post(
   "/:caseId/submissions",
   asyncHandler(async (req, res) => {

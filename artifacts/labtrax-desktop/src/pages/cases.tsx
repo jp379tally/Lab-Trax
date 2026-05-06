@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronUp,
@@ -11,7 +12,9 @@ import {
   Filter,
   Loader2,
   Lock,
+  Maximize2,
   Paperclip,
+  Pencil,
   Plus,
   ReceiptText,
   Search,
@@ -236,7 +239,7 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
                 <Plus size={13} /> Add new practice
                 {search.trim() && (
                   <span className="text-muted-foreground font-normal truncate">
-                    “{search.trim()}”
+                    "{search.trim()}"
                   </span>
                 )}
               </button>
@@ -827,6 +830,44 @@ function formatEventType(eventType: string | undefined | null): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const RESTORATION_TYPES = [
+  "Crown",
+  "Bridge",
+  "Veneer",
+  "Implant Crown",
+  "Inlay",
+  "Onlay",
+  "Full Denture",
+  "Partial Denture",
+  "Night Guard",
+  "Retainer",
+  "Sports Guard",
+  "Snore Guard",
+  "Other",
+];
+
+const MATERIALS = [
+  "Zirconia",
+  "PFM",
+  "E.max",
+  "Full Cast",
+  "Composite",
+  "Acrylic",
+  "Metal",
+  "PMMA",
+  "Other",
+];
+
+const SHADES = [
+  "A1", "A2", "A3", "A3.5", "A4",
+  "B1", "B2", "B3", "B4",
+  "C1", "C2", "C3", "C4",
+  "D2", "D3", "D4",
+  "BL1", "BL2", "BL3", "BL4",
+];
+
+type CaseTab = "overview" | "restorations" | "notes" | "files" | "invoice" | "history";
+
 function CaseDrawer({
   labCase,
   onClose,
@@ -838,6 +879,51 @@ function CaseDrawer({
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [activeTab, setActiveTab] = useState<CaseTab>("overview");
+  const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [confirmDeleteCase, setConfirmDeleteCase] = useState(false);
+
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState({
+    patientFirstName: labCase.patientFirstName || "",
+    patientLastName: labCase.patientLastName || "",
+    doctorName: labCase.doctorName || "",
+    dueDate: labCase.dueDate
+      ? new Date(labCase.dueDate).toISOString().split("T")[0]
+      : "",
+    priority: (labCase.priority || "normal") as "normal" | "rush",
+  });
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const [routeStatus, setRouteStatus] = useState("");
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [routeSuccess, setRouteSuccess] = useState(false);
+
+  const [noteText, setNoteText] = useState("");
+  const [noteVis, setNoteVis] = useState<"internal_lab_only" | "shared_with_provider">(
+    "shared_with_provider"
+  );
+  const [noteError, setNoteError] = useState<string | null>(null);
+
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const [generatingInvoice, setGeneratingInvoice] = useState(false);
+  const [invError, setInvError] = useState<string | null>(null);
+
+  const [showAddRest, setShowAddRest] = useState(false);
+  const [restForm, setRestForm] = useState({
+    toothNumber: "",
+    restorationType: "",
+    customType: "",
+    material: "",
+    shade: "",
+    quantity: 1,
+    unitPrice: "",
+  });
+  const [restError, setRestError] = useState<string | null>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ["case", labCase.id],
     queryFn: () => apiFetch<DetailedCase>(`/cases/${labCase.id}`),
@@ -847,26 +933,31 @@ function CaseDrawer({
   const invoiceQuery = useQuery({
     queryKey: ["invoice-for-case", labCase.id],
     queryFn: () =>
-      apiFetch<Invoice[]>(
-        `/invoices?caseId=${encodeURIComponent(labCase.id)}`
-      ),
+      apiFetch<Invoice[]>(`/invoices?caseId=${encodeURIComponent(labCase.id)}`),
     enabled: !isMobile,
   });
   const caseInvoice = invoiceQuery.data?.[0] ?? null;
 
-  const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
-  const [routeStatus, setRouteStatus] = useState("");
-  const [routeError, setRouteError] = useState<string | null>(null);
-  const [routeSuccess, setRouteSuccess] = useState(false);
-  const [noteText, setNoteText] = useState("");
-  const [noteVis, setNoteVis] = useState<
-    "internal_lab_only" | "shared_with_provider"
-  >("shared_with_provider");
-  const [noteError, setNoteError] = useState<string | null>(null);
-  const [uploadingFile, setUploadingFile] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [generatingInvoice, setGeneratingInvoice] = useState(false);
-  const [invError, setInvError] = useState<string | null>(null);
+  const editMutation = useMutation({
+    mutationFn: (updates: typeof editForm) =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          patientFirstName: updates.patientFirstName,
+          patientLastName: updates.patientLastName,
+          doctorName: updates.doctorName,
+          priority: updates.priority,
+          ...(updates.dueDate ? { dueDate: updates.dueDate } : {}),
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setEditMode(false);
+      setEditError(null);
+    },
+    onError: (e: Error) => setEditError(e.message),
+  });
 
   const routeMutation = useMutation({
     mutationFn: (status: string) =>
@@ -886,13 +977,7 @@ function CaseDrawer({
   });
 
   const addNoteMutation = useMutation({
-    mutationFn: ({
-      text,
-      visibility,
-    }: {
-      text: string;
-      visibility: string;
-    }) =>
+    mutationFn: ({ text, visibility }: { text: string; visibility: string }) =>
       apiFetch(`/cases/${labCase.id}/notes`, {
         method: "POST",
         body: JSON.stringify({ noteText: text, visibility }),
@@ -903,6 +988,55 @@ function CaseDrawer({
       setNoteError(null);
     },
     onError: (e: Error) => setNoteError(e.message),
+  });
+
+  const addRestorationMutation = useMutation({
+    mutationFn: () => {
+      const typeValue =
+        restForm.restorationType === "Other"
+          ? restForm.customType.trim()
+          : restForm.restorationType;
+      return apiFetch(`/cases/${labCase.id}/restorations`, {
+        method: "POST",
+        body: JSON.stringify({
+          toothNumber: restForm.toothNumber || "N/A",
+          restorationType: typeValue,
+          ...(restForm.material ? { material: restForm.material } : {}),
+          ...(restForm.shade ? { shade: restForm.shade } : {}),
+          quantity: restForm.quantity,
+          ...(restForm.unitPrice ? { unitPrice: Number(restForm.unitPrice) } : {}),
+        }),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      setRestForm({
+        toothNumber: "",
+        restorationType: "",
+        customType: "",
+        material: "",
+        shade: "",
+        quantity: 1,
+        unitPrice: "",
+      });
+      setShowAddRest(false);
+      setRestError(null);
+    },
+    onError: (e: Error) => setRestError(e.message),
+  });
+
+  const deleteCaseMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/cases/${labCase.id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      onClose();
+    },
+    onError: (e: Error) => {
+      window.alert(e.message || "Could not delete case.");
+      setConfirmDeleteCase(false);
+    },
   });
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -952,367 +1086,812 @@ function CaseDrawer({
     }
   }
 
+  function startEdit() {
+    const src = data ?? labCase;
+    setEditForm({
+      patientFirstName: src.patientFirstName || "",
+      patientLastName: src.patientLastName || "",
+      doctorName: src.doctorName || "",
+      dueDate: src.dueDate
+        ? new Date(src.dueDate).toISOString().split("T")[0]
+        : "",
+      priority: (src.priority || "normal") as "normal" | "rush",
+    });
+    setEditError(null);
+    setEditMode(true);
+  }
+
   if (isMobile) return <MobileCaseDrawer labCase={labCase} onClose={onClose} />;
 
-  const ROUTE_STATUSES = STATUS_FILTERS.filter((s) => s.value !== "all");
+  const isAdmin = !!data?.viewerCanManageAttachments;
   const currentStatus = (data?.status ?? labCase.status) as string;
   const hasRestorations = (data?.restorations?.length ?? 0) > 0;
+  const restorationCount = data?.restorations?.length ?? 0;
+  const noteCount = data?.notes?.length ?? 0;
+  const fileCount = data?.attachments?.length ?? 0;
+  const ROUTE_STATUSES = STATUS_FILTERS.filter((s) => s.value !== "all");
+
+  const tabs: Array<{ id: CaseTab; label: string; count?: number }> = [
+    { id: "overview", label: "Overview" },
+    { id: "restorations", label: "Restorations", count: restorationCount },
+    { id: "notes", label: "Notes", count: noteCount },
+    { id: "files", label: "Files", count: fileCount },
+    { id: "invoice", label: "Invoice" },
+    { id: "history", label: "History" },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-foreground/30" onClick={onClose} />
-      <aside className="w-full max-w-[520px] bg-card border-l border-border h-full flex flex-col">
-        <header className="flex items-center justify-between px-6 py-4 border-b border-border">
+      <aside className="w-full max-w-[700px] bg-card border-l border-border h-full flex flex-col shadow-2xl">
+        {/* Header */}
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
           <div>
             <div className="text-xs text-muted-foreground">Case</div>
-            <div className="font-mono text-sm font-semibold">
-              {labCase.caseNumber}
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="font-mono text-sm font-semibold">
+                {labCase.caseNumber}
+              </span>
+              <StatusBadge status={currentStatus} />
+              {(data?.priority ?? labCase.priority) === "rush" && (
+                <span className="text-[10px] font-bold uppercase tracking-wide text-destructive bg-destructive/10 px-1.5 py-0.5 rounded-full">
+                  Rush
+                </span>
+              )}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-1">
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteCase(true)}
+                className="h-8 w-8 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive flex items-center justify-center transition-colors"
+                title="Delete case"
+              >
+                <Trash2 size={15} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
-          {/* Core fields */}
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <Field
-              label="Patient"
-              value={`${labCase.patientFirstName} ${labCase.patientLastName}`}
-            />
-            <Field label="Doctor" value={labCase.doctorName} />
-            <Field label="Status" value={statusLabel(currentStatus)} />
-            <Field
-              label="Priority"
-              value={labCase.priority === "rush" ? "Rush" : "Normal"}
-            />
-            <Field label="Due date" value={formatDate(labCase.dueDate)} />
-            <Field label="Created" value={formatDate(labCase.createdAt)} />
-          </div>
+        {/* Tab navigation */}
+        <nav className="flex border-b border-border px-2 shrink-0 overflow-x-auto">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`px-3.5 py-2.5 text-xs font-medium whitespace-nowrap border-b-2 transition-colors flex items-center gap-1.5 ${
+                activeTab === tab.id
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {tab.label}
+              {tab.count != null && tab.count > 0 && (
+                <span
+                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none ${
+                    activeTab === tab.id
+                      ? "bg-primary/15 text-primary"
+                      : "bg-secondary text-muted-foreground"
+                  }`}
+                >
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
 
-          {/* Route case */}
-          <section>
-            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              Route Case
-            </h3>
-            <div className="flex gap-2">
-              <select
-                value={routeStatus}
-                onChange={(e) => {
-                  setRouteStatus(e.target.value);
-                  setRouteError(null);
-                }}
-                className="flex-1 h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
-              >
-                <option value="">Move to station…</option>
-                {ROUTE_STATUSES.map((s) => (
-                  <option
-                    key={s.value}
-                    value={s.value}
-                    disabled={s.value === currentStatus}
+        {/* Tab content */}
+        <div className="flex-1 overflow-y-auto">
+
+          {/* ── OVERVIEW ── */}
+          {activeTab === "overview" && (
+            <div className="px-5 py-5 space-y-6">
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    {editMode ? "Edit Case Details" : "Case Details"}
+                  </h3>
+                  {!editMode && (
+                    <button
+                      type="button"
+                      onClick={startEdit}
+                      className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Pencil size={11} /> Edit
+                    </button>
+                  )}
+                </div>
+                {!editMode ? (
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <Field
+                      label="Patient"
+                      value={`${data?.patientFirstName ?? labCase.patientFirstName} ${data?.patientLastName ?? labCase.patientLastName}`}
+                    />
+                    <Field label="Doctor" value={data?.doctorName ?? labCase.doctorName} />
+                    <Field label="Status" value={statusLabel(currentStatus)} />
+                    <Field
+                      label="Priority"
+                      value={(data?.priority ?? labCase.priority) === "rush" ? "Rush" : "Normal"}
+                    />
+                    <Field label="Due date" value={formatDate(data?.dueDate ?? labCase.dueDate)} />
+                    <Field label="Created" value={formatDate(data?.createdAt ?? labCase.createdAt)} />
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                          First Name
+                        </label>
+                        <input
+                          value={editForm.patientFirstName}
+                          onChange={(e) => {
+                            setEditForm((f) => ({ ...f, patientFirstName: e.target.value }));
+                            setEditError(null);
+                          }}
+                          className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                          Last Name
+                        </label>
+                        <input
+                          value={editForm.patientLastName}
+                          onChange={(e) => {
+                            setEditForm((f) => ({ ...f, patientLastName: e.target.value }));
+                            setEditError(null);
+                          }}
+                          className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Doctor
+                      </label>
+                      <input
+                        value={editForm.doctorName}
+                        onChange={(e) => {
+                          setEditForm((f) => ({ ...f, doctorName: e.target.value }));
+                          setEditError(null);
+                        }}
+                        className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                          Due Date
+                        </label>
+                        <input
+                          type="date"
+                          value={editForm.dueDate}
+                          onChange={(e) => {
+                            setEditForm((f) => ({ ...f, dueDate: e.target.value }));
+                            setEditError(null);
+                          }}
+                          className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                          Priority
+                        </label>
+                        <select
+                          value={editForm.priority}
+                          onChange={(e) =>
+                            setEditForm((f) => ({
+                              ...f,
+                              priority: e.target.value as "normal" | "rush",
+                            }))
+                          }
+                          className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                        >
+                          <option value="normal">Normal</option>
+                          <option value="rush">Rush</option>
+                        </select>
+                      </div>
+                    </div>
+                    {editError && <p className="text-xs text-destructive">{editError}</p>}
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => { setEditMode(false); setEditError(null); }}
+                        className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => editMutation.mutate(editForm)}
+                        disabled={editMutation.isPending}
+                        className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+                      >
+                        {editMutation.isPending && <Loader2 size={13} className="animate-spin" />}
+                        Save changes
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              {/* Route Case */}
+              <section>
+                <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
+                  Route Case
+                </h3>
+                <div className="flex gap-2">
+                  <select
+                    value={routeStatus}
+                    onChange={(e) => { setRouteStatus(e.target.value); setRouteError(null); }}
+                    className="flex-1 h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                   >
-                    {s.label}
-                    {s.value === currentStatus ? " (current)" : ""}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={!routeStatus || routeMutation.isPending}
-                onClick={() => routeMutation.mutate(routeStatus)}
-                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
-              >
-                {routeMutation.isPending ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  "Route"
-                )}
-              </button>
-            </div>
-            {routeError && (
-              <p className="mt-1.5 text-xs text-destructive">{routeError}</p>
-            )}
-            {routeSuccess && (
-              <p className="mt-1.5 text-xs text-green-600">
-                Status updated successfully.
-              </p>
-            )}
-          </section>
-
-          {/* Invoice */}
-          <section>
-            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              Invoice
-            </h3>
-            {invoiceQuery.isLoading ? (
-              <div className="text-sm text-muted-foreground flex items-center gap-1.5">
-                <Loader2 size={13} className="animate-spin" />
-                Loading…
-              </div>
-            ) : caseInvoice ? (
-              <div className="border border-border rounded-md px-3 py-2.5 flex items-center justify-between gap-3">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-semibold">
-                      {caseInvoice.invoiceNumber}
-                    </span>
-                    <StatusBadge status={caseInvoice.status} />
-                  </div>
-                  <div className="text-xs text-muted-foreground tabular-nums">
-                    Total: {formatMoney(caseInvoice.total)}
-                    {caseInvoice.balanceDue != null && (
-                      <> · Balance: {formatMoney(caseInvoice.balanceDue)}</>
-                    )}
-                  </div>
+                    <option value="">Move to station…</option>
+                    {ROUTE_STATUSES.map((s) => (
+                      <option key={s.value} value={s.value} disabled={s.value === currentStatus}>
+                        {s.label}{s.value === currentStatus ? " (current)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!routeStatus || routeMutation.isPending}
+                    onClick={() => routeMutation.mutate(routeStatus)}
+                    className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    {routeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : "Route"}
+                  </button>
                 </div>
+                {routeError && <p className="mt-1.5 text-xs text-destructive">{routeError}</p>}
+                {routeSuccess && (
+                  <p className="mt-1.5 text-xs text-green-600">Status updated successfully.</p>
+                )}
+              </section>
+            </div>
+          )}
+
+          {/* ── RESTORATIONS ── */}
+          {activeTab === "restorations" && (
+            <div className="px-5 py-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                  Restorations
+                </h3>
                 <button
                   type="button"
-                  onClick={() => setViewingInvoice(caseInvoice)}
-                  className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap"
+                  onClick={() => { setShowAddRest((v) => !v); setRestError(null); }}
+                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  Open
+                  <Plus size={12} />
+                  {showAddRest ? "Cancel" : "Add restoration"}
                 </button>
               </div>
-            ) : (
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  disabled={!hasRestorations || generatingInvoice || isLoading}
-                  onClick={handleGenerateInvoice}
-                  className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-secondary hover:bg-secondary/80 text-sm font-medium disabled:opacity-50 transition-colors"
-                >
-                  {generatingInvoice ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : (
-                    <ReceiptText size={14} />
-                  )}
-                  {generatingInvoice ? "Generating…" : "Generate Invoice"}
-                </button>
-                {!isLoading && !hasRestorations && (
-                  <p className="text-xs text-muted-foreground">
-                    Add restorations to this case before generating an invoice.
+
+              {showAddRest && (
+                <div className="border border-border rounded-lg p-4 space-y-3 bg-secondary/20">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    New restoration
                   </p>
-                )}
-                {invError && (
-                  <p className="text-xs text-destructive">{invError}</p>
-                )}
-              </div>
-            )}
-          </section>
-
-          {/* Restorations */}
-          <section>
-            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              Restorations
-            </h3>
-            {isLoading && (
-              <div className="text-sm text-muted-foreground">Loading…</div>
-            )}
-            {!isLoading && (data?.restorations?.length ?? 0) === 0 && (
-              <div className="text-sm text-muted-foreground">
-                No restorations on this case.
-              </div>
-            )}
-            <div className="space-y-2">
-              {data?.restorations?.map((r) => (
-                <RestorationRow
-                  key={r.id}
-                  restoration={r}
-                  labOrganizationId={labCase.labOrganizationId}
-                />
-              ))}
-            </div>
-          </section>
-
-          {/* Notes */}
-          <section>
-            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              Notes
-            </h3>
-            {isLoading && (
-              <div className="text-sm text-muted-foreground">Loading…</div>
-            )}
-            <div className="space-y-2 mb-3">
-              {!isLoading && (!data?.notes || data.notes.length === 0) && (
-                <div className="text-sm text-muted-foreground">
-                  No notes yet.
-                </div>
-              )}
-              {data?.notes?.map((n) => (
-                <div
-                  key={n.id}
-                  className="border border-border rounded-md px-3 py-2 text-sm"
-                >
-                  <p className="text-sm leading-relaxed">{n.noteText || "—"}</p>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    {n.visibility === "internal_lab_only" && (
-                      <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
-                        <Lock size={9} />
-                        Lab only
-                      </span>
-                    )}
-                    {n.createdAt && (
-                      <span className="text-[11px] text-muted-foreground">
-                        {relativeTime(n.createdAt)}
-                      </span>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Tooth # / Range
+                      </label>
+                      <input
+                        placeholder="e.g. 14 or 14-16"
+                        value={restForm.toothNumber}
+                        onChange={(e) => setRestForm((f) => ({ ...f, toothNumber: e.target.value }))}
+                        className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Quantity
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={restForm.quantity}
+                        onChange={(e) =>
+                          setRestForm((f) => ({
+                            ...f,
+                            quantity: Math.max(1, Number(e.target.value) || 1),
+                          }))
+                        }
+                        className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                      Restoration Type *
+                    </label>
+                    <select
+                      value={restForm.restorationType}
+                      onChange={(e) => setRestForm((f) => ({ ...f, restorationType: e.target.value }))}
+                      className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      <option value="">Select type…</option>
+                      {RESTORATION_TYPES.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                    {restForm.restorationType === "Other" && (
+                      <input
+                        placeholder="Describe restoration type…"
+                        value={restForm.customType}
+                        onChange={(e) => setRestForm((f) => ({ ...f, customType: e.target.value }))}
+                        className="mt-2 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
                     )}
                   </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Material
+                      </label>
+                      <select
+                        value={restForm.material}
+                        onChange={(e) => setRestForm((f) => ({ ...f, material: e.target.value }))}
+                        className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        <option value="">Select material…</option>
+                        {MATERIALS.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                        Shade
+                      </label>
+                      <select
+                        value={restForm.shade}
+                        onChange={(e) => setRestForm((f) => ({ ...f, shade: e.target.value }))}
+                        className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        <option value="">None</option>
+                        {SHADES.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                      Unit Price ($) — leave blank to auto-look up from pricing
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.01}
+                      placeholder="Auto"
+                      value={restForm.unitPrice}
+                      onChange={(e) => setRestForm((f) => ({ ...f, unitPrice: e.target.value }))}
+                      className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  </div>
+                  {restError && <p className="text-xs text-destructive">{restError}</p>}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => { setShowAddRest(false); setRestError(null); }}
+                      className="flex-1 h-8 rounded-md bg-secondary text-xs text-muted-foreground hover:text-foreground font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const typeValue =
+                          restForm.restorationType === "Other"
+                            ? restForm.customType.trim()
+                            : restForm.restorationType;
+                        if (!typeValue) {
+                          setRestError("Restoration type is required.");
+                          return;
+                        }
+                        addRestorationMutation.mutate();
+                      }}
+                      disabled={addRestorationMutation.isPending}
+                      className="flex-1 h-8 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+                    >
+                      {addRestorationMutation.isPending && <Loader2 size={11} className="animate-spin" />}
+                      Add restoration
+                    </button>
+                  </div>
                 </div>
-              ))}
+              )}
+
+              {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
+              {!isLoading && restorationCount === 0 && (
+                <div className="text-sm text-muted-foreground">
+                  No restorations yet. Use "Add restoration" to add one.
+                </div>
+              )}
+              <div className="space-y-2">
+                {data?.restorations?.map((r) => (
+                  <RestorationRow
+                    key={r.id}
+                    restoration={r}
+                    caseId={labCase.id}
+                    labOrganizationId={labCase.labOrganizationId}
+                    onDeleted={() => {
+                      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+                      qc.invalidateQueries({ queryKey: ["cases"] });
+                    }}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="border border-border rounded-md p-3 space-y-2">
-              <textarea
-                value={noteText}
-                onChange={(e) => {
-                  setNoteText(e.target.value);
-                  setNoteError(null);
-                }}
-                placeholder="Add a note…"
-                rows={2}
-                className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
-              />
-              <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-border">
-                <select
-                  value={noteVis}
-                  onChange={(e) =>
-                    setNoteVis(
-                      e.target.value as
-                        | "internal_lab_only"
-                        | "shared_with_provider"
-                    )
-                  }
-                  className="h-7 px-2 rounded bg-secondary text-xs border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
-                >
-                  <option value="shared_with_provider">
-                    Shared with provider
-                  </option>
-                  <option value="internal_lab_only">Internal only</option>
-                </select>
+          )}
+
+          {/* ── NOTES ── */}
+          {activeTab === "notes" && (
+            <div className="px-5 py-5 space-y-4">
+              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                Notes
+              </h3>
+              {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
+              <div className="space-y-2">
+                {!isLoading && noteCount === 0 && (
+                  <div className="text-sm text-muted-foreground">No notes yet.</div>
+                )}
+                {data?.notes?.map((n) => (
+                  <div key={n.id} className="border border-border rounded-md px-3 py-2.5 text-sm">
+                    <p className="leading-relaxed whitespace-pre-wrap">{n.noteText || "—"}</p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      {n.visibility === "internal_lab_only" ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                          <Lock size={9} /> Lab only
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-secondary text-muted-foreground border border-border">
+                          Shared
+                        </span>
+                      )}
+                      {n.createdAt && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {relativeTime(n.createdAt)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="border border-border rounded-md p-3 space-y-2">
+                <textarea
+                  value={noteText}
+                  onChange={(e) => { setNoteText(e.target.value); setNoteError(null); }}
+                  placeholder="Add a note…"
+                  rows={3}
+                  className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
+                />
+                <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-border">
+                  <select
+                    value={noteVis}
+                    onChange={(e) =>
+                      setNoteVis(e.target.value as "internal_lab_only" | "shared_with_provider")
+                    }
+                    className="h-7 px-2 rounded bg-secondary text-xs border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="shared_with_provider">Shared with provider</option>
+                    <option value="internal_lab_only">Internal only</option>
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!noteText.trim() || addNoteMutation.isPending}
+                    onClick={() => addNoteMutation.mutate({ text: noteText, visibility: noteVis })}
+                    className="h-7 px-3 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    {addNoteMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : "Add note"}
+                  </button>
+                </div>
+                {noteError && <p className="text-xs text-destructive">{noteError}</p>}
+              </div>
+            </div>
+          )}
+
+          {/* ── FILES ── */}
+          {activeTab === "files" && (
+            <div className="px-5 py-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                  Attachments
+                </h3>
                 <button
                   type="button"
-                  disabled={!noteText.trim() || addNoteMutation.isPending}
-                  onClick={() =>
-                    addNoteMutation.mutate({
-                      text: noteText,
-                      visibility: noteVis,
-                    })
-                  }
-                  className="h-7 px-3 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploadingFile}
+                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
                 >
-                  {addNoteMutation.isPending ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    "Add note"
-                  )}
+                  {uploadingFile ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />}
+                  {uploadingFile ? "Uploading…" : "Attach file"}
                 </button>
               </div>
-              {noteError && (
-                <p className="text-xs text-destructive">{noteError}</p>
+              <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
+              {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+              {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
+              {!isLoading && fileCount === 0 && !uploadingFile && (
+                <div className="text-sm text-muted-foreground">No files attached yet.</div>
               )}
+              {(() => {
+                const images = data?.attachments?.filter((a) => (a.fileType || "").startsWith("image/")) ?? [];
+                const others = data?.attachments?.filter((a) => !(a.fileType || "").startsWith("image/")) ?? [];
+                return (
+                  <>
+                    {images.length > 0 && (
+                      <div>
+                        <p className="text-[11px] text-muted-foreground mb-2 font-medium">
+                          Photos & Images ({images.length})
+                        </p>
+                        <div className="grid grid-cols-3 gap-2">
+                          {images.map((a) => (
+                            <div key={a.id} className="relative group">
+                              <button
+                                type="button"
+                                onClick={() => setLightboxUrl(a.storageKey)}
+                                className="relative w-full aspect-square rounded-lg overflow-hidden bg-secondary block"
+                                title={a.fileName}
+                              >
+                                <img
+                                  src={a.storageKey}
+                                  alt={a.fileName}
+                                  className="w-full h-full object-cover"
+                                  loading="lazy"
+                                />
+                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                                  <Maximize2 size={18} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                              </button>
+                              <p className="mt-1 text-[10px] text-muted-foreground truncate" title={a.fileName}>
+                                {a.fileName}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {others.length > 0 && (
+                      <div className="space-y-2">
+                        {images.length > 0 && (
+                          <p className="text-[11px] text-muted-foreground font-medium">
+                            Documents & Files ({others.length})
+                          </p>
+                        )}
+                        {others.map((a) => (
+                          <AttachmentRow
+                            key={a.id}
+                            caseId={labCase.id}
+                            attachment={a}
+                            canManage={!!data?.viewerCanManageAttachments}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
-          </section>
+          )}
 
-          {/* Attachments */}
-          <section>
-            <div className="flex items-center justify-between mb-2">
+          {/* ── INVOICE ── */}
+          {activeTab === "invoice" && (
+            <div className="px-5 py-5 space-y-4">
               <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                Attachments
+                Invoice
               </h3>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploadingFile}
-                className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
-              >
-                {uploadingFile ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <FileUp size={12} />
-                )}
-                {uploadingFile ? "Uploading…" : "Attach file"}
-              </button>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleFileChange}
-            />
-            {uploadError && (
-              <p className="mb-2 text-xs text-destructive">{uploadError}</p>
-            )}
-            {isLoading && (
-              <div className="text-sm text-muted-foreground">Loading…</div>
-            )}
-            {!isLoading &&
-              (data?.attachments?.length ?? 0) === 0 &&
-              !uploadingFile && (
-                <div className="text-sm text-muted-foreground">
-                  No files attached.
+              {invoiceQuery.isLoading ? (
+                <div className="text-sm text-muted-foreground flex items-center gap-1.5">
+                  <Loader2 size={13} className="animate-spin" />
+                  Loading…
+                </div>
+              ) : caseInvoice ? (
+                <div className="border border-border rounded-lg p-4 space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-semibold">{caseInvoice.invoiceNumber}</span>
+                      <StatusBadge status={caseInvoice.status} />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setViewingInvoice(caseInvoice)}
+                      className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors inline-flex items-center gap-1.5"
+                    >
+                      <ReceiptText size={13} />
+                      Open in editor
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <Field label="Total" value={formatMoney(caseInvoice.total)} />
+                    <Field label="Balance due" value={formatMoney(caseInvoice.balanceDue)} />
+                    {caseInvoice.issuedAt && (
+                      <Field label="Issued" value={formatDate(caseInvoice.issuedAt)} />
+                    )}
+                    {caseInvoice.dueDate && (
+                      <Field label="Due" value={formatDate(caseInvoice.dueDate)} />
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    No invoice has been generated for this case yet.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={!hasRestorations || generatingInvoice || isLoading}
+                    onClick={handleGenerateInvoice}
+                    className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-secondary hover:bg-secondary/80 text-sm font-medium disabled:opacity-50 transition-colors"
+                  >
+                    {generatingInvoice ? <Loader2 size={13} className="animate-spin" /> : <ReceiptText size={14} />}
+                    {generatingInvoice ? "Generating…" : "Generate Invoice"}
+                  </button>
+                  {!isLoading && !hasRestorations && (
+                    <p className="text-xs text-muted-foreground">
+                      Add restorations in the Restorations tab first — invoices are generated from restoration line items.
+                    </p>
+                  )}
+                  {invError && <p className="text-xs text-destructive">{invError}</p>}
                 </div>
               )}
-            <div className="space-y-2">
-              {data?.attachments?.map((a) => (
-                <AttachmentRow
-                  key={a.id}
-                  caseId={labCase.id}
-                  attachment={a}
-                  canManage={!!data?.viewerCanManageAttachments}
-                />
-              ))}
             </div>
-          </section>
+          )}
 
-          {/* Activity */}
-          <section>
-            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              Recent Activity
-            </h3>
-            {isLoading && (
-              <div className="text-sm text-muted-foreground">Loading…</div>
-            )}
-            {!isLoading && (data?.events?.length ?? 0) === 0 && (
-              <div className="text-sm text-muted-foreground">
-                No activity logged.
+          {/* ── HISTORY ── */}
+          {activeTab === "history" && (
+            <div className="px-5 py-5">
+              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-4">
+                Activity Log
+              </h3>
+              {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
+              {!isLoading && (data?.events?.length ?? 0) === 0 && (
+                <div className="text-sm text-muted-foreground">No activity logged yet.</div>
+              )}
+              <div>
+                {data?.events?.map((e, idx, arr) => {
+                  const isLast = idx === arr.length - 1;
+                  const eventType = e.eventType || "";
+                  const isStatus = eventType === "status_changed";
+                  const isNote = eventType === "note_added";
+                  const isAttachment = eventType.includes("attachment");
+                  const isInvoice = eventType.includes("invoice");
+                  const isRestoration = eventType.includes("restoration");
+                  const dotColor = isStatus
+                    ? "#3B82F6"
+                    : isNote
+                    ? "#F59E0B"
+                    : isAttachment
+                    ? "#8B5CF6"
+                    : isInvoice
+                    ? "#10B981"
+                    : isRestoration
+                    ? "#6366F1"
+                    : "#94A3B8";
+
+                  return (
+                    <div key={e.id || idx} className="flex gap-3 pb-5">
+                      <div className="flex flex-col items-center shrink-0 mt-0.5">
+                        <div
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: dotColor }}
+                        />
+                        {!isLast && <div className="w-px flex-1 bg-border mt-1.5" />}
+                      </div>
+                      <div className="flex-1 min-w-0 -mt-0.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-sm font-medium">{formatEventType(e.eventType)}</div>
+                          <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
+                            {relativeTime(e.occurredAt || e.createdAt)}
+                          </span>
+                        </div>
+                        {e.actorInitials && (
+                          <div className="text-xs text-muted-foreground mt-0.5">{e.actorInitials}</div>
+                        )}
+                        {isStatus && (e.metadataJson as any)?.fromStatus && (e.metadataJson as any)?.toStatus && (
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <StatusBadge status={String((e.metadataJson as any).fromStatus)} />
+                            <span className="text-xs text-muted-foreground">→</span>
+                            <StatusBadge status={String((e.metadataJson as any).toStatus)} />
+                          </div>
+                        )}
+                        {isNote && (e.metadataJson as any)?.visibility && (
+                          <div className="text-xs text-muted-foreground mt-0.5">
+                            {(e.metadataJson as any).visibility === "internal_lab_only"
+                              ? "Internal (lab only)"
+                              : "Shared with provider"}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            )}
-            <ul className="space-y-1.5">
-              {data?.events?.slice(0, 12).map((e) => (
-                <li
-                  key={e.id}
-                  className="text-sm flex items-start justify-between gap-3 border-l-2 border-primary/40 pl-3"
-                >
-                  <div className="min-w-0">
-                    <div className="font-medium">
-                      {formatEventType(e.eventType)}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {e.actorInitials || "—"}
-                      {e.metadataJson?.toStatus
-                        ? ` → ${statusLabel(String(e.metadataJson.toStatus))}`
-                        : ""}
-                    </div>
-                  </div>
-                  <span className="text-xs text-muted-foreground whitespace-nowrap">
-                    {relativeTime(e.occurredAt || e.createdAt)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
+            </div>
+          )}
         </div>
       </aside>
 
+      {/* Image lightbox */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setLightboxUrl(null)}
+            className="absolute top-4 right-4 h-10 w-10 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-colors"
+          >
+            <X size={20} />
+          </button>
+          <img
+            src={lightboxUrl}
+            alt="Preview"
+            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+
+      {/* Invoice editor overlay */}
       {viewingInvoice && (
-        <InvoiceEditor
-          invoice={viewingInvoice}
-          onClose={() => setViewingInvoice(null)}
-        />
+        <InvoiceEditor invoice={viewingInvoice} onClose={() => setViewingInvoice(null)} />
+      )}
+
+      {/* Delete case confirmation */}
+      {confirmDeleteCase && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40"
+          onClick={() => !deleteCaseMutation.isPending && setConfirmDeleteCase(false)}
+        >
+          <div
+            className="bg-card rounded-xl border border-border p-6 max-w-sm mx-4 space-y-4 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="h-9 w-9 rounded-full bg-destructive/15 flex items-center justify-center shrink-0">
+                <AlertTriangle size={17} className="text-destructive" />
+              </div>
+              <div>
+                <h3 className="font-semibold">Delete case {labCase.caseNumber}?</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  This will permanently delete the case and all its restorations, notes, and attachments. This cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteCase(false)}
+                disabled={deleteCaseMutation.isPending}
+                className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteCaseMutation.mutate()}
+                disabled={deleteCaseMutation.isPending}
+                className="flex-1 h-9 rounded-md bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
+              >
+                {deleteCaseMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                Delete permanently
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1346,24 +1925,46 @@ const PRICE_SOURCE_STYLES: Record<
 
 function RestorationRow({
   restoration: r,
+  caseId,
   labOrganizationId,
+  onDeleted,
 }: {
   restoration: CaseRestoration;
+  caseId: string;
   labOrganizationId: string;
+  onDeleted?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const source = (r.priceSource ?? null) as RestorationPriceSource | null;
   const style = source ? PRICE_SOURCE_STYLES[source] : null;
   const hasHistorySource =
     source === "tier" || source === "override" || source === "default";
 
+  const deleteMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/cases/${caseId}/restorations/${r.id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      onDeleted?.();
+    },
+    onError: (err: Error) => {
+      window.alert(err.message || "Couldn't delete restoration.");
+      setConfirmDelete(false);
+    },
+  });
+
   return (
-    <div className="border border-border rounded-md px-3 py-2 text-sm">
+    <div
+      className={`border rounded-md px-3 py-2 text-sm transition-colors ${
+        confirmDelete ? "border-destructive/40 bg-destructive/5" : "border-border"
+      }`}
+    >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="font-medium">
             {r.restorationType}
             <span className="text-muted-foreground"> · Tooth {r.toothNumber}</span>
+            {r.shade && <span className="text-muted-foreground"> · {r.shade}</span>}
           </div>
           {r.material && (
             <div className="text-xs text-muted-foreground">{r.material}</div>
@@ -1387,13 +1988,40 @@ function RestorationRow({
             )}
           </div>
         </div>
-        <div className="text-right whitespace-nowrap">
-          <div className="text-xs text-muted-foreground tabular-nums">
-            Qty {r.quantity}
+        <div className="flex items-start gap-2 shrink-0">
+          <div className="text-right whitespace-nowrap">
+            <div className="text-xs text-muted-foreground tabular-nums">Qty {r.quantity}</div>
+            <div className="text-sm tabular-nums font-medium">{formatMoney(r.unitPrice)}</div>
           </div>
-          <div className="text-sm tabular-nums">
-            {formatMoney(r.unitPrice)}
-          </div>
+          {!confirmDelete ? (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              className="h-7 w-7 rounded hover:bg-destructive/10 flex items-center justify-center text-muted-foreground hover:text-destructive transition-colors mt-0.5"
+              title="Delete restoration"
+            >
+              <Trash2 size={13} />
+            </button>
+          ) : (
+            <div className="flex items-center gap-1 mt-0.5">
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleteMutation.isPending}
+                className="h-6 px-1.5 rounded text-[11px] text-muted-foreground hover:text-foreground bg-secondary disabled:opacity-50"
+              >
+                Keep
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+                className="h-6 px-1.5 rounded text-[11px] font-medium text-destructive-foreground bg-destructive hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-0.5"
+              >
+                {deleteMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : "Delete"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {hasHistorySource && r.priceSourceId && (
