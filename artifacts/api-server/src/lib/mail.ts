@@ -194,6 +194,10 @@ export async function sendCleanupAlertEmail(
     ? `\nFile-level errors:\n${errors.map((e) => `  - ${e.fileName}: ${e.error}`).join("\n")}`
     : "";
 
+  const maintenanceUrl = `${getAppBaseUrl()}/desktop/maintenance`;
+  const maintenanceLinkHtml = `<p style="margin-top: 20px; font-size: 13px;">View the full run history on the <a href="${maintenanceUrl}" style="color: #4A6CF7;">Maintenance page</a>.</p>`;
+  const maintenanceLinkText = `\nView the full run history: ${maintenanceUrl}`;
+
   const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
     <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
       <h2 style="margin: 0;">LabTrax</h2>
@@ -201,11 +205,11 @@ export async function sendCleanupAlertEmail(
     </div>
     <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
       <p style="color: #555; font-size: 13px;">Run at: ${escapeHtml(report.ranAt)}</p>
-      ${fatalBannerHtml}${statsHtml}${errorRowsHtml}
+      ${fatalBannerHtml}${statsHtml}${errorRowsHtml}${maintenanceLinkHtml}
     </div>
   </div>`;
 
-  const text = `LabTrax Nightly Media Cleanup Report\nRun at: ${report.ranAt}\n\n${fatalBannerText}${statsText}${errorRowsText}`;
+  const text = `LabTrax Nightly Media Cleanup Report\nRun at: ${report.ranAt}\n\n${fatalBannerText}${statsText}${errorRowsText}${maintenanceLinkText}`;
 
   for (const email of params.adminEmails) {
     await sendMail({ to: email, subject, html, text });
