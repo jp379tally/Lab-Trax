@@ -11,8 +11,8 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, organizations, organizationMemberships, cases as casesTable, caseAttachments } from "@workspace/db";
-import { eq, and, inArray, or, isNull, sql } from "drizzle-orm";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments } from "@workspace/db";
+import { eq, and, inArray, or, isNull, sql, desc } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
@@ -1140,16 +1140,35 @@ export async function registerRoutes(): Promise<IRouter> {
         (typeof reqUser.displayName === "string" && reqUser.displayName) ||
         null;
       const now = new Date();
+      const previousNotes = existing.notes ?? "";
 
-      await db
-        .update(labPendingFiles)
-        .set({
-          notes,
-          notesUpdatedAt: now,
-          notesEditedByUserId: reqUser.id,
-          notesEditedByName: editorName,
-        })
-        .where(eq(labPendingFiles.id, id));
+      // Skip the no-op case so we don't pollute the audit log with edits that
+      // didn't actually change anything (e.g. the user opened the editor and
+      // hit save without typing).
+      const noteChanged = previousNotes !== notes;
+
+      await db.transaction(async (tx) => {
+        await tx
+          .update(labPendingFiles)
+          .set({
+            notes,
+            notesUpdatedAt: now,
+            notesEditedByUserId: reqUser.id,
+            notesEditedByName: editorName,
+          })
+          .where(eq(labPendingFiles.id, id));
+
+        if (noteChanged) {
+          await tx.insert(labPendingFileNoteEdits).values({
+            pendingFileId: id,
+            editorUserId: reqUser.id,
+            editorName,
+            oldNotes: previousNotes,
+            newNotes: notes,
+            createdAt: now,
+          });
+        }
+      });
 
       res.json({
         success: true,
@@ -1162,6 +1181,65 @@ export async function registerRoutes(): Promise<IRouter> {
       res.status(500).json({ error: "Failed to update pending file" });
     }
   });
+
+  // Read-only audit log of every change made to a pending file's notes,
+  // most-recent first. Only members of the file's lab (or master admins) can
+  // see it, mirroring the access rules on the underlying file row.
+  router.get(
+    "/lab-pending-files/:id/note-history",
+    requireAuth,
+    async (req, res) => {
+      try {
+        const reqUser = (req as any).user;
+        if (!reqUser) {
+          return res.status(401).json({ error: "Authentication required." });
+        }
+        const id = req.params.id as string;
+
+        const [existing] = await db
+          .select()
+          .from(labPendingFiles)
+          .where(eq(labPendingFiles.id, id));
+        if (!existing) {
+          return res.status(404).json({ error: "Pending file not found" });
+        }
+
+        const callerOrgIds = await getCallerLabOrganizationIds(reqUser);
+        const isMasterAdmin = reqUser.userType === "master_admin";
+        if (!isMasterAdmin && !callerOrgIds.includes(existing.organizationId)) {
+          return res.status(403).json({
+            error: "You are not a member of this lab.",
+          });
+        }
+
+        const rows = await db
+          .select()
+          .from(labPendingFileNoteEdits)
+          .where(eq(labPendingFileNoteEdits.pendingFileId, id))
+          .orderBy(desc(labPendingFileNoteEdits.createdAt));
+
+        const edits = rows.map((row) => ({
+          id: row.id,
+          editorUserId: row.editorUserId,
+          editorName: row.editorName || null,
+          oldNotes: row.oldNotes ?? "",
+          newNotes: row.newNotes ?? "",
+          createdAt:
+            row.createdAt instanceof Date
+              ? row.createdAt.toISOString()
+              : new Date(row.createdAt as any).toISOString(),
+        }));
+
+        res.json({ edits });
+      } catch (error: any) {
+        console.error(
+          "List pending file note history error:",
+          error?.message || error
+        );
+        res.status(500).json({ error: "Failed to list note history" });
+      }
+    }
+  );
 
   router.delete("/lab-pending-files/:id", requireAuth, async (req, res) => {
     try {

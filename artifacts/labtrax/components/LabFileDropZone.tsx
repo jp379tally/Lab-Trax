@@ -198,6 +198,23 @@ export function LabFileDropZone({
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewDraftNote, setPreviewDraftNote] = useState("");
 
+  // Note edit history modal state. Loaded on demand for a single file.
+  interface NoteEditEntry {
+    id: string;
+    editorUserId: string;
+    editorName: string | null;
+    oldNotes: string;
+    newNotes: string;
+    createdAt: string;
+  }
+  const [historyVisible, setHistoryVisible] = useState(false);
+  const [historyFileName, setHistoryFileName] = useState<string>("");
+  const [historyEntries, setHistoryEntries] = useState<NoteEditEntry[] | null>(
+    null
+  );
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
   const dragCounterRef = useRef(0);
   const pendingFilesRef = useRef<PendingFile[]>([]);
 
@@ -418,6 +435,51 @@ export function LabFileDropZone({
     setNoteModalVisible(false);
     setNoteTarget(null);
     setDraftNote("");
+  }
+
+  async function openNoteHistory(file: PendingFile) {
+    if (!file.serverId) {
+      // Local-only files don't have a server-side audit trail yet.
+      setHistoryFileName(file.fileName);
+      setHistoryEntries([]);
+      setHistoryError(null);
+      setHistoryLoading(false);
+      setHistoryVisible(true);
+      return;
+    }
+    setHistoryFileName(file.fileName);
+    setHistoryEntries(null);
+    setHistoryError(null);
+    setHistoryLoading(true);
+    setHistoryVisible(true);
+    try {
+      const response = await resilientFetch(
+        `/api/lab-pending-files/${file.serverId}/note-history`
+      );
+      if (!response.ok) {
+        setHistoryError("Could not load edit history.");
+        setHistoryEntries([]);
+        return;
+      }
+      const data = await response.json().catch(() => null);
+      const entries: NoteEditEntry[] = Array.isArray(data?.edits)
+        ? data.edits
+        : [];
+      setHistoryEntries(entries);
+    } catch {
+      setHistoryError("Could not load edit history.");
+      setHistoryEntries([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function dismissHistory() {
+    setHistoryVisible(false);
+    setHistoryEntries(null);
+    setHistoryError(null);
+    setHistoryLoading(false);
+    setHistoryFileName("");
   }
 
   function openPreview(file: PendingFile) {
@@ -1001,12 +1063,97 @@ export function LabFileDropZone({
               Uploaded by {previewTarget?.uploadedBy} · {previewTarget ? new Date(previewTarget.uploadedAt).toLocaleDateString() : ""}
             </Text>
             {previewTarget?.notesUpdatedAt ? (
-              <Text style={s.previewMetaEdited}>
-                Note edited by {previewTarget.notesEditedByName || "someone"} ·{" "}
-                {formatRelativeTimeShort(previewTarget.notesUpdatedAt)}
-              </Text>
+              <>
+                <Text style={s.previewMetaEdited}>
+                  Note edited by {previewTarget.notesEditedByName || "someone"} ·{" "}
+                  {formatRelativeTimeShort(previewTarget.notesUpdatedAt)}
+                </Text>
+                <Pressable
+                  onPress={() => previewTarget && openNoteHistory(previewTarget)}
+                  style={({ pressed }) => [
+                    s.historyLinkBtn,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Ionicons name="time-outline" size={14} color="#475569" />
+                  <Text style={s.historyLinkText}>View edit history</Text>
+                </Pressable>
+              </>
             ) : null}
           </ScrollView>
+        </View>
+      </Modal>
+
+      {/* ── Note edit history modal ── */}
+      <Modal
+        visible={historyVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={dismissHistory}
+      >
+        <View style={s.historyBackdrop}>
+          <View style={s.historySheet}>
+            <View style={s.historyHeader}>
+              <View style={s.historyHeaderText}>
+                <Text style={s.historyTitle}>Note edit history</Text>
+                <Text style={s.historySubtitle} numberOfLines={1}>
+                  {historyFileName || "Attachment"}
+                </Text>
+              </View>
+              <Pressable onPress={dismissHistory} hitSlop={12}>
+                <Ionicons name="close" size={24} color="#0F172A" />
+              </Pressable>
+            </View>
+            <ScrollView
+              style={s.historyScroll}
+              contentContainerStyle={s.historyScrollContent}
+            >
+              {historyLoading ? (
+                <Text style={s.historyEmpty}>Loading history…</Text>
+              ) : historyError ? (
+                <Text style={s.historyError}>{historyError}</Text>
+              ) : !historyEntries || historyEntries.length === 0 ? (
+                <Text style={s.historyEmpty}>No edits yet.</Text>
+              ) : (
+                historyEntries.map((entry) => (
+                  <View key={entry.id} style={s.historyEntry}>
+                    <View style={s.historyEntryHeader}>
+                      <Text style={s.historyEditor}>
+                        {entry.editorName || "Unknown editor"}
+                      </Text>
+                      <Text style={s.historyTime}>
+                        {formatRelativeTimeShort(
+                          new Date(entry.createdAt).getTime() || Date.now()
+                        )}
+                      </Text>
+                    </View>
+                    <Text style={s.historySectionLabel}>Before</Text>
+                    <View style={[s.historyBlock, s.historyBlockBefore]}>
+                      <Text
+                        style={[
+                          s.historyBlockText,
+                          !entry.oldNotes && s.historyBlockEmpty,
+                        ]}
+                      >
+                        {entry.oldNotes || "(empty)"}
+                      </Text>
+                    </View>
+                    <Text style={s.historySectionLabel}>After</Text>
+                    <View style={[s.historyBlock, s.historyBlockAfter]}>
+                      <Text
+                        style={[
+                          s.historyBlockText,
+                          !entry.newNotes && s.historyBlockEmpty,
+                        ]}
+                      >
+                        {entry.newNotes || "(empty)"}
+                      </Text>
+                    </View>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
         </View>
       </Modal>
 
@@ -1136,6 +1283,22 @@ export function LabFileDropZone({
                             edited by {file.notesEditedByName || "someone"} ·{" "}
                             {formatRelativeTimeShort(file.notesUpdatedAt)}
                           </Text>
+                        )}
+                        {!!file.notesUpdatedAt && (
+                          <Pressable
+                            onPress={(e: any) => {
+                              e?.stopPropagation?.();
+                              openNoteHistory(file);
+                            }}
+                            style={({ pressed }) => [
+                              s.rowHistoryBtn,
+                              pressed && { opacity: 0.7 },
+                            ]}
+                            hitSlop={6}
+                          >
+                            <Ionicons name="time-outline" size={12} color="#475569" />
+                            <Text style={s.rowHistoryText}>View history</Text>
+                          </Pressable>
                         )}
                       </Pressable>
 
@@ -1521,6 +1684,147 @@ const s = StyleSheet.create({
     textAlign: "center",
     marginTop: 2,
     fontStyle: "italic",
+  },
+  historyLinkBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingVertical: 8,
+    marginTop: 2,
+  },
+  historyLinkText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+    color: "#475569",
+  },
+  rowHistoryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    marginTop: 4,
+    alignSelf: "flex-start",
+    paddingVertical: 2,
+  },
+  rowHistoryText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 11,
+    color: "#475569",
+  },
+  historyBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    justifyContent: "flex-end",
+  },
+  historySheet: {
+    backgroundColor: "#FFF",
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    maxHeight: "85%",
+    minHeight: "40%",
+    paddingBottom: 24,
+  },
+  historyHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F5F9",
+    gap: 12,
+  },
+  historyHeaderText: {
+    flex: 1,
+  },
+  historyTitle: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 16,
+    color: "#0F172A",
+  },
+  historySubtitle: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    color: "#94A3B8",
+    marginTop: 2,
+  },
+  historyScroll: {
+    flex: 1,
+  },
+  historyScrollContent: {
+    padding: 16,
+    gap: 12,
+  },
+  historyEmpty: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    color: "#94A3B8",
+    textAlign: "center",
+    paddingVertical: 32,
+  },
+  historyError: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+    color: "#DC2626",
+    textAlign: "center",
+    paddingVertical: 32,
+  },
+  historyEntry: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    padding: 12,
+    gap: 6,
+  },
+  historyEntryHeader: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 4,
+  },
+  historyEditor: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+    color: "#0F172A",
+    flexShrink: 1,
+  },
+  historyTime: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+    color: "#94A3B8",
+  },
+  historySectionLabel: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 10,
+    color: "#64748B",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginTop: 2,
+  },
+  historyBlock: {
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  historyBlockBefore: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  historyBlockAfter: {
+    backgroundColor: "#EFF6FF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+  },
+  historyBlockText: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    color: "#0F172A",
+    lineHeight: 18,
+  },
+  historyBlockEmpty: {
+    fontStyle: "italic",
+    color: "#94A3B8",
   },
   modal: {
     flex: 1,

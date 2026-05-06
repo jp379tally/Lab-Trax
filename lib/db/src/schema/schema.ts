@@ -82,6 +82,32 @@ export const labPendingFiles = pgTable(
   })
 );
 
+// Append-only audit log of every edit made to a pending file's free-text
+// notes. We never UPDATE rows here — each note save inserts a new entry so
+// admins can reconstruct the full timeline of who changed what and when,
+// even after the underlying pending file is gone.
+export const labPendingFileNoteEdits = pgTable(
+  "lab_pending_file_note_edits",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    pendingFileId: varchar("pending_file_id").notNull(),
+    editorUserId: varchar("editor_user_id").notNull(),
+    editorName: text("editor_name"),
+    oldNotes: text("old_notes"),
+    newNotes: text("new_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    fileIdx: index("lab_pending_file_note_edits_file_idx").on(
+      table.pendingFileId
+    ),
+  })
+);
+
 export const organizations = pgTable("organizations", {
   id: varchar("id")
     .primaryKey()

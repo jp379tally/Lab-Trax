@@ -19,6 +19,7 @@ import {
   ExternalLink,
   FileText,
   Film,
+  History,
   Image as ImageIcon,
   Inbox,
   Link2,
@@ -233,6 +234,7 @@ interface PreviewDialogProps {
   onClose: () => void;
   onAttachClick: () => void;
   onDelete: () => void;
+  onShowHistory: () => void;
   isDeleting: boolean;
   onSaveNotes: (notes: string) => Promise<unknown>;
 }
@@ -649,6 +651,7 @@ function PreviewDialog({
   onClose,
   onAttachClick,
   onDelete,
+  onShowHistory,
   isDeleting,
   onSaveNotes,
 }: PreviewDialogProps) {
@@ -834,6 +837,16 @@ function PreviewDialog({
                   No notes added.
                 </p>
               )}
+              {file.notesUpdatedAt && (
+                <button
+                  type="button"
+                  onClick={onShowHistory}
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                >
+                  <History size={11} />
+                  View edit history
+                </button>
+              )}
             </div>
             <div className="px-4 py-3 flex-1">
               <a
@@ -886,11 +899,146 @@ function PreviewDialog({
   );
 }
 
+interface NoteEdit {
+  id: string;
+  editorUserId: string;
+  editorName: string | null;
+  oldNotes: string;
+  newNotes: string;
+  createdAt: string;
+}
+
+interface NoteHistoryDialogProps {
+  file: PendingFile;
+  onClose: () => void;
+}
+
+function NoteHistoryDialog({ file, onClose }: NoteHistoryDialogProps) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const historyQuery = useQuery({
+    queryKey: ["lab-pending-files", file.id, "note-history"],
+    queryFn: async () => {
+      const res = await apiFetch<{ edits: NoteEdit[] }>(
+        `/lab-pending-files/${file.id}/note-history`,
+      );
+      return res?.edits ?? [];
+    },
+  });
+
+  const edits = historyQuery.data ?? [];
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 px-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-card border border-border rounded-xl shadow-lg w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3.5 border-b border-border flex items-start gap-3">
+          <History size={16} className="text-muted-foreground mt-0.5 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold">Note edit history</h3>
+            <p className="text-xs text-muted-foreground mt-0.5 truncate">
+              {file.fileName}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground shrink-0"
+            aria-label="Close history"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto">
+          {historyQuery.isLoading && (
+            <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+              Loading history…
+            </div>
+          )}
+          {historyQuery.isError && !historyQuery.isLoading && (
+            <div className="px-5 py-10 text-center text-sm text-destructive">
+              Could not load edit history.
+            </div>
+          )}
+          {!historyQuery.isLoading &&
+            !historyQuery.isError &&
+            edits.length === 0 && (
+              <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+                No edits yet.
+              </div>
+            )}
+          {edits.length > 0 && (
+            <ol className="divide-y divide-border">
+              {edits.map((edit) => (
+                <li key={edit.id} className="px-5 py-3.5 space-y-2">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="text-sm font-medium">
+                      {edit.editorName || "Unknown editor"}
+                    </span>
+                    <span
+                      className="text-[11px] text-muted-foreground shrink-0"
+                      title={new Date(edit.createdAt).toLocaleString()}
+                    >
+                      {relativeTime(edit.createdAt)}
+                    </span>
+                  </div>
+                  <div className="grid gap-2 text-xs">
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                        Before
+                      </div>
+                      <div className="rounded-md bg-secondary/40 px-2.5 py-1.5 whitespace-pre-wrap break-words text-foreground/80">
+                        {edit.oldNotes ? (
+                          edit.oldNotes
+                        ) : (
+                          <span className="italic text-muted-foreground">
+                            (empty)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-0.5">
+                        After
+                      </div>
+                      <div className="rounded-md bg-primary/5 px-2.5 py-1.5 whitespace-pre-wrap break-words text-foreground/90">
+                        {edit.newNotes ? (
+                          edit.newNotes
+                        ) : (
+                          <span className="italic text-muted-foreground">
+                            (empty)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function PendingFilesList() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [attachTarget, setAttachTarget] = useState<PendingFile | null>(null);
   const [previewTarget, setPreviewTarget] = useState<PendingFile | null>(null);
+  const [historyTarget, setHistoryTarget] = useState<PendingFile | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -994,6 +1142,10 @@ export function PendingFilesList() {
             }
           : prev,
       );
+      queryClient.invalidateQueries({ queryKey: ["lab-pending-files"] });
+      queryClient.invalidateQueries({
+        queryKey: ["lab-pending-files", id, "note-history"],
+      });
       cancelEdit();
     },
     onError: (e: unknown, _vars, ctx) => {
@@ -1212,10 +1364,20 @@ export function PendingFilesList() {
                         {f.notes}
                       </div>
                       {f.notesUpdatedAt && (
-                        <div className="text-[11px] text-muted-foreground mt-0.5 italic">
-                          edited by{" "}
-                          {f.notesEditedByName || "someone"} ·{" "}
-                          {relativeTime(f.notesUpdatedAt)}
+                        <div className="text-[11px] text-muted-foreground mt-0.5 italic flex items-center gap-1.5 flex-wrap">
+                          <span>
+                            edited by {f.notesEditedByName || "someone"} ·{" "}
+                            {relativeTime(f.notesUpdatedAt)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setHistoryTarget(f)}
+                            className="inline-flex items-center gap-1 not-italic hover:text-foreground hover:underline"
+                            title="View full edit history"
+                          >
+                            <History size={11} />
+                            View history
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1271,6 +1433,7 @@ export function PendingFilesList() {
           file={previewTarget}
           onClose={() => setPreviewTarget(null)}
           onAttachClick={() => setAttachTarget(previewTarget)}
+          onShowHistory={() => setHistoryTarget(previewTarget)}
           onDelete={() => {
             if (
               window.confirm(
@@ -1304,6 +1467,13 @@ export function PendingFilesList() {
               queryKey: ["lab-pending-files"],
             });
           }}
+        />
+      )}
+
+      {historyTarget && (
+        <NoteHistoryDialog
+          file={historyTarget}
+          onClose={() => setHistoryTarget(null)}
         />
       )}
     </section>
