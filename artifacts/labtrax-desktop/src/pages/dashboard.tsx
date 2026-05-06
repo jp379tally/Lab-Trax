@@ -15,6 +15,7 @@ import type { Invoice, LabCase } from "@/lib/types";
 import { formatDate, formatMoney, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DesktopFileDropZone } from "@/components/DesktopFileDropZone";
+import { PendingFilesList } from "@/components/PendingFilesList";
 
 function isToday(d?: string | null): boolean {
   if (!d) return false;
@@ -176,8 +177,9 @@ export default function DashboardPage() {
         />
       </div>
 
-      <div className="mb-7">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-7">
         <DesktopFileDropZone />
+        <PendingFilesList />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">

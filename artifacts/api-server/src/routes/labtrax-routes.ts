@@ -11,7 +11,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, organizations, organizationMemberships } from "@workspace/db";
+import { users, labCases, labPendingFiles, organizations, organizationMemberships, cases as casesTable, caseAttachments } from "@workspace/db";
 import { eq, and, inArray, or, isNull, sql } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
@@ -1150,6 +1150,70 @@ export async function registerRoutes(): Promise<IRouter> {
     } catch (error: any) {
       console.error("Delete pending file error:", error?.message || error);
       res.status(500).json({ error: "Failed to delete pending file" });
+    }
+  });
+
+  // Attach a pending inbox file to a specific case. Records a
+  // caseAttachments row that points at the previously uploaded file URL,
+  // then deletes the pending file so it disappears from the inbox.
+  router.post("/lab-pending-files/:id/attach", requireAuth, async (req, res) => {
+    try {
+      const reqUser = (req as any).user;
+      if (!reqUser) {
+        return res.status(401).json({ error: "Authentication required." });
+      }
+      const id = req.params.id as string;
+      const { caseId } = req.body || {};
+      if (typeof caseId !== "string" || !caseId.trim()) {
+        return res.status(400).json({ error: "caseId is required" });
+      }
+
+      const [pending] = await db
+        .select()
+        .from(labPendingFiles)
+        .where(eq(labPendingFiles.id, id));
+      if (!pending) {
+        return res.status(404).json({ error: "Pending file not found" });
+      }
+
+      const callerOrgIds = await getCallerLabOrganizationIds(reqUser);
+      const isMasterAdmin = reqUser.userType === "master_admin";
+      if (!isMasterAdmin && !callerOrgIds.includes(pending.organizationId)) {
+        return res.status(403).json({ error: "You are not a member of this lab." });
+      }
+
+      const [targetCase] = await db
+        .select()
+        .from(casesTable)
+        .where(eq(casesTable.id, caseId.trim()));
+      if (!targetCase) {
+        return res.status(404).json({ error: "Case not found" });
+      }
+      if (targetCase.labOrganizationId !== pending.organizationId) {
+        return res.status(403).json({
+          error: "Case does not belong to this lab.",
+        });
+      }
+
+      // Insert the attachment and remove the pending file in a single
+      // transaction so a mid-flight failure can't leave the file in both
+      // the inbox and the case attachments list.
+      await db.transaction(async (tx) => {
+        await tx.insert(caseAttachments).values({
+          caseId: targetCase.id,
+          uploadedByUserId: reqUser.id,
+          uploadedByOrganizationId: pending.organizationId,
+          fileName: pending.fileName,
+          storageKey: pending.fileUrl,
+          fileType: pending.mimeType,
+        });
+        await tx.delete(labPendingFiles).where(eq(labPendingFiles.id, id));
+      });
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Attach pending file error:", error?.message || error);
+      res.status(500).json({ error: "Failed to attach pending file" });
     }
   });
 
