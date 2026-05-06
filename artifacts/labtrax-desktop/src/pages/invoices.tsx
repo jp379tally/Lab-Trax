@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Loader2, Plus, Search, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import type { Invoice, InvoiceLineItem } from "@/lib/types";
+import type { Invoice, InvoiceDisplayMetadata, InvoiceLineItem } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 
@@ -25,10 +25,16 @@ const EDITABLE_STATUSES = [
 
 type DraftLine = {
   id?: string;
+  item: string;
   description: string;
   quantity: number;
   unitPrice: number;
 };
+
+function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMetadata {
+  if (!inv) return {};
+  return (inv.displayMetadata ?? inv.displayMetadataJson ?? {}) as InvoiceDisplayMetadata;
+}
 
 export default function InvoicesPage() {
   const { data, isLoading, error } = useQuery({
@@ -47,9 +53,12 @@ export default function InvoicesPage() {
       .filter((i) => {
         if (status !== "all" && i.status !== status) return false;
         if (!q) return true;
+        const meta = readDisplayMetadata(i);
         return (
           i.invoiceNumber.toLowerCase().includes(q) ||
-          (i.providerOrganization?.name || "").toLowerCase().includes(q)
+          (i.providerOrganization?.name || "").toLowerCase().includes(q) ||
+          (meta.patientName || "").toLowerCase().includes(q) ||
+          (meta.billTo || "").toLowerCase().includes(q)
         );
       })
       .sort((a, b) =>
@@ -105,6 +114,8 @@ export default function InvoicesPage() {
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                 <th className="text-left font-medium px-5 py-2.5">Invoice #</th>
                 <th className="text-left font-medium py-2.5">Client</th>
+                <th className="text-left font-medium py-2.5">Patient</th>
+                <th className="text-left font-medium py-2.5">Bill to</th>
                 <th className="text-left font-medium py-2.5">Issued</th>
                 <th className="text-left font-medium py-2.5">Due</th>
                 <th className="text-left font-medium py-2.5">Status</th>
@@ -115,7 +126,7 @@ export default function InvoicesPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={9} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading invoices…
                   </td>
@@ -123,19 +134,21 @@ export default function InvoicesPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={9} className="px-5 py-12 text-center text-destructive">
                     {(error as Error).message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={9} className="px-5 py-12 text-center text-muted-foreground">
                     No invoices match the current filters.
                   </td>
                 </tr>
               )}
-              {filtered.map((i) => (
+              {filtered.map((i) => {
+                const meta = readDisplayMetadata(i);
+                return (
                 <tr
                   key={i.id}
                   onClick={() => setEditing(i)}
@@ -146,6 +159,12 @@ export default function InvoicesPage() {
                     {i.providerOrganization?.name || (
                       <span className="text-muted-foreground">—</span>
                     )}
+                  </td>
+                  <td className="py-3">
+                    {meta.patientName || <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="py-3 text-muted-foreground">
+                    {meta.billTo || <span className="text-muted-foreground">—</span>}
                   </td>
                   <td className="py-3 text-muted-foreground">{formatDate(i.issuedAt)}</td>
                   <td className="py-3 text-muted-foreground">
@@ -159,7 +178,8 @@ export default function InvoicesPage() {
                     {formatMoney(i.balanceDue ?? i.total)}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -201,6 +221,12 @@ function InvoiceEditor({
   const [discount, setDiscount] = useState<number>(0);
   const [items, setItems] = useState<DraftLine[]>([]);
   const [notes, setNotes] = useState<string>("");
+  const [patientName, setPatientName] = useState<string>("");
+  const [billTo, setBillTo] = useState<string>("");
+  const [teeth, setTeeth] = useState<string>("");
+  const [shade, setShade] = useState<string>("");
+  const [caseNotes, setCaseNotes] = useState<string>("");
+  const [credits, setCredits] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -218,9 +244,18 @@ function InvoiceEditor({
     setTax(Number(d.tax ?? 0));
     setDiscount(Number(d.discount ?? 0));
     setNotes(d.notes ?? "");
+    const meta = readDisplayMetadata(d);
+    setPatientName(meta.patientName ?? "");
+    setBillTo(meta.billTo ?? "");
+    setTeeth(meta.teeth ?? "");
+    setShade(meta.shade ?? "");
+    setCaseNotes(meta.caseNotes ?? "");
+    setCredits(Number(meta.credits ?? 0) || 0);
+    const metaItems = Array.isArray(meta.lineItems) ? meta.lineItems : [];
     setItems(
-      (d.items ?? []).map((it: InvoiceLineItem) => ({
+      (d.items ?? []).map((it: InvoiceLineItem, idx: number) => ({
         id: it.id,
+        item: metaItems[idx]?.item ?? "",
         description: it.description,
         quantity: Number(it.quantity ?? 0),
         unitPrice: Number(it.unitPrice ?? 0),
@@ -245,17 +280,36 @@ function InvoiceEditor({
       }
       const trimmedItems = items.map((it) => ({
         ...it,
+        item: it.item.trim(),
         description: it.description.trim(),
       }));
       if (trimmedItems.some((it) => !it.description)) {
         throw new Error("Each line item needs a description.");
       }
+      const existingMeta = readDisplayMetadata(detailQuery.data) as Record<
+        string,
+        unknown
+      >;
+      const displayMetadata: Record<string, unknown> = {
+        ...existingMeta,
+        patientName: patientName.trim(),
+        billTo: billTo.trim(),
+        teeth: teeth.trim(),
+        shade: shade.trim(),
+        caseNotes: caseNotes.trim(),
+        credits: Number(credits) || 0,
+        lineItems: trimmedItems.map((it) => ({
+          item: it.item,
+          description: it.description,
+        })),
+      };
       const payload: Record<string, unknown> = {
         status: statusValue,
         invoiceNumber: invoiceNumber.trim(),
         tax,
         discount,
         notes: notes.trim() ? notes.trim() : null,
+        displayMetadata,
         items: trimmedItems.map((it, idx) => ({
           description: it.description,
           quantity: it.quantity,
@@ -297,7 +351,10 @@ function InvoiceEditor({
   }
 
   function addItem() {
-    setItems((prev) => [...prev, { description: "", quantity: 1, unitPrice: 0 }]);
+    setItems((prev) => [
+      ...prev,
+      { item: "", description: "", quantity: 1, unitPrice: 0 },
+    ]);
   }
 
   return (
@@ -417,6 +474,85 @@ function InvoiceEditor({
           </section>
 
           <section>
+            <h3 className="text-sm font-semibold mb-3">Patient & billing details</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Patient name
+                </label>
+                <input
+                  type="text"
+                  value={patientName}
+                  onChange={(e) => setPatientName(e.target.value)}
+                  placeholder="Patient name"
+                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Bill to
+                </label>
+                <input
+                  type="text"
+                  value={billTo}
+                  onChange={(e) => setBillTo(e.target.value)}
+                  placeholder="Doctor or practice name"
+                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Teeth
+                </label>
+                <input
+                  type="text"
+                  value={teeth}
+                  onChange={(e) => setTeeth(e.target.value)}
+                  placeholder="e.g. 8, 9, 10"
+                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Shade
+                </label>
+                <input
+                  type="text"
+                  value={shade}
+                  onChange={(e) => setShade(e.target.value)}
+                  placeholder="e.g. A2"
+                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Case notes
+                </label>
+                <textarea
+                  value={caseNotes}
+                  onChange={(e) => setCaseNotes(e.target.value)}
+                  rows={2}
+                  placeholder="Case notes from the originating case"
+                  className="w-full px-3 py-2 rounded-md bg-background border border-input text-sm resize-y"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Credits
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={credits}
+                  onChange={(e) => setCredits(Number(e.target.value) || 0)}
+                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm text-right tabular-nums"
+                />
+              </div>
+            </div>
+          </section>
+
+          <section>
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold">Line items</h3>
               <button
@@ -431,6 +567,7 @@ function InvoiceEditor({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="text-left font-medium px-3 py-2 w-44">Item</th>
                     <th className="text-left font-medium px-3 py-2">Description</th>
                     <th className="text-right font-medium px-3 py-2 w-20">Qty</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Unit price</th>
@@ -441,13 +578,24 @@ function InvoiceEditor({
                 <tbody>
                   {items.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
                         No line items. Click "Add line" to add one.
                       </td>
                     </tr>
                   )}
                   {items.map((it, idx) => (
                     <tr key={idx} className="border-t border-border">
+                      <td className="px-3 py-1.5">
+                        <input
+                          type="text"
+                          value={it.item}
+                          onChange={(e) =>
+                            updateItem(idx, { item: e.target.value })
+                          }
+                          placeholder="Item"
+                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
+                        />
+                      </td>
                       <td className="px-3 py-1.5">
                         <input
                           type="text"
@@ -521,7 +669,7 @@ function InvoiceEditor({
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-border">
-                    <td colSpan={3} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    <td colSpan={4} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Subtotal
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
@@ -530,7 +678,7 @@ function InvoiceEditor({
                     <td />
                   </tr>
                   <tr className="border-t border-border">
-                    <td colSpan={3} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    <td colSpan={4} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Tax
                     </td>
                     <td className="px-3 py-2 text-right">
@@ -546,7 +694,7 @@ function InvoiceEditor({
                     <td />
                   </tr>
                   <tr className="border-t border-border">
-                    <td colSpan={3} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    <td colSpan={4} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Discount
                     </td>
                     <td className="px-3 py-2 text-right">
@@ -562,7 +710,7 @@ function InvoiceEditor({
                     <td />
                   </tr>
                   <tr className="border-t border-border bg-secondary/30">
-                    <td colSpan={3} className="px-3 py-2.5 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    <td colSpan={4} className="px-3 py-2.5 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Total
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums font-semibold">

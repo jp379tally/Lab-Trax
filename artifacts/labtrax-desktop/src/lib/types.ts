@@ -125,6 +125,18 @@ export interface InvoiceLineItem {
   sortOrder: number;
 }
 
+export interface InvoiceDisplayMetadata {
+  patientName?: string | null;
+  billTo?: string | null;
+  teeth?: string | null;
+  shade?: string | null;
+  caseNotes?: string | null;
+  caseType?: string | null;
+  clientName?: string | null;
+  credits?: number | null;
+  lineItems?: Array<{ item?: string | null; description?: string | null }> | null;
+}
+
 export interface Payment {
   id: string;
   invoiceId: string;
@@ -153,6 +165,8 @@ export interface Invoice {
   createdAt?: string | null;
   updatedAt?: string | null;
   notes?: string | null;
+  displayMetadata?: InvoiceDisplayMetadata | null;
+  displayMetadataJson?: InvoiceDisplayMetadata | null;
   items?: InvoiceLineItem[];
   payments?: Payment[];
   providerOrganization?: { id: string; name: string } | null;
