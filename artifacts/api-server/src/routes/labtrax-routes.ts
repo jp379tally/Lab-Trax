@@ -987,6 +987,13 @@ export async function registerRoutes(): Promise<IRouter> {
           fileName: row.fileName,
           mimeType: row.mimeType,
           notes: row.notes || "",
+          notesUpdatedAt: row.notesUpdatedAt
+            ? row.notesUpdatedAt instanceof Date
+              ? row.notesUpdatedAt.toISOString()
+              : new Date(row.notesUpdatedAt as any).toISOString()
+            : null,
+          notesEditedByUserId: row.notesEditedByUserId || null,
+          notesEditedByName: row.notesEditedByName || null,
           createdAt:
             row.createdAt instanceof Date
               ? row.createdAt.toISOString()
@@ -1069,6 +1076,9 @@ export async function registerRoutes(): Promise<IRouter> {
           fileName: inserted.fileName,
           mimeType: inserted.mimeType,
           notes: inserted.notes || "",
+          notesUpdatedAt: null,
+          notesEditedByUserId: null,
+          notesEditedByName: null,
           createdAt:
             inserted.createdAt instanceof Date
               ? inserted.createdAt.toISOString()
@@ -1109,12 +1119,28 @@ export async function registerRoutes(): Promise<IRouter> {
         });
       }
 
+      const editorName =
+        (typeof reqUser.username === "string" && reqUser.username) ||
+        (typeof reqUser.displayName === "string" && reqUser.displayName) ||
+        null;
+      const now = new Date();
+
       await db
         .update(labPendingFiles)
-        .set({ notes })
+        .set({
+          notes,
+          notesUpdatedAt: now,
+          notesEditedByUserId: reqUser.id,
+          notesEditedByName: editorName,
+        })
         .where(eq(labPendingFiles.id, id));
 
-      res.json({ success: true });
+      res.json({
+        success: true,
+        notesUpdatedAt: now.toISOString(),
+        notesEditedByUserId: reqUser.id,
+        notesEditedByName: editorName,
+      });
     } catch (error: any) {
       console.error("Update pending file error:", error?.message || error);
       res.status(500).json({ error: "Failed to update pending file" });

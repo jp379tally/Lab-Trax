@@ -30,6 +30,9 @@ export interface PendingFile {
   fileName: string;
   mimeType: string;
   notes: string;
+  notesUpdatedAt: string | null;
+  notesEditedByUserId: string | null;
+  notesEditedByName: string | null;
   createdAt: string;
 }
 
@@ -462,17 +465,34 @@ export function PendingFilesList() {
 
   const updateNotesMutation = useMutation({
     mutationFn: async ({ id, notes }: { id: string; notes: string }) => {
-      await apiFetch(`/lab-pending-files/${id}`, {
+      const res = await apiFetch<{
+        success: boolean;
+        notesUpdatedAt: string | null;
+        notesEditedByUserId: string | null;
+        notesEditedByName: string | null;
+      }>(`/lab-pending-files/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ notes }),
       });
-      return notes;
+      return { notes, meta: res };
     },
-    onSuccess: (notes, { id }) => {
+    onSuccess: ({ notes, meta }, { id }) => {
       queryClient.setQueryData<PendingFile[]>(
         ["lab-pending-files"],
         (prev) =>
-          prev?.map((f) => (f.id === id ? { ...f, notes } : f)) ?? prev,
+          prev?.map((f) =>
+            f.id === id
+              ? {
+                  ...f,
+                  notes,
+                  notesUpdatedAt: meta?.notesUpdatedAt ?? f.notesUpdatedAt,
+                  notesEditedByUserId:
+                    meta?.notesEditedByUserId ?? f.notesEditedByUserId,
+                  notesEditedByName:
+                    meta?.notesEditedByName ?? f.notesEditedByName,
+                }
+              : f,
+          ) ?? prev,
       );
       queryClient.invalidateQueries({ queryKey: ["lab-pending-files"] });
       cancelEdit();
@@ -678,8 +698,17 @@ export function PendingFilesList() {
                       </div>
                     </div>
                   ) : f.notes ? (
-                    <div className="text-xs text-foreground/80 mt-1 ml-[30px] whitespace-pre-wrap break-words">
-                      {f.notes}
+                    <div className="ml-[30px]">
+                      <div className="text-xs text-foreground/80 mt-1 whitespace-pre-wrap break-words">
+                        {f.notes}
+                      </div>
+                      {f.notesUpdatedAt && (
+                        <div className="text-[11px] text-muted-foreground mt-0.5 italic">
+                          edited by{" "}
+                          {f.notesEditedByName || "someone"} ·{" "}
+                          {relativeTime(f.notesUpdatedAt)}
+                        </div>
+                      )}
                     </div>
                   ) : null}
                 </div>

@@ -70,6 +70,9 @@ export const labPendingFiles = pgTable(
     fileName: text("file_name").notNull(),
     mimeType: text("mime_type").notNull(),
     notes: text("notes"),
+    notesUpdatedAt: timestamp("notes_updated_at", { withTimezone: true }),
+    notesEditedByUserId: varchar("notes_edited_by_user_id"),
+    notesEditedByName: text("notes_edited_by_name"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

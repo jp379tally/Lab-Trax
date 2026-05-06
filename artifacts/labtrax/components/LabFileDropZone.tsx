@@ -38,6 +38,9 @@ export interface PendingFile {
   uploadedBy: string;
   uploadedAt: number;
   notes?: string;
+  notesUpdatedAt?: number | null;
+  notesEditedByName?: string | null;
+  notesEditedByUserId?: string | null;
   // When set, this file lives on the server and is shared across every member
   // of the lab identified by `serverOrganizationId`. Local-only files (no
   // active lab membership, or upload still in progress) leave these undefined
@@ -106,6 +109,9 @@ interface ServerPendingFileResponse {
   fileName: string;
   mimeType: string;
   notes: string;
+  notesUpdatedAt?: string | null;
+  notesEditedByUserId?: string | null;
+  notesEditedByName?: string | null;
   createdAt: string;
 }
 
@@ -120,7 +126,25 @@ function serverFileToPending(file: ServerPendingFileResponse): PendingFile {
     uploadedBy: file.uploaderName || "Lab member",
     uploadedAt: new Date(file.createdAt).getTime() || Date.now(),
     notes: file.notes || "",
+    notesUpdatedAt: file.notesUpdatedAt
+      ? new Date(file.notesUpdatedAt).getTime() || null
+      : null,
+    notesEditedByName: file.notesEditedByName || null,
+    notesEditedByUserId: file.notesEditedByUserId || null,
   };
+}
+
+function formatRelativeTimeShort(ms: number): string {
+  const diff = Math.max(0, Date.now() - ms);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(ms).toLocaleDateString();
 }
 
 function detectMimeKind(mimeType: string): "image" | "video" | "pdf" | "file" {
@@ -339,13 +363,39 @@ export function LabFileDropZone({
     setNoteModalVisible(true);
   }
 
-  async function patchServerNote(serverId: string, notes: string) {
+  async function patchServerNote(
+    serverId: string,
+    notes: string,
+    localFileId?: string
+  ) {
     try {
-      await resilientFetch(`/api/lab-pending-files/${serverId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ notes }),
+      const response = await resilientFetch(
+        `/api/lab-pending-files/${serverId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ notes }),
+        }
+      );
+      if (!response.ok) return;
+      const data = await response.json().catch(() => null);
+      if (!data || !data.notesUpdatedAt) return;
+      const editedAt = new Date(data.notesUpdatedAt).getTime() || Date.now();
+      const editorName = data.notesEditedByName || null;
+      const editorId = data.notesEditedByUserId || null;
+      const next = pendingFilesRef.current.map((f) => {
+        const matches =
+          (localFileId && f.id === localFileId) || f.serverId === serverId;
+        return matches
+          ? {
+              ...f,
+              notesUpdatedAt: editedAt,
+              notesEditedByName: editorName,
+              notesEditedByUserId: editorId,
+            }
+          : f;
       });
+      persistFiles(next).catch(() => {});
     } catch {}
   }
 
@@ -357,7 +407,7 @@ export function LabFileDropZone({
     );
     persistFiles(updated).catch(() => {});
     if (noteTarget.serverId) {
-      patchServerNote(noteTarget.serverId, trimmed);
+      patchServerNote(noteTarget.serverId, trimmed, noteTarget.id);
     }
     setNoteModalVisible(false);
     setNoteTarget(null);
@@ -392,7 +442,7 @@ export function LabFileDropZone({
     persistFiles(updated).catch(() => {});
     const serverId = live?.serverId || previewTarget.serverId;
     if (serverId) {
-      patchServerNote(serverId, trimmed);
+      patchServerNote(serverId, trimmed, live?.id || previewTarget.id);
     }
     setPreviewVisible(false);
     setPreviewTarget(null);
@@ -950,6 +1000,12 @@ export function LabFileDropZone({
             <Text style={s.previewMeta}>
               Uploaded by {previewTarget?.uploadedBy} · {previewTarget ? new Date(previewTarget.uploadedAt).toLocaleDateString() : ""}
             </Text>
+            {previewTarget?.notesUpdatedAt ? (
+              <Text style={s.previewMetaEdited}>
+                Note edited by {previewTarget.notesEditedByName || "someone"} ·{" "}
+                {formatRelativeTimeShort(previewTarget.notesUpdatedAt)}
+              </Text>
+            ) : null}
           </ScrollView>
         </View>
       </Modal>
@@ -1073,6 +1129,12 @@ export function LabFileDropZone({
                         {!!file.notes && (
                           <Text style={s.fileNotePreview} numberOfLines={2}>
                             {file.notes}
+                          </Text>
+                        )}
+                        {!!file.notes && !!file.notesUpdatedAt && (
+                          <Text style={s.fileNoteEdited} numberOfLines={1}>
+                            edited by {file.notesEditedByName || "someone"} ·{" "}
+                            {formatRelativeTimeShort(file.notesUpdatedAt)}
                           </Text>
                         )}
                       </Pressable>
@@ -1452,6 +1514,14 @@ const s = StyleSheet.create({
     textAlign: "center",
     marginTop: 4,
   },
+  previewMetaEdited: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+    color: "#94A3B8",
+    textAlign: "center",
+    marginTop: 2,
+    fontStyle: "italic",
+  },
   modal: {
     flex: 1,
     backgroundColor: "#FFF",
@@ -1602,6 +1672,13 @@ const s = StyleSheet.create({
     marginTop: 3,
     fontStyle: "italic",
     lineHeight: 16,
+  },
+  fileNoteEdited: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 10,
+    color: "#94A3B8",
+    marginTop: 2,
+    fontStyle: "italic",
   },
   fileActions: {
     flexDirection: "column",
