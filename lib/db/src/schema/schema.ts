@@ -1016,6 +1016,31 @@ export const statementSendRuns = pgTable(
   })
 );
 
+export const mediaCleanupRuns = pgTable(
+  "media_cleanup_runs",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    dryRun: boolean("dry_run").default(false).notNull(),
+    status: text("status").default("ok").notNull(),
+    errorMessage: text("error_message"),
+    scannedFiles: integer("scanned_files").default(0).notNull(),
+    referencedFiles: integer("referenced_files").default(0).notNull(),
+    orphanCount: integer("orphan_count").default(0).notNull(),
+    removedCount: integer("removed_count").default(0).notNull(),
+    freedBytes: integer("freed_bytes").default(0).notNull(),
+    errorCount: integer("error_count").default(0).notNull(),
+    triggeredBy: text("triggered_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    startedAtIdx: index("media_cleanup_runs_started_at_idx").on(table.startedAt),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

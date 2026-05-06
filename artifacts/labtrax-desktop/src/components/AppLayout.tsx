@@ -20,6 +20,7 @@ import {
   Wallet,
   Wrench,
   XCircle,
+  HardDrive,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads } from "@/lib/uploads-context";
@@ -30,6 +31,7 @@ interface NavItem {
   path: string;
   icon: typeof LayoutDashboard;
   badge?: string;
+  adminOnly?: boolean;
 }
 
 const NAV: NavItem[] = [
@@ -46,6 +48,7 @@ const NAV: NavItem[] = [
 
 const SECONDARY: NavItem[] = [
   { label: "Admin Settings", path: "/settings", icon: Settings },
+  { label: "Maintenance", path: "/maintenance", icon: HardDrive, adminOnly: true },
 ];
 
 interface Props {
@@ -122,7 +125,7 @@ export function AppLayout({ children }: Props) {
             System
           </div>
           <ul className="space-y-0.5">
-            {SECONDARY.map((item) => {
+            {SECONDARY.filter((item) => !item.adminOnly || user?.role === "admin").map((item) => {
               const active = location.startsWith(item.path);
               const Icon = item.icon;
               return (

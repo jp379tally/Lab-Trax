@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { eq } from "drizzle-orm";
-import { db, caseAttachments, users } from "@workspace/db";
+import { db, caseAttachments, mediaCleanupRuns, users } from "@workspace/db";
 import { logger } from "./logger";
 import { sendCleanupAlertEmail } from "./mail";
 
@@ -138,28 +138,15 @@ export async function cleanupOrphanedCaseMedia(
       fs.rmSync(resolved, { force: true });
       report.removedCount += 1;
       report.freedBytes += size;
-    } catch (err: any) {
+    } catch (err: unknown) {
       report.errors.push({
         fileName,
-        error: err?.message || String(err),
+        error: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
   return report;
-}
-
-// ── Last-run summary (in-memory) ────────────────────────────────────────────
-
-export interface CleanupRunSummary extends OrphanedMediaReport {
-  ranAt: string;
-}
-
-let _lastCleanupReport: CleanupRunSummary | null = null;
-
-/** Returns the result of the most recent scheduler run, or null if it hasn't run yet. */
-export function getLastCleanupReport(): CleanupRunSummary | null {
-  return _lastCleanupReport;
 }
 
 // ── Daily orphaned-media cleanup scheduler ──────────────────────────────────
@@ -188,6 +175,71 @@ function msUntilNext(hourUtc: number): number {
   return next.getTime() - now.getTime();
 }
 
+/**
+ * Run `cleanupOrphanedCaseMedia` and persist the result to `media_cleanup_runs`.
+ *
+ * On a fatal cleanup failure the run is still persisted with status="error",
+ * and then the original error is re-thrown so callers can surface a proper
+ * error response rather than silently reporting success with zeroed metrics.
+ */
+export async function runAndPersistCleanup(
+  triggeredBy: string,
+  opts: CleanupOptions = { dryRun: false },
+): Promise<{ runId: string; report: OrphanedMediaReport; status: string; errorMessage: string | null }> {
+  const startedAt = new Date();
+  let report: OrphanedMediaReport | null = null;
+  let status = "ok";
+  let errorMessage: string | null = null;
+  let fatalError: unknown = null;
+
+  try {
+    report = await cleanupOrphanedCaseMedia(opts);
+  } catch (err: unknown) {
+    fatalError = err;
+    status = "error";
+    errorMessage = err instanceof Error ? err.message : String(err);
+    // Build a zero-metrics placeholder so the DB insert always has valid data.
+    report = {
+      dryRun: opts.dryRun,
+      mediaDirExists: false,
+      scannedFiles: 0,
+      referencedFiles: 0,
+      orphanCount: 0,
+      removedCount: 0,
+      freedBytes: 0,
+      sample: [],
+      errors: [],
+    };
+  }
+
+  const finishedAt = new Date();
+
+  const [row] = await db
+    .insert(mediaCleanupRuns)
+    .values({
+      startedAt,
+      finishedAt,
+      dryRun: opts.dryRun,
+      status,
+      errorMessage,
+      scannedFiles: report.scannedFiles,
+      referencedFiles: report.referencedFiles,
+      orphanCount: report.orphanCount,
+      removedCount: report.removedCount,
+      freedBytes: report.freedBytes,
+      errorCount: report.errors.length,
+      triggeredBy,
+    })
+    .returning({ id: mediaCleanupRuns.id });
+
+  // Re-throw after persisting so callers can return a proper error response.
+  if (fatalError !== null) {
+    throw fatalError;
+  }
+
+  return { runId: row!.id, report, status, errorMessage };
+}
+
 export function startDailyOrphanedMediaCleanup() {
   if (scheduled) return;
   scheduled = true;
@@ -204,10 +256,12 @@ export function startDailyOrphanedMediaCleanup() {
         { startedAt: ranAt },
         "Daily orphaned case-media cleanup starting",
       );
-      const report = await cleanupOrphanedCaseMedia({ dryRun: false });
-      _lastCleanupReport = { ...report, ranAt };
+      const { runId, report } = await runAndPersistCleanup("scheduler", {
+        dryRun: false,
+      });
       logger.info(
         {
+          runId,
           scannedFiles: report.scannedFiles,
           referencedFiles: report.referencedFiles,
           orphanCount: report.orphanCount,
@@ -240,15 +294,15 @@ export function startDailyOrphanedMediaCleanup() {
               errors: report.errors,
             },
           });
-        } catch (mailErr: any) {
+        } catch (mailErr: unknown) {
           logger.error(
-            { err: mailErr?.message || String(mailErr) },
+            { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
             "Daily orphaned case-media cleanup: admin alert email failed",
           );
         }
       }
-    } catch (err: any) {
-      const errMsg = err?.message || String(err);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       logger.error(
         { err: errMsg },
         "Daily orphaned case-media cleanup FAILED",
@@ -266,9 +320,9 @@ export function startDailyOrphanedMediaCleanup() {
           adminEmails,
           report: { ranAt, fatalError: errMsg },
         });
-      } catch (mailErr: any) {
+      } catch (mailErr: unknown) {
         logger.error(
-          { err: mailErr?.message || String(mailErr) },
+          { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
           "Daily orphaned case-media cleanup: fatal alert email failed",
         );
       }

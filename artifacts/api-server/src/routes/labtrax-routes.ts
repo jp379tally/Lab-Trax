@@ -6,13 +6,13 @@ import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import { runOneDriveBackup } from "../lib/backup";
-import { cleanupOrphanedCaseMedia, getLastCleanupReport } from "../lib/case-media";
+import { cleanupOrphanedCaseMedia, runAndPersistCleanup } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, mediaCleanupRuns } from "@workspace/db";
 import { eq, and, inArray, or, isNull, sql, desc } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
@@ -2809,6 +2809,28 @@ Important rules:
     });
   };
 
+  router.get("/admin/cleanup/orphaned-media/runs", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const limitRaw = (req.query as any)?.limit;
+    const limit = Math.min(
+      200,
+      Math.max(1, Number.isFinite(Number(limitRaw)) ? Number(limitRaw) : 50),
+    );
+    try {
+      const runs = await db
+        .select()
+        .from(mediaCleanupRuns)
+        .orderBy(desc(mediaCleanupRuns.startedAt))
+        .limit(limit);
+      return res.json({ runs });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to fetch cleanup runs." });
+    }
+  });
+
   router.post("/admin/cleanup/orphaned-media", cleanupAuth, async (req, res) => {
     const triggeredBy =
       ((req as any).cleanupTriggeredBy as string | undefined) || "unknown";
@@ -2842,7 +2864,7 @@ Important rules:
     })();
 
     try {
-      const report = await cleanupOrphanedCaseMedia({
+      const { runId, report, status, errorMessage } = await runAndPersistCleanup(triggeredBy, {
         dryRun,
         // `includeAll` returns the full orphan filename list (useful for
         // forensic review); otherwise honor `sampleLimit` or the default.
@@ -2852,26 +2874,12 @@ Important rules:
             ? { sampleLimit }
             : {}),
       });
-      console.log(
-        `[CLEANUP] orphaned case-media triggeredBy=${triggeredBy} dryRun=${dryRun} scanned=${report.scannedFiles} orphans=${report.orphanCount} removed=${report.removedCount} freedBytes=${report.freedBytes} errors=${report.errors.length}`,
-      );
-      return res.json({ ok: true, triggeredBy, ...report });
+      return res.json({ ok: true, runId, triggeredBy, status, errorMessage, ...report });
     } catch (e: any) {
-      console.error("Orphaned media cleanup failed:", e?.message || e);
       return res
         .status(500)
         .json({ error: e?.message || "Orphaned media cleanup failed." });
     }
-  });
-
-  // ── Admin: last nightly cleanup run summary ───────────────────────────────
-  router.get("/admin/cleanup/last-report", requireAuth, (req, res) => {
-    const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
-      return res.status(403).json({ error: "Admin access required." });
-    }
-    const report = getLastCleanupReport();
-    return res.json({ ok: true, report });
   });
 
   // ── Admin Backup → OneDrive ───────────────────────────────────────────────

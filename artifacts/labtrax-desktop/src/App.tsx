@@ -12,6 +12,7 @@ import StatementsPage from "@/pages/statements";
 import PricingPage from "@/pages/pricing";
 import ReportsPage from "@/pages/reports";
 import SettingsPage from "@/pages/settings";
+import MaintenancePage from "@/pages/maintenance";
 import RegisterPage from "@/pages/finance/register";
 import ReconcilePage from "@/pages/finance/reconcile";
 import CashFlowPage from "@/pages/finance/cash-flow";
@@ -50,6 +51,7 @@ function AppLayoutWithUploads() {
         <Route path="/pricing" component={PricingPage} />
         <Route path="/reports" component={ReportsPage} />
         <Route path="/settings" component={SettingsPage} />
+        <Route path="/maintenance" component={MaintenancePage} />
         <Route path="/finance" component={() => <Redirect to="/finance/register" />} />
         <Route path="/finance/register" component={RegisterPage} />
         <Route path="/finance/reconcile" component={ReconcilePage} />
