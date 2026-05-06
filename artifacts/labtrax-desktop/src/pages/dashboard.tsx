@@ -285,7 +285,14 @@ export default function DashboardPage() {
     <div className="px-8 py-7 max-w-[1400px] mx-auto">
       <div className="flex items-end justify-between mb-7">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Dashboard
+            {user?.practiceName && (
+              <span className="ml-2 text-muted-foreground font-normal">
+                — {user.practiceName}
+              </span>
+            )}
+          </h1>
           <p className="text-sm text-muted-foreground mt-1">
             Your lab at a glance.
           </p>

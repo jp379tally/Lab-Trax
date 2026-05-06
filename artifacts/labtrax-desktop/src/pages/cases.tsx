@@ -927,14 +927,12 @@ function CaseDrawer({
   const { data, isLoading } = useQuery({
     queryKey: ["case", labCase.id],
     queryFn: () => apiFetch<DetailedCase>(`/cases/${labCase.id}`),
-    enabled: !isMobile,
   });
 
   const invoiceQuery = useQuery({
     queryKey: ["invoice-for-case", labCase.id],
     queryFn: () =>
       apiFetch<Invoice[]>(`/invoices?caseId=${encodeURIComponent(labCase.id)}`),
-    enabled: !isMobile,
   });
   const caseInvoice = invoiceQuery.data?.[0] ?? null;
 
@@ -1100,8 +1098,6 @@ function CaseDrawer({
     setEditError(null);
     setEditMode(true);
   }
-
-  if (isMobile) return <MobileCaseDrawer labCase={labCase} onClose={onClose} />;
 
   const isAdmin = !!data?.viewerCanManageAttachments;
   const currentStatus = (data?.status ?? labCase.status) as string;
