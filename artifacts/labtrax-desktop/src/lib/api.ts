@@ -276,6 +276,144 @@ export async function apiUploadWithProgress<T = unknown>(
   return result.data;
 }
 
+// --- Chunked / resumable uploads ------------------------------------------
+
+export interface ChunkUploadResult {
+  uploadedBytes: number;
+  fileSize: number;
+  complete: boolean;
+  url?: string;
+  filename?: string;
+  size?: number;
+}
+
+export interface SendChunkOptions {
+  onChunkProgress?: (bytesUploadedInThisChunk: number) => void;
+  signal?: AbortSignal;
+}
+
+function sendChunkXhr(
+  url: string,
+  blob: Blob,
+  offset: number,
+  csrf: string | null,
+  opts: SendChunkOptions,
+): Promise<{ ok: true; data: ChunkUploadResult } | { ok: false; status: number; message: string; uploadedBytes?: number }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PATCH", url, true);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("Upload-Offset", String(offset));
+    if (csrf) xhr.setRequestHeader(CSRF_HEADER_NAME, csrf);
+
+    if (xhr.upload && opts.onChunkProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          opts.onChunkProgress?.(event.loaded);
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      const status = xhr.status;
+      const text = xhr.responseText || "";
+      let parsed: unknown = null;
+      if (text) {
+        try { parsed = JSON.parse(text); } catch { parsed = text; }
+      }
+      if (status >= 200 && status < 300) {
+        resolve({ ok: true, data: parsed as ChunkUploadResult });
+      } else {
+        const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+        const msg =
+          (obj && typeof obj.message === "string" && obj.message) ||
+          (obj && typeof obj.error === "string" && obj.error) ||
+          `Request failed (${status})`;
+        const uploadedBytes =
+          obj && typeof obj.uploadedBytes === "number" ? obj.uploadedBytes : undefined;
+        resolve({ ok: false, status, message: msg, uploadedBytes });
+      }
+    };
+    xhr.onerror = () => {
+      resolve({ ok: false, status: 0, message: "Network error during upload." });
+    };
+    xhr.onabort = () => {
+      resolve({ ok: false, status: 0, message: "Upload was canceled." });
+    };
+
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        xhr.abort();
+      } else {
+        opts.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+      }
+    }
+
+    xhr.send(blob);
+  });
+}
+
+export async function createUploadSession(params: {
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+}): Promise<{ sessionId: string; uploadedBytes: number; fileSize: number }> {
+  return apiFetch("/media/upload-session", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function getUploadSessionStatus(
+  sessionId: string,
+): Promise<{ sessionId: string; uploadedBytes: number; fileSize: number; fileName: string; mimeType: string }> {
+  return apiFetch(`/media/upload-session/${encodeURIComponent(sessionId)}`);
+}
+
+export async function deleteUploadSession(sessionId: string): Promise<void> {
+  try {
+    await apiFetch(`/media/upload-session/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+  } catch {
+    /* best effort */
+  }
+}
+
+export async function sendUploadChunk(
+  sessionId: string,
+  blob: Blob,
+  offset: number,
+  opts: SendChunkOptions = {},
+): Promise<ChunkUploadResult> {
+  const url = `/api/media/upload-session/${encodeURIComponent(sessionId)}`;
+  let csrf = readCsrfCookie();
+  if (!csrf) {
+    const seeded = await refreshAccessToken();
+    if (seeded) csrf = readCsrfCookie();
+  }
+
+  let result = await sendChunkXhr(url, blob, offset, csrf, opts);
+  if (!result.ok && result.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      csrf = readCsrfCookie();
+      result = await sendChunkXhr(url, blob, offset, csrf, opts);
+    } else {
+      throw new ApiError("Your session has expired. Please sign in again.", 401);
+    }
+  }
+
+  if (!result.ok) {
+    const err = new ApiError(result.message, result.status);
+    (err as ApiError & { uploadedBytes?: number }).uploadedBytes = result.uploadedBytes;
+    throw err;
+  }
+  return result.data;
+}
+
 export async function login(username: string, password: string): Promise<SessionUser> {
   const r = await fetch("/api/auth/login", {
     method: "POST",

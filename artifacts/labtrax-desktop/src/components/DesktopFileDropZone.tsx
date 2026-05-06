@@ -2,7 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle, FileText, Film, Image, RotateCw, Upload, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { useUploads, type UploadRejection } from "@/lib/uploads-context";
+import { useUploads, type FileWithHandle, type UploadRejection } from "@/lib/uploads-context";
+import { supportsDropHandles, supportsFilePicker } from "@/lib/upload-handles";
+
+const PICKER_TYPES = [
+  {
+    description: "Images, videos, and PDFs",
+    accept: {
+      "image/*": [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"],
+      "video/*": [".mp4", ".mov", ".webm", ".avi"],
+      "application/pdf": [".pdf"],
+    },
+  },
+];
 
 function FileTypeIcon({ mimeType, className }: { mimeType: string; className?: string }) {
   if (mimeType === "application/pdf") return <FileText size={16} className={className} />;
@@ -22,23 +34,69 @@ interface DesktopFileDropZoneProps {
 }
 
 function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileDropZoneProps) {
-  const { entries, addFiles, removeEntry, cancelEntry, updateNote, commitNote, retryEntry, resumeEntry } =
-    useUploads();
+  const {
+    entries,
+    addFiles,
+    removeEntry,
+    cancelEntry,
+    updateNote,
+    commitNote,
+    retryEntry,
+    resumeEntry,
+    requestResumePermission,
+    hasResumeHandle,
+  } = useUploads();
   const [dragOver, setDragOver] = useState(false);
   const [rejections, setRejections] = useState<UploadRejection[]>([]);
   const [resumeErrors, setResumeErrors] = useState<Record<string, string>>({});
+  const [resumingIds, setResumingIds] = useState<Record<string, boolean>>({});
   const dragCounterRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resumeInputsRef = useRef<Map<string, HTMLInputElement>>(new Map());
 
-  const processFiles = useCallback(
-    (files: FileList | File[]) => {
-      if (!organizationId) return;
-      const result = addFiles(files, { organizationId, uploaderName });
+  const processItems = useCallback(
+    (items: FileWithHandle[]) => {
+      if (!organizationId || items.length === 0) return;
+      const result = addFiles(items, { organizationId, uploaderName });
       setRejections(result.rejections);
     },
     [addFiles, organizationId, uploaderName],
   );
+
+  const processFiles = useCallback(
+    (files: FileList | File[]) => {
+      processItems(Array.from(files).map((file) => ({ file })));
+    },
+    [processItems],
+  );
+
+  const openFilePicker = useCallback(async () => {
+    if (!organizationId) return;
+    if (supportsFilePicker()) {
+      try {
+        const handles: any[] = await (window as any).showOpenFilePicker({
+          multiple: true,
+          excludeAcceptAllOption: false,
+          types: PICKER_TYPES,
+        });
+        const items: FileWithHandle[] = [];
+        for (const handle of handles) {
+          try {
+            const file = await handle.getFile();
+            items.push({ file, handle });
+          } catch {
+            /* skip unreadable handles */
+          }
+        }
+        processItems(items);
+        return;
+      } catch (err: any) {
+        if (err?.name === "AbortError") return; // user dismissed picker
+        // Fall through to the legacy <input type="file"> picker.
+      }
+    }
+    fileInputRef.current?.click();
+  }, [organizationId, processItems]);
 
   function handleDragEnter(e: React.DragEvent) {
     e.preventDefault();
@@ -64,6 +122,36 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
     e.stopPropagation();
     dragCounterRef.current = 0;
     setDragOver(false);
+    // When the browser supports it, use DataTransferItem.getAsFileSystemHandle
+    // so we can persist the handle and silently resume after a refresh.
+    if (supportsDropHandles() && e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      const items = Array.from(e.dataTransfer.items);
+      void (async () => {
+        const collected: FileWithHandle[] = [];
+        for (const item of items) {
+          if (item.kind !== "file") continue;
+          let handle: any = null;
+          try {
+            handle = await (item as any).getAsFileSystemHandle?.();
+          } catch {
+            handle = null;
+          }
+          if (handle && handle.kind === "file") {
+            try {
+              const file = await handle.getFile();
+              collected.push({ file, handle });
+              continue;
+            } catch {
+              /* fall through to plain file */
+            }
+          }
+          const file = item.getAsFile();
+          if (file) collected.push({ file });
+        }
+        processItems(collected);
+      })();
+      return;
+    }
     if (e.dataTransfer.files.length > 0) {
       processFiles(e.dataTransfer.files);
     }
@@ -115,9 +203,9 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
             role="button"
             tabIndex={0}
             aria-label="Drop files here or click to pick files"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => void openFilePicker()}
             onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click();
+              if (e.key === "Enter" || e.key === " ") void openFilePicker();
             }}
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
@@ -255,15 +343,51 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                         Upload was interrupted by a page refresh.
                       </div>
                       <div className="flex items-center gap-2 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={() => resumeInputsRef.current.get(entry.id)?.click()}
-                          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
-                          aria-label={`Re-pick ${entry.fileName} to resume upload`}
-                        >
-                          <RotateCw size={11} />
-                          Re-pick file to resume
-                        </button>
+                        {hasResumeHandle(entry.id) ? (
+                          <button
+                            type="button"
+                            disabled={!!resumingIds[entry.id]}
+                            onClick={async () => {
+                              setResumingIds((prev) => ({ ...prev, [entry.id]: true }));
+                              const result = await requestResumePermission(entry.id);
+                              setResumingIds((prev) => {
+                                const next = { ...prev };
+                                delete next[entry.id];
+                                return next;
+                              });
+                              setResumeErrors((prev) => {
+                                const next = { ...prev };
+                                if (result.ok) {
+                                  delete next[entry.id];
+                                } else if (result.reason === "no-handle") {
+                                  // Handle was lost (e.g. cleared storage); fall back to re-pick.
+                                  delete next[entry.id];
+                                  resumeInputsRef.current.get(entry.id)?.click();
+                                } else if (result.reason === "permission-denied") {
+                                  next[entry.id] = "Permission to read the file was denied.";
+                                } else {
+                                  next[entry.id] = result.reason ?? "Could not resume upload.";
+                                }
+                                return next;
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1 disabled:opacity-50"
+                            aria-label={`Resume upload of ${entry.fileName}`}
+                          >
+                            <RotateCw size={11} />
+                            {resumingIds[entry.id] ? "Resuming…" : "Resume upload"}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => resumeInputsRef.current.get(entry.id)?.click()}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
+                            aria-label={`Re-pick ${entry.fileName} to resume upload`}
+                          >
+                            <RotateCw size={11} />
+                            Re-pick file to resume
+                          </button>
+                        )}
                         <input
                           ref={(el) => {
                             if (el) resumeInputsRef.current.set(entry.id, el);

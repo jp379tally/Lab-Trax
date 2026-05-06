@@ -245,12 +245,303 @@ const caseMediaUpload = multer({
   limits: { fileSize: 200 * 1024 * 1024 },
 });
 
+// Resumable chunked-upload session storage. Each session is one in-progress
+// file split across many small HTTP requests so that a dropped connection or
+// browser refresh only loses the current chunk, not the whole transfer.
+const uploadSessionsDir = path.resolve(casMediaDir, ".sessions");
+const MAX_RESUMABLE_FILE_BYTES = 200 * 1024 * 1024;
+const MAX_RESUMABLE_CHUNK_BYTES = 8 * 1024 * 1024;
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface UploadSessionMeta {
+  sessionId: string;
+  userId: string;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  finalName: string;
+  createdAt: number;
+}
+
+function uploadSessionPaths(sessionId: string) {
+  return {
+    metaPath: path.resolve(uploadSessionsDir, `${sessionId}.json`),
+    partPath: path.resolve(uploadSessionsDir, `${sessionId}.part`),
+  };
+}
+
+function isSafeSessionId(id: string): boolean {
+  return /^[a-f0-9]{32}$/.test(id);
+}
+
+function readUploadSessionMeta(sessionId: string): UploadSessionMeta | null {
+  if (!isSafeSessionId(sessionId)) return null;
+  const { metaPath } = uploadSessionPaths(sessionId);
+  try {
+    const raw = fs.readFileSync(metaPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed.sessionId === "string" &&
+      typeof parsed.userId === "string" &&
+      typeof parsed.fileName === "string" &&
+      typeof parsed.fileSize === "number" &&
+      typeof parsed.mimeType === "string" &&
+      typeof parsed.finalName === "string" &&
+      typeof parsed.createdAt === "number"
+    ) {
+      return parsed as UploadSessionMeta;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function getCurrentUploadOffset(sessionId: string): number {
+  const { partPath } = uploadSessionPaths(sessionId);
+  try {
+    return fs.statSync(partPath).size;
+  } catch {
+    return 0;
+  }
+}
+
+function destroyUploadSession(sessionId: string): void {
+  const { metaPath, partPath } = uploadSessionPaths(sessionId);
+  try { fs.unlinkSync(metaPath); } catch { /* ignore */ }
+  try { fs.unlinkSync(partPath); } catch { /* ignore */ }
+}
+
+function pruneStaleUploadSessions(): void {
+  try {
+    if (!fs.existsSync(uploadSessionsDir)) return;
+    const now = Date.now();
+    for (const entry of fs.readdirSync(uploadSessionsDir)) {
+      if (!entry.endsWith(".json")) continue;
+      const sessionId = entry.slice(0, -5);
+      const meta = readUploadSessionMeta(sessionId);
+      if (!meta || now - meta.createdAt > SESSION_MAX_AGE_MS) {
+        destroyUploadSession(sessionId);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function registerRoutes(): Promise<IRouter> {
   const router: IRouter = Router();
   await seedDefaultUsers();
 
   fs.mkdirSync(casMediaDir, { recursive: true });
+  fs.mkdirSync(uploadSessionsDir, { recursive: true });
+  pruneStaleUploadSessions();
   // Static uploads are served via app.ts
+
+  function buildPublicMediaUrl(req: express.Request, filename: string): string {
+    const forwardedHost = req.header("x-forwarded-host");
+    const host = forwardedHost || req.get("host") || "localhost";
+    const forwardedProto = req.header("x-forwarded-proto");
+    const protocol = forwardedProto
+      ? forwardedProto.split(",")[0].trim()
+      : (req.protocol || "https");
+    return `${protocol}://${host}/uploads/case-media/${filename}`;
+  }
+
+  // --- Resumable upload session lifecycle ----------------------------------
+  // The single-shot /media/upload endpoint below still works for small files
+  // and the mobile client. Web clients that want to survive dropped
+  // connections / page refreshes should:
+  //   1. POST /media/upload-session         -> { sessionId, uploadedBytes }
+  //   2. PATCH /media/upload-session/:id    (binary chunks, with Upload-Offset)
+  //   3. The PATCH that finishes the file returns { complete: true, url, ... }
+  //   4. GET /media/upload-session/:id      can be called any time to re-check
+  //      the server's current uploadedBytes (e.g. after a refresh).
+
+  router.post("/media/upload-session", requireAuth, (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const fileName = typeof body.fileName === "string" ? body.fileName.trim() : "";
+    const fileSize = typeof body.fileSize === "number" ? body.fileSize : NaN;
+    const mimeType = typeof body.mimeType === "string" ? body.mimeType : "application/octet-stream";
+    if (!fileName) {
+      return res.status(400).json({ error: "fileName is required" });
+    }
+    if (!Number.isFinite(fileSize) || fileSize <= 0) {
+      return res.status(400).json({ error: "fileSize must be a positive number" });
+    }
+    if (fileSize > MAX_RESUMABLE_FILE_BYTES) {
+      return res.status(413).json({ error: "File exceeds maximum upload size" });
+    }
+    const ext = path.extname(fileName) || ".bin";
+    const safeBase =
+      path
+        .basename(fileName, ext)
+        .replace(/[^a-zA-Z0-9\-_]+/g, "-")
+        .slice(0, 60) || "media";
+    const finalName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safeBase}${ext}`;
+    const sessionId = randomBytes(16).toString("hex");
+    const meta: UploadSessionMeta = {
+      sessionId,
+      userId: reqUser.id,
+      fileName,
+      fileSize,
+      mimeType,
+      finalName,
+      createdAt: Date.now(),
+    };
+    try {
+      fs.mkdirSync(uploadSessionsDir, { recursive: true });
+      const { metaPath, partPath } = uploadSessionPaths(sessionId);
+      fs.writeFileSync(metaPath, JSON.stringify(meta));
+      fs.writeFileSync(partPath, "");
+    } catch (error: any) {
+      console.error("Failed to create upload session:", error?.message || error);
+      return res.status(500).json({ error: "Could not create upload session" });
+    }
+    return res.status(201).json({
+      sessionId,
+      uploadedBytes: 0,
+      fileSize,
+    });
+  });
+
+  router.get("/media/upload-session/:id", requireAuth, (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const sessionId = req.params.id;
+    const meta = readUploadSessionMeta(sessionId);
+    if (!meta || meta.userId !== reqUser.id) {
+      return res.status(404).json({ error: "Upload session not found" });
+    }
+    return res.json({
+      sessionId: meta.sessionId,
+      uploadedBytes: getCurrentUploadOffset(sessionId),
+      fileSize: meta.fileSize,
+      fileName: meta.fileName,
+      mimeType: meta.mimeType,
+    });
+  });
+
+  router.delete("/media/upload-session/:id", requireAuth, (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const sessionId = req.params.id;
+    const meta = readUploadSessionMeta(sessionId);
+    if (meta && meta.userId === reqUser.id) {
+      destroyUploadSession(sessionId);
+    }
+    return res.status(204).end();
+  });
+
+  router.patch("/media/upload-session/:id", requireAuth, (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const sessionId = req.params.id;
+    const meta = readUploadSessionMeta(sessionId);
+    if (!meta || meta.userId !== reqUser.id) {
+      return res.status(404).json({ error: "Upload session not found" });
+    }
+    const offsetHeader = req.header("upload-offset");
+    const offset = Number(offsetHeader);
+    if (!Number.isFinite(offset) || offset < 0) {
+      return res.status(400).json({ error: "Upload-Offset header is required" });
+    }
+    const currentOffset = getCurrentUploadOffset(sessionId);
+    if (offset !== currentOffset) {
+      // Client is out of sync; tell it the real offset so it can resume.
+      return res.status(409).json({
+        error: "Upload-Offset does not match server state",
+        uploadedBytes: currentOffset,
+        fileSize: meta.fileSize,
+      });
+    }
+    const declaredLength = Number(req.header("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_RESUMABLE_CHUNK_BYTES) {
+      return res.status(413).json({ error: "Chunk exceeds maximum size" });
+    }
+    if (Number.isFinite(declaredLength) && currentOffset + declaredLength > meta.fileSize) {
+      return res.status(400).json({ error: "Chunk would exceed declared file size" });
+    }
+
+    const { partPath, metaPath } = uploadSessionPaths(sessionId);
+    const writeStream = fs.createWriteStream(partPath, { flags: "a" });
+    let bytesInThisChunk = 0;
+    let aborted = false;
+
+    req.on("data", (chunk: Buffer) => {
+      bytesInThisChunk += chunk.length;
+      if (currentOffset + bytesInThisChunk > meta.fileSize) {
+        aborted = true;
+        writeStream.destroy();
+        try { req.destroy(); } catch { /* ignore */ }
+      }
+    });
+
+    const handleError = (err: any) => {
+      if (res.headersSent) return;
+      console.error("Chunk write error:", err?.message || err);
+      // Don't destroy the session — the client can re-query the offset and
+      // retry from whatever was successfully appended before the failure.
+      res.status(500).json({
+        error: "Failed to persist chunk",
+        uploadedBytes: getCurrentUploadOffset(sessionId),
+      });
+    };
+
+    writeStream.on("error", handleError);
+    req.on("error", handleError);
+
+    writeStream.on("finish", () => {
+      if (aborted) {
+        if (!res.headersSent) {
+          res.status(400).json({
+            error: "Chunk would exceed declared file size",
+            uploadedBytes: getCurrentUploadOffset(sessionId),
+          });
+        }
+        return;
+      }
+      const newOffset = getCurrentUploadOffset(sessionId);
+      if (newOffset >= meta.fileSize) {
+        const finalPath = path.resolve(casMediaDir, meta.finalName);
+        try {
+          fs.renameSync(partPath, finalPath);
+          try { fs.unlinkSync(metaPath); } catch { /* ignore */ }
+        } catch (error: any) {
+          console.error("Failed to finalize upload:", error?.message || error);
+          return res.status(500).json({ error: "Failed to finalize upload" });
+        }
+        return res.json({
+          sessionId,
+          uploadedBytes: meta.fileSize,
+          fileSize: meta.fileSize,
+          complete: true,
+          url: buildPublicMediaUrl(req, meta.finalName),
+          filename: meta.finalName,
+          size: meta.fileSize,
+        });
+      }
+      return res.json({
+        sessionId,
+        uploadedBytes: newOffset,
+        fileSize: meta.fileSize,
+        complete: false,
+      });
+    });
+
+    req.pipe(writeStream);
+  });
 
   router.post("/media/upload", requireAuth, caseMediaUpload.single("file"), (req, res) => {
     try {
