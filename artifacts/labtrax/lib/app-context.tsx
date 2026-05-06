@@ -129,6 +129,9 @@ interface AppContextValue {
   // should iterate this list rather than relying on the single
   // activeLabAffiliationKey.
   allLabOrganizationIds: string[];
+  // Affiliation keys ("org:<id>") for every active lab the user belongs to.
+  // Use this to check membership without relying on practiceName strings.
+  allLabAffiliationKeysList: string[];
   leaveLab: () => Promise<{ success: boolean; error?: string }>;
   deleteLab: () => Promise<{ success: boolean; error?: string }>;
   isLabCreator: boolean;
@@ -3473,6 +3476,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       activeLabAffiliationKey,
       activeLabAffiliationName,
       allLabOrganizationIds,
+      allLabAffiliationKeysList,
       leaveLab,
       deleteLab,
       isLabCreator,
@@ -3487,7 +3491,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       hardRefresh,
       updateWorkStatus,
     }),
-    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName],
+    [role, adminUnlocked, cases, notifications, unreadCount, activeCaseCount, rushCaseCount, isLoading, clients, pricingTiers, users, invoices, pendingInvoiceEditId, shippingAccounts, conversations, chatMessages, totalUnreadMessages, groupJoinRequests, labInvitations, inventory, customStationLabels, userIsAffiliated, isLabCreator, deletedClientInvoices, currentUser, currentUserId, currentUserProfile, registeredUsers, allLabOrganizationIds, activeLabAffiliationKey, activeLabAffiliationName, allLabAffiliationKeysList],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

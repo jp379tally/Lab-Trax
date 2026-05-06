@@ -37,7 +37,7 @@ type LabDirectoryEntry = {
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { mode, setMode, colors, isDark } = useTheme();
-  const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite, fetchLabDirectory, hardRefresh } = useApp();
+  const { sendGroupJoinRequest, leaveLab, deleteLab, isLabCreator, sendLabInvite, fetchLabDirectory, hardRefresh, allLabAffiliationKeysList } = useApp();
   const { currentUser, userType, registeredUsers, deleteAccount, updateUserProfile, changePassword, refreshUsers } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
@@ -1258,8 +1258,7 @@ export default function SettingsScreen() {
               <View style={{ gap: 10, maxHeight: 280 }}>
                 <ScrollView showsVerticalScrollIndicator={false}>
                   {matchedLabs.map((lab) => {
-                    const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
-                    const alreadyMember = currentUserData?.practiceName?.toLowerCase().trim() === lab.practiceName.toLowerCase().trim();
+                    const alreadyMember = allLabAffiliationKeysList.includes(`org:${lab.organizationId}`);
                     return (
                       <View key={lab.username} style={{ flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: 8, gap: 12 }}>
                         <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: "#EDE9FE", justifyContent: "center", alignItems: "center" }}>

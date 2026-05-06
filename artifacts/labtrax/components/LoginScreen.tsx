@@ -466,20 +466,6 @@ export default function LoginScreen() {
       const resolvedPhone = isLab ? labPhone.trim() : practicePhone.trim();
       const resolvedEmail = isLab ? (labEmail.trim() || signUpEmail.trim()) : signUpEmail.trim();
 
-      
-      if (userType === "provider") {
-        const pendingClient = {
-          practiceName: practiceName.trim() || doctorName.trim(),
-          leadDoctor: doctorName.trim() ? `Dr. ${doctorName.trim()} (${acctNum})` : signUpUsername.trim(),
-          phone: practicePhone.trim(),
-          email: signUpEmail.trim(),
-          address: [streetAddress.trim(), city.trim(), zipCode.trim()].filter(Boolean).join(", "),
-          tier: "Standard",
-          discountRate: 0,
-        };
-        await AsyncStorage.setItem("@drivesync_pending_client", JSON.stringify(pendingClient));
-      }
-
       const result = await register({
         username: signUpUsername.trim(),
         password: signUpPassword,
@@ -499,6 +485,48 @@ export default function LoginScreen() {
       });
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");
+      } else {
+        // After successful registration the user has a valid session.
+        // Flush any join requests that were queued during the join_group step.
+        try {
+          const stored = await AsyncStorage.getItem("@drivesync_group_join_requests");
+          if (stored) {
+            const existing: GroupJoinRequest[] = JSON.parse(stored);
+            const myUsername = signUpUsername.trim().toLowerCase();
+            const myRequests = existing.filter(
+              (r) => r.requestingUsername.toLowerCase() === myUsername && r.status === "pending"
+            );
+            if (myRequests.length > 0) {
+              try {
+                const groupsRes = await apiRequest("GET", "/api/labs/groups");
+                const groupsData = await groupsRes.json();
+                const groups: any[] = Array.isArray(groupsData.groups) ? groupsData.groups : [];
+                for (const req of myRequests) {
+                  const targetGroup = groups.find(
+                    (g: any) => g.username.toLowerCase() === req.targetAdminUsername.toLowerCase()
+                  );
+                  if (targetGroup?.organizationId) {
+                    await apiRequest(
+                      "POST",
+                      `/api/organizations/${targetGroup.organizationId}/join-requests`,
+                      {
+                        requestedRole: selectedRole || "user",
+                        message: req.message || `${signUpUsername.trim()} would like to join ${targetGroup.practiceName}.`,
+                      }
+                    ).catch(() => {});
+                  }
+                }
+              } catch {}
+              const remaining = existing.filter(
+                (r) => r.requestingUsername.toLowerCase() !== myUsername
+              );
+              await AsyncStorage.setItem(
+                "@drivesync_group_join_requests",
+                JSON.stringify(remaining)
+              );
+            }
+          }
+        } catch {}
       }
     } catch {
       setSignUpError("Registration failed. Please try again.");

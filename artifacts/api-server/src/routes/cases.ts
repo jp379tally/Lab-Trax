@@ -217,9 +217,9 @@ router.get(
       ? [organizationId]
       : (
           await db.query.organizationMemberships.findMany({
-            where: eq(
-              organizationMemberships.userId,
-              (req as any).auth.userId
+            where: and(
+              eq(organizationMemberships.userId, (req as any).auth.userId),
+              eq(organizationMemberships.status, "active")
             ),
           })
         ).map((m: any) => m.labId);
