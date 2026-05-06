@@ -973,12 +973,27 @@ export async function registerRoutes(): Promise<IRouter> {
       }
 
       const rows = await db
-        .select()
+        .select({
+          file: labPendingFiles,
+          editorFirstName: users.firstName,
+          editorLastName: users.lastName,
+          editorUsername: users.username,
+        })
         .from(labPendingFiles)
+        .leftJoin(users, eq(users.id, labPendingFiles.notesEditedByUserId))
         .where(inArray(labPendingFiles.organizationId, allowedOrgIds));
 
       const files = rows
-        .map((row) => ({
+        .map(({ file: row, editorFirstName, editorLastName, editorUsername }) => {
+          const fullName = [editorFirstName, editorLastName]
+            .map((part) => (typeof part === "string" ? part.trim() : ""))
+            .filter(Boolean)
+            .join(" ");
+          const currentEditorName =
+            (row.notesEditedByUserId
+              ? fullName || (editorUsername ? editorUsername.trim() : "")
+              : "") || null;
+          return {
           id: row.id,
           organizationId: row.organizationId,
           uploaderUserId: row.uploaderUserId,
@@ -993,12 +1008,13 @@ export async function registerRoutes(): Promise<IRouter> {
               : new Date(row.notesUpdatedAt as any).toISOString()
             : null,
           notesEditedByUserId: row.notesEditedByUserId || null,
-          notesEditedByName: row.notesEditedByName || null,
+          notesEditedByName: currentEditorName || row.notesEditedByName || null,
           createdAt:
             row.createdAt instanceof Date
               ? row.createdAt.toISOString()
               : new Date(row.createdAt as any).toISOString(),
-        }))
+          };
+        })
         .sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
