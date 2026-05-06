@@ -1,10 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Loader2, Plus, Search, Trash2, X } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import {
+  ArrowDown,
+  ArrowUp,
+  Download,
+  Loader2,
+  Mail,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
+import { apiFetch, ApiError } from "@/lib/api";
 import type { Invoice, InvoiceDisplayMetadata, InvoiceLineItem } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import {
+  buildInvoicePdf,
+  downloadInvoicePdf,
+  type InvoicePdfOptions,
+} from "@/lib/export";
 
 const STATUS_FILTERS = [
   { value: "all", label: "All" },
@@ -357,6 +372,52 @@ function InvoiceEditor({
     ]);
   }
 
+  const [emailOpen, setEmailOpen] = useState(false);
+
+  const practiceName =
+    detailQuery.data?.providerOrganization?.name ||
+    invoice.providerOrganization?.name ||
+    providerId;
+  const labName =
+    detailQuery.data?.labOrganization?.name ||
+    invoice.labOrganization?.name ||
+    "";
+
+  function buildPdfOptions(): InvoicePdfOptions {
+    return {
+      invoiceNumber,
+      labName,
+      practiceName,
+      patientName,
+      billTo,
+      teeth,
+      shade,
+      caseNotes,
+      issuedAt: issuedAt ? new Date(issuedAt).toISOString() : null,
+      dueAt: dueAt ? new Date(dueAt).toISOString() : null,
+      status: statusValue.replace(/_/g, " "),
+      items: items.map((it) => ({
+        item: it.item,
+        description: it.description,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        lineTotal: Number(it.quantity || 0) * Number(it.unitPrice || 0),
+      })),
+      subtotal,
+      tax,
+      discount,
+      credits,
+      total,
+      balanceDue: detailQuery.data?.balanceDue ?? total,
+      notes,
+      generatedAt: new Date(),
+    };
+  }
+
+  function handleDownloadPdf() {
+    downloadInvoicePdf(buildPdfOptions());
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-foreground/30">
       <div className="w-full max-w-3xl bg-card border-l border-border h-full overflow-y-auto scrollbar-thin">
@@ -366,6 +427,22 @@ function InvoiceEditor({
             <div className="font-mono text-sm font-semibold">{invoice.invoiceNumber}</div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={detailQuery.isLoading}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              <Download size={14} /> PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => setEmailOpen(true)}
+              disabled={detailQuery.isLoading}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              <Mail size={14} /> Email
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -789,6 +866,173 @@ function InvoiceEditor({
             </section>
           )}
         </div>
+      </div>
+      {emailOpen && (
+        <EmailInvoiceDialog
+          invoice={invoice}
+          practiceName={practiceName}
+          buildPdfOptions={buildPdfOptions}
+          onClose={() => setEmailOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function EmailInvoiceDialog({
+  invoice,
+  practiceName,
+  buildPdfOptions,
+  onClose,
+}: {
+  invoice: Invoice;
+  practiceName: string;
+  buildPdfOptions: () => InvoicePdfOptions;
+  onClose: () => void;
+}) {
+  const [to, setTo] = useState("");
+  const [subject, setSubject] = useState(
+    `Invoice ${invoice.invoiceNumber}`,
+  );
+  const [message, setMessage] = useState(
+    `Hi ${practiceName},\n\nPlease find invoice ${invoice.invoiceNumber} attached.\n\nThank you,`,
+  );
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sentAt, setSentAt] = useState<string | null>(null);
+
+  async function send() {
+    setError(null);
+    setSending(true);
+    try {
+      const built = buildInvoicePdf(buildPdfOptions());
+      const trimmedTo = to.trim();
+      const res = await apiFetch<{ sentAt: string; to: string }>(
+        "/invoices/statements/email",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            labOrganizationId: invoice.labOrganizationId,
+            practiceOrganizationId: invoice.providerOrganizationId,
+            invoiceIds: [invoice.id],
+            ...(trimmedTo ? { to: trimmedTo } : {}),
+            subject: subject.trim(),
+            message,
+            filename: built.filename,
+            pdfBase64: built.base64,
+          }),
+        },
+      );
+      setSentAt(res.sentAt);
+      setTo(res.to);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? e.message
+          : (e as Error)?.message || "Failed to send.";
+      setError(msg);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-foreground/40">
+      <div className="w-full max-w-lg bg-card border border-border rounded-xl shadow-xl flex flex-col max-h-[90vh]">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Email invoice</div>
+            <div className="text-sm font-semibold font-mono">
+              {invoice.invoiceNumber}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          {sentAt ? (
+            <div className="rounded-md border border-success/40 bg-success/10 px-3 py-3 text-sm">
+              <div className="font-medium text-success">Invoice sent.</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Delivered to {to} at {new Date(sentAt).toLocaleString("en-US")}.
+              </div>
+            </div>
+          ) : (
+            <>
+              <label className="block">
+                <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                  To
+                </span>
+                <input
+                  type="email"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  placeholder="Leave blank to use the practice's billing email on file"
+                  className="mt-1 w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                  Subject
+                </span>
+                <input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="mt-1 w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                  Message
+                </span>
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  rows={8}
+                  className="mt-1 w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y"
+                />
+              </label>
+              <div className="text-xs text-muted-foreground">
+                The invoice PDF will be attached.
+              </div>
+              {error && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            {sentAt ? "Close" : "Cancel"}
+          </button>
+          {!sentAt && (
+            <button
+              type="button"
+              onClick={send}
+              disabled={sending}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {sending ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Mail size={14} />
+              )}
+              {sending ? "Sending…" : "Send email"}
+            </button>
+          )}
+        </footer>
       </div>
     </div>
   );

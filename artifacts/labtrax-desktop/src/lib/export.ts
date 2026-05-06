@@ -102,6 +102,226 @@ export function downloadStatementPdf(opts: StatementPdfOptions) {
   triggerDownload(built.blob, built.filename);
 }
 
+export interface InvoicePdfLineItem {
+  item?: string | null;
+  description: string;
+  quantity: number | string;
+  unitPrice: number | string;
+  lineTotal: number | string;
+}
+
+export interface InvoicePdfOptions {
+  invoiceNumber: string;
+  labName: string;
+  practiceName: string;
+  patientName?: string | null;
+  billTo?: string | null;
+  teeth?: string | null;
+  shade?: string | null;
+  caseNotes?: string | null;
+  issuedAt?: string | null;
+  dueAt?: string | null;
+  status: string;
+  items: InvoicePdfLineItem[];
+  subtotal: number | string;
+  tax?: number | string | null;
+  discount?: number | string | null;
+  credits?: number | string | null;
+  total: number | string;
+  balanceDue?: number | string | null;
+  notes?: string | null;
+  generatedAt: Date;
+}
+
+export interface BuiltInvoicePdf {
+  blob: Blob;
+  filename: string;
+  base64: string;
+}
+
+export function buildInvoicePdf(opts: InvoicePdfOptions): BuiltInvoicePdf {
+  const doc = buildInvoiceDoc(opts);
+  const filename = `invoice-${safeFilename(opts.invoiceNumber)}.pdf`;
+  const arrayBuffer = doc.output("arraybuffer") as ArrayBuffer;
+  const blob = new Blob([arrayBuffer], { type: "application/pdf" });
+  const base64 = arrayBufferToBase64(arrayBuffer);
+  return { blob, filename, base64 };
+}
+
+export function downloadInvoicePdf(opts: InvoicePdfOptions) {
+  const built = buildInvoicePdf(opts);
+  triggerDownload(built.blob, built.filename);
+}
+
+function buildInvoiceDoc(opts: InvoicePdfOptions) {
+  const doc = new jsPDF({ unit: "pt", format: "letter" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 40;
+
+  doc.setFontSize(20);
+  doc.setFont("helvetica", "bold");
+  doc.text("Invoice", margin, 50);
+
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(120);
+  doc.text(`#${opts.invoiceNumber}`, margin, 66);
+  doc.setTextColor(0);
+
+  // Lab (right-aligned)
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "bold");
+  doc.text(opts.labName, pageWidth - margin, 50, { align: "right" });
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(120);
+  doc.text(
+    `Generated ${opts.generatedAt.toLocaleDateString("en-US")}`,
+    pageWidth - margin,
+    66,
+    { align: "right" },
+  );
+  doc.setTextColor(0);
+
+  // Bill-to / patient block
+  let y = 100;
+  doc.setFontSize(8);
+  doc.setTextColor(120);
+  doc.text("BILL TO", margin, y);
+  doc.text("PATIENT", margin + 220, y);
+  doc.setTextColor(0);
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "bold");
+  const billToValue = (opts.billTo && opts.billTo.trim()) || opts.practiceName;
+  doc.text(billToValue, margin, y + 14);
+  doc.text(
+    (opts.patientName && opts.patientName.trim()) || "—",
+    margin + 220,
+    y + 14,
+  );
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(120);
+  if (billToValue !== opts.practiceName) {
+    doc.text(opts.practiceName, margin, y + 28);
+  }
+  doc.setTextColor(0);
+  y += 50;
+
+  // Meta row: Issued / Due / Status / Teeth / Shade
+  const metaPairs: Array<[string, string]> = [
+    ["Issued", fmtDate(opts.issuedAt) || "—"],
+    ["Due", fmtDate(opts.dueAt) || "—"],
+    ["Status", opts.status],
+  ];
+  if (opts.teeth && opts.teeth.trim()) {
+    metaPairs.push(["Teeth", opts.teeth.trim()]);
+  }
+  if (opts.shade && opts.shade.trim()) {
+    metaPairs.push(["Shade", opts.shade.trim()]);
+  }
+  const colW = (pageWidth - margin * 2) / metaPairs.length;
+  metaPairs.forEach(([label, value], i) => {
+    const x = margin + colW * i;
+    doc.setFontSize(8);
+    doc.setTextColor(120);
+    doc.text(label.toUpperCase(), x, y);
+    doc.setFontSize(10);
+    doc.setTextColor(0);
+    doc.text(value, x, y + 14);
+  });
+  y += 28;
+
+  if (opts.caseNotes && opts.caseNotes.trim()) {
+    doc.setFontSize(8);
+    doc.setTextColor(120);
+    doc.text("CASE NOTES", margin, y);
+    doc.setFontSize(9);
+    doc.setTextColor(0);
+    const wrapped = doc.splitTextToSize(
+      opts.caseNotes.trim(),
+      pageWidth - margin * 2,
+    );
+    doc.text(wrapped, margin, y + 12);
+    y += 12 + wrapped.length * 11 + 4;
+  }
+
+  // Line items
+  autoTable(doc, {
+    startY: y + 8,
+    head: [["Item", "Description", "Qty", "Unit price", "Total"]],
+    body: opts.items.map((it) => [
+      (it.item && String(it.item).trim()) || "—",
+      it.description,
+      String(it.quantity),
+      fmtMoney(it.unitPrice as number | string),
+      fmtMoney(it.lineTotal as number | string),
+    ]),
+    styles: { fontSize: 9, cellPadding: 6 },
+    headStyles: { fillColor: [40, 44, 52], textColor: 255 },
+    columnStyles: {
+      0: { cellWidth: 110 },
+      2: { halign: "right", cellWidth: 40 },
+      3: { halign: "right", cellWidth: 80 },
+      4: { halign: "right", cellWidth: 80 },
+    },
+    margin: { left: margin, right: margin },
+  });
+
+  const afterTable = (doc as unknown as { lastAutoTable?: { finalY: number } })
+    .lastAutoTable;
+  let totalsY = (afterTable?.finalY ?? y + 8) + 16;
+
+  // Totals block (right column)
+  const totalsX = pageWidth - margin - 200;
+  const valueX = pageWidth - margin;
+  const writeRow = (label: string, value: string, bold = false) => {
+    doc.setFont("helvetica", bold ? "bold" : "normal");
+    doc.setFontSize(bold ? 11 : 10);
+    doc.text(label, totalsX, totalsY);
+    doc.text(value, valueX, totalsY, { align: "right" });
+    totalsY += bold ? 18 : 16;
+  };
+  writeRow("Subtotal", fmtMoney(opts.subtotal));
+  if (Number(opts.tax ?? 0) > 0) writeRow("Tax", fmtMoney(opts.tax ?? 0));
+  if (Number(opts.discount ?? 0) > 0)
+    writeRow("Discount", `-${fmtMoney(opts.discount ?? 0)}`);
+  if (Number(opts.credits ?? 0) > 0)
+    writeRow("Credits", `-${fmtMoney(opts.credits ?? 0)}`);
+  doc.setDrawColor(220);
+  doc.line(totalsX, totalsY - 8, valueX, totalsY - 8);
+  const grandTotal = (
+    Number(opts.total ?? 0) - Number(opts.credits ?? 0)
+  ).toFixed(2);
+  writeRow("Total", fmtMoney(grandTotal), true);
+  if (opts.balanceDue !== undefined && opts.balanceDue !== null) {
+    const bal = Math.max(0, Number(opts.balanceDue) - Number(opts.credits ?? 0));
+    writeRow("Balance due", fmtMoney(bal.toFixed(2)));
+  }
+
+  if (opts.notes && opts.notes.trim()) {
+    doc.setFontSize(8);
+    doc.setTextColor(120);
+    doc.text("NOTES", margin, totalsY + 12);
+    doc.setFontSize(9);
+    doc.setTextColor(0);
+    const wrapped = doc.splitTextToSize(
+      opts.notes.trim(),
+      pageWidth - margin * 2,
+    );
+    doc.text(wrapped, margin, totalsY + 26);
+  }
+
+  return doc;
+}
+
+function fmtDate(value?: string | null): string {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-US");
+}
+
 function buildStatementDoc(opts: StatementPdfOptions) {
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const pageWidth = doc.internal.pageSize.getWidth();
