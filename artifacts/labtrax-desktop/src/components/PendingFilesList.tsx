@@ -8,6 +8,7 @@ import {
   Inbox,
   Link2,
   Loader2,
+  Pencil,
   RefreshCw,
   Trash2,
   XCircle,
@@ -208,7 +209,22 @@ export function PendingFilesList() {
   const queryClient = useQueryClient();
   const [attachTarget, setAttachTarget] = useState<PendingFile | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function startEdit(file: PendingFile) {
+    setEditingId(file.id);
+    setEditValue(file.notes ?? "");
+    setEditError(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditValue("");
+    setEditError(null);
+  }
 
   function flashError(msg: string) {
     setActionError(msg);
@@ -234,6 +250,34 @@ export function PendingFilesList() {
     enabled: !!user,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
+  });
+
+  const updateNotesMutation = useMutation({
+    mutationFn: async ({ id, notes }: { id: string; notes: string }) => {
+      await apiFetch(`/lab-pending-files/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ notes }),
+      });
+      return notes;
+    },
+    onSuccess: (notes, { id }) => {
+      queryClient.setQueryData<PendingFile[]>(
+        ["lab-pending-files"],
+        (prev) =>
+          prev?.map((f) => (f.id === id ? { ...f, notes } : f)) ?? prev,
+      );
+      queryClient.invalidateQueries({ queryKey: ["lab-pending-files"] });
+      cancelEdit();
+    },
+    onError: (e: unknown) => {
+      const msg =
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : "Could not save the note. Please try again.";
+      setEditError(msg);
+    },
   });
 
   const deleteMutation = useMutation({
@@ -348,13 +392,90 @@ export function PendingFilesList() {
                     {f.uploaderName || "Unknown uploader"} ·{" "}
                     {relativeTime(f.createdAt)}
                   </div>
-                  {f.notes && (
-                    <div className="text-xs text-foreground/80 mt-1 whitespace-pre-wrap">
+                  {editingId === f.id ? (
+                    <div className="mt-1.5 space-y-1.5">
+                      <textarea
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            cancelEdit();
+                          } else if (
+                            e.key === "Enter" &&
+                            (e.metaKey || e.ctrlKey)
+                          ) {
+                            e.preventDefault();
+                            updateNotesMutation.mutate({
+                              id: f.id,
+                              notes: editValue.trim(),
+                            });
+                          }
+                        }}
+                        rows={3}
+                        placeholder="Add a note for your team…"
+                        className="w-full px-2.5 py-1.5 rounded-md border border-border bg-background text-xs placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-primary resize-y"
+                        disabled={updateNotesMutation.isPending}
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateNotesMutation.mutate({
+                              id: f.id,
+                              notes: editValue.trim(),
+                            })
+                          }
+                          disabled={
+                            updateNotesMutation.isPending ||
+                            editValue.trim() === (f.notes ?? "").trim()
+                          }
+                          className="h-7 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-foreground disabled:opacity-50 inline-flex items-center gap-1.5"
+                        >
+                          {updateNotesMutation.isPending ? (
+                            <>
+                              <Loader2 size={12} className="animate-spin" />
+                              Saving…
+                            </>
+                          ) : (
+                            "Save"
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          disabled={updateNotesMutation.isPending}
+                          className="h-7 px-2.5 rounded-md text-xs hover:bg-secondary"
+                        >
+                          Cancel
+                        </button>
+                        {editError && (
+                          <span className="text-xs text-destructive inline-flex items-start gap-1">
+                            <XCircle size={12} className="mt-0.5 shrink-0" />
+                            {editError}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ) : f.notes ? (
+                    <div className="text-xs text-foreground/80 mt-1 whitespace-pre-wrap break-words">
                       {f.notes}
                     </div>
-                  )}
+                  ) : null}
                 </div>
                 <div className="shrink-0 flex items-center gap-1">
+                  {editingId !== f.id && (
+                    <button
+                      type="button"
+                      onClick={() => startEdit(f)}
+                      className="h-8 px-2.5 rounded-md text-xs font-medium hover:bg-secondary inline-flex items-center gap-1.5 text-foreground"
+                      title={f.notes ? "Edit note" : "Add note"}
+                    >
+                      <Pencil size={13} />
+                      {f.notes ? "Edit note" : "Add note"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setAttachTarget(f)}
