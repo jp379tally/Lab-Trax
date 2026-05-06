@@ -216,6 +216,7 @@ interface PreviewDialogProps {
   onAttachClick: () => void;
   onDelete: () => void;
   isDeleting: boolean;
+  onSaveNotes: (notes: string) => Promise<unknown>;
 }
 
 function PreviewBody({ file }: { file: PendingFile }) {
@@ -297,14 +298,62 @@ function PreviewDialog({
   onAttachClick,
   onDelete,
   isDeleting,
+  onSaveNotes,
 }: PreviewDialogProps) {
+  const [isEditingNotes, setIsEditingNotes] = useState(false);
+  const [notesValue, setNotesValue] = useState(file.notes ?? "");
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+
+  useEffect(() => {
+    if (!isEditingNotes) {
+      setNotesValue(file.notes ?? "");
+    }
+  }, [file.notes, isEditingNotes]);
+
+  function startEditingNotes() {
+    setNotesValue(file.notes ?? "");
+    setNotesError(null);
+    setIsEditingNotes(true);
+  }
+
+  function cancelEditingNotes() {
+    setIsEditingNotes(false);
+    setNotesValue(file.notes ?? "");
+    setNotesError(null);
+  }
+
+  async function saveNotes() {
+    const trimmed = notesValue.trim();
+    if (trimmed === (file.notes ?? "").trim()) {
+      setIsEditingNotes(false);
+      return;
+    }
+    setIsSavingNotes(true);
+    setNotesError(null);
+    try {
+      await onSaveNotes(trimmed);
+      setIsEditingNotes(false);
+    } catch (e: unknown) {
+      const msg =
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : "Could not save the note. Please try again.";
+      setNotesError(msg);
+    } finally {
+      setIsSavingNotes(false);
+    }
+  }
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !isEditingNotes) onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, isEditingNotes]);
 
   return (
     <div
@@ -350,10 +399,81 @@ function PreviewDialog({
           </div>
           <aside className="w-full md:w-72 md:border-l border-t md:border-t-0 border-border bg-card flex flex-col">
             <div className="px-4 py-3 border-b border-border">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Notes
-              </h4>
-              {file.notes ? (
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Notes
+                </h4>
+                {!isEditingNotes && (
+                  <button
+                    type="button"
+                    onClick={startEditingNotes}
+                    className="h-7 px-2 rounded-md text-xs font-medium hover:bg-secondary inline-flex items-center gap-1 text-foreground"
+                    title={file.notes ? "Edit note" : "Add note"}
+                  >
+                    <Pencil size={12} />
+                    {file.notes ? "Edit" : "Add"}
+                  </button>
+                )}
+              </div>
+              {isEditingNotes ? (
+                <div className="mt-1.5 space-y-1.5">
+                  <textarea
+                    autoFocus
+                    value={notesValue}
+                    onChange={(e) => setNotesValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelEditingNotes();
+                      } else if (
+                        e.key === "Enter" &&
+                        (e.metaKey || e.ctrlKey)
+                      ) {
+                        e.preventDefault();
+                        void saveNotes();
+                      }
+                    }}
+                    rows={5}
+                    placeholder="Add a note for your team…"
+                    className="w-full px-2.5 py-1.5 rounded-md border border-border bg-background text-sm placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-primary resize-y"
+                    disabled={isSavingNotes}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void saveNotes()}
+                      disabled={
+                        isSavingNotes ||
+                        notesValue.trim() === (file.notes ?? "").trim()
+                      }
+                      className="h-7 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-foreground disabled:opacity-50 inline-flex items-center gap-1.5"
+                    >
+                      {isSavingNotes ? (
+                        <>
+                          <Loader2 size={12} className="animate-spin" />
+                          Saving…
+                        </>
+                      ) : (
+                        "Save"
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelEditingNotes}
+                      disabled={isSavingNotes}
+                      className="h-7 px-2.5 rounded-md text-xs hover:bg-secondary"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {notesError && (
+                    <div className="text-xs text-destructive inline-flex items-start gap-1">
+                      <XCircle size={12} className="mt-0.5 shrink-0" />
+                      {notesError}
+                    </div>
+                  )}
+                </div>
+              ) : file.notes ? (
                 <p className="text-sm text-foreground/90 mt-1.5 whitespace-pre-wrap break-words">
                   {file.notes}
                 </p>
@@ -476,6 +596,21 @@ export function PendingFilesList() {
       });
       return { notes, meta: res };
     },
+    onMutate: async ({ id, notes }) => {
+      await queryClient.cancelQueries({ queryKey: ["lab-pending-files"] });
+      const previous = queryClient.getQueryData<PendingFile[]>([
+        "lab-pending-files",
+      ]);
+      queryClient.setQueryData<PendingFile[]>(
+        ["lab-pending-files"],
+        (prev) =>
+          prev?.map((f) => (f.id === id ? { ...f, notes } : f)) ?? prev,
+      );
+      setPreviewTarget((prev) =>
+        prev && prev.id === id ? { ...prev, notes } : prev,
+      );
+      return { previous };
+    },
     onSuccess: ({ notes, meta }, { id }) => {
       queryClient.setQueryData<PendingFile[]>(
         ["lab-pending-files"],
@@ -494,10 +629,29 @@ export function PendingFilesList() {
               : f,
           ) ?? prev,
       );
-      queryClient.invalidateQueries({ queryKey: ["lab-pending-files"] });
+      setPreviewTarget((prev) =>
+        prev && prev.id === id
+          ? {
+              ...prev,
+              notes,
+              notesUpdatedAt: meta?.notesUpdatedAt ?? prev.notesUpdatedAt,
+              notesEditedByUserId:
+                meta?.notesEditedByUserId ?? prev.notesEditedByUserId,
+              notesEditedByName:
+                meta?.notesEditedByName ?? prev.notesEditedByName,
+            }
+          : prev,
+      );
       cancelEdit();
     },
-    onError: (e: unknown) => {
+    onError: (e: unknown, _vars, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(["lab-pending-files"], ctx.previous);
+        const restored = ctx.previous.find(
+          (f) => f.id === (previewTarget?.id ?? ""),
+        );
+        if (restored) setPreviewTarget(restored);
+      }
       const msg =
         e instanceof ApiError
           ? e.message
@@ -505,6 +659,9 @@ export function PendingFilesList() {
             ? e.message
             : "Could not save the note. Please try again.";
       setEditError(msg);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["lab-pending-files"] });
     },
   });
 
@@ -776,6 +933,12 @@ export function PendingFilesList() {
           isDeleting={
             deleteMutation.isPending &&
             deleteMutation.variables === previewTarget.id
+          }
+          onSaveNotes={(notes) =>
+            updateNotesMutation.mutateAsync({
+              id: previewTarget.id,
+              notes,
+            })
           }
         />
       )}
