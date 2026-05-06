@@ -4,8 +4,11 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  Eye,
+  EyeOff,
   Filter,
   Loader2,
+  Lock,
   Paperclip,
   Plus,
   Search,
@@ -542,6 +545,8 @@ function CaseDrawer({
           notes: Array<{ id: string; body?: string | null; createdAt?: string | null }>;
           events: CaseEvent[];
           attachments: CaseAttachment[];
+          viewerIsLabMember?: boolean;
+          viewerCanManageAttachments?: boolean;
         }
       >(`/cases/${labCase.id}`),
   });
@@ -602,7 +607,12 @@ function CaseDrawer({
             )}
             <div className="space-y-2">
               {data?.attachments?.map((a) => (
-                <AttachmentRow key={a.id} caseId={labCase.id} attachment={a} />
+                <AttachmentRow
+                  key={a.id}
+                  caseId={labCase.id}
+                  attachment={a}
+                  canManage={!!data?.viewerCanManageAttachments}
+                />
               ))}
             </div>
           </section>
@@ -879,9 +889,11 @@ function PriceHistoryPanel({
 function AttachmentRow({
   caseId,
   attachment,
+  canManage,
 }: {
   caseId: string;
   attachment: CaseAttachment;
+  canManage: boolean;
 }) {
   const queryClient = useQueryClient();
   const deleteMutation = useMutation({
@@ -897,6 +909,24 @@ function AttachmentRow({
     },
   });
 
+  const visibility = attachment.visibility || "shared_with_provider";
+  const isInternal = visibility === "internal_lab_only";
+  const nextVisibility = isInternal ? "shared_with_provider" : "internal_lab_only";
+
+  const visibilityMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/cases/${caseId}/attachments/${attachment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ visibility: nextVisibility }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["case", caseId] });
+    },
+    onError: (err: Error) => {
+      window.alert(err.message || "Couldn't update attachment visibility.");
+    },
+  });
+
   const isImage = (attachment.fileType || "").startsWith("image/");
   const href = attachment.storageKey;
 
@@ -906,14 +936,35 @@ function AttachmentRow({
     deleteMutation.mutate();
   }
 
+  function onToggleVisibility() {
+    if (visibilityMutation.isPending) return;
+    visibilityMutation.mutate();
+  }
+
   return (
     <div className="border border-border rounded-md px-3 py-2 text-sm flex items-start gap-3">
       <div className="mt-0.5 text-muted-foreground">
         <Paperclip size={14} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="font-medium truncate" title={attachment.fileName}>
-          {attachment.fileName}
+        <div className="font-medium truncate flex items-center gap-2" title={attachment.fileName}>
+          <span className="truncate">{attachment.fileName}</span>
+          <span
+            className={
+              "shrink-0 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide " +
+              (isInternal
+                ? "bg-amber-100 text-amber-800 border border-amber-200"
+                : "bg-secondary text-muted-foreground border border-border")
+            }
+            title={
+              isInternal
+                ? "Only visible to lab staff"
+                : "Visible to the provider"
+            }
+          >
+            {isInternal ? <Lock size={10} /> : <Eye size={10} />}
+            {isInternal ? "Lab only" : "Shared"}
+          </span>
         </div>
         <div className="text-xs text-muted-foreground mt-0.5">
           {isImage ? "Image" : attachment.fileType || "File"}
@@ -922,6 +973,27 @@ function AttachmentRow({
         </div>
       </div>
       <div className="flex items-center gap-1">
+        {canManage && (
+          <button
+            type="button"
+            onClick={onToggleVisibility}
+            disabled={visibilityMutation.isPending}
+            className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-50"
+            title={
+              isInternal
+                ? "Share with the provider"
+                : "Mark as lab-only"
+            }
+          >
+            {visibilityMutation.isPending ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : isInternal ? (
+              <Eye size={13} />
+            ) : (
+              <EyeOff size={13} />
+            )}
+          </button>
+        )}
         {href && (
           <a
             href={href}

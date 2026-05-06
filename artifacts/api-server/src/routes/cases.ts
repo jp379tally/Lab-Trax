@@ -28,6 +28,11 @@ const router = Router();
 router.use(requireAuth);
 
 async function assertCaseAccess(userId: string, caseId: string) {
+  const access = await assertCaseAccessWithMemberships(userId, caseId);
+  return access.case;
+}
+
+async function assertCaseAccessWithMemberships(userId: string, caseId: string) {
   const found = await db.query.cases.findFirst({
     where: eq(cases.id, caseId),
   });
@@ -42,7 +47,22 @@ async function assertCaseAccess(userId: string, caseId: string) {
   ).catch(() => null);
   if (!labMembership && !providerMembership)
     throw new HttpError(403, "You do not have access to this case.");
-  return found;
+  return { case: found, labMembership, providerMembership };
+}
+
+const ATTACHMENT_VISIBILITIES = [
+  "shared_with_provider",
+  "internal_lab_only",
+] as const;
+
+function visibleAttachmentsFor(
+  attachments: any[],
+  isLabMember: boolean
+): any[] {
+  if (isLabMember) return attachments;
+  return attachments.filter(
+    (a: any) => a.visibility !== "internal_lab_only"
+  );
 }
 
 const createCaseSchema = z.object({
@@ -254,10 +274,11 @@ router.get(
 router.get(
   "/:caseId",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
+    const access = await assertCaseAccessWithMemberships(
       (req as any).auth.userId,
       req.params.caseId
     );
+    const found = access.case;
     const [restorations, notes, attachments, events, locations] =
       await Promise.all([
         db.query.caseRestorations.findMany({
@@ -298,13 +319,20 @@ router.get(
       return { ...a, uploaderName: name };
     });
 
+    const isLabMember = !!access.labMembership;
+    const labRole = access.labMembership?.role as string | undefined;
+    const viewerCanManageAttachments =
+      isLabMember && !!labRole && (ADMIN_ROLES as string[]).includes(labRole);
+
     return ok(res, {
       ...found,
       restorations,
       notes,
-      attachments: enrichedAttachments,
+      attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
       events,
       locations,
+      viewerIsLabMember: isLabMember,
+      viewerCanManageAttachments,
     });
   })
 );
@@ -312,10 +340,11 @@ router.get(
 router.get(
   "/:caseId/attachments",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
+    const access = await assertCaseAccessWithMemberships(
       (req as any).auth.userId,
       req.params.caseId
     );
+    const found = access.case;
     const attachments = await db.query.caseAttachments.findMany({
       where: eq(caseAttachments.caseId, found.id),
       orderBy: [desc(caseAttachments.createdAt)],
@@ -337,7 +366,54 @@ router.get(
         : null;
       return { ...a, uploaderName: name };
     });
-    return ok(res, enriched);
+    const isLabMember = !!access.labMembership;
+    return ok(res, visibleAttachmentsFor(enriched, isLabMember));
+  })
+);
+
+const updateAttachmentSchema = z.object({
+  visibility: z.enum(ATTACHMENT_VISIBILITIES),
+});
+
+router.patch(
+  "/:caseId/attachments/:attachmentId",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccess(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireAnyRole(
+      (req as any).auth.userId,
+      found.labOrganizationId,
+      ADMIN_ROLES
+    );
+    const input = updateAttachmentSchema.parse(req.body);
+    const attachment = await db.query.caseAttachments.findFirst({
+      where: and(
+        eq(caseAttachments.id, req.params.attachmentId),
+        eq(caseAttachments.caseId, found.id)
+      ),
+    });
+    if (!attachment) throw new HttpError(404, "Attachment not found.");
+    if (attachment.visibility === input.visibility) {
+      return ok(res, attachment);
+    }
+    const [updated] = await db
+      .update(caseAttachments)
+      .set({ visibility: input.visibility })
+      .where(eq(caseAttachments.id, attachment.id))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      organizationId: found.labOrganizationId,
+      action: "case_attachment_visibility_changed",
+      entityType: "case_attachment",
+      entityId: attachment.id,
+      beforeJson: attachment,
+      afterJson: updated,
+    });
+    return ok(res, updated);
   })
 );
 
