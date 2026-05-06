@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
@@ -13,6 +14,7 @@ import { apiFetch } from "@/lib/api";
 import type { Invoice, LabCase } from "@/lib/types";
 import { formatDate, formatMoney, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import { DesktopFileDropZone } from "@/components/DesktopFileDropZone";
 
 function isToday(d?: string | null): boolean {
   if (!d) return false;
@@ -74,6 +76,19 @@ function SummaryCard({ title, value, hint, icon: Icon, tone = "primary" }: Summa
 }
 
 export default function DashboardPage() {
+  // Suppress browser navigation if a file is dropped outside the drop zone.
+  useEffect(() => {
+    function prevent(e: DragEvent) {
+      e.preventDefault();
+    }
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
+
   const casesQuery = useQuery({
     queryKey: ["cases"],
     queryFn: () => apiFetch<LabCase[]>("/cases"),
@@ -159,6 +174,10 @@ export default function DashboardPage() {
           icon={DollarSign}
           tone="primary"
         />
+      </div>
+
+      <div className="mb-7">
+        <DesktopFileDropZone />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
