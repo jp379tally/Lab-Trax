@@ -60,6 +60,7 @@ export function AppLayout({ children }: Props) {
   const { entries, activeCount, removeEntry, cancelEntry } = useUploads();
   const successCount = entries.filter((e) => e.status === "success").length;
   const errorCount = entries.filter((e) => e.status === "error").length;
+  const interruptedCount = entries.filter((e) => e.status === "interrupted").length;
   const hasAnyUploads = entries.length > 0;
 
   const initials = useMemo(() => {
@@ -181,7 +182,7 @@ export function AppLayout({ children }: Props) {
             >
               {activeCount > 0 ? (
                 <Loader2 size={16} className="animate-spin text-primary" />
-              ) : errorCount > 0 ? (
+              ) : errorCount > 0 || interruptedCount > 0 ? (
                 <XCircle size={16} className="text-destructive" />
               ) : (
                 <Upload size={16} />
@@ -204,7 +205,7 @@ export function AppLayout({ children }: Props) {
                     <span className="text-[11px] text-muted-foreground">
                       {activeCount > 0
                         ? `${activeCount} in progress`
-                        : `${successCount} done${errorCount > 0 ? ` · ${errorCount} failed` : ""}`}
+                        : `${successCount} done${errorCount > 0 ? ` · ${errorCount} failed` : ""}${interruptedCount > 0 ? ` · ${interruptedCount} interrupted` : ""}`}
                     </span>
                   </div>
                   <ul className="max-h-72 overflow-y-auto scrollbar-thin">
@@ -228,7 +229,7 @@ export function AppLayout({ children }: Props) {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between gap-2">
                               <div className="text-xs font-medium truncate">
-                                {entry.file.name}
+                                {entry.fileName}
                               </div>
                               {inFlight && (
                                 <div className="text-[11px] tabular-nums text-muted-foreground shrink-0">
@@ -242,7 +243,7 @@ export function AppLayout({ children }: Props) {
                                 aria-valuemin={0}
                                 aria-valuemax={100}
                                 aria-valuenow={entry.progress}
-                                aria-label={`Upload progress for ${entry.file.name}`}
+                                aria-label={`Upload progress for ${entry.fileName}`}
                                 className="mt-1 h-1 w-full rounded-full bg-secondary overflow-hidden"
                               >
                                 <div
@@ -254,7 +255,9 @@ export function AppLayout({ children }: Props) {
                               <div className="text-[11px] text-muted-foreground truncate">
                                 {entry.status === "success"
                                   ? "Added to shared inbox"
-                                  : (entry.errorMessage ?? "Upload failed")}
+                                  : entry.status === "interrupted"
+                                    ? "Interrupted — re-pick file in inbox"
+                                    : (entry.errorMessage ?? "Upload failed")}
                               </div>
                             )}
                           </div>
@@ -263,7 +266,7 @@ export function AppLayout({ children }: Props) {
                               type="button"
                               onClick={() => cancelEntry(entry.id)}
                               className="shrink-0 mt-0.5 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
-                              aria-label={`Cancel upload of ${entry.file.name}`}
+                              aria-label={`Cancel upload of ${entry.fileName}`}
                             >
                               Cancel
                             </button>
@@ -272,7 +275,7 @@ export function AppLayout({ children }: Props) {
                               type="button"
                               onClick={() => removeEntry(entry.id)}
                               className="shrink-0 mt-0.5 text-muted-foreground hover:text-foreground"
-                              aria-label={`Remove ${entry.file.name}`}
+                              aria-label={`Remove ${entry.fileName}`}
                             >
                               <XCircle size={13} />
                             </button>

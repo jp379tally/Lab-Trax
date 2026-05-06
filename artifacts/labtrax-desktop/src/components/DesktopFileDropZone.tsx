@@ -22,12 +22,14 @@ interface DesktopFileDropZoneProps {
 }
 
 function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileDropZoneProps) {
-  const { entries, addFiles, removeEntry, cancelEntry, updateNote, commitNote, retryEntry } =
+  const { entries, addFiles, removeEntry, cancelEntry, updateNote, commitNote, retryEntry, resumeEntry } =
     useUploads();
   const [dragOver, setDragOver] = useState(false);
   const [rejections, setRejections] = useState<UploadRejection[]>([]);
+  const [resumeErrors, setResumeErrors] = useState<Record<string, string>>({});
   const dragCounterRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const resumeInputsRef = useRef<Map<string, HTMLInputElement>>(new Map());
 
   const processFiles = useCallback(
     (files: FileList | File[]) => {
@@ -72,6 +74,22 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
       processFiles(e.target.files);
     }
     e.target.value = "";
+  }
+
+  function handleResumeChange(id: string, e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const result = resumeEntry(id, file);
+    setResumeErrors((prev) => {
+      const next = { ...prev };
+      if (result.ok) {
+        delete next[id];
+      } else {
+        next[id] = result.reason ?? "Could not resume upload.";
+      }
+      return next;
+    });
   }
 
   const disabled = !organizationId;
@@ -155,19 +173,24 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
             {entries.map((entry) => (
               <li
                 key={entry.id}
-                className="flex items-start gap-3 rounded-lg border border-border bg-secondary/30 px-3 py-2.5"
+                className={[
+                  "flex items-start gap-3 rounded-lg border px-3 py-2.5",
+                  entry.status === "interrupted"
+                    ? "border-destructive/40 bg-destructive/5"
+                    : "border-border bg-secondary/30",
+                ].join(" ")}
               >
                 <div className="mt-0.5 shrink-0 text-muted-foreground">
-                  <FileTypeIcon mimeType={entry.file.type} />
+                  <FileTypeIcon mimeType={entry.mimeType} />
                 </div>
 
                 <div className="min-w-0 flex-1 space-y-1.5">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs font-medium truncate max-w-[200px]">
-                      {entry.file.name}
+                      {entry.fileName}
                     </span>
                     <span className="text-xs text-muted-foreground shrink-0">
-                      {formatBytes(entry.file.size)}
+                      {formatBytes(entry.fileSize)}
                     </span>
                   </div>
 
@@ -183,7 +206,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                             type="button"
                             onClick={() => cancelEntry(entry.id)}
                             className="text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
-                            aria-label={`Cancel upload of ${entry.file.name}`}
+                            aria-label={`Cancel upload of ${entry.fileName}`}
                           >
                             Cancel
                           </button>
@@ -194,7 +217,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-valuenow={entry.progress}
-                        aria-label={`Upload progress for ${entry.file.name}`}
+                        aria-label={`Upload progress for ${entry.fileName}`}
                         className="h-1.5 w-full rounded-full bg-secondary overflow-hidden"
                       >
                         <div
@@ -211,15 +234,52 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                         <XCircle size={12} />
                         {entry.errorMessage ?? "Upload failed"}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => retryEntry(entry.id)}
-                        className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
-                        aria-label={`Retry uploading ${entry.file.name}`}
-                      >
-                        <RotateCw size={11} />
-                        Retry
-                      </button>
+                      {entry.file && (
+                        <button
+                          type="button"
+                          onClick={() => retryEntry(entry.id)}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
+                          aria-label={`Retry uploading ${entry.fileName}`}
+                        >
+                          <RotateCw size={11} />
+                          Retry
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {entry.status === "interrupted" && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-xs text-destructive">
+                        <XCircle size={12} />
+                        Upload was interrupted by a page refresh.
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => resumeInputsRef.current.get(entry.id)?.click()}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
+                          aria-label={`Re-pick ${entry.fileName} to resume upload`}
+                        >
+                          <RotateCw size={11} />
+                          Re-pick file to resume
+                        </button>
+                        <input
+                          ref={(el) => {
+                            if (el) resumeInputsRef.current.set(entry.id, el);
+                            else resumeInputsRef.current.delete(entry.id);
+                          }}
+                          type="file"
+                          accept="image/*,video/*,application/pdf"
+                          className="hidden"
+                          onChange={(e) => handleResumeChange(entry.id, e)}
+                        />
+                      </div>
+                      {resumeErrors[entry.id] && (
+                        <div className="text-xs text-destructive">
+                          {resumeErrors[entry.id]}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -245,7 +305,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                 <button
                   onClick={() => removeEntry(entry.id)}
                   className="shrink-0 mt-0.5 text-muted-foreground hover:text-foreground transition-colors"
-                  aria-label={`Remove ${entry.file.name}`}
+                  aria-label={`Remove ${entry.fileName}`}
                 >
                   <X size={14} />
                 </button>
