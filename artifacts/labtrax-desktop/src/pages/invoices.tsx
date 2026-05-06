@@ -908,13 +908,10 @@ function EmailInvoiceDialog({
       const built = buildInvoicePdf(buildPdfOptions());
       const trimmedTo = to.trim();
       const res = await apiFetch<{ sentAt: string; to: string }>(
-        "/invoices/statements/email",
+        `/invoices/${invoice.id}/email`,
         {
           method: "POST",
           body: JSON.stringify({
-            labOrganizationId: invoice.labOrganizationId,
-            practiceOrganizationId: invoice.providerOrganizationId,
-            invoiceIds: [invoice.id],
             ...(trimmedTo ? { to: trimmedTo } : {}),
             subject: subject.trim(),
             message,

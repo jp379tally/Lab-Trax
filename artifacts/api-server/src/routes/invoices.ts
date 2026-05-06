@@ -182,6 +182,135 @@ router.post(
   }),
 );
 
+const emailInvoiceSchema = z.object({
+  to: z.string().email().optional(),
+  cc: z.array(z.string().email()).max(10).optional(),
+  subject: z.string().min(1).max(500),
+  message: z.string().min(1).max(20000),
+  filename: z.string().min(1).max(200),
+  pdfBase64: z.string().min(1).max(8 * 1024 * 1024),
+});
+
+router.post(
+  "/:invoiceId/email",
+  asyncHandler(async (req, res) => {
+    const input = emailInvoiceSchema.parse(req.body);
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, req.params.invoiceId),
+    });
+    if (!invoice) throw new HttpError(404, "Invoice not found.");
+    await requireAnyRole(
+      (req as any).auth.userId,
+      invoice.labOrganizationId,
+      BILLING_ROLES,
+    );
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, invoice.providerOrganizationId),
+    });
+    if (!practice) throw new HttpError(404, "Practice not found.");
+
+    const recipient = (input.to ?? practice.billingEmail ?? "").trim();
+    if (!recipient) {
+      throw new HttpError(
+        400,
+        "This practice has no billing email on file. Add one first or enter a recipient.",
+      );
+    }
+
+    const cfg = getMailerConfig();
+    if (!cfg) {
+      throw new HttpError(
+        503,
+        "Email is not configured on the server. Ask an administrator to set SMTP credentials.",
+      );
+    }
+
+    let pdfBuffer: Buffer;
+    try {
+      pdfBuffer = Buffer.from(input.pdfBase64, "base64");
+    } catch {
+      throw new HttpError(400, "Invalid PDF payload.");
+    }
+    if (pdfBuffer.length === 0) {
+      throw new HttpError(400, "Invalid PDF payload.");
+    }
+
+    const transporter = createTransport(cfg);
+    try {
+      await transporter.sendMail({
+        from: cfg.from,
+        to: recipient,
+        cc: input.cc?.length ? input.cc : undefined,
+        subject: input.subject,
+        text: input.message,
+        attachments: [
+          {
+            filename: input.filename.endsWith(".pdf")
+              ? input.filename
+              : `${input.filename}.pdf`,
+            content: pdfBuffer,
+            contentType: "application/pdf",
+          },
+        ],
+      });
+    } catch (err: any) {
+      req.log?.error?.({ err }, "[INVOICE EMAIL] sendMail failed");
+      throw new HttpError(
+        502,
+        "Failed to send the email. Check SMTP settings and try again.",
+      );
+    }
+
+    const user = (req as any).user;
+    const actorInitials = user?.initials || "SYS";
+    const sentAt = new Date();
+    const metadata = {
+      practiceOrganizationId: practice.id,
+      practiceName: practice.displayName || practice.name,
+      to: recipient,
+      cc: input.cc ?? [],
+      subject: input.subject,
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      filename: input.filename,
+      sentAt: sentAt.toISOString(),
+    };
+
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_emailed",
+      entityType: "invoice",
+      entityId: invoice.id,
+      metadataJson: metadata,
+    });
+
+    if (invoice.caseId) {
+      await db.insert(caseEvents).values({
+        caseId: invoice.caseId,
+        eventType: "invoice_emailed",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: invoice.labOrganizationId,
+        actorInitials,
+        metadataJson: {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          to: recipient,
+          subject: input.subject,
+          practiceOrganizationId: practice.id,
+        },
+      });
+    }
+
+    return ok(res, {
+      sentAt: sentAt.toISOString(),
+      to: recipient,
+      cc: input.cc ?? [],
+    });
+  }),
+);
+
 function nextInvoiceNumber(caseNumber: string) {
   return `INV-${caseNumber}`;
 }
