@@ -272,8 +272,19 @@ export function startDailyOrphanedMediaCleanup() {
         "Daily orphaned case-media cleanup OK",
       );
 
-      // Alert admins if files were removed or errors occurred.
-      if (report.removedCount > 0 || report.errors.length > 0) {
+      // Alert admins if removed/freed thresholds are met, or errors occurred.
+      const minRemoved = Math.max(
+        1,
+        parseInt(process.env.CLEANUP_ALERT_MIN_REMOVED || "1", 10) || 1,
+      );
+      const minFreedMb =
+        parseFloat(process.env.CLEANUP_ALERT_MIN_FREED_MB || "0") || 0;
+      const meetsRemoveThreshold = report.removedCount >= minRemoved;
+      const meetsFreedThreshold =
+        minFreedMb > 0 &&
+        report.freedBytes / 1024 / 1024 >= minFreedMb;
+      const hasErrors = report.errors.length > 0;
+      if (meetsRemoveThreshold || meetsFreedThreshold || hasErrors) {
         try {
           const admins = await db
             .select({ email: users.email })
