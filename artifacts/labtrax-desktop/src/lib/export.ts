@@ -61,6 +61,8 @@ export interface StatementPdfOptions {
     status: string;
     total: string;
     balanceDue: string;
+    patientName?: string | null;
+    billTo?: string | null;
   }>;
 }
 
@@ -368,20 +370,29 @@ function buildStatementDoc(opts: StatementPdfOptions) {
 
   autoTable(doc, {
     startY: summaryY + 70,
-    head: [["Invoice", "Issued", "Due", "Status", "Total", "Open"]],
-    body: opts.invoices.map((i) => [
-      i.invoiceNumber,
-      i.issuedAt,
-      i.dueAt,
-      i.status,
-      fmtMoney(i.total),
-      Number(i.balanceDue) > 0 ? fmtMoney(i.balanceDue) : "—",
-    ]),
-    styles: { fontSize: 9, cellPadding: 6 },
+    head: [["Invoice", "Patient", "Issued", "Due", "Status", "Total", "Open"]],
+    body: opts.invoices.map((i) => {
+      const patient = (i.patientName && i.patientName.trim()) || "—";
+      const billTo = i.billTo && i.billTo.trim() ? i.billTo.trim() : "";
+      const invoiceCell =
+        billTo && billTo !== opts.practiceName
+          ? `${i.invoiceNumber}\nBill to: ${billTo}`
+          : i.invoiceNumber;
+      return [
+        invoiceCell,
+        patient,
+        i.issuedAt,
+        i.dueAt,
+        i.status,
+        fmtMoney(i.total),
+        Number(i.balanceDue) > 0 ? fmtMoney(i.balanceDue) : "—",
+      ];
+    }),
+    styles: { fontSize: 9, cellPadding: 6, valign: "top" },
     headStyles: { fillColor: [40, 44, 52], textColor: 255 },
     columnStyles: {
-      4: { halign: "right" },
       5: { halign: "right" },
+      6: { halign: "right" },
     },
     margin: { left: margin, right: margin },
   });

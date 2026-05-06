@@ -862,14 +862,19 @@ function StatementDrawer({
         open: row.openBalance,
         overdue: row.overdueBalance,
       },
-      invoices: sorted.map((i) => ({
-        invoiceNumber: i.invoiceNumber,
-        issuedAt: formatDate(i.issuedAt),
-        dueAt: formatDate(i.dueAt ?? i.dueDate),
-        status: statusLabel(i.status),
-        total: String(i.total ?? 0),
-        balanceDue: String(i.balanceDue ?? 0),
-      })),
+      invoices: sorted.map((i) => {
+        const meta = i.displayMetadata ?? i.displayMetadataJson ?? null;
+        return {
+          invoiceNumber: i.invoiceNumber,
+          issuedAt: formatDate(i.issuedAt),
+          dueAt: formatDate(i.dueAt ?? i.dueDate),
+          status: statusLabel(i.status),
+          total: String(i.total ?? 0),
+          balanceDue: String(i.balanceDue ?? 0),
+          patientName: meta?.patientName ?? null,
+          billTo: meta?.billTo ?? null,
+        };
+      }),
     };
   }
 
