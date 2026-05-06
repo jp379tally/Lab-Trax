@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { eq, sql } from "drizzle-orm";
+import { eq, lt, sql } from "drizzle-orm";
 import { db, caseAttachments, mediaCleanupRuns, systemSettings, users } from "@workspace/db";
 import { logger } from "./logger";
 import { sendCleanupAlertEmail } from "./mail";
@@ -269,6 +269,23 @@ export async function runAndPersistCleanup(
       triggeredBy,
     })
     .returning({ id: mediaCleanupRuns.id });
+
+  // Trim old history rows to keep the table small.
+  const retentionDays = Math.max(
+    1,
+    parseInt(process.env.CLEANUP_HISTORY_RETENTION_DAYS || "365", 10) || 365,
+  );
+  try {
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    await db
+      .delete(mediaCleanupRuns)
+      .where(lt(mediaCleanupRuns.startedAt, cutoff));
+  } catch (trimErr: unknown) {
+    logger.warn(
+      { err: trimErr instanceof Error ? trimErr.message : String(trimErr) },
+      "media_cleanup_runs trim failed — history rows not pruned",
+    );
+  }
 
   // Re-throw after persisting so callers can return a proper error response.
   if (fatalError !== null) {
