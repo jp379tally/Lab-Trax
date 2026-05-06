@@ -522,6 +522,54 @@ function removeAttachmentFile(
   }
 }
 
+router.post(
+  "/:caseId/attachments",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccess(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+    const input = z
+      .object({
+        storageKey: z.string().min(1),
+        fileName: z.string().min(1),
+        fileType: z.string().default("application/octet-stream"),
+        visibility: z
+          .enum(["internal_lab_only", "shared_with_provider"] as const)
+          .default("shared_with_provider"),
+      })
+      .parse(req.body);
+
+    const [attachment] = await db
+      .insert(caseAttachments)
+      .values({
+        caseId: found.id,
+        uploadedByUserId: (req as any).auth.userId,
+        uploadedByOrganizationId: found.labOrganizationId,
+        fileName: input.fileName,
+        storageKey: input.storageKey,
+        fileType: input.fileType,
+        visibility: input.visibility,
+      })
+      .returning();
+
+    await writeAuditLog({
+      req,
+      organizationId: found.labOrganizationId,
+      action: "case_attachment_created",
+      entityType: "case_attachment",
+      entityId: attachment.id,
+      afterJson: attachment,
+    });
+
+    return ok(res, attachment, 201);
+  })
+);
+
 async function removeAttachmentFromOneDrive(
   req: any,
   storageKey: string | null | undefined

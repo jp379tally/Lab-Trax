@@ -7,11 +7,13 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FileUp,
   Filter,
   Loader2,
   Lock,
   Paperclip,
   Plus,
+  ReceiptText,
   Search,
   Trash2,
   X,
@@ -21,6 +23,7 @@ import type {
   CaseAttachment,
   CaseEvent,
   CaseRestoration,
+  Invoice,
   LabCase,
   Organization,
   PricingHistoryEntry,
@@ -30,6 +33,7 @@ import type {
 } from "@/lib/types";
 import { formatDate, formatMoney, relativeTime, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import { InvoiceEditor } from "./invoices";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "All" },
@@ -800,6 +804,29 @@ function MobileCaseDrawer({ labCase, onClose }: { labCase: LabCase; onClose: () 
   );
 }
 
+type CaseNote = {
+  id: string;
+  noteText?: string | null;
+  visibility?: string | null;
+  createdAt?: string | null;
+};
+
+type DetailedCase = LabCase & {
+  restorations: CaseRestoration[];
+  notes: CaseNote[];
+  events: CaseEvent[];
+  attachments: CaseAttachment[];
+  viewerIsLabMember?: boolean;
+  viewerCanManageAttachments?: boolean;
+};
+
+function formatEventType(eventType: string | undefined | null): string {
+  if (!eventType) return "Event";
+  return eventType
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function CaseDrawer({
   labCase,
   onClose,
@@ -808,24 +835,128 @@ function CaseDrawer({
   onClose: () => void;
 }) {
   const isMobile = labCase._source === "mobile";
+  const qc = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["case", labCase.id],
-    queryFn: () =>
-      apiFetch<
-        LabCase & {
-          restorations: CaseRestoration[];
-          notes: Array<{ id: string; body?: string | null; createdAt?: string | null }>;
-          events: CaseEvent[];
-          attachments: CaseAttachment[];
-          viewerIsLabMember?: boolean;
-          viewerCanManageAttachments?: boolean;
-        }
-      >(`/cases/${labCase.id}`),
+    queryFn: () => apiFetch<DetailedCase>(`/cases/${labCase.id}`),
     enabled: !isMobile,
   });
 
+  const invoiceQuery = useQuery({
+    queryKey: ["invoice-for-case", labCase.id],
+    queryFn: () =>
+      apiFetch<Invoice[]>(
+        `/invoices?caseId=${encodeURIComponent(labCase.id)}`
+      ),
+    enabled: !isMobile,
+  });
+  const caseInvoice = invoiceQuery.data?.[0] ?? null;
+
+  const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
+  const [routeStatus, setRouteStatus] = useState("");
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [routeSuccess, setRouteSuccess] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const [noteVis, setNoteVis] = useState<
+    "internal_lab_only" | "shared_with_provider"
+  >("shared_with_provider");
+  const [noteError, setNoteError] = useState<string | null>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [generatingInvoice, setGeneratingInvoice] = useState(false);
+  const [invError, setInvError] = useState<string | null>(null);
+
+  const routeMutation = useMutation({
+    mutationFn: (status: string) =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setRouteStatus("");
+      setRouteError(null);
+      setRouteSuccess(true);
+      setTimeout(() => setRouteSuccess(false), 3000);
+    },
+    onError: (e: Error) => setRouteError(e.message),
+  });
+
+  const addNoteMutation = useMutation({
+    mutationFn: ({
+      text,
+      visibility,
+    }: {
+      text: string;
+      visibility: string;
+    }) =>
+      apiFetch(`/cases/${labCase.id}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ noteText: text, visibility }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setNoteText("");
+      setNoteError(null);
+    },
+    onError: (e: Error) => setNoteError(e.message),
+  });
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setUploadingFile(true);
+    setUploadError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { url } = await apiFetch<{ url: string }>("/media/upload", {
+        method: "POST",
+        body: fd,
+      });
+      await apiFetch(`/cases/${labCase.id}/attachments`, {
+        method: "POST",
+        body: JSON.stringify({
+          storageKey: url,
+          fileName: file.name,
+          fileType: file.type || "application/octet-stream",
+        }),
+      });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+    } catch (err: any) {
+      setUploadError(err?.message || "Upload failed.");
+    } finally {
+      setUploadingFile(false);
+    }
+  }
+
+  async function handleGenerateInvoice() {
+    setGeneratingInvoice(true);
+    setInvError(null);
+    try {
+      const inv = await apiFetch<Invoice>(
+        `/invoices/cases/${labCase.id}/generate-invoice`,
+        { method: "POST" }
+      );
+      await invoiceQuery.refetch();
+      qc.invalidateQueries({ queryKey: ["invoices"] });
+      setViewingInvoice(inv);
+    } catch (err: any) {
+      setInvError(err?.message || "Could not generate invoice.");
+    } finally {
+      setGeneratingInvoice(false);
+    }
+  }
+
   if (isMobile) return <MobileCaseDrawer labCase={labCase} onClose={onClose} />;
+
+  const ROUTE_STATUSES = STATUS_FILTERS.filter((s) => s.value !== "all");
+  const currentStatus = (data?.status ?? labCase.status) as string;
+  const hasRestorations = (data?.restorations?.length ?? 0) > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -834,7 +965,9 @@ function CaseDrawer({
         <header className="flex items-center justify-between px-6 py-4 border-b border-border">
           <div>
             <div className="text-xs text-muted-foreground">Case</div>
-            <div className="font-mono text-sm font-semibold">{labCase.caseNumber}</div>
+            <div className="font-mono text-sm font-semibold">
+              {labCase.caseNumber}
+            </div>
           </div>
           <button
             type="button"
@@ -844,23 +977,146 @@ function CaseDrawer({
             <X size={16} />
           </button>
         </header>
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+          {/* Core fields */}
           <div className="grid grid-cols-2 gap-4 text-sm">
-            <Field label="Patient" value={`${labCase.patientFirstName} ${labCase.patientLastName}`} />
+            <Field
+              label="Patient"
+              value={`${labCase.patientFirstName} ${labCase.patientLastName}`}
+            />
             <Field label="Doctor" value={labCase.doctorName} />
-            <Field label="Status" value={statusLabel(labCase.status)} />
-            <Field label="Priority" value={labCase.priority === "rush" ? "Rush" : "Normal"} />
+            <Field label="Status" value={statusLabel(currentStatus)} />
+            <Field
+              label="Priority"
+              value={labCase.priority === "rush" ? "Rush" : "Normal"}
+            />
             <Field label="Due date" value={formatDate(labCase.dueDate)} />
             <Field label="Created" value={formatDate(labCase.createdAt)} />
           </div>
 
+          {/* Route case */}
+          <section>
+            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
+              Route Case
+            </h3>
+            <div className="flex gap-2">
+              <select
+                value={routeStatus}
+                onChange={(e) => {
+                  setRouteStatus(e.target.value);
+                  setRouteError(null);
+                }}
+                className="flex-1 h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+              >
+                <option value="">Move to station…</option>
+                {ROUTE_STATUSES.map((s) => (
+                  <option
+                    key={s.value}
+                    value={s.value}
+                    disabled={s.value === currentStatus}
+                  >
+                    {s.label}
+                    {s.value === currentStatus ? " (current)" : ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!routeStatus || routeMutation.isPending}
+                onClick={() => routeMutation.mutate(routeStatus)}
+                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+              >
+                {routeMutation.isPending ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  "Route"
+                )}
+              </button>
+            </div>
+            {routeError && (
+              <p className="mt-1.5 text-xs text-destructive">{routeError}</p>
+            )}
+            {routeSuccess && (
+              <p className="mt-1.5 text-xs text-green-600">
+                Status updated successfully.
+              </p>
+            )}
+          </section>
+
+          {/* Invoice */}
+          <section>
+            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
+              Invoice
+            </h3>
+            {invoiceQuery.isLoading ? (
+              <div className="text-sm text-muted-foreground flex items-center gap-1.5">
+                <Loader2 size={13} className="animate-spin" />
+                Loading…
+              </div>
+            ) : caseInvoice ? (
+              <div className="border border-border rounded-md px-3 py-2.5 flex items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs font-semibold">
+                      {caseInvoice.invoiceNumber}
+                    </span>
+                    <StatusBadge status={caseInvoice.status} />
+                  </div>
+                  <div className="text-xs text-muted-foreground tabular-nums">
+                    Total: {formatMoney(caseInvoice.total)}
+                    {caseInvoice.balanceDue != null && (
+                      <> · Balance: {formatMoney(caseInvoice.balanceDue)}</>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewingInvoice(caseInvoice)}
+                  className="h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-sm text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap"
+                >
+                  Open
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  disabled={!hasRestorations || generatingInvoice || isLoading}
+                  onClick={handleGenerateInvoice}
+                  className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-secondary hover:bg-secondary/80 text-sm font-medium disabled:opacity-50 transition-colors"
+                >
+                  {generatingInvoice ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <ReceiptText size={14} />
+                  )}
+                  {generatingInvoice ? "Generating…" : "Generate Invoice"}
+                </button>
+                {!isLoading && !hasRestorations && (
+                  <p className="text-xs text-muted-foreground">
+                    Add restorations to this case before generating an invoice.
+                  </p>
+                )}
+                {invError && (
+                  <p className="text-xs text-destructive">{invError}</p>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Restorations */}
           <section>
             <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
               Restorations
             </h3>
-            {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
+            {isLoading && (
+              <div className="text-sm text-muted-foreground">Loading…</div>
+            )}
             {!isLoading && (data?.restorations?.length ?? 0) === 0 && (
-              <div className="text-sm text-muted-foreground">No restorations on this case.</div>
+              <div className="text-sm text-muted-foreground">
+                No restorations on this case.
+              </div>
             )}
             <div className="space-y-2">
               {data?.restorations?.map((r) => (
@@ -873,14 +1129,133 @@ function CaseDrawer({
             </div>
           </section>
 
+          {/* Notes */}
           <section>
             <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              Attachments
+              Notes
             </h3>
-            {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-            {!isLoading && (data?.attachments?.length ?? 0) === 0 && (
-              <div className="text-sm text-muted-foreground">No files attached.</div>
+            {isLoading && (
+              <div className="text-sm text-muted-foreground">Loading…</div>
             )}
+            <div className="space-y-2 mb-3">
+              {!isLoading && (!data?.notes || data.notes.length === 0) && (
+                <div className="text-sm text-muted-foreground">
+                  No notes yet.
+                </div>
+              )}
+              {data?.notes?.map((n) => (
+                <div
+                  key={n.id}
+                  className="border border-border rounded-md px-3 py-2 text-sm"
+                >
+                  <p className="text-sm leading-relaxed">{n.noteText || "—"}</p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    {n.visibility === "internal_lab_only" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                        <Lock size={9} />
+                        Lab only
+                      </span>
+                    )}
+                    {n.createdAt && (
+                      <span className="text-[11px] text-muted-foreground">
+                        {relativeTime(n.createdAt)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="border border-border rounded-md p-3 space-y-2">
+              <textarea
+                value={noteText}
+                onChange={(e) => {
+                  setNoteText(e.target.value);
+                  setNoteError(null);
+                }}
+                placeholder="Add a note…"
+                rows={2}
+                className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
+              />
+              <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-border">
+                <select
+                  value={noteVis}
+                  onChange={(e) =>
+                    setNoteVis(
+                      e.target.value as
+                        | "internal_lab_only"
+                        | "shared_with_provider"
+                    )
+                  }
+                  className="h-7 px-2 rounded bg-secondary text-xs border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="shared_with_provider">
+                    Shared with provider
+                  </option>
+                  <option value="internal_lab_only">Internal only</option>
+                </select>
+                <button
+                  type="button"
+                  disabled={!noteText.trim() || addNoteMutation.isPending}
+                  onClick={() =>
+                    addNoteMutation.mutate({
+                      text: noteText,
+                      visibility: noteVis,
+                    })
+                  }
+                  className="h-7 px-3 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                >
+                  {addNoteMutation.isPending ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    "Add note"
+                  )}
+                </button>
+              </div>
+              {noteError && (
+                <p className="text-xs text-destructive">{noteError}</p>
+              )}
+            </div>
+          </section>
+
+          {/* Attachments */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                Attachments
+              </h3>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadingFile}
+                className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
+              >
+                {uploadingFile ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <FileUp size={12} />
+                )}
+                {uploadingFile ? "Uploading…" : "Attach file"}
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+            {uploadError && (
+              <p className="mb-2 text-xs text-destructive">{uploadError}</p>
+            )}
+            {isLoading && (
+              <div className="text-sm text-muted-foreground">Loading…</div>
+            )}
+            {!isLoading &&
+              (data?.attachments?.length ?? 0) === 0 &&
+              !uploadingFile && (
+                <div className="text-sm text-muted-foreground">
+                  No files attached.
+                </div>
+              )}
             <div className="space-y-2">
               {data?.attachments?.map((a) => (
                 <AttachmentRow
@@ -893,24 +1268,34 @@ function CaseDrawer({
             </div>
           </section>
 
+          {/* Activity */}
           <section>
             <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-              Recent activity
+              Recent Activity
             </h3>
-            {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
+            {isLoading && (
+              <div className="text-sm text-muted-foreground">Loading…</div>
+            )}
             {!isLoading && (data?.events?.length ?? 0) === 0 && (
-              <div className="text-sm text-muted-foreground">No activity logged.</div>
+              <div className="text-sm text-muted-foreground">
+                No activity logged.
+              </div>
             )}
             <ul className="space-y-1.5">
-              {data?.events?.slice(0, 8).map((e) => (
+              {data?.events?.slice(0, 12).map((e) => (
                 <li
                   key={e.id}
                   className="text-sm flex items-start justify-between gap-3 border-l-2 border-primary/40 pl-3"
                 >
-                  <div>
-                    <div className="font-medium">{e.eventType?.replace(/_/g, " ")}</div>
+                  <div className="min-w-0">
+                    <div className="font-medium">
+                      {formatEventType(e.eventType)}
+                    </div>
                     <div className="text-xs text-muted-foreground">
                       {e.actorInitials || "—"}
+                      {e.metadataJson?.toStatus
+                        ? ` → ${statusLabel(String(e.metadataJson.toStatus))}`
+                        : ""}
                     </div>
                   </div>
                   <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -922,6 +1307,13 @@ function CaseDrawer({
           </section>
         </div>
       </aside>
+
+      {viewingInvoice && (
+        <InvoiceEditor
+          invoice={viewingInvoice}
+          onClose={() => setViewingInvoice(null)}
+        />
+      )}
     </div>
   );
 }

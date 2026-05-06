@@ -428,13 +428,21 @@ router.get(
       .filter((m: any) => m.status === "active")
       .map((m: any) => m.labId);
 
+    const caseIdFilter =
+      typeof req.query.caseId === "string" && req.query.caseId
+        ? req.query.caseId
+        : null;
+
     const rows = orgIds.length
       ? await db.query.invoices.findMany({
-          where: or(
-            ...orgIds.flatMap((orgId: string) => [
-              eq(invoices.labOrganizationId, orgId),
-              eq(invoices.providerOrganizationId, orgId),
-            ])
+          where: and(
+            caseIdFilter ? eq(invoices.caseId, caseIdFilter) : undefined,
+            or(
+              ...orgIds.flatMap((orgId: string) => [
+                eq(invoices.labOrganizationId, orgId),
+                eq(invoices.providerOrganizationId, orgId),
+              ])
+            )
           ),
           orderBy: [desc(invoices.createdAt)],
         })

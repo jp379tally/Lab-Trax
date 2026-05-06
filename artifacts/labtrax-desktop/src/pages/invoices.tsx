@@ -207,7 +207,7 @@ export default function InvoicesPage() {
   );
 }
 
-function InvoiceEditor({
+export function InvoiceEditor({
   invoice,
   onClose,
 }: {
