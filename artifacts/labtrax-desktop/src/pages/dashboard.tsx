@@ -1,19 +1,157 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowRight,
+  CheckCircle2,
   Clock,
+  HardDrive,
   Plus,
   Upload,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 import type { LabCase } from "@/lib/types";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatDateTime, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
 import { NewCaseModal } from "./cases";
+import { useAuth } from "@/lib/auth-context";
+
+interface MediaCleanupRun {
+  id: string;
+  startedAt: string;
+  finishedAt: string | null;
+  dryRun: boolean;
+  status: string;
+  errorMessage: string | null;
+  scannedFiles: number;
+  referencedFiles: number;
+  orphanCount: number;
+  removedCount: number;
+  freedBytes: number;
+  errorCount: number;
+  triggeredBy: string;
+  createdAt: string;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const value = bytes / Math.pow(1024, i);
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
+}
+
+function MediaCleanupCard() {
+  const runsQuery = useQuery({
+    queryKey: ["admin", "cleanup", "runs", "last"],
+    queryFn: () =>
+      apiFetch<{ runs: MediaCleanupRun[] }>(
+        "/admin/cleanup/orphaned-media/runs?limit=1",
+      ),
+    refetchInterval: 5 * 60 * 1000,
+  });
+
+  const lastRun = runsQuery.data?.runs[0] ?? null;
+  const hasError = lastRun?.status === "error";
+
+  return (
+    <section className="bg-card border border-border rounded-xl">
+      <header className="flex items-center gap-2 px-5 py-3.5 border-b border-border">
+        <HardDrive size={14} className="text-muted-foreground" />
+        <div>
+          <h2 className="text-sm font-semibold">Media Cleanup</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Last nightly orphaned-media run
+          </p>
+        </div>
+      </header>
+
+      <div className="px-5 py-4 space-y-3 text-sm">
+        {runsQuery.isLoading && (
+          <p className="text-muted-foreground text-xs">Loading…</p>
+        )}
+
+        {runsQuery.isError && (
+          <div className="flex items-center gap-2 text-destructive text-xs">
+            <AlertCircle size={13} className="shrink-0" />
+            Failed to load cleanup history.
+          </div>
+        )}
+
+        {!runsQuery.isLoading && !runsQuery.isError && !lastRun && (
+          <div className="flex items-center gap-2 text-muted-foreground text-xs">
+            <Clock size={13} />
+            Not yet run — no cleanup has completed yet.
+          </div>
+        )}
+
+        {lastRun && (
+          <>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {hasError ? (
+                <AlertCircle size={13} className="text-destructive shrink-0" />
+              ) : (
+                <CheckCircle2 size={13} className="text-green-600 dark:text-green-400 shrink-0" />
+              )}
+              <span>
+                Ran {relativeTime(lastRun.startedAt)}{" "}
+                <span className="text-foreground/50">·</span>{" "}
+                {formatDateTime(lastRun.startedAt)}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-md bg-secondary/50 px-3 py-2.5">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+                  Scanned
+                </div>
+                <div className="font-semibold text-base tabular-nums">
+                  {lastRun.scannedFiles.toLocaleString()}
+                </div>
+                <div className="text-[11px] text-muted-foreground">files</div>
+              </div>
+              <div className="rounded-md bg-secondary/50 px-3 py-2.5">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+                  Removed
+                </div>
+                <div className="font-semibold text-base tabular-nums">
+                  {lastRun.removedCount.toLocaleString()}
+                </div>
+                <div className="text-[11px] text-muted-foreground">orphans</div>
+              </div>
+              <div className="rounded-md bg-secondary/50 px-3 py-2.5">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+                  Freed
+                </div>
+                <div className="font-semibold text-base tabular-nums">
+                  {formatBytes(lastRun.freedBytes)}
+                </div>
+                <div className="text-[11px] text-muted-foreground">disk space</div>
+              </div>
+            </div>
+
+            {(hasError || lastRun.errorCount > 0) && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-xs space-y-1">
+                <div className="font-medium text-destructive flex items-center gap-1.5">
+                  <AlertCircle size={12} />
+                  {hasError
+                    ? "Cleanup run failed"
+                    : `${lastRun.errorCount} error${lastRun.errorCount === 1 ? "" : "s"} during cleanup`}
+                </div>
+                {lastRun.errorMessage && (
+                  <p className="text-muted-foreground truncate">{lastRun.errorMessage}</p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
 
 function isToday(d?: string | null): boolean {
   if (!d) return false;
@@ -113,6 +251,8 @@ export default function DashboardPage() {
   }, []);
 
   const [showNewCase, setShowNewCase] = useState(false);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
 
   const casesQuery = useQuery({
     queryKey: ["cases"],
@@ -184,6 +324,8 @@ export default function DashboardPage() {
             </h2>
             <DashboardDropZone />
           </div>
+
+          {isAdmin && <MediaCleanupCard />}
 
           <section className="bg-card border border-border rounded-xl">
             <header className="px-5 py-3.5 border-b border-border">
