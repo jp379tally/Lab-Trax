@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Building2, KeyRound, Loader2, LogOut, Monitor, ShieldCheck, User as UserIcon } from "lucide-react";
+import { Building2, HardDrive, KeyRound, Loader2, LogOut, Monitor, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
@@ -17,7 +17,7 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -28,6 +28,7 @@ export default function SettingsPage() {
     { key: "sessions", label: "Active sessions", icon: Monitor, show: true },
     { key: "organizations", label: "Organizations", icon: Building2, show: true },
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
+    { key: "storage", label: "Storage", icon: HardDrive, show: isAdmin },
   ];
   const [tab, setTab] = useState<TabKey>("profile");
 
@@ -69,6 +70,7 @@ export default function SettingsPage() {
           {tab === "sessions" && <SessionsPanel />}
           {tab === "organizations" && <OrganizationsPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
+          {tab === "storage" && isAdmin && <StoragePanel />}
         </div>
       </div>
     </div>
@@ -366,6 +368,225 @@ function UsersPanel() {
           </tbody>
         </table>
       </div>
+    </PanelShell>
+  );
+}
+
+interface CleanupReport {
+  ok: boolean;
+  triggeredBy: string;
+  dryRun: boolean;
+  mediaDirExists: boolean;
+  scannedFiles: number;
+  referencedFiles: number;
+  orphanCount: number;
+  removedCount: number;
+  freedBytes: number;
+  sample: string[];
+  errors: Array<{ fileName: string; error: string }>;
+}
+
+interface LastRun {
+  at: string;
+  removedCount: number;
+  freedBytes: number;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const value = bytes / Math.pow(1024, i);
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
+}
+
+const LAST_RUN_KEY = "labtrax.admin.storage.lastRun";
+
+function StoragePanel() {
+  const [report, setReport] = useState<CleanupReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lastRun, setLastRun] = useState<LastRun | null>(() => {
+    try {
+      const raw = localStorage.getItem(LAST_RUN_KEY);
+      return raw ? (JSON.parse(raw) as LastRun) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const scanMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<CleanupReport>("/admin/cleanup/orphaned-media?dryRun=true", {
+        method: "POST",
+      }),
+    onSuccess: (data) => {
+      setReport(data);
+      setError(null);
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Scan failed.");
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<CleanupReport>("/admin/cleanup/orphaned-media?dryRun=false", {
+        method: "POST",
+      }),
+    onSuccess: (data) => {
+      setReport(data);
+      setError(null);
+      const run: LastRun = {
+        at: new Date().toISOString(),
+        removedCount: data.removedCount,
+        freedBytes: data.freedBytes,
+      };
+      setLastRun(run);
+      try {
+        localStorage.setItem(LAST_RUN_KEY, JSON.stringify(run));
+      } catch {
+        // ignore
+      }
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Cleanup failed.");
+    },
+  });
+
+  const busy = scanMutation.isPending || deleteMutation.isPending;
+
+  return (
+    <PanelShell
+      title="Storage"
+      subtitle="Scan for and remove orphaned case-media files that are no longer linked to any case."
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+
+      {lastRun && (
+        <div className="rounded-md bg-secondary/40 border border-border px-4 py-3 text-sm space-y-0.5">
+          <div className="font-medium text-foreground">Last cleanup</div>
+          <div className="text-xs text-muted-foreground">
+            Ran {formatRelative(lastRun.at)} · removed {lastRun.removedCount} {lastRun.removedCount === 1 ? "file" : "files"} · freed {formatBytes(lastRun.freedBytes)}
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-3 items-center">
+        <button
+          type="button"
+          onClick={() => scanMutation.mutate()}
+          disabled={busy}
+          className="h-9 px-4 rounded-md bg-secondary text-foreground text-sm font-medium hover:bg-secondary/80 disabled:opacity-60 inline-flex items-center gap-2"
+        >
+          {scanMutation.isPending ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <HardDrive size={14} />
+          )}
+          {scanMutation.isPending ? "Scanning…" : "Scan for orphans"}
+        </button>
+
+        {report && report.dryRun && report.orphanCount > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                !window.confirm(
+                  `Delete ${report.orphanCount} orphaned ${report.orphanCount === 1 ? "file" : "files"} (${formatBytes(report.freedBytes)})? This cannot be undone.`,
+                )
+              )
+                return;
+              deleteMutation.mutate();
+            }}
+            disabled={busy}
+            className="h-9 px-4 rounded-md bg-destructive/10 text-destructive text-sm font-medium hover:bg-destructive/20 disabled:opacity-60 inline-flex items-center gap-2"
+          >
+            {deleteMutation.isPending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Trash2 size={14} />
+            )}
+            {deleteMutation.isPending
+              ? "Deleting…"
+              : `Delete ${report.orphanCount} orphaned ${report.orphanCount === 1 ? "file" : "files"}`}
+          </button>
+        )}
+      </div>
+
+      {report && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { label: "Scanned", value: report.scannedFiles.toLocaleString() },
+              { label: "Referenced", value: report.referencedFiles.toLocaleString() },
+              { label: "Orphans", value: report.orphanCount.toLocaleString() },
+              {
+                label: report.dryRun ? "Reclaimable" : "Freed",
+                value: formatBytes(report.freedBytes),
+              },
+            ].map(({ label, value }) => (
+              <div
+                key={label}
+                className="rounded-lg border border-border bg-secondary/30 px-4 py-3 text-center"
+              >
+                <div className="text-xl font-semibold tabular-nums">{value}</div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mt-0.5">
+                  {label}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {!report.mediaDirExists && (
+            <div className="text-sm text-muted-foreground rounded-md bg-secondary/40 border border-border px-3 py-2">
+              The case-media upload directory does not exist yet — no files have been uploaded, so there is nothing to scan.
+            </div>
+          )}
+
+          {!report.dryRun && report.removedCount > 0 && (
+            <Alert tone="success">
+              Removed {report.removedCount} {report.removedCount === 1 ? "file" : "files"} · freed {formatBytes(report.freedBytes)}.
+            </Alert>
+          )}
+
+          {report.orphanCount === 0 && report.dryRun && report.mediaDirExists && (
+            <div className="text-sm text-muted-foreground text-center py-2">
+              No orphaned files found. Storage is clean.
+            </div>
+          )}
+
+          {report.sample.length > 0 && (
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                Sample orphaned files ({report.sample.length} shown)
+              </div>
+              <div className="border border-border rounded-md divide-y divide-border max-h-48 overflow-y-auto">
+                {report.sample.map((name) => (
+                  <div key={name} className="px-3 py-1.5 text-xs font-mono text-muted-foreground truncate">
+                    {name}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {report.errors.length > 0 && (
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-destructive font-medium mb-1.5">
+                Errors ({report.errors.length})
+              </div>
+              <div className="border border-destructive/30 rounded-md divide-y divide-border max-h-36 overflow-y-auto">
+                {report.errors.map(({ fileName, error: errMsg }) => (
+                  <div key={fileName} className="px-3 py-1.5 text-xs">
+                    <span className="font-mono text-muted-foreground">{fileName}</span>
+                    <span className="text-destructive ml-2">{errMsg}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </PanelShell>
   );
 }
