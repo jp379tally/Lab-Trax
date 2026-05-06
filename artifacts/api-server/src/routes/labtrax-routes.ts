@@ -6,7 +6,7 @@ import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import { runOneDriveBackup } from "../lib/backup";
-import { cleanupOrphanedCaseMedia } from "../lib/case-media";
+import { cleanupOrphanedCaseMedia, getLastCleanupReport } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -2862,6 +2862,16 @@ Important rules:
         .status(500)
         .json({ error: e?.message || "Orphaned media cleanup failed." });
     }
+  });
+
+  // ── Admin: last nightly cleanup run summary ───────────────────────────────
+  router.get("/admin/cleanup/last-report", requireAuth, (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const report = getLastCleanupReport();
+    return res.json({ ok: true, report });
   });
 
   // ── Admin Backup → OneDrive ───────────────────────────────────────────────

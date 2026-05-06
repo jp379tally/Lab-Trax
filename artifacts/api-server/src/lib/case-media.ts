@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { db, caseAttachments } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import { db, caseAttachments, users } from "@workspace/db";
 import { logger } from "./logger";
+import { sendCleanupAlertEmail } from "./mail";
 
 export const caseMediaDir = path.resolve(
   process.cwd(),
@@ -147,6 +149,19 @@ export async function cleanupOrphanedCaseMedia(
   return report;
 }
 
+// ── Last-run summary (in-memory) ────────────────────────────────────────────
+
+export interface CleanupRunSummary extends OrphanedMediaReport {
+  ranAt: string;
+}
+
+let _lastCleanupReport: CleanupRunSummary | null = null;
+
+/** Returns the result of the most recent scheduler run, or null if it hasn't run yet. */
+export function getLastCleanupReport(): CleanupRunSummary | null {
+  return _lastCleanupReport;
+}
+
 // ── Daily orphaned-media cleanup scheduler ──────────────────────────────────
 // Mirrors the daily OneDrive backup scheduler in lib/backup.ts. Runs once per
 // day at the configured UTC hour (default 08:00 UTC, an hour after the
@@ -183,12 +198,14 @@ export function startDailyOrphanedMediaCleanup() {
   );
 
   const tick = async () => {
+    const ranAt = new Date().toISOString();
     try {
       logger.info(
-        { startedAt: new Date().toISOString() },
+        { startedAt: ranAt },
         "Daily orphaned case-media cleanup starting",
       );
       const report = await cleanupOrphanedCaseMedia({ dryRun: false });
+      _lastCleanupReport = { ...report, ranAt };
       logger.info(
         {
           scannedFiles: report.scannedFiles,
@@ -200,11 +217,61 @@ export function startDailyOrphanedMediaCleanup() {
         },
         "Daily orphaned case-media cleanup OK",
       );
+
+      // Alert admins if files were removed or errors occurred.
+      if (report.removedCount > 0 || report.errors.length > 0) {
+        try {
+          const admins = await db
+            .select({ email: users.email })
+            .from(users)
+            .where(eq(users.role, "admin"));
+          const adminEmails = admins
+            .map((u) => u.email)
+            .filter((e): e is string => Boolean(e));
+          await sendCleanupAlertEmail({
+            adminEmails,
+            report: {
+              ranAt,
+              scannedFiles: report.scannedFiles,
+              orphanCount: report.orphanCount,
+              removedCount: report.removedCount,
+              freedBytes: report.freedBytes,
+              errorCount: report.errors.length,
+              errors: report.errors,
+            },
+          });
+        } catch (mailErr: any) {
+          logger.error(
+            { err: mailErr?.message || String(mailErr) },
+            "Daily orphaned case-media cleanup: admin alert email failed",
+          );
+        }
+      }
     } catch (err: any) {
+      const errMsg = err?.message || String(err);
       logger.error(
-        { err: err?.message || String(err) },
+        { err: errMsg },
         "Daily orphaned case-media cleanup FAILED",
       );
+      // Send a fatal-failure alert to admins even though no report was produced.
+      try {
+        const admins = await db
+          .select({ email: users.email })
+          .from(users)
+          .where(eq(users.role, "admin"));
+        const adminEmails = admins
+          .map((u) => u.email)
+          .filter((e): e is string => Boolean(e));
+        await sendCleanupAlertEmail({
+          adminEmails,
+          report: { ranAt, fatalError: errMsg },
+        });
+      } catch (mailErr: any) {
+        logger.error(
+          { err: mailErr?.message || String(mailErr) },
+          "Daily orphaned case-media cleanup: fatal alert email failed",
+        );
+      }
     } finally {
       setTimeout(tick, msUntilNext(hourUtc));
     }

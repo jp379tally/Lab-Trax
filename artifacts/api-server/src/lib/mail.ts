@@ -133,6 +133,85 @@ export async function sendInviteEmail(
   });
 }
 
+export interface CleanupAlertParams {
+  adminEmails: string[];
+  report: {
+    ranAt: string;
+    /** Set when the cleanup run itself threw a fatal error before producing a report. */
+    fatalError?: string;
+    scannedFiles?: number;
+    orphanCount?: number;
+    removedCount?: number;
+    freedBytes?: number;
+    errorCount?: number;
+    errors?: Array<{ fileName: string; error: string }>;
+  };
+}
+
+export async function sendCleanupAlertEmail(
+  params: CleanupAlertParams
+): Promise<void> {
+  if (params.adminEmails.length === 0) return;
+
+  const { report } = params;
+  const isFatal = Boolean(report.fatalError);
+  const removedCount = report.removedCount ?? 0;
+  const errorCount = report.errorCount ?? 0;
+  const hasIssues = isFatal || removedCount > 0 || errorCount > 0;
+  if (!hasIssues) return;
+
+  const dateStr = report.ranAt.slice(0, 10);
+  const subject = isFatal
+    ? `LabTrax Media Cleanup FAILED on ${dateStr}`
+    : errorCount > 0
+      ? `LabTrax Media Cleanup: ${errorCount} error(s) on ${dateStr}`
+      : `LabTrax Media Cleanup: ${removedCount} file(s) removed on ${dateStr}`;
+
+  const fatalBannerHtml = isFatal
+    ? `<div style="background:#c0392b;color:white;padding:12px 16px;border-radius:4px;margin-bottom:16px;"><strong>Fatal error — cleanup did not complete:</strong><br/><code style="word-break:break-all;">${escapeHtml(report.fatalError!)}</code></div>`
+    : "";
+  const fatalBannerText = isFatal
+    ? `FATAL ERROR — cleanup did not complete:\n  ${report.fatalError}\n\n`
+    : "";
+
+  const errors = report.errors ?? [];
+  const freedMb = ((report.freedBytes ?? 0) / 1024 / 1024).toFixed(2);
+
+  const statsHtml = isFatal ? "" : `<table style="border-collapse: collapse; width: 100%; font-size: 14px;">
+        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Scanned files</td><td style="padding: 8px 12px;">${report.scannedFiles ?? 0}</td></tr>
+        <tr><td style="padding: 8px 12px; font-weight: bold;">Orphaned files found</td><td style="padding: 8px 12px;">${report.orphanCount ?? 0}</td></tr>
+        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Files removed</td><td style="padding: 8px 12px;">${removedCount}</td></tr>
+        <tr><td style="padding: 8px 12px; font-weight: bold;">Space freed</td><td style="padding: 8px 12px;">${freedMb} MB</td></tr>
+        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Errors</td><td style="padding: 8px 12px; color: ${errorCount > 0 ? "#c0392b" : "inherit"};">${errorCount}</td></tr>
+      </table>`;
+
+  const statsText = isFatal ? "" : `Scanned files: ${report.scannedFiles ?? 0}\nOrphaned files found: ${report.orphanCount ?? 0}\nFiles removed: ${removedCount}\nSpace freed: ${freedMb} MB\nErrors: ${errorCount}`;
+
+  const errorRowsHtml = errors.length > 0
+    ? `<h3 style="color:#c0392b;">File-level errors</h3><ul>${errors.map((e) => `<li><code>${escapeHtml(e.fileName)}</code>: ${escapeHtml(e.error)}</li>`).join("")}</ul>`
+    : "";
+  const errorRowsText = errors.length > 0
+    ? `\nFile-level errors:\n${errors.map((e) => `  - ${e.fileName}: ${e.error}`).join("\n")}`
+    : "";
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.85;">Nightly Media Cleanup Report</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <p style="color: #555; font-size: 13px;">Run at: ${escapeHtml(report.ranAt)}</p>
+      ${fatalBannerHtml}${statsHtml}${errorRowsHtml}
+    </div>
+  </div>`;
+
+  const text = `LabTrax Nightly Media Cleanup Report\nRun at: ${report.ranAt}\n\n${fatalBannerText}${statsText}${errorRowsText}`;
+
+  for (const email of params.adminEmails) {
+    await sendMail({ to: email, subject, html, text });
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
