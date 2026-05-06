@@ -94,6 +94,19 @@ export interface PricingHistoryEntry {
   afterNotes?: string | null;
 }
 
+export interface CaseAttachment {
+  id: string;
+  caseId: string;
+  uploadedByUserId: string;
+  uploadedByOrganizationId: string;
+  fileName: string;
+  storageKey: string;
+  fileType: string;
+  visibility?: string | null;
+  createdAt?: string | null;
+  uploaderName?: string | null;
+}
+
 export interface CaseEvent {
   id: string;
   caseId: string;

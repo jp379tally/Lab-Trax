@@ -12,6 +12,7 @@ import {
   cases,
   organizationConnections,
   organizationMemberships,
+  users,
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
@@ -276,14 +277,99 @@ router.get(
         }),
       ]);
 
+    const uploaderIds = Array.from(
+      new Set(attachments.map((a: any) => a.uploadedByUserId).filter(Boolean))
+    );
+    const uploaderRows = uploaderIds.length
+      ? await db.query.users.findMany({ where: inArray(users.id, uploaderIds) })
+      : [];
+    const uploaderById = new Map(uploaderRows.map((u: any) => [u.id, u]));
+    const enrichedAttachments = attachments.map((a: any) => {
+      const u = uploaderById.get(a.uploadedByUserId) as any | undefined;
+      const name = u
+        ? [u.firstName, u.lastName].filter(Boolean).join(" ") ||
+          u.username ||
+          u.email ||
+          null
+        : null;
+      return { ...a, uploaderName: name };
+    });
+
     return ok(res, {
       ...found,
       restorations,
       notes,
-      attachments,
+      attachments: enrichedAttachments,
       events,
       locations,
     });
+  })
+);
+
+router.get(
+  "/:caseId/attachments",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccess(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    const attachments = await db.query.caseAttachments.findMany({
+      where: eq(caseAttachments.caseId, found.id),
+      orderBy: [desc(caseAttachments.createdAt)],
+    });
+    const uploaderIds = Array.from(
+      new Set(attachments.map((a: any) => a.uploadedByUserId).filter(Boolean))
+    );
+    const uploaderRows = uploaderIds.length
+      ? await db.query.users.findMany({ where: inArray(users.id, uploaderIds) })
+      : [];
+    const uploaderById = new Map(uploaderRows.map((u: any) => [u.id, u]));
+    const enriched = attachments.map((a: any) => {
+      const u = uploaderById.get(a.uploadedByUserId) as any | undefined;
+      const name = u
+        ? [u.firstName, u.lastName].filter(Boolean).join(" ") ||
+          u.username ||
+          u.email ||
+          null
+        : null;
+      return { ...a, uploaderName: name };
+    });
+    return ok(res, enriched);
+  })
+);
+
+router.delete(
+  "/:caseId/attachments/:attachmentId",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccess(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+    const attachment = await db.query.caseAttachments.findFirst({
+      where: and(
+        eq(caseAttachments.id, req.params.attachmentId),
+        eq(caseAttachments.caseId, found.id)
+      ),
+    });
+    if (!attachment) throw new HttpError(404, "Attachment not found.");
+
+    await db
+      .delete(caseAttachments)
+      .where(eq(caseAttachments.id, attachment.id));
+
+    await writeAuditLog({
+      req,
+      organizationId: found.labOrganizationId,
+      action: "case_attachment_deleted",
+      entityType: "case_attachment",
+      entityId: attachment.id,
+      beforeJson: attachment,
+    });
+    return ok(res, { deleted: true });
   })
 );
 
