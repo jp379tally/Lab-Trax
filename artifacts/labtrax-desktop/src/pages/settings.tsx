@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { Building2, HardDrive, KeyRound, Loader2, LogOut, Monitor, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Building2, BellRing, HardDrive, KeyRound, Loader2, LogOut, Monitor, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
@@ -402,6 +402,126 @@ function formatBytes(bytes: number): string {
 
 const LAST_RUN_KEY = "labtrax.admin.storage.lastRun";
 
+interface CleanupAlertSettings {
+  minRemoved: number;
+  minFreedMb: number;
+  dbMinRemoved: number | null;
+  dbMinFreedMb: number | null;
+  envMinRemoved: number;
+  envMinFreedMb: number;
+}
+
+function CleanupAlertSettingsPanel() {
+  const queryClient = useQueryClient();
+  const [minRemoved, setMinRemoved] = useState("");
+  const [minFreedMb, setMinFreedMb] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  const settingsQuery = useQuery({
+    queryKey: ["admin", "cleanup-alert-settings"],
+    queryFn: () => apiFetch<CleanupAlertSettings>("/admin/settings/cleanup-alerts"),
+  });
+
+  useEffect(() => {
+    if (settingsQuery.data) {
+      setMinRemoved(String(settingsQuery.data.minRemoved));
+      setMinFreedMb(String(settingsQuery.data.minFreedMb));
+    }
+  }, [settingsQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean; minRemoved: number; minFreedMb: number }>(
+        "/admin/settings/cleanup-alerts",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            minRemoved: parseInt(minRemoved, 10),
+            minFreedMb: parseFloat(minFreedMb),
+          }),
+        },
+      ),
+    onSuccess: () => {
+      setError(null);
+      setSuccess(true);
+      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-alert-settings"] });
+      setTimeout(() => setSuccess(false), 2500);
+    },
+    onError: (err: Error) => {
+      setSuccess(false);
+      setError(err.message || "Failed to save settings.");
+    },
+  });
+
+  const data = settingsQuery.data;
+
+  return (
+    <div className="border border-border rounded-lg p-4 space-y-4">
+      <div className="flex items-center gap-2">
+        <BellRing size={14} className="text-muted-foreground" />
+        <h3 className="text-sm font-semibold">Cleanup alert thresholds</h3>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        The nightly cleanup job emails admins when it removes files or frees storage above these limits. Set "Min freed (MB)" to 0 to disable the freed-bytes threshold.
+      </p>
+      {error && <Alert tone="danger">{error}</Alert>}
+      {success && <Alert tone="success">Thresholds saved.</Alert>}
+      {settingsQuery.isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 size={13} className="animate-spin" />
+          Loading…
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Min files removed">
+            <input
+              className={inputCls}
+              type="number"
+              min={1}
+              step={1}
+              value={minRemoved}
+              onChange={(e) => setMinRemoved(e.target.value)}
+              placeholder={data ? String(data.envMinRemoved) : "1"}
+            />
+            {data?.dbMinRemoved === null && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Using env default: {data.envMinRemoved}
+              </p>
+            )}
+          </Field>
+          <Field label="Min freed (MB)">
+            <input
+              className={inputCls}
+              type="number"
+              min={0}
+              step={0.1}
+              value={minFreedMb}
+              onChange={(e) => setMinFreedMb(e.target.value)}
+              placeholder={data ? String(data.envMinFreedMb) : "0"}
+            />
+            {data?.dbMinFreedMb === null && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Using env default: {data.envMinFreedMb}
+              </p>
+            )}
+          </Field>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => saveMutation.mutate()}
+        disabled={saveMutation.isPending || settingsQuery.isLoading}
+        className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
+      >
+        {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+        {saveMutation.isPending ? "Saving…" : "Save thresholds"}
+      </button>
+    </div>
+  );
+}
+
 function StoragePanel() {
   const [report, setReport] = useState<CleanupReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -587,6 +707,7 @@ function StoragePanel() {
           )}
         </div>
       )}
+      <CleanupAlertSettingsPanel />
     </PanelShell>
   );
 }

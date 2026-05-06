@@ -6,13 +6,13 @@ import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import { runOneDriveBackup } from "../lib/backup";
-import { cleanupOrphanedCaseMedia, runAndPersistCleanup } from "../lib/case-media";
+import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, mediaCleanupRuns } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, mediaCleanupRuns, systemSettings } from "@workspace/db";
 import { eq, and, inArray, or, isNull, sql, desc } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
@@ -2879,6 +2879,70 @@ Important rules:
       return res
         .status(500)
         .json({ error: e?.message || "Orphaned media cleanup failed." });
+    }
+  });
+
+  // ── Admin: cleanup alert settings ────────────────────────────────────────
+  router.get("/admin/settings/cleanup-alerts", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const rows = await db
+        .select()
+        .from(systemSettings)
+        .where(
+          sql`${systemSettings.key} in (${SETTING_CLEANUP_MIN_REMOVED}, ${SETTING_CLEANUP_MIN_FREED_MB})`,
+        );
+      const dbMinRemovedRaw = rows.find((r) => r.key === SETTING_CLEANUP_MIN_REMOVED)?.value ?? null;
+      const dbMinFreedMbRaw = rows.find((r) => r.key === SETTING_CLEANUP_MIN_FREED_MB)?.value ?? null;
+      const envMinRemoved = parseInt(process.env.CLEANUP_ALERT_MIN_REMOVED || "1", 10) || 1;
+      const envMinFreedMb = parseFloat(process.env.CLEANUP_ALERT_MIN_FREED_MB || "0") || 0;
+      const minRemoved = Math.max(
+        1,
+        dbMinRemovedRaw !== null ? parseInt(dbMinRemovedRaw, 10) || 1 : envMinRemoved,
+      );
+      const minFreedMb = dbMinFreedMbRaw !== null ? parseFloat(dbMinFreedMbRaw) || 0 : envMinFreedMb;
+      return res.json({
+        minRemoved,
+        minFreedMb,
+        dbMinRemoved: dbMinRemovedRaw !== null ? Number(dbMinRemovedRaw) : null,
+        dbMinFreedMb: dbMinFreedMbRaw !== null ? Number(dbMinFreedMbRaw) : null,
+        envMinRemoved,
+        envMinFreedMb,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to fetch cleanup alert settings." });
+    }
+  });
+
+  router.put("/admin/settings/cleanup-alerts", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const body = req.body as any;
+      const minRemoved = typeof body?.minRemoved === "number" ? body.minRemoved : parseInt(String(body?.minRemoved ?? ""), 10);
+      const minFreedMb = typeof body?.minFreedMb === "number" ? body.minFreedMb : parseFloat(String(body?.minFreedMb ?? ""));
+      if (!Number.isFinite(minRemoved) || !Number.isInteger(minRemoved) || minRemoved < 1) {
+        return res.status(400).json({ error: "minRemoved must be a positive integer." });
+      }
+      if (!Number.isFinite(minFreedMb) || minFreedMb < 0) {
+        return res.status(400).json({ error: "minFreedMb must be a non-negative number." });
+      }
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_CLEANUP_MIN_REMOVED, value: String(minRemoved) })
+        .onConflictDoUpdate({ target: systemSettings.key, set: { value: String(minRemoved), updatedAt: new Date() } });
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_CLEANUP_MIN_FREED_MB, value: String(minFreedMb) })
+        .onConflictDoUpdate({ target: systemSettings.key, set: { value: String(minFreedMb), updatedAt: new Date() } });
+      return res.json({ success: true, minRemoved, minFreedMb });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to save cleanup alert settings." });
     }
   });
 

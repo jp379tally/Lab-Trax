@@ -1041,6 +1041,12 @@ export const mediaCleanupRuns = pgTable(
   })
 );
 
+export const systemSettings = pgTable("system_settings", {
+  key: varchar("key").primaryKey(),
+  value: text("value"),
+  updatedAt: updatedAt(),
+});
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

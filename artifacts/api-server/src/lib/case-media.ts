@@ -1,9 +1,47 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { eq } from "drizzle-orm";
-import { db, caseAttachments, mediaCleanupRuns, users } from "@workspace/db";
+import { eq, sql } from "drizzle-orm";
+import { db, caseAttachments, mediaCleanupRuns, systemSettings, users } from "@workspace/db";
 import { logger } from "./logger";
 import { sendCleanupAlertEmail } from "./mail";
+
+/**
+ * Keys used in the system_settings table for cleanup alert thresholds.
+ */
+export const SETTING_CLEANUP_MIN_REMOVED = "cleanup_alert_min_removed";
+export const SETTING_CLEANUP_MIN_FREED_MB = "cleanup_alert_min_freed_mb";
+
+/**
+ * Read cleanup alert thresholds from the DB, falling back to env vars if no
+ * DB value is set.
+ */
+export async function getCleanupAlertThresholds(): Promise<{
+  minRemoved: number;
+  minFreedMb: number;
+}> {
+  const rows = await db
+    .select()
+    .from(systemSettings)
+    .where(
+      sql`${systemSettings.key} in (${SETTING_CLEANUP_MIN_REMOVED}, ${SETTING_CLEANUP_MIN_FREED_MB})`,
+    );
+
+  const minRemovedRaw = rows.find((r) => r.key === SETTING_CLEANUP_MIN_REMOVED)?.value ?? null;
+  const minFreedMbRaw = rows.find((r) => r.key === SETTING_CLEANUP_MIN_FREED_MB)?.value ?? null;
+
+  const minRemoved = Math.max(
+    1,
+    minRemovedRaw !== null
+      ? parseInt(minRemovedRaw, 10) || 1
+      : parseInt(process.env.CLEANUP_ALERT_MIN_REMOVED || "1", 10) || 1,
+  );
+  const minFreedMb =
+    minFreedMbRaw !== null
+      ? parseFloat(minFreedMbRaw) || 0
+      : parseFloat(process.env.CLEANUP_ALERT_MIN_FREED_MB || "0") || 0;
+
+  return { minRemoved, minFreedMb };
+}
 
 export const caseMediaDir = path.resolve(
   process.cwd(),
@@ -273,12 +311,8 @@ export function startDailyOrphanedMediaCleanup() {
       );
 
       // Alert admins if removed/freed thresholds are met, or errors occurred.
-      const minRemoved = Math.max(
-        1,
-        parseInt(process.env.CLEANUP_ALERT_MIN_REMOVED || "1", 10) || 1,
-      );
-      const minFreedMb =
-        parseFloat(process.env.CLEANUP_ALERT_MIN_FREED_MB || "0") || 0;
+      // Prefer DB-persisted values; fall back to env vars.
+      const { minRemoved, minFreedMb } = await getCleanupAlertThresholds();
       const meetsRemoveThreshold = report.removedCount >= minRemoved;
       const meetsFreedThreshold =
         minFreedMb > 0 &&
