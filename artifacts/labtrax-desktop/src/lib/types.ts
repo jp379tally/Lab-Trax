@@ -32,6 +32,8 @@ export interface LabCase {
   teeth?: string | null;
   totalPrice?: string | number | null;
   restorations?: CaseRestoration[];
+  /** "mobile" when this case originated from the mobile app's lab_cases table */
+  _source?: "mobile";
 }
 
 export type RestorationPriceSource = "default" | "tier" | "override" | "manual";

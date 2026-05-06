@@ -1114,10 +1114,18 @@ export async function registerRoutes(): Promise<IRouter> {
         conditions.push(inArray(labCases.organizationId, labIds));
       }
 
-      const rows = await db
-        .select()
-        .from(labCases)
-        .where(and(isNull(labCases.deletedAt), or(...conditions)));
+      const [rows, desktopCaseRows] = await Promise.all([
+        db
+          .select()
+          .from(labCases)
+          .where(and(isNull(labCases.deletedAt), or(...conditions))),
+        labIds.length > 0
+          ? db
+              .select()
+              .from(casesTable)
+              .where(inArray(casesTable.labOrganizationId, labIds))
+          : Promise.resolve([]),
+      ]);
 
       // Preload organization display info so we can keep the JSON payload
       // (affiliationKey/affiliationName) in sync with the authoritative
@@ -1143,22 +1151,28 @@ export async function registerRoutes(): Promise<IRouter> {
         }
       }
 
-      const cases = rows
+      // Status map: desktop → mobile legacy format
+      const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
+        received: "INTAKE",
+        in_design: "DESIGN",
+        in_milling: "MILLING",
+        in_porcelain: "PORCELAIN",
+        qc: "QC_CHECK",
+        shipped: "DELIVERY",
+        delivered: "COMPLETE",
+        on_hold: "ON_HOLD",
+        remake: "REMAKE",
+        cancelled: "COMPLETE",
+      };
+
+      const mobileCases = rows
         .map((row) => {
           try {
             const parsed = JSON.parse(row.caseData);
             if (!parsed || typeof parsed !== "object") return null;
-            // Always trust the column for ownerId so the client view matches
-            // the server-authoritative visibility decision.
             if (typeof parsed.ownerId !== "string" || !parsed.ownerId) {
               parsed.ownerId = row.ownerId;
             }
-            // Mirror the organization_id column into the JSON fields the
-            // client uses, so the client view exactly matches what the server
-            // returned. Without this, backfilled rows whose JSON is missing
-            // `affiliationKey: "org:<UUID>"` would be filtered out by the
-            // client's defense-in-depth check even though the server already
-            // approved them.
             if (row.organizationId) {
               parsed.organizationId = row.organizationId;
               parsed.affiliationKey = `org:${row.organizationId}`;
@@ -1168,9 +1182,6 @@ export async function registerRoutes(): Promise<IRouter> {
                   orgInfo.displayName || orgInfo.name || parsed.affiliationName || null;
               }
             } else {
-              // Private case: nullify any leftover lab affiliation in the JSON
-              // so the client filter (which keys on affiliationKey) never
-              // disagrees with the server's NULL-organization decision.
               parsed.organizationId = null;
               if (
                 typeof parsed.affiliationKey === "string" &&
@@ -1185,6 +1196,50 @@ export async function registerRoutes(): Promise<IRouter> {
             return null;
           }
         })
+        .filter(Boolean);
+
+      // Bridge desktop structured cases into legacy format so the mobile app
+      // can see cases entered on the desktop. IDs are stable UUIDs so there
+      // is no collision with the timestamp-prefixed mobile IDs.
+      const mobileIdsSet = new Set(mobileCases.map((c: any) => c?.id).filter(Boolean));
+      const bridgedDesktopCases = desktopCaseRows
+        .filter((dc) => !mobileIdsSet.has(dc.id))
+        .map((dc) => {
+          const orgInfo = orgInfoById.get(dc.labOrganizationId ?? "");
+          const affiliationName = orgInfo
+            ? orgInfo.displayName || orgInfo.name
+            : null;
+          const firstName = dc.patientFirstName ?? "";
+          const lastName = dc.patientLastName ?? "";
+          const patientName = [firstName, lastName].filter(Boolean).join(" ");
+          const initials =
+            (firstName[0] ?? "") + (lastName[0] ?? "");
+          const mobileStatus =
+            DESKTOP_TO_MOBILE_STATUS[dc.status ?? ""] ?? "INTAKE";
+          const createdMs = dc.createdAt ? new Date(dc.createdAt).getTime() : Date.now();
+          const updatedMs = dc.updatedAt ? new Date(dc.updatedAt).getTime() : createdMs;
+          return {
+            id: dc.id,
+            caseNumber: dc.caseNumber ?? "",
+            doctorName: dc.doctorName ?? "",
+            patientName,
+            patientInitials: initials || "?",
+            status: mobileStatus,
+            isRush: dc.priority === "rush",
+            notes: "",
+            price: null,
+            dueDate: dc.dueDate ?? null,
+            organizationId: dc.labOrganizationId ?? null,
+            affiliationKey: dc.labOrganizationId ? `org:${dc.labOrganizationId}` : null,
+            affiliationName,
+            ownerId: dc.createdByUserId ?? null,
+            createdAt: createdMs,
+            updatedAt: updatedMs,
+            _sourceTable: "cases",
+          };
+        });
+
+      const cases = [...mobileCases, ...bridgedDesktopCases]
         .filter(Boolean)
         .sort(
           (a: any, b: any) =>

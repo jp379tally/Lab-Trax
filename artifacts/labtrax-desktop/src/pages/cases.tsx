@@ -752,6 +752,54 @@ export default function CasesPage() {
   );
 }
 
+function MobileCaseDrawer({ labCase, onClose }: { labCase: LabCase; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="flex-1 bg-foreground/30" onClick={onClose} />
+      <aside className="w-full max-w-[520px] bg-card border-l border-border h-full flex flex-col">
+        <header className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Case · from mobile app</div>
+            <div className="font-mono text-sm font-semibold">{labCase.caseNumber}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          <div className="text-xs text-muted-foreground bg-secondary/60 rounded-lg px-3 py-2">
+            This case was created on the mobile app. Open LabTrax on your phone or tablet to edit it.
+          </div>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <Field label="Patient" value={`${labCase.patientFirstName} ${labCase.patientLastName}`} />
+            <Field label="Doctor" value={labCase.doctorName} />
+            <Field label="Status" value={statusLabel(labCase.status)} />
+            <Field label="Priority" value={labCase.priority === "rush" ? "Rush" : "Normal"} />
+            {labCase.restorationTypes && (
+              <Field label="Type" value={labCase.restorationTypes} />
+            )}
+            {labCase.restorationMaterials && (
+              <Field label="Material" value={labCase.restorationMaterials} />
+            )}
+            {labCase.teeth && (
+              <Field label="Teeth" value={labCase.teeth} />
+            )}
+            <Field label="Due date" value={formatDate(labCase.dueDate)} />
+            <Field label="Created" value={formatDate(labCase.createdAt)} />
+            {Number(labCase.totalPrice ?? 0) > 0 && (
+              <Field label="Price" value={formatMoney(labCase.totalPrice)} />
+            )}
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 function CaseDrawer({
   labCase,
   onClose,
@@ -759,6 +807,8 @@ function CaseDrawer({
   labCase: LabCase;
   onClose: () => void;
 }) {
+  const isMobile = labCase._source === "mobile";
+
   const { data, isLoading } = useQuery({
     queryKey: ["case", labCase.id],
     queryFn: () =>
@@ -772,7 +822,10 @@ function CaseDrawer({
           viewerCanManageAttachments?: boolean;
         }
       >(`/cases/${labCase.id}`),
+    enabled: !isMobile,
   });
+
+  if (isMobile) return <MobileCaseDrawer labCase={labCase} onClose={onClose} />;
 
   return (
     <div className="fixed inset-0 z-50 flex">

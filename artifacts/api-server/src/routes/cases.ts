@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Router } from "express";
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -12,6 +12,7 @@ import {
   caseRestorations,
   caseSubmissionQueue,
   cases,
+  labCases,
   organizationConnections,
   organizationMemberships,
   users,
@@ -223,28 +224,55 @@ router.get(
           })
         ).map((m: any) => m.labId);
 
-    const rows = membershipOrgIds.length
-      ? await db.query.cases.findMany({
-          where: or(
-            inArray(cases.labOrganizationId, membershipOrgIds),
-            inArray(cases.providerOrganizationId, membershipOrgIds)
-          ),
-          orderBy: [desc(cases.createdAt)],
+    // Status map: mobile legacy → desktop format
+    const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {
+      INTAKE: "received",
+      DESIGN: "in_design",
+      MILLING: "in_milling",
+      PORCELAIN: "in_porcelain",
+      QC_CHECK: "qc",
+      DELIVERY: "shipped",
+      COMPLETE: "delivered",
+      ON_HOLD: "on_hold",
+      REMAKE: "remake",
+    };
+
+    const [rows, mobileRows] = await Promise.all([
+      membershipOrgIds.length
+        ? db.query.cases.findMany({
+            where: or(
+              inArray(cases.labOrganizationId, membershipOrgIds),
+              inArray(cases.providerOrganizationId, membershipOrgIds)
+            ),
+            orderBy: [desc(cases.createdAt)],
+          })
+        : Promise.resolve([]),
+      membershipOrgIds.length
+        ? db
+            .select()
+            .from(labCases)
+            .where(
+              and(
+                isNull(labCases.deletedAt),
+                inArray(labCases.organizationId, membershipOrgIds)
+              )
+            )
+        : Promise.resolve([]),
+    ]);
+
+    const caseIds = rows.map((r: any) => r.id);
+    const restorations = caseIds.length
+      ? await db.query.caseRestorations.findMany({
+          where: inArray(caseRestorations.caseId, caseIds),
         })
       : [];
-
-    if (!rows.length) return ok(res, []);
-    const caseIds = rows.map((r: any) => r.id);
-    const restorations = await db.query.caseRestorations.findMany({
-      where: inArray(caseRestorations.caseId, caseIds),
-    });
     const byCase = new Map<string, typeof restorations>();
     for (const r of restorations) {
       const list = byCase.get(r.caseId) ?? [];
       list.push(r);
       byCase.set(r.caseId, list);
     }
-    const enriched = rows.map((row: any) => {
+    const enriched: any[] = rows.map((row: any) => {
       const items = byCase.get(row.id) ?? [];
       const teeth = items.map((i: any) => i.toothNumber).join(", ");
       const types = Array.from(
@@ -268,6 +296,54 @@ router.get(
         ...(includeRestorations ? { restorations: items } : {}),
       };
     });
+
+    // Bridge mobile cases into the desktop list so users see everything
+    // regardless of which platform they used to create the case.
+    const desktopIdSet = new Set(rows.map((r: any) => r.id));
+    for (const mr of mobileRows) {
+      if (desktopIdSet.has(mr.id)) continue;
+      try {
+        const parsed = typeof mr.caseData === "string" ? JSON.parse(mr.caseData) : mr.caseData;
+        if (!parsed || typeof parsed !== "object") continue;
+        const patientName = String(parsed.patientName ?? "");
+        const spaceIdx = patientName.indexOf(" ");
+        const firstName = spaceIdx >= 0 ? patientName.slice(0, spaceIdx) : patientName;
+        const lastName = spaceIdx >= 0 ? patientName.slice(spaceIdx + 1) : "";
+        const rawStatus = String(parsed.status ?? "INTAKE").toUpperCase();
+        const desktopStatus = MOBILE_TO_DESKTOP_STATUS[rawStatus] ?? "received";
+        const createdAt = parsed.createdAt
+          ? new Date(Number(parsed.createdAt)).toISOString()
+          : new Date().toISOString();
+        const updatedAt = parsed.updatedAt
+          ? new Date(Number(parsed.updatedAt)).toISOString()
+          : createdAt;
+        enriched.push({
+          id: mr.id,
+          caseNumber: String(parsed.caseNumber ?? ""),
+          labOrganizationId: mr.organizationId ?? null,
+          providerOrganizationId: null,
+          patientFirstName: firstName,
+          patientLastName: lastName,
+          doctorName: String(parsed.doctorName ?? ""),
+          status: desktopStatus,
+          priority: parsed.isRush ? "rush" : "normal",
+          dueDate: parsed.dueDate ?? null,
+          createdByUserId: mr.ownerId,
+          createdAt,
+          updatedAt,
+          restorationCount: 0,
+          restorationTypes: parsed.caseType ?? null,
+          restorationMaterials: parsed.material ?? null,
+          teeth: parsed.toothIndices ?? null,
+          totalPrice: parsed.price != null ? String(parsed.price) : "0.00",
+          _source: "mobile",
+        });
+      } catch {
+        // skip malformed rows
+      }
+    }
+
+    if (!enriched.length) return ok(res, []);
     return ok(res, enriched);
   })
 );
