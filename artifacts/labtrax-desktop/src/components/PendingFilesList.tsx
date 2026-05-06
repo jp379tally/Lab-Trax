@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle,
+  Download,
+  ExternalLink,
   FileText,
   Film,
   Image as ImageIcon,
@@ -11,6 +13,7 @@ import {
   Pencil,
   RefreshCw,
   Trash2,
+  X,
   XCircle,
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -106,7 +109,7 @@ function AttachDialog({ file, onClose, onAttached }: AttachDialogProps) {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 px-4">
       <div className="bg-card border border-border rounded-xl shadow-lg w-full max-w-lg overflow-hidden">
         <div className="px-5 py-4 border-b border-border">
           <h3 className="text-sm font-semibold">Attach to a case</h3>
@@ -204,10 +207,215 @@ function AttachDialog({ file, onClose, onAttached }: AttachDialogProps) {
   );
 }
 
+interface PreviewDialogProps {
+  file: PendingFile;
+  onClose: () => void;
+  onAttachClick: () => void;
+  onDelete: () => void;
+  isDeleting: boolean;
+}
+
+function PreviewBody({ file }: { file: PendingFile }) {
+  const { mimeType, fileUrl, fileName } = file;
+
+  if (mimeType.startsWith("image/")) {
+    return (
+      <div className="flex items-center justify-center bg-black/5 dark:bg-black/30 min-h-[20rem] max-h-[70vh] overflow-auto">
+        <img
+          src={fileUrl}
+          alt={fileName}
+          className="max-w-full max-h-[70vh] object-contain"
+        />
+      </div>
+    );
+  }
+
+  if (mimeType === "application/pdf") {
+    return (
+      <iframe
+        src={fileUrl}
+        title={fileName}
+        className="w-full h-[70vh] bg-background"
+      />
+    );
+  }
+
+  if (mimeType.startsWith("video/")) {
+    return (
+      <div className="flex items-center justify-center bg-black min-h-[20rem] max-h-[70vh]">
+        <video
+          src={fileUrl}
+          controls
+          className="max-w-full max-h-[70vh]"
+        >
+          <track kind="captions" />
+        </video>
+      </div>
+    );
+  }
+
+  if (mimeType.startsWith("audio/")) {
+    return (
+      <div className="flex items-center justify-center bg-secondary/40 py-12 px-6">
+        <audio src={fileUrl} controls className="w-full max-w-md" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center justify-center text-center gap-3 py-16 px-6 bg-secondary/30">
+      <FileTypeIcon
+        mimeType={mimeType}
+        className="text-muted-foreground"
+      />
+      <div>
+        <p className="text-sm font-medium">No inline preview available</p>
+        <p className="text-xs text-muted-foreground mt-1">
+          This file type ({mimeType || "unknown"}) can't be previewed here.
+        </p>
+      </div>
+      <a
+        href={fileUrl}
+        download={fileName}
+        target="_blank"
+        rel="noreferrer"
+        className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium"
+      >
+        <Download size={13} />
+        Download file
+      </a>
+    </div>
+  );
+}
+
+function PreviewDialog({
+  file,
+  onClose,
+  onAttachClick,
+  onDelete,
+  isDeleting,
+}: PreviewDialogProps) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
+      onClick={onClose}
+    >
+      <div
+        className="bg-card border border-border rounded-xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3.5 border-b border-border flex items-start gap-3">
+          <div className="mt-0.5 shrink-0 text-muted-foreground">
+            <FileTypeIcon mimeType={file.mimeType} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3
+              className="text-sm font-semibold truncate"
+              title={file.fileName}
+            >
+              {file.fileName}
+            </h3>
+            <p className="text-xs text-muted-foreground mt-0.5 truncate">
+              {file.uploaderName || "Unknown uploader"} ·{" "}
+              {relativeTime(file.createdAt)} ·{" "}
+              <span className="uppercase tracking-wide">
+                {file.mimeType.split("/")[1] || file.mimeType}
+              </span>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground shrink-0"
+            aria-label="Close preview"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
+          <div className="flex-1 min-w-0 overflow-auto">
+            <PreviewBody file={file} />
+          </div>
+          <aside className="w-full md:w-72 md:border-l border-t md:border-t-0 border-border bg-card flex flex-col">
+            <div className="px-4 py-3 border-b border-border">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Notes
+              </h4>
+              {file.notes ? (
+                <p className="text-sm text-foreground/90 mt-1.5 whitespace-pre-wrap break-words">
+                  {file.notes}
+                </p>
+              ) : (
+                <p className="text-sm text-muted-foreground mt-1.5 italic">
+                  No notes added.
+                </p>
+              )}
+            </div>
+            <div className="px-4 py-3 flex-1">
+              <a
+                href={file.fileUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+              >
+                <ExternalLink size={12} />
+                Open in new tab
+              </a>
+            </div>
+          </aside>
+        </div>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={isDeleting}
+            className="px-3 py-1.5 text-sm rounded-md text-destructive hover:bg-destructive/10 inline-flex items-center gap-1.5 disabled:opacity-50"
+          >
+            {isDeleting ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Trash2 size={13} />
+            )}
+            Delete
+          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-sm rounded-md hover:bg-secondary"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={onAttachClick}
+              className="px-3 py-1.5 text-sm rounded-md bg-primary text-primary-foreground font-medium inline-flex items-center gap-1.5"
+            >
+              <Link2 size={13} />
+              Attach to case
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 export function PendingFilesList() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [attachTarget, setAttachTarget] = useState<PendingFile | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<PendingFile | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -316,6 +524,14 @@ export function PendingFilesList() {
   const isLoading = filesQuery.isLoading;
   const isFetching = filesQuery.isFetching && !isLoading;
 
+  // Keep the preview target in sync when the underlying list refreshes
+  // (e.g. after attaching, the file disappears and we should close the modal).
+  useEffect(() => {
+    if (!previewTarget) return;
+    const stillExists = files.some((f) => f.id === previewTarget.id);
+    if (!stillExists) setPreviewTarget(null);
+  }, [files, previewTarget]);
+
   return (
     <section className="bg-card border border-border rounded-xl overflow-hidden">
       <header className="flex items-center justify-between px-5 py-3.5 border-b border-border">
@@ -366,34 +582,37 @@ export function PendingFilesList() {
         {!isLoading && files.length > 0 && (
           <ul className="divide-y divide-border">
             {files.map((f) => (
-              <li
-                key={f.id}
-                className="px-5 py-3.5 flex items-start gap-3 hover:bg-secondary/30"
-              >
-                <div className="mt-0.5 shrink-0 text-muted-foreground">
-                  <FileTypeIcon mimeType={f.mimeType} />
-                </div>
+              <li key={f.id} className="px-5 py-3.5 flex items-start gap-3 hover:bg-secondary/30">
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-baseline gap-x-2">
-                    <a
-                      href={f.fileUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-sm font-medium truncate hover:underline"
-                      title={f.fileName}
-                    >
-                      {f.fileName}
-                    </a>
-                    <span className="text-[11px] text-muted-foreground uppercase tracking-wide">
-                      {f.mimeType.split("/")[1] || f.mimeType}
+                  <button
+                    type="button"
+                    onClick={() => setPreviewTarget(f)}
+                    className="flex items-start gap-3 w-full text-left"
+                    title={`Preview ${f.fileName}`}
+                  >
+                    <span className="mt-0.5 shrink-0 text-muted-foreground">
+                      <FileTypeIcon mimeType={f.mimeType} />
                     </span>
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-0.5">
-                    {f.uploaderName || "Unknown uploader"} ·{" "}
-                    {relativeTime(f.createdAt)}
-                  </div>
+                    <span className="min-w-0 flex-1 block">
+                      <span className="flex flex-wrap items-baseline gap-x-2">
+                        <span
+                          className="text-sm font-medium truncate hover:underline"
+                          title={f.fileName}
+                        >
+                          {f.fileName}
+                        </span>
+                        <span className="text-[11px] text-muted-foreground uppercase tracking-wide">
+                          {f.mimeType.split("/")[1] || f.mimeType}
+                        </span>
+                      </span>
+                      <span className="block text-xs text-muted-foreground mt-0.5">
+                        {f.uploaderName || "Unknown uploader"} ·{" "}
+                        {relativeTime(f.createdAt)}
+                      </span>
+                    </span>
+                  </button>
                   {editingId === f.id ? (
-                    <div className="mt-1.5 space-y-1.5">
+                    <div className="mt-1.5 ml-[30px] space-y-1.5">
                       <textarea
                         autoFocus
                         value={editValue}
@@ -459,7 +678,7 @@ export function PendingFilesList() {
                       </div>
                     </div>
                   ) : f.notes ? (
-                    <div className="text-xs text-foreground/80 mt-1 whitespace-pre-wrap break-words">
+                    <div className="text-xs text-foreground/80 mt-1 ml-[30px] whitespace-pre-wrap break-words">
                       {f.notes}
                     </div>
                   ) : null}
@@ -508,6 +727,29 @@ export function PendingFilesList() {
           </ul>
         )}
       </div>
+
+      {previewTarget && (
+        <PreviewDialog
+          file={previewTarget}
+          onClose={() => setPreviewTarget(null)}
+          onAttachClick={() => setAttachTarget(previewTarget)}
+          onDelete={() => {
+            if (
+              window.confirm(
+                `Delete "${previewTarget.fileName}" from the inbox? This cannot be undone.`,
+              )
+            ) {
+              deleteMutation.mutate(previewTarget.id, {
+                onSuccess: () => setPreviewTarget(null),
+              });
+            }
+          }}
+          isDeleting={
+            deleteMutation.isPending &&
+            deleteMutation.variables === previewTarget.id
+          }
+        />
+      )}
 
       {attachTarget && (
         <AttachDialog
