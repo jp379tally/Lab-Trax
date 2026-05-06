@@ -6,6 +6,7 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "run-finance-cron": "tsx ./src/run-finance-cron.ts",
+    "cleanup-orphaned-case-media": "tsx ./src/cleanup-orphaned-case-media.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

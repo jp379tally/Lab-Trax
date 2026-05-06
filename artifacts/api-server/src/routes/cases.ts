@@ -17,6 +17,7 @@ import {
   users,
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
+import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import { deleteFromOneDrive } from "../lib/onedrive";
 import { HttpError, ok } from "../lib/http";
 import { resolveServerPriceWithSource } from "../lib/pricing";
@@ -417,33 +418,11 @@ router.patch(
   })
 );
 
-const caseMediaDir = path.resolve(process.cwd(), "uploads", "case-media");
-
 // Best-effort removal of the underlying file backing a case attachment.
 // The DB row's `storageKey` is the public URL the file was uploaded to
 // (e.g. https://host/uploads/case-media/<filename>). We only ever delete
 // inside `uploads/case-media/` and resolve paths defensively so a crafted
 // storageKey can't escape the media directory.
-function extractMediaFileName(storageKey: string): string | null {
-  const marker = "/uploads/case-media/";
-  const idx = storageKey.indexOf(marker);
-  let fileName: string | null = null;
-  if (idx >= 0) {
-    fileName = storageKey.slice(idx + marker.length).split(/[?#]/)[0];
-  } else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(storageKey)) {
-    fileName = path.basename(storageKey);
-  }
-  if (!fileName) return null;
-  try {
-    fileName = decodeURIComponent(fileName);
-  } catch {
-    // leave as-is if not URL-encoded
-  }
-  // Strip any path separators — we only ever delete a single file by name.
-  fileName = path.basename(fileName);
-  return fileName || null;
-}
-
 function removeAttachmentFile(
   req: any,
   storageKey: string | null | undefined

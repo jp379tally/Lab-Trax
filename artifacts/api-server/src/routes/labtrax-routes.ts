@@ -6,6 +6,7 @@ import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import { runOneDriveBackup } from "../lib/backup";
+import { cleanupOrphanedCaseMedia } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -2710,6 +2711,101 @@ Important rules:
     } catch (e: any) {
       console.error("Backup endpoint error:", e?.message);
       if (!res.headersSent) res.status(500).json({ error: "Backup failed." });
+    }
+  });
+
+  // ── Admin: clean up orphaned case-media files ────────────────────────────
+  // Removes files in `uploads/case-media/` that no `case_attachments.storageKey`
+  // references. Pass `?dryRun=true` (or `{ dryRun: true }`) to preview without
+  // deleting. Also reachable as a cron via `scripts/cleanup-orphaned-case-media`
+  // using the shared `MEDIA_CLEANUP_JOB_TOKEN` instead of an admin JWT.
+  const cleanupAuth = async (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    const tokenHeader =
+      (req.headers["x-media-cleanup-job-token"] as string | undefined) || "";
+    const expectedToken = process.env.MEDIA_CLEANUP_JOB_TOKEN;
+
+    if (tokenHeader) {
+      if (!expectedToken) {
+        return res.status(503).json({
+          error: "MEDIA_CLEANUP_JOB_TOKEN is not configured on the server.",
+        });
+      }
+      if (tokenHeader !== expectedToken) {
+        return res.status(401).json({ error: "Invalid job token." });
+      }
+      (req as any).cleanupTriggeredBy = "scheduler";
+      return next();
+    }
+
+    return requireAuth(req, res, (err?: any) => {
+      if (err) return next(err);
+      const reqUser = (req as any).user;
+      if (!reqUser || reqUser.role !== "admin") {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      (req as any).cleanupTriggeredBy = `admin:${
+        reqUser.username || reqUser.id
+      }`;
+      return next();
+    });
+  };
+
+  router.post("/admin/cleanup/orphaned-media", cleanupAuth, async (req, res) => {
+    const triggeredBy =
+      ((req as any).cleanupTriggeredBy as string | undefined) || "unknown";
+    const dryRun = (() => {
+      const q = (req.query as any)?.dryRun;
+      const b = (req.body as any)?.dryRun;
+      const v = q ?? b;
+      if (typeof v === "boolean") return v;
+      if (typeof v === "string") return v.toLowerCase() !== "false";
+      // Default to dry-run for safety.
+      return true;
+    })();
+
+    const includeAll = (() => {
+      const q = (req.query as any)?.includeAll;
+      const b = (req.body as any)?.includeAll;
+      const v = q ?? b;
+      if (typeof v === "boolean") return v;
+      if (typeof v === "string") return v.toLowerCase() === "true";
+      return false;
+    })();
+
+    const sampleLimit = (() => {
+      const q = (req.query as any)?.sampleLimit;
+      const b = (req.body as any)?.sampleLimit;
+      const v = q ?? b;
+      const n =
+        typeof v === "number" ? v : typeof v === "string" ? parseInt(v, 10) : NaN;
+      if (Number.isFinite(n) && n > 0) return Math.min(n, 100000);
+      return undefined;
+    })();
+
+    try {
+      const report = await cleanupOrphanedCaseMedia({
+        dryRun,
+        // `includeAll` returns the full orphan filename list (useful for
+        // forensic review); otherwise honor `sampleLimit` or the default.
+        ...(includeAll
+          ? { sampleLimit: Number.MAX_SAFE_INTEGER }
+          : sampleLimit !== undefined
+            ? { sampleLimit }
+            : {}),
+      });
+      console.log(
+        `[CLEANUP] orphaned case-media triggeredBy=${triggeredBy} dryRun=${dryRun} scanned=${report.scannedFiles} orphans=${report.orphanCount} removed=${report.removedCount} freedBytes=${report.freedBytes} errors=${report.errors.length}`,
+      );
+      return res.json({ ok: true, triggeredBy, ...report });
+    } catch (e: any) {
+      console.error("Orphaned media cleanup failed:", e?.message || e);
+      return res
+        .status(500)
+        .json({ error: e?.message || "Orphaned media cleanup failed." });
     }
   });
 
