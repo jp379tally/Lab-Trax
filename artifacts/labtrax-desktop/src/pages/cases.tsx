@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
   ChevronUp,
   Filter,
   Loader2,
+  Plus,
   Search,
   X,
 } from "lucide-react";
@@ -13,6 +14,7 @@ import type {
   CaseEvent,
   CaseRestoration,
   LabCase,
+  Organization,
   PricingHistoryEntry,
   PricingOverride,
   PricingTier,
@@ -42,6 +44,270 @@ type SortKey =
   | "createdAt"
   | "totalPrice";
 
+function generateCaseNumber(): string {
+  const now = new Date();
+  const yy = String(now.getFullYear()).slice(2);
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const rand = Math.floor(Math.random() * 1000)
+    .toString()
+    .padStart(3, "0");
+  return `LT-${yy}${mm}${dd}-${rand}`;
+}
+
+interface NewCaseFormData {
+  caseNumber: string;
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  dueDate: string;
+  priority: "normal" | "rush";
+}
+
+export function NewCaseModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+  });
+
+  const orgs = orgsQuery.data ?? [];
+  const labOrgs = orgs.filter((o) => o.type === "lab");
+  const providerOrgs = orgs.filter((o) => o.type !== "lab");
+
+  const [form, setForm] = useState<NewCaseFormData>({
+    caseNumber: generateCaseNumber(),
+    labOrganizationId: "",
+    providerOrganizationId: "",
+    patientFirstName: "",
+    patientLastName: "",
+    doctorName: "",
+    dueDate: "",
+    priority: "normal",
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: (data: NewCaseFormData) =>
+      apiFetch<LabCase>("/cases", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      onClose();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  function set<K extends keyof NewCaseFormData>(k: K, v: NewCaseFormData[K]) {
+    setForm((f) => ({ ...f, [k]: v }));
+    setError(null);
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.labOrganizationId)
+      return setError("Please select a lab organization.");
+    if (!form.providerOrganizationId)
+      return setError("Please select a practice.");
+    if (!form.patientFirstName.trim() || !form.patientLastName.trim())
+      return setError("Patient first and last name are required.");
+    if (!form.doctorName.trim()) return setError("Doctor name is required.");
+    mutation.mutate(form);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div
+        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-lg mx-4"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add case"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-semibold">New case</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+          {orgsQuery.isLoading && (
+            <p className="text-sm text-muted-foreground">
+              Loading organizations…
+            </p>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Case number
+              </label>
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary font-mono"
+                  value={form.caseNumber}
+                  onChange={(e) => set("caseNumber", e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => set("caseNumber", generateCaseNumber())}
+                  className="h-9 px-3 text-xs rounded-md bg-secondary hover:bg-secondary/80 text-muted-foreground transition-colors"
+                >
+                  Regenerate
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Lab organization
+              </label>
+              <select
+                className="w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                value={form.labOrganizationId}
+                onChange={(e) => set("labOrganizationId", e.target.value)}
+              >
+                <option value="">Select lab…</option>
+                {labOrgs.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.displayName || o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Practice
+              </label>
+              <select
+                className="w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                value={form.providerOrganizationId}
+                onChange={(e) => set("providerOrganizationId", e.target.value)}
+              >
+                <option value="">Select practice…</option>
+                {providerOrgs.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.displayName || o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Patient first name
+              </label>
+              <input
+                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                value={form.patientFirstName}
+                onChange={(e) => set("patientFirstName", e.target.value)}
+                placeholder="First"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Patient last name
+              </label>
+              <input
+                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                value={form.patientLastName}
+                onChange={(e) => set("patientLastName", e.target.value)}
+                placeholder="Last"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Doctor name
+              </label>
+              <input
+                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                value={form.doctorName}
+                onChange={(e) => set("doctorName", e.target.value)}
+                placeholder="Dr. Smith"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Due date
+              </label>
+              <input
+                type="date"
+                className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                value={form.dueDate}
+                onChange={(e) => set("dueDate", e.target.value)}
+              />
+            </div>
+
+            <div className="col-span-2">
+              <label className="block text-xs font-medium text-muted-foreground mb-1">
+                Priority
+              </label>
+              <div className="flex gap-2">
+                {(["normal", "rush"] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => set("priority", p)}
+                    className={`flex-1 h-9 rounded-md text-sm font-medium transition-colors ${
+                      form.priority === p
+                        ? p === "rush"
+                          ? "bg-destructive/15 text-destructive border border-destructive/30"
+                          : "bg-primary/10 text-primary border border-primary/30"
+                        : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+                    }`}
+                  >
+                    {p === "rush" ? "Rush" : "Normal"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {error && (
+            <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+              {error}
+            </p>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={mutation.isPending}
+              className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-60"
+            >
+              {mutation.isPending ? "Creating…" : "Create case"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function CasesPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["cases"],
@@ -54,6 +320,7 @@ export default function CasesPage() {
   const [sortKey, setSortKey] = useState<SortKey>("createdAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<LabCase | null>(null);
+  const [showNewCase, setShowNewCase] = useState(false);
 
   const filtered = useMemo(() => {
     const rows = data ?? [];
@@ -112,8 +379,18 @@ export default function CasesPage() {
             All lab cases across your organizations.
           </p>
         </div>
-        <div className="text-sm text-muted-foreground">
-          {filtered.length} of {data?.length ?? 0}
+        <div className="flex items-center gap-3">
+          <div className="text-sm text-muted-foreground">
+            {filtered.length} of {data?.length ?? 0}
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowNewCase(true)}
+            className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors shadow-sm"
+          >
+            <Plus size={14} />
+            Add case
+          </button>
         </div>
       </div>
 
@@ -240,6 +517,7 @@ export default function CasesPage() {
       </div>
 
       {selected && <CaseDrawer labCase={selected} onClose={() => setSelected(null)} />}
+      {showNewCase && <NewCaseModal onClose={() => setShowNewCase(false)} />}
     </div>
   );
 }
