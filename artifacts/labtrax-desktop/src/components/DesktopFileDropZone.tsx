@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle, FileText, Film, Image, Loader2, RotateCw, Upload, X, XCircle } from "lucide-react";
+import { CheckCircle, FileText, Film, Image, RotateCw, Upload, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads, type UploadRejection } from "@/lib/uploads-context";
@@ -170,10 +170,27 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                     </span>
                   </div>
 
-                  {entry.status === "uploading" && (
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <Loader2 size={12} className="animate-spin" />
-                      Uploading…
+                  {(entry.status === "uploading" || entry.status === "queued") && (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>
+                          {entry.status === "queued" ? "Waiting…" : "Uploading…"}
+                        </span>
+                        <span className="tabular-nums">{entry.progress}%</span>
+                      </div>
+                      <div
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={entry.progress}
+                        aria-label={`Upload progress for ${entry.file.name}`}
+                        className="h-1.5 w-full rounded-full bg-secondary overflow-hidden"
+                      >
+                        <div
+                          className="h-full bg-primary transition-[width] duration-150 ease-out"
+                          style={{ width: `${entry.progress}%` }}
+                        />
+                      </div>
                     </div>
                   )}
 

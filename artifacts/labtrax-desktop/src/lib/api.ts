@@ -160,6 +160,122 @@ export async function apiFetch<T = unknown>(
   return parsed as T;
 }
 
+export interface UploadWithProgressOptions {
+  onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
+}
+
+async function performXhrUpload<T>(
+  url: string,
+  formData: FormData,
+  csrf: string | null,
+  opts: UploadWithProgressOptions,
+): Promise<{ ok: true; data: T } | { ok: false; status: number; message: string }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url, true);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Accept", "application/json");
+    if (csrf) xhr.setRequestHeader(CSRF_HEADER_NAME, csrf);
+
+    if (xhr.upload) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && opts.onProgress) {
+          const pct = Math.min(99, Math.round((event.loaded / event.total) * 100));
+          opts.onProgress(pct);
+        }
+      };
+      xhr.upload.onload = () => {
+        opts.onProgress?.(99);
+      };
+    }
+
+    xhr.onload = () => {
+      const status = xhr.status;
+      const text = xhr.responseText || "";
+      let parsed: unknown = null;
+      if (text) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = text;
+        }
+      }
+      if (status >= 200 && status < 300) {
+        let payload: unknown = parsed;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          !Array.isArray(parsed) &&
+          "data" in (parsed as Record<string, unknown>) &&
+          Object.keys(parsed as Record<string, unknown>).length <= 3
+        ) {
+          payload = (parsed as { data: unknown }).data;
+        }
+        resolve({ ok: true, data: payload as T });
+      } else {
+        const fromObj =
+          parsed && typeof parsed === "object"
+            ? (parsed as Record<string, unknown>)
+            : null;
+        const msg =
+          (fromObj && typeof fromObj.message === "string" && fromObj.message) ||
+          (fromObj && typeof fromObj.error === "string" && fromObj.error) ||
+          `Request failed (${status})`;
+        resolve({ ok: false, status, message: msg });
+      }
+    };
+    xhr.onerror = () => {
+      resolve({ ok: false, status: 0, message: "Network error during upload." });
+    };
+    xhr.onabort = () => {
+      resolve({ ok: false, status: 0, message: "Upload was canceled." });
+    };
+
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        xhr.abort();
+      } else {
+        opts.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+      }
+    }
+
+    xhr.send(formData);
+  });
+}
+
+export async function apiUploadWithProgress<T = unknown>(
+  path: string,
+  formData: FormData,
+  opts: UploadWithProgressOptions = {},
+): Promise<T> {
+  const url = path.startsWith("http")
+    ? path
+    : `/api${path.startsWith("/") ? path : `/${path}`}`;
+
+  let csrf = readCsrfCookie();
+  if (!csrf) {
+    const seeded = await refreshAccessToken();
+    if (seeded) csrf = readCsrfCookie();
+  }
+
+  let result = await performXhrUpload<T>(url, formData, csrf, opts);
+  if (!result.ok && result.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      csrf = readCsrfCookie();
+      result = await performXhrUpload<T>(url, formData, csrf, opts);
+    } else {
+      throw new ApiError("Your session has expired. Please sign in again.", 401);
+    }
+  }
+
+  if (!result.ok) {
+    throw new ApiError(result.message, result.status);
+  }
+  return result.data;
+}
+
 export async function login(username: string, password: string): Promise<SessionUser> {
   const r = await fetch("/api/auth/login", {
     method: "POST",

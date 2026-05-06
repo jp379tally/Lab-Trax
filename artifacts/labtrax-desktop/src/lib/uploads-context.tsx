@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiUploadWithProgress } from "@/lib/api";
 
 const ACCEPTED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -40,6 +40,7 @@ export interface UploadEntry {
   serverId?: string;
   organizationId: string;
   uploaderName: string;
+  progress: number;
 }
 
 export interface UploadRejection {
@@ -91,14 +92,18 @@ function validateFile(file: File): string | null {
   return null;
 }
 
-async function uploadFileToServer(file: File): Promise<string | null> {
+async function uploadFileToServer(
+  file: File,
+  onProgress: (percent: number) => void,
+): Promise<string | null> {
   const formData = new FormData();
   formData.append("file", file, file.name);
   try {
-    const result = await apiFetch<{ url: string }>("/media/upload", {
-      method: "POST",
-      body: formData,
-    });
+    const result = await apiUploadWithProgress<{ url: string }>(
+      "/media/upload",
+      formData,
+      { onProgress },
+    );
     return typeof result?.url === "string" ? result.url : null;
   } catch {
     return null;
@@ -181,11 +186,21 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
       cancelAutoClear(entry.id);
       setEntries((prev) =>
         prev.map((e) =>
-          e.id === entry.id ? { ...e, status: "uploading", errorMessage: undefined } : e,
+          e.id === entry.id
+            ? { ...e, status: "uploading", errorMessage: undefined, progress: 0 }
+            : e,
         ),
       );
 
-      const fileUrl = await uploadFileToServer(entry.file);
+      const fileUrl = await uploadFileToServer(entry.file, (percent) => {
+        setEntries((prev) =>
+          prev.map((e) =>
+            e.id === entry.id && e.status === "uploading" && percent > e.progress
+              ? { ...e, progress: percent }
+              : e,
+          ),
+        );
+      });
       if (!fileUrl) {
         setEntries((prev) =>
           prev.map((e) =>
@@ -229,7 +244,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
 
       setEntries((prev) =>
         prev.map((e) =>
-          e.id === entry.id ? { ...e, status: "success", serverId } : e,
+          e.id === entry.id ? { ...e, status: "success", serverId, progress: 100 } : e,
         ),
       );
       scheduleAutoClear(entry.id);
@@ -255,6 +270,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
             status: "queued",
             organizationId,
             uploaderName,
+            progress: 0,
           });
         }
       }

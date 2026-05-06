@@ -208,42 +208,67 @@ export function AppLayout({ children }: Props) {
                     </span>
                   </div>
                   <ul className="max-h-72 overflow-y-auto scrollbar-thin">
-                    {entries.map((entry) => (
-                      <li
-                        key={entry.id}
-                        className="flex items-center gap-2 px-3 py-2 border-b border-border last:border-b-0"
-                      >
-                        <div className="shrink-0">
-                          {entry.status === "uploading" || entry.status === "queued" ? (
-                            <Loader2 size={14} className="animate-spin text-primary" />
-                          ) : entry.status === "success" ? (
-                            <CheckCircle size={14} className="text-success" />
-                          ) : (
-                            <XCircle size={14} className="text-destructive" />
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-medium truncate">
-                            {entry.file.name}
-                          </div>
-                          <div className="text-[11px] text-muted-foreground truncate">
-                            {entry.status === "uploading" || entry.status === "queued"
-                              ? "Uploading…"
-                              : entry.status === "success"
-                                ? "Added to shared inbox"
-                                : (entry.errorMessage ?? "Upload failed")}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeEntry(entry.id)}
-                          className="shrink-0 text-muted-foreground hover:text-foreground"
-                          aria-label={`Remove ${entry.file.name}`}
+                    {entries.map((entry) => {
+                      const inFlight =
+                        entry.status === "uploading" || entry.status === "queued";
+                      return (
+                        <li
+                          key={entry.id}
+                          className="flex items-start gap-2 px-3 py-2 border-b border-border last:border-b-0"
                         >
-                          <XCircle size={13} />
-                        </button>
-                      </li>
-                    ))}
+                          <div className="shrink-0 mt-0.5">
+                            {inFlight ? (
+                              <Upload size={14} className="text-primary" />
+                            ) : entry.status === "success" ? (
+                              <CheckCircle size={14} className="text-success" />
+                            ) : (
+                              <XCircle size={14} className="text-destructive" />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs font-medium truncate">
+                                {entry.file.name}
+                              </div>
+                              {inFlight && (
+                                <div className="text-[11px] tabular-nums text-muted-foreground shrink-0">
+                                  {entry.progress}%
+                                </div>
+                              )}
+                            </div>
+                            {inFlight ? (
+                              <div
+                                role="progressbar"
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={entry.progress}
+                                aria-label={`Upload progress for ${entry.file.name}`}
+                                className="mt-1 h-1 w-full rounded-full bg-secondary overflow-hidden"
+                              >
+                                <div
+                                  className="h-full bg-primary transition-[width] duration-150 ease-out"
+                                  style={{ width: `${entry.progress}%` }}
+                                />
+                              </div>
+                            ) : (
+                              <div className="text-[11px] text-muted-foreground truncate">
+                                {entry.status === "success"
+                                  ? "Added to shared inbox"
+                                  : (entry.errorMessage ?? "Upload failed")}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeEntry(entry.id)}
+                            className="shrink-0 mt-0.5 text-muted-foreground hover:text-foreground"
+                            aria-label={`Remove ${entry.file.name}`}
+                          >
+                            <XCircle size={13} />
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               </>
