@@ -10,6 +10,8 @@ import { requireCsrf } from "./middlewares/csrf";
 import { logger } from "./lib/logger";
 import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
+import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
+import { startDailyOneDriveBackup } from "./lib/backup";
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -45,6 +47,11 @@ app.use(express.urlencoded({ extended: true, limit: "12mb" }));
 app.use("/api", requireCsrf, router);
 
 startStatementScheduler();
+startDailyOrphanedMediaCleanup();
+// OneDrive backup scheduler — only active when the connector is available.
+if (process.env.REPLIT_CONNECTORS_HOSTNAME) {
+  startDailyOneDriveBackup();
+}
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof ZodError) {

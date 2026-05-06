@@ -4,6 +4,7 @@ import archiver from "archiver";
 import { db } from "@workspace/db";
 import { users, labCases } from "@workspace/db";
 import { uploadToOneDrive } from "./onedrive";
+import { logger } from "./logger";
 
 export interface BackupResult {
   fileName: string;
@@ -111,16 +112,25 @@ export function startDailyOneDriveBackup() {
   );
 
   const tick = async () => {
-    const startedAt = new Date().toISOString();
     try {
-      console.log(`[BACKUP] Daily OneDrive backup starting at ${startedAt}`);
+      logger.info(
+        { startedAt: new Date().toISOString() },
+        "Daily OneDrive backup starting",
+      );
       const result = await runOneDriveBackup("scheduler:daily");
-      console.log(
-        `[BACKUP] Daily OneDrive backup OK file=${result.fileName} size=${result.size} cases=${result.counts.cases} users=${result.counts.users}`,
+      logger.info(
+        {
+          fileName: result.fileName,
+          size: result.size,
+          cases: result.counts.cases,
+          users: result.counts.users,
+        },
+        "Daily OneDrive backup OK",
       );
     } catch (err: any) {
-      console.error(
-        `[BACKUP] Daily OneDrive backup FAILED: ${err?.message || err}`,
+      logger.error(
+        { err: err?.message || String(err) },
+        "Daily OneDrive backup FAILED",
       );
     } finally {
       // Re-schedule for the next day even if this run failed.
@@ -129,8 +139,12 @@ export function startDailyOneDriveBackup() {
   };
 
   const initialDelay = msUntilNext(hourUtc);
-  console.log(
-    `[BACKUP] Daily OneDrive backup scheduled for ${hourUtc.toString().padStart(2, "0")}:00 UTC (first run in ${Math.round(initialDelay / 60000)} min)`,
+  logger.info(
+    {
+      hourUtc,
+      firstRunInMinutes: Math.round(initialDelay / 60000),
+    },
+    "Daily OneDrive backup scheduled",
   );
   setTimeout(tick, initialDelay);
 }

@@ -51,5 +51,9 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `AI_INTEGRATIONS_OPENAI_API_KEY` — optional; enables AI features (tooth chart detection, etc.)
 - `LABTRAX_ENABLE_DEMO_SEEDS` — set to `"true"` to seed demo users on startup
 - `ONEDRIVE_*` — optional OneDrive backup integration credentials
+- `CLEANUP_HOUR_UTC` — UTC hour (0–23) for the nightly orphaned media cleanup (default: `8`)
+- `BACKUP_HOUR_UTC` — UTC hour (0–23) for the nightly OneDrive backup (default: `7`)
+- `MEDIA_CLEANUP_JOB_TOKEN` — shared secret for the standalone cleanup script (scheduled deployment path only)
+- `MEDIA_CLEANUP_API_URL` — base API URL for the standalone cleanup script (e.g. `https://your.replit.app/api`; scheduled deployment path only)
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
