@@ -89,6 +89,31 @@ export async function ensureOneDriveFolder(folderName: string): Promise<string> 
   return folder.id;
 }
 
+// Best-effort deletion of a file previously mirrored to OneDrive.
+// Returns:
+//   "deleted"   – the file existed and was removed
+//   "missing"   – OneDrive responded 404 (already gone, treated as success)
+//   "disabled"  – OneDrive is not configured in this environment
+// Throws on any other error (network failure, auth failure, 5xx, etc.)
+// so callers can decide whether to log and continue.
+export async function deleteFromOneDrive(
+  fileName: string,
+  folderPath = "LabTrax Case Media"
+): Promise<"deleted" | "missing" | "disabled"> {
+  if (!process.env.REPLIT_CONNECTORS_HOSTNAME) return "disabled";
+  const token = await getOneDriveAccessToken();
+  const itemPath = `/${folderPath}/${fileName}`;
+  const resp = await graphRequest(
+    `/me/drive/root:${encodeURIComponent(itemPath).replace(/%2F/g, "/")}`,
+    { method: "DELETE" },
+    token
+  );
+  if (resp.status === 204 || resp.status === 200) return "deleted";
+  if (resp.status === 404) return "missing";
+  const err = await resp.text().catch(() => "");
+  throw new Error(`OneDrive delete failed (${resp.status}): ${err}`);
+}
+
 export async function uploadToOneDrive(
   fileBuffer: Buffer,
   fileName: string,
