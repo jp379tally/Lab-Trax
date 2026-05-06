@@ -1,6 +1,7 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { UploadsProvider } from "@/lib/uploads-context";
 import LoginPage from "@/pages/login";
 import DashboardPage from "@/pages/dashboard";
 import CasesPage from "@/pages/cases";
@@ -29,6 +30,14 @@ const queryClient = new QueryClient({
 });
 
 function AuthedRoutes() {
+  return (
+    <UploadsProvider>
+      <AppLayoutWithUploads />
+    </UploadsProvider>
+  );
+}
+
+function AppLayoutWithUploads() {
   return (
     <AppLayout>
       <Switch>

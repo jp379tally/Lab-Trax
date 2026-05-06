@@ -2,42 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle, FileText, Film, Image, Loader2, RotateCw, Upload, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-
-const ACCEPTED_MIME_TYPES = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-  "image/bmp",
-  "image/tiff",
-  "video/mp4",
-  "video/quicktime",
-  "video/webm",
-  "video/x-msvideo",
-  "application/pdf",
-]);
-
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
-
-function isAcceptedType(mime: string): boolean {
-  if (ACCEPTED_MIME_TYPES.has(mime)) return true;
-  if (mime.startsWith("image/")) return true;
-  if (mime.startsWith("video/")) return true;
-  return false;
-}
-
-type UploadStatus = "queued" | "uploading" | "success" | "error";
-
-interface FileEntry {
-  id: string;
-  file: File;
-  note: string;
-  status: UploadStatus;
-  errorMessage?: string;
-  serverId?: string;
-}
+import { useUploads, type UploadRejection } from "@/lib/uploads-context";
 
 function FileTypeIcon({ mimeType, className }: { mimeType: string; className?: string }) {
   if (mimeType === "application/pdf") return <FileText size={16} className={className} />;
@@ -51,165 +16,25 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function validateFile(file: File): string | null {
-  if (!isAcceptedType(file.type)) {
-    return "File type not accepted. Please upload images, videos, or PDFs.";
-  }
-  if (file.size > MAX_FILE_SIZE_BYTES) {
-    return `File is too large (${formatBytes(file.size)}). Maximum size is 10 MB.`;
-  }
-  return null;
-}
-
-async function uploadFileToServer(file: File): Promise<string | null> {
-  const formData = new FormData();
-  formData.append("file", file, file.name);
-  try {
-    const result = await apiFetch<{ url: string }>("/media/upload", {
-      method: "POST",
-      body: formData,
-    });
-    return typeof result?.url === "string" ? result.url : null;
-  } catch {
-    return null;
-  }
-}
-
-async function registerPendingFile(params: {
-  organizationId: string;
-  fileUrl: string;
-  fileName: string;
-  mimeType: string;
-  notes: string;
-  uploaderName: string;
-}): Promise<string | null> {
-  try {
-    const result = await apiFetch<{ file?: { id: string } }>("/lab-pending-files", {
-      method: "POST",
-      body: JSON.stringify(params),
-    });
-    return result?.file?.id ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function patchPendingFileNote(serverId: string, notes: string): Promise<void> {
-  try {
-    await apiFetch(`/lab-pending-files/${serverId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ notes }),
-    });
-  } catch {
-    // best-effort
-  }
-}
-
 interface DesktopFileDropZoneProps {
   organizationId: string | null;
   uploaderName: string;
 }
 
 function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileDropZoneProps) {
-  const [entries, setEntries] = useState<FileEntry[]>([]);
-  const entriesRef = useRef<FileEntry[]>([]);
+  const { entries, addFiles, removeEntry, updateNote, commitNote, retryEntry } = useUploads();
   const [dragOver, setDragOver] = useState(false);
-  const [rejections, setRejections] = useState<{ name: string; reason: string }[]>([]);
+  const [rejections, setRejections] = useState<UploadRejection[]>([]);
   const dragCounterRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Keep the ref in sync so async callbacks can read the latest entries.
-  useEffect(() => {
-    entriesRef.current = entries;
-  }, [entries]);
-
-  function genId() {
-    return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  }
-
-  const uploadEntry = useCallback(
-    async (entry: FileEntry) => {
-      if (!organizationId) return;
-
-      setEntries((prev) =>
-        prev.map((e) => (e.id === entry.id ? { ...e, status: "uploading" } : e)),
-      );
-
-      const fileUrl = await uploadFileToServer(entry.file);
-      if (!fileUrl) {
-        setEntries((prev) =>
-          prev.map((e) =>
-            e.id === entry.id
-              ? { ...e, status: "error", errorMessage: "Upload failed. Please try again." }
-              : e,
-          ),
-        );
-        return;
-      }
-
-      // Read the most current note from the ref — the user may have typed
-      // into the note field while the upload was in flight.
-      const currentNote =
-        entriesRef.current.find((e) => e.id === entry.id)?.note ?? "";
-
-      const serverId = await registerPendingFile({
-        organizationId,
-        fileUrl,
-        fileName: entry.file.name,
-        mimeType: entry.file.type || "application/octet-stream",
-        notes: currentNote,
-        uploaderName,
-      });
-
-      if (!serverId) {
-        setEntries((prev) =>
-          prev.map((e) =>
-            e.id === entry.id
-              ? {
-                  ...e,
-                  status: "error",
-                  errorMessage: "File uploaded but could not be registered. Please retry.",
-                }
-              : e,
-          ),
-        );
-        return;
-      }
-
-      setEntries((prev) =>
-        prev.map((e) =>
-          e.id === entry.id ? { ...e, status: "success", serverId } : e,
-        ),
-      );
-    },
-    [organizationId, uploaderName],
-  );
-
   const processFiles = useCallback(
     (files: FileList | File[]) => {
-      const list = Array.from(files);
-      const valid: FileEntry[] = [];
-      const invalid: { name: string; reason: string }[] = [];
-
-      for (const file of list) {
-        const error = validateFile(file);
-        if (error) {
-          invalid.push({ name: file.name, reason: error });
-        } else {
-          valid.push({ id: genId(), file, note: "", status: "queued" });
-        }
-      }
-
-      setRejections(invalid);
-
-      if (valid.length > 0) {
-        setEntries((prev) => [...prev, ...valid]);
-        for (const entry of valid) {
-          uploadEntry(entry);
-        }
-      }
+      if (!organizationId) return;
+      const result = addFiles(files, { organizationId, uploaderName });
+      setRejections(result.rejections);
     },
-    [uploadEntry],
+    [addFiles, organizationId, uploaderName],
   );
 
   function handleDragEnter(e: React.DragEvent) {
@@ -246,27 +71,6 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
       processFiles(e.target.files);
     }
     e.target.value = "";
-  }
-
-  function handleNoteChange(id: string, note: string) {
-    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, note } : e)));
-  }
-
-  function handleNoteBlur(id: string) {
-    const entry = entries.find((e) => e.id === id);
-    if (entry?.status === "success" && entry.serverId) {
-      patchPendingFileNote(entry.serverId, entry.note);
-    }
-  }
-
-  function removeEntry(id: string) {
-    setEntries((prev) => prev.filter((e) => e.id !== id));
-  }
-
-  function retryEntry(id: string) {
-    const entry = entriesRef.current.find((e) => e.id === id);
-    if (!entry || entry.status !== "error") return;
-    uploadEntry(entry);
   }
 
   const disabled = !organizationId;
@@ -331,9 +135,9 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
 
         {rejections.length > 0 && (
           <div className="space-y-1">
-            {rejections.map((r, i) => (
+            {rejections.map((r) => (
               <div
-                key={i}
+                key={r.id}
                 className="flex items-start gap-2 text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2"
               >
                 <XCircle size={13} className="mt-0.5 shrink-0" />
@@ -403,8 +207,8 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                       type="text"
                       placeholder="Add a note (optional)"
                       value={entry.note}
-                      onChange={(e) => handleNoteChange(entry.id, e.target.value)}
-                      onBlur={() => handleNoteBlur(entry.id)}
+                      onChange={(e) => updateNote(entry.id, e.target.value)}
+                      onBlur={() => commitNote(entry.id)}
                       className="w-full text-xs rounded-md border border-border bg-background px-2.5 py-1.5 placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                     />
                   )}

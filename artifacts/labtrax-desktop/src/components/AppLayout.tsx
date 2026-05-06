@@ -2,22 +2,27 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import {
   Bell,
+  CheckCircle,
   ChevronDown,
   CreditCard,
   FileBarChart2,
   FileText,
   LayoutDashboard,
+  Loader2,
   LogOut,
   Receipt,
   Search,
   Settings,
   Stethoscope,
   Tag,
+  Upload,
   Users,
   Wallet,
   Wrench,
+  XCircle,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { useUploads } from "@/lib/uploads-context";
 import { Logo } from "./Logo";
 
 interface NavItem {
@@ -51,6 +56,11 @@ export function AppLayout({ children }: Props) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [uploadsOpen, setUploadsOpen] = useState(false);
+  const { entries, activeCount, removeEntry } = useUploads();
+  const successCount = entries.filter((e) => e.status === "success").length;
+  const errorCount = entries.filter((e) => e.status === "error").length;
+  const hasAnyUploads = entries.length > 0;
 
   const initials = useMemo(() => {
     if (user?.initials) return user.initials.slice(0, 2).toUpperCase();
@@ -156,6 +166,88 @@ export function AppLayout({ children }: Props) {
               placeholder="Search cases, invoices, doctors…"
               className="w-full h-9 pl-9 pr-3 rounded-md bg-secondary text-sm placeholder:text-muted-foreground/70 border border-transparent focus:bg-card focus:border-border focus:outline-none"
             />
+          </div>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setUploadsOpen((v) => !v)}
+              disabled={!hasAnyUploads}
+              className="relative h-9 px-2.5 rounded-md hover:bg-secondary flex items-center gap-1.5 text-muted-foreground disabled:opacity-50 disabled:cursor-default"
+              aria-label={
+                activeCount > 0
+                  ? `${activeCount} upload${activeCount === 1 ? "" : "s"} in progress`
+                  : "Uploads"
+              }
+            >
+              {activeCount > 0 ? (
+                <Loader2 size={16} className="animate-spin text-primary" />
+              ) : errorCount > 0 ? (
+                <XCircle size={16} className="text-destructive" />
+              ) : (
+                <Upload size={16} />
+              )}
+              {hasAnyUploads && (
+                <span className="text-xs font-medium tabular-nums">
+                  {activeCount > 0 ? activeCount : entries.length}
+                </span>
+              )}
+            </button>
+            {uploadsOpen && hasAnyUploads && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setUploadsOpen(false)}
+                />
+                <div className="absolute right-0 top-[calc(100%+6px)] w-80 z-50 bg-card border border-border rounded-md shadow-lg text-sm overflow-hidden">
+                  <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+                    <span className="font-medium text-xs">Uploads</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {activeCount > 0
+                        ? `${activeCount} in progress`
+                        : `${successCount} done${errorCount > 0 ? ` · ${errorCount} failed` : ""}`}
+                    </span>
+                  </div>
+                  <ul className="max-h-72 overflow-y-auto scrollbar-thin">
+                    {entries.map((entry) => (
+                      <li
+                        key={entry.id}
+                        className="flex items-center gap-2 px-3 py-2 border-b border-border last:border-b-0"
+                      >
+                        <div className="shrink-0">
+                          {entry.status === "uploading" || entry.status === "queued" ? (
+                            <Loader2 size={14} className="animate-spin text-primary" />
+                          ) : entry.status === "success" ? (
+                            <CheckCircle size={14} className="text-success" />
+                          ) : (
+                            <XCircle size={14} className="text-destructive" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-medium truncate">
+                            {entry.file.name}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground truncate">
+                            {entry.status === "uploading" || entry.status === "queued"
+                              ? "Uploading…"
+                              : entry.status === "success"
+                                ? "Added to shared inbox"
+                                : (entry.errorMessage ?? "Upload failed")}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeEntry(entry.id)}
+                          className="shrink-0 text-muted-foreground hover:text-foreground"
+                          aria-label={`Remove ${entry.file.name}`}
+                        >
+                          <XCircle size={13} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </>
+            )}
           </div>
           <button
             type="button"
