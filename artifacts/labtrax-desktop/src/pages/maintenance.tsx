@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, CheckCircle2, Clock, Loader2, RefreshCw } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { AlertCircle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search } from "lucide-react";
+import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
 interface CleanupRun {
@@ -19,6 +19,18 @@ interface CleanupRun {
   errorCount: number;
   triggeredBy: string;
   createdAt: string;
+}
+
+interface CleanupResult {
+  ok: boolean;
+  runId: string;
+  dryRun: boolean;
+  status: string;
+  errorMessage: string | null;
+  scannedFiles: number;
+  orphanCount: number;
+  removedCount: number;
+  freedBytes: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -62,10 +74,17 @@ function TriggeredByBadge({ value }: { value: string }) {
   );
 }
 
+type RunState =
+  | { kind: "idle" }
+  | { kind: "running"; dryRun: boolean }
+  | { kind: "done"; result: CleanupResult }
+  | { kind: "error"; message: string; dryRun: boolean };
+
 export default function MaintenancePage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [limit, setLimit] = useState(50);
+  const [runState, setRunState] = useState<RunState>({ kind: "idle" });
 
   const runsQuery = useQuery({
     queryKey: ["admin", "cleanup-runs", limit],
@@ -75,6 +94,29 @@ export default function MaintenancePage() {
       ),
     enabled: isAdmin,
   });
+
+  async function triggerCleanup(dryRun: boolean) {
+    setRunState({ kind: "running", dryRun });
+    try {
+      const result = await apiFetch<CleanupResult>(
+        "/admin/cleanup/orphaned-media",
+        {
+          method: "POST",
+          body: JSON.stringify({ dryRun }),
+        },
+      );
+      setRunState({ kind: "done", result });
+      await runsQuery.refetch();
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : "An unexpected error occurred.";
+      setRunState({ kind: "error", message, dryRun });
+    }
+  }
+
+  const isRunning = runState.kind === "running";
 
   if (!isAdmin) {
     return (
@@ -94,22 +136,167 @@ export default function MaintenancePage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Maintenance</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            History of nightly orphaned file cleanup runs.
+            Manage and review orphaned file cleanup runs.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => runsQuery.refetch()}
-          disabled={runsQuery.isFetching}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-border hover:bg-secondary transition-colors disabled:opacity-50"
-        >
-          <RefreshCw
-            size={13}
-            className={runsQuery.isFetching ? "animate-spin" : ""}
-          />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => triggerCleanup(true)}
+            disabled={isRunning}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-border hover:bg-secondary transition-colors disabled:opacity-50"
+            title="Preview orphaned files without deleting anything"
+          >
+            {isRunning && runState.dryRun ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Search size={13} />
+            )}
+            Dry run
+          </button>
+          <button
+            type="button"
+            onClick={() => triggerCleanup(false)}
+            disabled={isRunning}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+            title="Delete orphaned files now"
+          >
+            {isRunning && !runState.dryRun ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Play size={13} />
+            )}
+            Run now
+          </button>
+          <button
+            type="button"
+            onClick={() => runsQuery.refetch()}
+            disabled={runsQuery.isFetching}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-border hover:bg-secondary transition-colors disabled:opacity-50"
+          >
+            <RefreshCw
+              size={13}
+              className={runsQuery.isFetching ? "animate-spin" : ""}
+            />
+            Refresh
+          </button>
+        </div>
       </div>
+
+      {runState.kind === "running" && (
+        <div className="mb-4 flex items-center gap-2 px-4 py-3 rounded-lg border border-border bg-secondary/40 text-sm text-muted-foreground">
+          <Loader2 size={15} className="animate-spin flex-shrink-0" />
+          {runState.dryRun
+            ? "Scanning for orphaned files…"
+            : "Deleting orphaned files…"}
+        </div>
+      )}
+
+      {runState.kind === "done" && (
+        <div
+          className={`mb-4 px-4 py-3 rounded-lg border text-sm ${
+            runState.result.status === "ok"
+              ? runState.result.dryRun
+                ? "border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/40"
+                : "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/40"
+              : "border-destructive/30 bg-destructive/5"
+          }`}
+        >
+          <div className="flex items-start gap-2">
+            {runState.result.status === "ok" ? (
+              runState.result.dryRun ? (
+                <Info size={15} className="flex-shrink-0 mt-0.5 text-blue-600 dark:text-blue-400" />
+              ) : (
+                <CheckCircle2 size={15} className="flex-shrink-0 mt-0.5 text-green-600 dark:text-green-400" />
+              )
+            ) : (
+              <AlertCircle size={15} className="flex-shrink-0 mt-0.5 text-destructive" />
+            )}
+            <div className="flex-1 min-w-0">
+              {runState.result.dryRun ? (
+                <>
+                  <p className="font-medium text-blue-700 dark:text-blue-300">
+                    Dry run complete
+                  </p>
+                  <p className="mt-0.5 text-blue-600/80 dark:text-blue-400/80">
+                    Found{" "}
+                    <strong>{runState.result.orphanCount.toLocaleString()}</strong>{" "}
+                    orphaned{" "}
+                    {runState.result.orphanCount === 1 ? "file" : "files"} out of{" "}
+                    <strong>{runState.result.scannedFiles.toLocaleString()}</strong>{" "}
+                    scanned
+                    {runState.result.freedBytes > 0 && (
+                      <>
+                        {" "}—{" "}
+                        <strong>{formatBytes(runState.result.freedBytes)}</strong>{" "}
+                        would be freed
+                      </>
+                    )}
+                    . No files were deleted.
+                  </p>
+                </>
+              ) : runState.result.status === "ok" ? (
+                <>
+                  <p className="font-medium text-green-700 dark:text-green-300">
+                    Cleanup complete
+                  </p>
+                  <p className="mt-0.5 text-green-600/80 dark:text-green-400/80">
+                    Removed{" "}
+                    <strong>{runState.result.removedCount.toLocaleString()}</strong>{" "}
+                    orphaned{" "}
+                    {runState.result.removedCount === 1 ? "file" : "files"}
+                    {runState.result.freedBytes > 0 && (
+                      <>
+                        {", "}
+                        freeing{" "}
+                        <strong>{formatBytes(runState.result.freedBytes)}</strong>
+                      </>
+                    )}
+                    .
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-medium text-destructive">Cleanup failed</p>
+                  {runState.result.errorMessage && (
+                    <p className="mt-0.5 text-destructive/80">
+                      {runState.result.errorMessage}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setRunState({ kind: "idle" })}
+              className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors text-xs"
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {runState.kind === "error" && (
+        <div className="mb-4 flex items-start gap-2 px-4 py-3 rounded-lg border border-destructive/30 bg-destructive/5 text-sm">
+          <AlertCircle size={15} className="flex-shrink-0 mt-0.5 text-destructive" />
+          <div className="flex-1 min-w-0">
+            <p className="font-medium text-destructive">
+              {runState.dryRun ? "Dry run failed" : "Cleanup failed"}
+            </p>
+            <p className="mt-0.5 text-destructive/80">{runState.message}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setRunState({ kind: "idle" })}
+            className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors text-xs"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {runsQuery.isLoading ? (
         <div className="flex items-center justify-center py-20 text-muted-foreground gap-2">
@@ -126,7 +313,7 @@ export default function MaintenancePage() {
           <Clock size={32} className="mb-3 opacity-30" />
           <p className="text-sm font-medium">No cleanup runs recorded yet.</p>
           <p className="text-xs mt-1">
-            The nightly scheduler will record runs here automatically.
+            Use the buttons above or wait for the nightly scheduler.
           </p>
         </div>
       ) : (
