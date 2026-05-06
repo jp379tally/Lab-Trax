@@ -45,6 +45,8 @@ export interface PracticeStatementData {
     status: string;
     total: string;
     balanceDue: string;
+    patientName: string | null;
+    billTo: string | null;
   }>;
 }
 
@@ -135,6 +137,9 @@ export async function buildPracticeStatements(
     cur.totalBilled += total;
     cur.totalPaid += Math.max(0, total - balance);
     if (inv.status !== "void") cur.openBalance += balance;
+    const meta = (inv.displayMetadataJson ?? null) as
+      | { patientName?: string | null; billTo?: string | null }
+      | null;
     cur.invoices.push({
       invoiceNumber: inv.invoiceNumber,
       issuedAt: inv.issuedAt ?? inv.createdAt ?? null,
@@ -142,6 +147,8 @@ export async function buildPracticeStatements(
       status: inv.status,
       total: String(inv.total ?? "0"),
       balanceDue: String(inv.balanceDue ?? "0"),
+      patientName: meta?.patientName ?? null,
+      billTo: meta?.billTo ?? null,
     });
     grouped.set(id, cur);
   }
@@ -192,13 +199,25 @@ export async function generateStatementPdfBuffer(
     doc.moveDown(0.3);
 
     const startX = doc.x;
-    const colWidths = [110, 90, 90, 90, 80, 80];
-    const headers = ["Invoice", "Issued", "Due", "Status", "Total", "Balance"];
+    const colWidths = [110, 100, 75, 75, 60, 70, 70];
+    const headers = [
+      "Invoice",
+      "Patient",
+      "Issued",
+      "Due",
+      "Status",
+      "Total",
+      "Balance",
+    ];
+    const rightAlignFrom = 5;
     let y = doc.y;
     doc.font("Helvetica-Bold").fontSize(9).fillColor("#444");
     let x = startX;
     headers.forEach((h, i) => {
-      doc.text(h, x, y, { width: colWidths[i], align: i >= 4 ? "right" : "left" });
+      doc.text(h, x, y, {
+        width: colWidths[i],
+        align: i >= rightAlignFrom ? "right" : "left",
+      });
       x += colWidths[i]!;
     });
     doc.fillColor("#000");
@@ -211,12 +230,18 @@ export async function generateStatementPdfBuffer(
 
     doc.font("Helvetica").fontSize(9);
     for (const inv of data.invoices) {
-      if (y > doc.page.height - 80) {
+      const billTo = inv.billTo && inv.billTo.trim() ? inv.billTo.trim() : "";
+      const showBillTo = billTo && billTo !== data.practiceName;
+      const rowHeight = showBillTo ? 26 : 16;
+      if (y + rowHeight > doc.page.height - 60) {
         doc.addPage();
         y = doc.y;
       }
+      const patient =
+        inv.patientName && inv.patientName.trim() ? inv.patientName.trim() : "—";
       const cells = [
         inv.invoiceNumber,
+        patient,
         fmtDate(inv.issuedAt),
         fmtDate(inv.dueAt),
         inv.status,
@@ -225,10 +250,22 @@ export async function generateStatementPdfBuffer(
       ];
       x = startX;
       cells.forEach((c, i) => {
-        doc.text(c, x, y, { width: colWidths[i], align: i >= 4 ? "right" : "left" });
+        doc.text(c, x, y, {
+          width: colWidths[i],
+          align: i >= rightAlignFrom ? "right" : "left",
+        });
         x += colWidths[i]!;
       });
-      y += 16;
+      if (showBillTo) {
+        doc
+          .fontSize(8)
+          .fillColor("#666")
+          .text(`Bill to: ${billTo}`, startX, y + 12, {
+            width: colWidths[0],
+          });
+        doc.fontSize(9).fillColor("#000");
+      }
+      y += rowHeight;
     }
 
     doc.end();
