@@ -57,7 +57,7 @@ export function AppLayout({ children }: Props) {
   const { user, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const [uploadsOpen, setUploadsOpen] = useState(false);
-  const { entries, activeCount, removeEntry } = useUploads();
+  const { entries, activeCount, removeEntry, cancelEntry } = useUploads();
   const successCount = entries.filter((e) => e.status === "success").length;
   const errorCount = entries.filter((e) => e.status === "error").length;
   const hasAnyUploads = entries.length > 0;
@@ -258,14 +258,25 @@ export function AppLayout({ children }: Props) {
                               </div>
                             )}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => removeEntry(entry.id)}
-                            className="shrink-0 mt-0.5 text-muted-foreground hover:text-foreground"
-                            aria-label={`Remove ${entry.file.name}`}
-                          >
-                            <XCircle size={13} />
-                          </button>
+                          {inFlight ? (
+                            <button
+                              type="button"
+                              onClick={() => cancelEntry(entry.id)}
+                              className="shrink-0 mt-0.5 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
+                              aria-label={`Cancel upload of ${entry.file.name}`}
+                            >
+                              Cancel
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => removeEntry(entry.id)}
+                              className="shrink-0 mt-0.5 text-muted-foreground hover:text-foreground"
+                              aria-label={`Remove ${entry.file.name}`}
+                            >
+                              <XCircle size={13} />
+                            </button>
+                          )}
                         </li>
                       );
                     })}

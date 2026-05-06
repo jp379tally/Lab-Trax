@@ -22,7 +22,8 @@ interface DesktopFileDropZoneProps {
 }
 
 function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileDropZoneProps) {
-  const { entries, addFiles, removeEntry, updateNote, commitNote, retryEntry } = useUploads();
+  const { entries, addFiles, removeEntry, cancelEntry, updateNote, commitNote, retryEntry } =
+    useUploads();
   const [dragOver, setDragOver] = useState(false);
   const [rejections, setRejections] = useState<UploadRejection[]>([]);
   const dragCounterRef = useRef(0);
@@ -176,7 +177,17 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                         <span>
                           {entry.status === "queued" ? "Waiting…" : "Uploading…"}
                         </span>
-                        <span className="tabular-nums">{entry.progress}%</span>
+                        <div className="flex items-center gap-2">
+                          <span className="tabular-nums">{entry.progress}%</span>
+                          <button
+                            type="button"
+                            onClick={() => cancelEntry(entry.id)}
+                            className="text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
+                            aria-label={`Cancel upload of ${entry.file.name}`}
+                          >
+                            Cancel
+                          </button>
+                        </div>
                       </div>
                       <div
                         role="progressbar"

@@ -62,6 +62,7 @@ interface UploadsContextValue {
     opts: { organizationId: string; uploaderName: string },
   ) => AddFilesResult;
   removeEntry: (id: string) => void;
+  cancelEntry: (id: string) => void;
   updateNote: (id: string, note: string) => void;
   commitNote: (id: string) => void;
   retryEntry: (id: string) => void;
@@ -95,6 +96,7 @@ function validateFile(file: File): string | null {
 async function uploadFileToServer(
   file: File,
   onProgress: (percent: number) => void,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const formData = new FormData();
   formData.append("file", file, file.name);
@@ -102,7 +104,7 @@ async function uploadFileToServer(
     const result = await apiUploadWithProgress<{ url: string }>(
       "/media/upload",
       formData,
-      { onProgress },
+      { onProgress, signal },
     );
     return typeof result?.url === "string" ? result.url : null;
   } catch {
@@ -148,6 +150,8 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<UploadEntry[]>([]);
   const entriesRef = useRef<UploadEntry[]>([]);
   const clearTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const controllersRef = useRef<Map<string, AbortController>>(new Map());
+  const canceledIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     entriesRef.current = entries;
@@ -184,6 +188,9 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   const uploadEntry = useCallback(
     async (entry: UploadEntry) => {
       cancelAutoClear(entry.id);
+      canceledIdsRef.current.delete(entry.id);
+      const controller = new AbortController();
+      controllersRef.current.set(entry.id, controller);
       setEntries((prev) =>
         prev.map((e) =>
           e.id === entry.id
@@ -192,15 +199,27 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         ),
       );
 
-      const fileUrl = await uploadFileToServer(entry.file, (percent) => {
-        setEntries((prev) =>
-          prev.map((e) =>
-            e.id === entry.id && e.status === "uploading" && percent > e.progress
-              ? { ...e, progress: percent }
-              : e,
-          ),
-        );
-      });
+      const fileUrl = await uploadFileToServer(
+        entry.file,
+        (percent) => {
+          setEntries((prev) =>
+            prev.map((e) =>
+              e.id === entry.id && e.status === "uploading" && percent > e.progress
+                ? { ...e, progress: percent }
+                : e,
+            ),
+          );
+        },
+        controller.signal,
+      );
+      controllersRef.current.delete(entry.id);
+
+      if (canceledIdsRef.current.has(entry.id) || controller.signal.aborted) {
+        canceledIdsRef.current.delete(entry.id);
+        setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+        return;
+      }
+
       if (!fileUrl) {
         setEntries((prev) =>
           prev.map((e) =>
@@ -290,6 +309,26 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   const removeEntry = useCallback(
     (id: string) => {
       cancelAutoClear(id);
+      const controller = controllersRef.current.get(id);
+      if (controller) {
+        canceledIdsRef.current.add(id);
+        controller.abort();
+        return;
+      }
+      setEntries((prev) => prev.filter((e) => e.id !== id));
+    },
+    [cancelAutoClear],
+  );
+
+  const cancelEntry = useCallback(
+    (id: string) => {
+      cancelAutoClear(id);
+      const controller = controllersRef.current.get(id);
+      if (controller) {
+        canceledIdsRef.current.add(id);
+        controller.abort();
+        return;
+      }
       setEntries((prev) => prev.filter((e) => e.id !== id));
     },
     [cancelAutoClear],
@@ -326,11 +365,12 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
       activeCount,
       addFiles,
       removeEntry,
+      cancelEntry,
       updateNote,
       commitNote,
       retryEntry,
     }),
-    [entries, activeCount, addFiles, removeEntry, updateNote, commitNote, retryEntry],
+    [entries, activeCount, addFiles, removeEntry, cancelEntry, updateNote, commitNote, retryEntry],
   );
 
   return <UploadsContext.Provider value={value}>{children}</UploadsContext.Provider>;
