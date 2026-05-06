@@ -1,7 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Document, Page, pdfjs } from "react-pdf";
+import pdfWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
   CheckCircle,
+  ChevronLeft,
+  ChevronRight,
   Download,
   ExternalLink,
   FileText,
@@ -10,12 +23,17 @@ import {
   Inbox,
   Link2,
   Loader2,
+  Maximize2,
+  Minus,
   Pencil,
+  Plus,
   RefreshCw,
   Trash2,
   X,
   XCircle,
 } from "lucide-react";
+
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatDate, relativeTime } from "@/lib/format";
@@ -219,29 +237,363 @@ interface PreviewDialogProps {
   onSaveNotes: (notes: string) => Promise<unknown>;
 }
 
+const MIN_IMAGE_SCALE = 1;
+const MAX_IMAGE_SCALE = 8;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function ImagePreview({ fileUrl, fileName }: { fileUrl: string; fileName: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<
+    | {
+        pointerId: number;
+        startX: number;
+        startY: number;
+        originX: number;
+        originY: number;
+      }
+    | null
+  >(null);
+
+  const reset = useCallback(() => {
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+  }, []);
+
+  const zoomBy = useCallback(
+    (factor: number, anchor?: { x: number; y: number }) => {
+      setScale((prev) => {
+        const next = clamp(prev * factor, MIN_IMAGE_SCALE, MAX_IMAGE_SCALE);
+        if (next === prev) return prev;
+        if (next === 1) {
+          setOffset({ x: 0, y: 0 });
+          return next;
+        }
+        if (anchor) {
+          setOffset((o) => ({
+            x: anchor.x - ((anchor.x - o.x) * next) / prev,
+            y: anchor.y - ((anchor.y - o.y) * next) / prev,
+          }));
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const scaleRef = useRef(scale);
+  useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
+
+  // Bind a non-passive wheel listener so we can preventDefault for zoom
+  // gestures. Pinch-to-zoom on trackpads arrives as wheel events with
+  // ctrlKey=true; holding Cmd/Ctrl with a mouse wheel does the same. Plain
+  // two-finger scrolling pans the zoomed image instead of zooming.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      if (!el) return;
+      const isZoomGesture = e.ctrlKey || e.metaKey;
+      if (isZoomGesture) {
+        e.preventDefault();
+        const rect = el.getBoundingClientRect();
+        const anchor = {
+          x: e.clientX - rect.left - rect.width / 2,
+          y: e.clientY - rect.top - rect.height / 2,
+        };
+        const factor = Math.exp(-e.deltaY * 0.015);
+        zoomBy(factor, anchor);
+        return;
+      }
+      // Pan with the wheel/trackpad when zoomed in.
+      if (scaleRef.current > 1) {
+        e.preventDefault();
+        setOffset((o) => ({ x: o.x - e.deltaX, y: o.y - e.deltaY }));
+      }
+    }
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [zoomBy]);
+
+  function handleDoubleClick(e: ReactMouseEvent<HTMLDivElement>) {
+    if (scale > 1) {
+      reset();
+      return;
+    }
+    const el = containerRef.current;
+    if (!el) {
+      setScale(2);
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const anchor = {
+      x: e.clientX - rect.left - rect.width / 2,
+      y: e.clientY - rect.top - rect.height / 2,
+    };
+    zoomBy(2, anchor);
+  }
+
+  function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    if (scale <= 1) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: offset.x,
+      originY: offset.y,
+    };
+    setIsDragging(true);
+  }
+
+  function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    setOffset({
+      x: drag.originX + (e.clientX - drag.startX),
+      y: drag.originY + (e.clientY - drag.startY),
+    });
+  }
+
+  function onPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore — pointer may already be released
+    }
+    dragRef.current = null;
+    setIsDragging(false);
+  }
+
+  return (
+    <div className="relative bg-black/5 dark:bg-black/30 h-[70vh]">
+      <div
+        ref={containerRef}
+        onDoubleClick={handleDoubleClick}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        className="w-full h-full overflow-hidden flex items-center justify-center select-none"
+        style={{ cursor: scale > 1 ? (isDragging ? "grabbing" : "grab") : "zoom-in", touchAction: "none" }}
+      >
+        <img
+          src={fileUrl}
+          alt={fileName}
+          draggable={false}
+          className="max-w-full max-h-[70vh] object-contain pointer-events-none"
+          style={{
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transformOrigin: "center center",
+            transition: isDragging ? "none" : "transform 120ms ease-out",
+          }}
+        />
+      </div>
+      <div className="absolute bottom-3 right-3 flex items-center gap-1 bg-card/95 border border-border rounded-md shadow-sm px-1 py-1 text-xs">
+        <button
+          type="button"
+          onClick={() => zoomBy(1 / 1.5)}
+          disabled={scale <= MIN_IMAGE_SCALE}
+          className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center disabled:opacity-40"
+          aria-label="Zoom out"
+        >
+          <Minus size={13} />
+        </button>
+        <span className="tabular-nums w-12 text-center text-muted-foreground">
+          {Math.round(scale * 100)}%
+        </span>
+        <button
+          type="button"
+          onClick={() => zoomBy(1.5)}
+          disabled={scale >= MAX_IMAGE_SCALE}
+          className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center disabled:opacity-40"
+          aria-label="Zoom in"
+        >
+          <Plus size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={reset}
+          disabled={scale === 1 && offset.x === 0 && offset.y === 0}
+          className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center disabled:opacity-40"
+          aria-label="Reset zoom"
+          title="Reset zoom"
+        >
+          <Maximize2 size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PdfPreview({ fileUrl, fileName }: { fileUrl: string; fileName: string }) {
+  const fileProp = useMemo(() => ({ url: fileUrl }), [fileUrl]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(800);
+  const [numPages, setNumPages] = useState(0);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageInput, setPageInput] = useState("1");
+  const [error, setError] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    setWidth(el.clientWidth);
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setWidth(entry.contentRect.width);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    setPageInput(String(pageNumber));
+  }, [pageNumber]);
+
+  // Reset paging state when the source file changes so we don't briefly
+  // show "page 7 of 3" while the new document loads.
+  useEffect(() => {
+    setNumPages(0);
+    setPageNumber(1);
+    setPageInput("1");
+    setError(null);
+  }, [fileUrl]);
+
+  function commitPageInput() {
+    const next = parseInt(pageInput, 10);
+    if (Number.isFinite(next) && numPages > 0) {
+      setPageNumber(clamp(next, 1, numPages));
+    } else {
+      setPageInput(String(pageNumber));
+    }
+  }
+
+  const pageWidth = clamp(width - 32, 320, 1100);
+
+  return (
+    <div className="flex flex-col h-[70vh] bg-black/5 dark:bg-black/30">
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto flex items-start justify-center py-4 px-4"
+      >
+        {error ? (
+          <div className="text-sm text-destructive flex items-start gap-1.5 mt-8">
+            <XCircle size={14} className="mt-0.5 shrink-0" />
+            {error}
+          </div>
+        ) : (
+          <Document
+            file={fileProp}
+            onLoadSuccess={({ numPages: n }) => {
+              setNumPages(n);
+              setError(null);
+              setPageNumber((p) => clamp(p, 1, n));
+            }}
+            onLoadError={(e) => {
+              setError(
+                e?.message
+                  ? `Could not load PDF: ${e.message}`
+                  : "Could not load this PDF.",
+              );
+            }}
+            loading={
+              <div className="text-sm text-muted-foreground mt-8 flex items-center gap-2">
+                <Loader2 size={14} className="animate-spin" />
+                Loading PDF…
+              </div>
+            }
+            error={
+              <div className="text-sm text-destructive mt-8 flex items-start gap-1.5">
+                <XCircle size={14} className="mt-0.5 shrink-0" />
+                Could not load this PDF.
+              </div>
+            }
+          >
+            <Page
+              key={`page-${pageNumber}`}
+              pageNumber={pageNumber}
+              width={pageWidth}
+              renderTextLayer={false}
+              renderAnnotationLayer={false}
+              className="shadow-md bg-white"
+            />
+          </Document>
+        )}
+      </div>
+      {numPages > 0 && !error && (
+        <div className="border-t border-border bg-card/80 px-3 py-2 flex items-center justify-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
+            disabled={pageNumber <= 1}
+            className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center disabled:opacity-40"
+            aria-label="Previous page"
+          >
+            <ChevronLeft size={14} />
+          </button>
+          <span className="text-muted-foreground">Page</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={pageInput}
+            onChange={(e) => setPageInput(e.target.value.replace(/[^0-9]/g, ""))}
+            onBlur={commitPageInput}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitPageInput();
+              }
+            }}
+            className="h-7 w-12 text-center rounded border border-border bg-background tabular-nums focus:outline-none focus:ring-1 focus:ring-primary"
+            aria-label={`Page number, ${pageNumber} of ${numPages}`}
+          />
+          <span className="text-muted-foreground">of {numPages}</span>
+          <button
+            type="button"
+            onClick={() => setPageNumber((p) => Math.min(numPages, p + 1))}
+            disabled={pageNumber >= numPages}
+            className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center disabled:opacity-40"
+            aria-label="Next page"
+          >
+            <ChevronRight size={14} />
+          </button>
+          <span className="mx-1 text-muted-foreground/50">·</span>
+          <a
+            href={fileUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="h-7 px-2 rounded hover:bg-secondary flex items-center gap-1 text-muted-foreground"
+            title={`Open ${fileName} in a new tab`}
+          >
+            <ExternalLink size={12} />
+            Open
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PreviewBody({ file }: { file: PendingFile }) {
   const { mimeType, fileUrl, fileName } = file;
 
   if (mimeType.startsWith("image/")) {
-    return (
-      <div className="flex items-center justify-center bg-black/5 dark:bg-black/30 min-h-[20rem] max-h-[70vh] overflow-auto">
-        <img
-          src={fileUrl}
-          alt={fileName}
-          className="max-w-full max-h-[70vh] object-contain"
-        />
-      </div>
-    );
+    return <ImagePreview fileUrl={fileUrl} fileName={fileName} />;
   }
 
   if (mimeType === "application/pdf") {
-    return (
-      <iframe
-        src={fileUrl}
-        title={fileName}
-        className="w-full h-[70vh] bg-background"
-      />
-    );
+    return <PdfPreview fileUrl={fileUrl} fileName={fileName} />;
   }
 
   if (mimeType.startsWith("video/")) {
