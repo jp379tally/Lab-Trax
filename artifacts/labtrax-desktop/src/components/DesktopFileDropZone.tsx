@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle, FileText, Film, Image, Loader2, Upload, X, XCircle } from "lucide-react";
+import { CheckCircle, FileText, Film, Image, Loader2, RotateCw, Upload, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -263,6 +263,12 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
     setEntries((prev) => prev.filter((e) => e.id !== id));
   }
 
+  function retryEntry(id: string) {
+    const entry = entriesRef.current.find((e) => e.id === id);
+    if (!entry || entry.status !== "error") return;
+    uploadEntry(entry);
+  }
+
   const disabled = !organizationId;
 
   return (
@@ -368,9 +374,20 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                   )}
 
                   {entry.status === "error" && (
-                    <div className="flex items-center gap-1.5 text-xs text-destructive">
-                      <XCircle size={12} />
-                      {entry.errorMessage ?? "Upload failed"}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 text-xs text-destructive">
+                        <XCircle size={12} />
+                        {entry.errorMessage ?? "Upload failed"}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => retryEntry(entry.id)}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus:outline-none focus:ring-1 focus:ring-primary rounded-sm px-1"
+                        aria-label={`Retry uploading ${entry.file.name}`}
+                      >
+                        <RotateCw size={11} />
+                        Retry
+                      </button>
                     </div>
                   )}
 
