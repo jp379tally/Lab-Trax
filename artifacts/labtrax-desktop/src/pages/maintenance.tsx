@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -364,25 +364,39 @@ export default function MaintenancePage() {
                     <td className="px-4 py-3 whitespace-nowrap tabular-nums text-muted-foreground">
                       {formatDuration(run.startedAt, run.finishedAt)}
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="px-4 py-3">
                       {run.status === "ok" ? (
                         <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
                           <CheckCircle2 size={13} />
                           <span className="text-xs font-medium">OK</span>
                         </span>
+                      ) : run.status === "error" && run.errorMessage?.toLowerCase().includes("interrupted") ? (
+                        <div>
+                          <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                            <AlertTriangle size={13} />
+                            <span className="text-xs font-medium">Interrupted</span>
+                          </span>
+                          <div className="mt-0.5 text-[11px] text-amber-600/80 dark:text-amber-400/80">
+                            {run.errorMessage}
+                          </div>
+                        </div>
                       ) : (
-                        <span
-                          className="inline-flex items-center gap-1 text-destructive cursor-help"
-                          title={run.errorMessage ?? "Unknown error"}
-                        >
-                          <AlertCircle size={13} />
-                          <span className="text-xs font-medium">Error</span>
-                        </span>
+                        <div>
+                          <span className="inline-flex items-center gap-1 text-destructive">
+                            <AlertCircle size={13} />
+                            <span className="text-xs font-medium">Error</span>
+                          </span>
+                          {run.errorMessage && (
+                            <div className="mt-0.5 text-[11px] text-destructive/70">
+                              {run.errorMessage}
+                            </div>
+                          )}
+                        </div>
                       )}
                       {run.errorCount > 0 && (
-                        <span className="ml-2 text-[11px] text-destructive/70">
-                          ({run.errorCount} file error{run.errorCount !== 1 ? "s" : ""})
-                        </span>
+                        <div className="mt-0.5 text-[11px] text-destructive/70">
+                          {run.errorCount} file error{run.errorCount !== 1 ? "s" : ""}
+                        </div>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">

@@ -173,11 +173,28 @@ function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
                       <Loader2 size={11} className="animate-spin" />
                       Running
                     </span>
+                  ) : isError && run.errorMessage?.toLowerCase().includes("interrupted") ? (
+                    <div>
+                      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                        <AlertTriangle size={11} />
+                        <span>Interrupted</span>
+                      </span>
+                      <div className="mt-0.5 text-[10px] text-amber-600/80 dark:text-amber-400/80 leading-tight">
+                        {run.errorMessage}
+                      </div>
+                    </div>
                   ) : isError ? (
-                    <span className="inline-flex items-center gap-1 text-destructive" title={run.errorMessage ?? undefined}>
-                      <AlertCircle size={11} />
-                      Error
-                    </span>
+                    <div>
+                      <span className="inline-flex items-center gap-1 text-destructive">
+                        <AlertCircle size={11} />
+                        <span>Error</span>
+                      </span>
+                      {run.errorMessage && (
+                        <div className="mt-0.5 text-[10px] text-destructive/70 leading-tight">
+                          {run.errorMessage}
+                        </div>
+                      )}
+                    </div>
                   ) : (
                     <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
                       <CheckCircle2 size={11} />
