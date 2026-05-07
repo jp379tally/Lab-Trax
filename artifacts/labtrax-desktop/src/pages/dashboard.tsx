@@ -5,6 +5,8 @@ import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   HardDrive,
   Loader2,
@@ -70,9 +72,87 @@ type ManualRunFeedback =
   | { kind: "error"; message: string };
 
 
+const HISTORY_LIMIT = 20;
+
+function triggeredByLabel(triggeredBy: string): { label: string; isManual: boolean } {
+  if (triggeredBy.startsWith("admin:")) {
+    const who = triggeredBy.slice("admin:".length);
+    return { label: who ? `Manual (${who})` : "Manual", isManual: true };
+  }
+  if (triggeredBy === "scheduled" || triggeredBy === "nightly" || triggeredBy === "cron") {
+    return { label: "Scheduled", isManual: false };
+  }
+  if (triggeredBy === "api" || triggeredBy === "script") {
+    return { label: "Script", isManual: false };
+  }
+  return { label: triggeredBy, isManual: false };
+}
+
+function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border/60">
+            <th className="text-left font-medium py-2 pr-3 whitespace-nowrap">When</th>
+            <th className="text-left font-medium py-2 pr-3 whitespace-nowrap">Source</th>
+            <th className="text-right font-medium py-2 pr-3 whitespace-nowrap">Removed</th>
+            <th className="text-right font-medium py-2 pr-3 whitespace-nowrap">Freed</th>
+            <th className="text-left font-medium py-2 whitespace-nowrap">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => {
+            const { label, isManual } = triggeredByLabel(run.triggeredBy);
+            const isError = run.status === "error";
+            return (
+              <tr key={run.id} className="border-b border-border/40 last:border-0 hover:bg-secondary/30">
+                <td className="py-1.5 pr-3 text-muted-foreground whitespace-nowrap" title={formatDateTime(run.startedAt)}>
+                  {relativeTime(run.startedAt)}
+                </td>
+                <td className="py-1.5 pr-3 whitespace-nowrap">
+                  <span
+                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      isManual
+                        ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                        : "bg-secondary text-muted-foreground"
+                    }`}
+                  >
+                    {label}
+                  </span>
+                </td>
+                <td className="py-1.5 pr-3 text-right tabular-nums">
+                  {run.removedCount.toLocaleString()}
+                </td>
+                <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">
+                  {formatBytes(run.freedBytes)}
+                </td>
+                <td className="py-1.5">
+                  {isError ? (
+                    <span className="inline-flex items-center gap-1 text-destructive" title={run.errorMessage ?? undefined}>
+                      <AlertCircle size={11} />
+                      Error
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
+                      <CheckCircle2 size={11} />
+                      OK
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function MediaCleanupCard() {
   const qc = useQueryClient();
   const [feedback, setFeedback] = useState<ManualRunFeedback | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scheduleDismiss = () => {
@@ -90,10 +170,10 @@ function MediaCleanupCard() {
   }, []);
 
   const runsQuery = useQuery({
-    queryKey: ["admin", "cleanup", "runs", "last"],
+    queryKey: ["admin", "cleanup", "runs", HISTORY_LIMIT],
     queryFn: () =>
       apiFetch<{ runs: MediaCleanupRun[] }>(
-        "/admin/cleanup/orphaned-media/runs?limit=1",
+        `/admin/cleanup/orphaned-media/runs?limit=${HISTORY_LIMIT}`,
       ),
     refetchInterval: 5 * 60 * 1000,
   });
@@ -146,7 +226,8 @@ function MediaCleanupCard() {
   const isAlreadyRunning =
     runNowMutation.error instanceof ApiError && runNowMutation.error.status === 409;
 
-  const lastRun = runsQuery.data?.runs[0] ?? null;
+  const allRuns = runsQuery.data?.runs ?? [];
+  const lastRun = allRuns[0] ?? null;
   const hasError = lastRun?.status === "error";
   const nextRunLabel =
     scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
@@ -310,6 +391,30 @@ function MediaCleanupCard() {
               </div>
             )}
           </>
+        )}
+
+        {allRuns.length > 0 && (
+          <div className="pt-1 border-t border-border/60">
+            <button
+              type="button"
+              onClick={() => setShowHistory((v) => !v)}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors w-full py-1"
+            >
+              {showHistory ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              <span className="font-medium">
+                {showHistory ? "Hide" : "Show"} run history
+              </span>
+              <span className="ml-auto text-[10px]">
+                {allRuns.length} run{allRuns.length === 1 ? "" : "s"}
+              </span>
+            </button>
+
+            {showHistory && (
+              <div className="mt-2">
+                <RunHistoryTable runs={allRuns} />
+              </div>
+            )}
+          </div>
         )}
 
         {(nextRunLabel || nextBackupLabel) && (
