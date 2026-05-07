@@ -2946,6 +2946,30 @@ Important rules:
     }
   });
 
+  router.delete("/admin/settings/cleanup-alerts", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const field = (req.query as any).field as string | undefined;
+    const validFields: Record<string, string> = {
+      minRemoved: SETTING_CLEANUP_MIN_REMOVED,
+      minFreedMb: SETTING_CLEANUP_MIN_FREED_MB,
+    };
+    if (field && !validFields[field]) {
+      return res.status(400).json({ error: "Invalid field. Must be one of: minRemoved, minFreedMb." });
+    }
+    try {
+      const keysToDelete = field ? [validFields[field]] : Object.values(validFields);
+      for (const key of keysToDelete) {
+        await db.delete(systemSettings).where(eq(systemSettings.key, key));
+      }
+      return res.json({ success: true, reset: field ?? "all" });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to reset cleanup alert settings." });
+    }
+  });
+
   // ── Admin: cleanup schedule settings ─────────────────────────────────────
   router.get("/admin/settings/cleanup-schedule", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
@@ -3039,6 +3063,30 @@ Important rules:
       return res
         .status(500)
         .json({ error: e?.message || "Failed to save cleanup schedule settings." });
+    }
+  });
+
+  router.delete("/admin/settings/cleanup-schedule", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const field = (req.query as any).field as string | undefined;
+    const validFields: Record<string, string> = {
+      hourUtc: SETTING_CLEANUP_HOUR_UTC,
+      retentionDays: SETTING_CLEANUP_HISTORY_RETENTION_DAYS,
+    };
+    if (field && !validFields[field]) {
+      return res.status(400).json({ error: "Invalid field. Must be one of: hourUtc, retentionDays." });
+    }
+    try {
+      const keysToDelete = field ? [validFields[field]] : Object.values(validFields);
+      for (const key of keysToDelete) {
+        await db.delete(systemSettings).where(eq(systemSettings.key, key));
+      }
+      return res.json({ success: true, reset: field ?? "all" });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to reset cleanup schedule settings." });
     }
   });
 

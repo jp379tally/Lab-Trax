@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Clock, HardDrive, KeyRound, Loader2, LogOut, Monitor, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
+import { Building2, BellRing, Clock, HardDrive, KeyRound, Loader2, LogOut, Monitor, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
@@ -464,6 +464,34 @@ function CleanupScheduleSettingsPanel() {
     },
   });
 
+  const resetHourMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean }>("/admin/settings/cleanup-schedule?field=hourUtc", {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-schedule"] });
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Failed to reset setting.");
+    },
+  });
+
+  const resetRetentionMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean }>("/admin/settings/cleanup-schedule?field=retentionDays", {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-schedule"] });
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Failed to reset setting.");
+    },
+  });
+
   const data = settingsQuery.data;
 
   return (
@@ -495,11 +523,25 @@ function CleanupScheduleSettingsPanel() {
               onChange={(e) => setHourUtc(e.target.value)}
               placeholder={data ? String(data.envHourUtc) : "8"}
             />
-            {data?.dbHourUtc === null && (
+            {data && data.dbHourUtc !== null ? (
+              <button
+                type="button"
+                onClick={() => resetHourMutation.mutate()}
+                disabled={resetHourMutation.isPending}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+              >
+                {resetHourMutation.isPending ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={11} />
+                )}
+                Reset to default ({data.envHourUtc}:00 UTC)
+              </button>
+            ) : data ? (
               <p className="text-[11px] text-muted-foreground mt-1">
                 Using env default: {data.envHourUtc}:00 UTC
               </p>
-            )}
+            ) : null}
           </Field>
           <Field label="History retention (days)">
             <input
@@ -511,11 +553,25 @@ function CleanupScheduleSettingsPanel() {
               onChange={(e) => setRetentionDays(e.target.value)}
               placeholder={data ? String(data.envRetentionDays) : "365"}
             />
-            {data?.dbRetentionDays === null && (
+            {data && data.dbRetentionDays !== null ? (
+              <button
+                type="button"
+                onClick={() => resetRetentionMutation.mutate()}
+                disabled={resetRetentionMutation.isPending}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+              >
+                {resetRetentionMutation.isPending ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={11} />
+                )}
+                Reset to default ({data.envRetentionDays} days)
+              </button>
+            ) : data ? (
               <p className="text-[11px] text-muted-foreground mt-1">
                 Using env default: {data.envRetentionDays} days
               </p>
-            )}
+            ) : null}
           </Field>
         </div>
       )}
@@ -576,6 +632,34 @@ function CleanupAlertSettingsPanel() {
     },
   });
 
+  const resetMinRemovedMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean }>("/admin/settings/cleanup-alerts?field=minRemoved", {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-alert-settings"] });
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Failed to reset setting.");
+    },
+  });
+
+  const resetMinFreedMbMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean }>("/admin/settings/cleanup-alerts?field=minFreedMb", {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-alert-settings"] });
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Failed to reset setting.");
+    },
+  });
+
   const data = settingsQuery.data;
 
   return (
@@ -606,11 +690,25 @@ function CleanupAlertSettingsPanel() {
               onChange={(e) => setMinRemoved(e.target.value)}
               placeholder={data ? String(data.envMinRemoved) : "1"}
             />
-            {data?.dbMinRemoved === null && (
+            {data && data.dbMinRemoved !== null ? (
+              <button
+                type="button"
+                onClick={() => resetMinRemovedMutation.mutate()}
+                disabled={resetMinRemovedMutation.isPending}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+              >
+                {resetMinRemovedMutation.isPending ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={11} />
+                )}
+                Reset to default ({data.envMinRemoved})
+              </button>
+            ) : data ? (
               <p className="text-[11px] text-muted-foreground mt-1">
                 Using env default: {data.envMinRemoved}
               </p>
-            )}
+            ) : null}
           </Field>
           <Field label="Min freed (MB)">
             <input
@@ -622,11 +720,25 @@ function CleanupAlertSettingsPanel() {
               onChange={(e) => setMinFreedMb(e.target.value)}
               placeholder={data ? String(data.envMinFreedMb) : "0"}
             />
-            {data?.dbMinFreedMb === null && (
+            {data && data.dbMinFreedMb !== null ? (
+              <button
+                type="button"
+                onClick={() => resetMinFreedMbMutation.mutate()}
+                disabled={resetMinFreedMbMutation.isPending}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+              >
+                {resetMinFreedMbMutation.isPending ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={11} />
+                )}
+                Reset to default ({data.envMinFreedMb} MB)
+              </button>
+            ) : data ? (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Using env default: {data.envMinFreedMb}
+                Using env default: {data.envMinFreedMb} MB
               </p>
-            )}
+            ) : null}
           </Field>
         </div>
       )}
