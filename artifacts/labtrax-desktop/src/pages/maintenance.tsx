@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, AlertTriangle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search, XCircle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { formatTriggeredBy } from "@/lib/cleanup";
 
 interface CleanupRun {
   id: string;
@@ -60,39 +61,9 @@ function formatDuration(start: string, end: string | null, now?: number): string
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatTriggeredByLabel(
-  triggeredBy: string,
-  run?: Pick<CleanupRun, "status" | "errorMessage">,
-): string {
-  if (
-    run?.status === "error" &&
-    run.errorMessage?.toLowerCase().includes("interrupted")
-  ) {
-    return "Automatic (server restart detection)";
-  }
-  if (
-    !triggeredBy ||
-    triggeredBy === "scheduler" ||
-    triggeredBy === "scheduled" ||
-    triggeredBy === "nightly" ||
-    triggeredBy === "cron"
-  ) {
-    return "Scheduled";
-  }
-  if (triggeredBy.startsWith("admin:")) {
-    const name = triggeredBy.slice("admin:".length).trim();
-    return name ? `Manual (${name})` : "Manual";
-  }
-  if (triggeredBy === "api" || triggeredBy === "script") {
-    return "Script";
-  }
-  return triggeredBy;
-}
 
 function TriggeredByBadge({ run }: { run: CleanupRun }) {
-  const label = formatTriggeredByLabel(run.triggeredBy, run);
-  const isAutomatic = label.startsWith("Automatic");
-  const isManual = label.startsWith("Manual");
+  const { label, isManual, isAutomatic } = formatTriggeredBy(run.triggeredBy, run);
   return (
     <span
       className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${

@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
+import { formatTriggeredBy } from "@/lib/cleanup";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LabCase } from "@/lib/types";
@@ -214,19 +215,6 @@ type ManualRunFeedback =
 
 const HISTORY_LIMIT = 20;
 
-function triggeredByLabel(triggeredBy: string): { label: string; isManual: boolean } {
-  if (triggeredBy.startsWith("admin:")) {
-    const who = triggeredBy.slice("admin:".length);
-    return { label: who ? `Manual (${who})` : "Manual", isManual: true };
-  }
-  if (triggeredBy === "scheduled" || triggeredBy === "nightly" || triggeredBy === "cron") {
-    return { label: "Scheduled", isManual: false };
-  }
-  if (triggeredBy === "api" || triggeredBy === "script") {
-    return { label: "Script", isManual: false };
-  }
-  return { label: triggeredBy, isManual: false };
-}
 
 function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
   return (
@@ -243,7 +231,7 @@ function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
         </thead>
         <tbody>
           {runs.map((run) => {
-            const { label, isManual } = triggeredByLabel(run.triggeredBy);
+            const { label, isManual } = formatTriggeredBy(run.triggeredBy);
             const isError = run.status === "error";
             const isRunningRow = run.status === "running";
             const isCancelled = run.status === "cancelled";
@@ -568,7 +556,7 @@ function MediaCleanupCard() {
             </div>
             {isRunningFromQuery && (() => {
               const triggerMeta = lastRun.triggeredBy
-                ? triggeredByLabel(lastRun.triggeredBy)
+                ? formatTriggeredBy(lastRun.triggeredBy)
                 : null;
               return (
                 <div className="flex items-center gap-2">
@@ -638,7 +626,7 @@ function MediaCleanupCard() {
                 {formatDateTime(lastRun.startedAt)}
               </span>
               {lastRun.triggeredBy && (() => {
-                const { label, isManual } = triggeredByLabel(lastRun.triggeredBy);
+                const { label, isManual } = formatTriggeredBy(lastRun.triggeredBy);
                 return (
                   <span
                     className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
