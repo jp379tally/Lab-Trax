@@ -173,6 +173,39 @@ function stageDetailLabel(progress: CleanupProgress | null | undefined): string 
   }
 }
 
+function ElapsedTimer({ startedAt }: { startedAt: string | null }) {
+  const [elapsed, setElapsed] = useState<number | null>(() => {
+    if (!startedAt) return null;
+    return Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+  });
+
+  useEffect(() => {
+    if (!startedAt) {
+      setElapsed(null);
+      return;
+    }
+    const start = new Date(startedAt).getTime();
+    setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    const id = setInterval(() => {
+      setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+
+  if (elapsed === null) return null;
+
+  const display =
+    elapsed < 60
+      ? `${elapsed} s`
+      : elapsed < 3600
+      ? `${Math.floor(elapsed / 60)} m ${elapsed % 60} s`
+      : `${Math.floor(elapsed / 3600)} h ${Math.floor((elapsed % 3600) / 60)} m`;
+
+  return (
+    <p className="text-[11px] text-muted-foreground/70">Running for {display}</p>
+  );
+}
+
 type ManualRunFeedback =
   | { kind: "success"; removedCount: number; freedBytes: number }
   | { kind: "error"; message: string };
@@ -477,6 +510,7 @@ function MediaCleanupCard() {
               <Loader2 size={11} className="animate-spin shrink-0" />
               <span>{stageDetailLabel(cleanupStatusQuery.data)}</span>
             </div>
+            {isRunningFromQuery && <ElapsedTimer startedAt={lastRun.startedAt} />}
           </div>
         )}
 
