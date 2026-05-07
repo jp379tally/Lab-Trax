@@ -67,6 +67,45 @@ interface RunNowResult {
   freedBytes: number;
 }
 
+type CleanupStage = "idle" | "scanning" | "checking-references" | "removing" | "finishing";
+
+interface CleanupProgress {
+  stage: CleanupStage;
+  scannedFiles?: number;
+  orphanCount?: number;
+}
+
+function stageBadgeLabel(progress: CleanupProgress | null | undefined): string {
+  if (!progress || progress.stage === "idle") return "Running\u2026";
+  switch (progress.stage) {
+    case "scanning":           return "Scanning\u2026";
+    case "checking-references": return "Checking\u2026";
+    case "removing":           return "Removing\u2026";
+    case "finishing":          return "Finishing\u2026";
+    default:                   return "Running\u2026";
+  }
+}
+
+function stageDetailLabel(progress: CleanupProgress | null | undefined): string {
+  if (!progress || progress.stage === "idle") return "Starting\u2026";
+  switch (progress.stage) {
+    case "scanning":
+      return "Scanning files on disk\u2026";
+    case "checking-references":
+      return progress.scannedFiles != null
+        ? `Checking ${progress.scannedFiles.toLocaleString()} file${progress.scannedFiles === 1 ? "" : "s"} against the database\u2026`
+        : "Checking references in database\u2026";
+    case "removing":
+      return progress.orphanCount != null && progress.orphanCount > 0
+        ? `Removing ${progress.orphanCount.toLocaleString()} orphan${progress.orphanCount === 1 ? "" : "s"}\u2026`
+        : "No orphans found — finishing\u2026";
+    case "finishing":
+      return "Saving results\u2026";
+    default:
+      return "Running\u2026";
+  }
+}
+
 type ManualRunFeedback =
   | { kind: "success"; removedCount: number; freedBytes: number }
   | { kind: "error"; message: string };
@@ -232,6 +271,13 @@ function MediaCleanupCard() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const cleanupStatusQuery = useQuery({
+    queryKey: ["admin", "cleanup", "status"],
+    queryFn: () => apiFetch<CleanupProgress>("/admin/cleanup/orphaned-media/status"),
+    refetchInterval: runNowMutation.isPending ? 1500 : false,
+    enabled: runNowMutation.isPending,
+  });
+
   const isAlreadyRunning =
     runNowMutation.error instanceof ApiError && runNowMutation.error.status === 409;
 
@@ -265,7 +311,7 @@ function MediaCleanupCard() {
           {isRunning ? (
             <>
               <Loader2 size={11} className="animate-spin" />
-              Running…
+              {stageBadgeLabel(cleanupStatusQuery.data)}
             </>
           ) : (
             <>
@@ -305,6 +351,13 @@ function MediaCleanupCard() {
             >
               <X size={12} />
             </button>
+          </div>
+        )}
+
+        {isRunning && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 size={12} className="animate-spin shrink-0" />
+            <span>{stageDetailLabel(cleanupStatusQuery.data)}</span>
           </div>
         )}
 

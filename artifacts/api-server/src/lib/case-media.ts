@@ -17,6 +17,33 @@ export class CleanupAlreadyRunningError extends Error {
 }
 
 /**
+ * Stages emitted while a cleanup run is in progress.
+ * "idle" means no cleanup is currently running.
+ */
+export type CleanupStage =
+  | "idle"
+  | "scanning"
+  | "checking-references"
+  | "removing"
+  | "finishing";
+
+export interface CleanupProgress {
+  stage: CleanupStage;
+  scannedFiles?: number;
+  orphanCount?: number;
+}
+
+let _currentProgress: CleanupProgress = { stage: "idle" };
+
+export function getCleanupProgress(): CleanupProgress {
+  return { ..._currentProgress };
+}
+
+function setCleanupProgress(progress: CleanupProgress): void {
+  _currentProgress = progress;
+}
+
+/**
  * Keys used in the system_settings table for cleanup alert thresholds.
  */
 export const SETTING_CLEANUP_MIN_REMOVED = "cleanup_alert_min_removed";
@@ -207,6 +234,8 @@ export async function cleanupOrphanedCaseMedia(
     errors: [],
   };
 
+  setCleanupProgress({ stage: "scanning" });
+
   if (!fs.existsSync(caseMediaDir)) {
     return report;
   }
@@ -218,6 +247,8 @@ export async function cleanupOrphanedCaseMedia(
     .map((e) => e.name);
   report.scannedFiles = filesOnDisk.length;
 
+  setCleanupProgress({ stage: "checking-references", scannedFiles: report.scannedFiles });
+
   const rows = await db
     .select({ storageKey: caseAttachments.storageKey })
     .from(caseAttachments);
@@ -228,6 +259,9 @@ export async function cleanupOrphanedCaseMedia(
     if (name) referenced.add(name);
   }
   report.referencedFiles = referenced.size;
+
+  const orphanCount = filesOnDisk.filter((f) => !referenced.has(f)).length;
+  setCleanupProgress({ stage: "removing", scannedFiles: report.scannedFiles, orphanCount });
 
   for (const fileName of filesOnDisk) {
     if (referenced.has(fileName)) continue;
@@ -416,61 +450,69 @@ export async function runAndPersistCleanup(
       sample: [],
       errors: [],
     };
+  } finally {
+    setCleanupProgress({ stage: "finishing" });
   }
 
   const finishedAt = new Date();
 
-  // Update the sentinel row with the final outcome.
-  await db
-    .update(mediaCleanupRuns)
-    .set({
-      finishedAt,
-      status,
-      errorMessage,
-      scannedFiles: report.scannedFiles,
-      referencedFiles: report.referencedFiles,
-      orphanCount: report.orphanCount,
-      removedCount: report.removedCount,
-      freedBytes: report.freedBytes,
-      errorCount: report.errors.length,
-    })
-    .where(eq(mediaCleanupRuns.id, runId));
-
-  // Trim old history rows to keep the table small.
-  const { retentionDays } = await getCleanupHistoryRetentionDays();
   try {
-    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    // Update the sentinel row with the final outcome.
     await db
-      .delete(mediaCleanupRuns)
-      .where(lt(mediaCleanupRuns.startedAt, cutoff));
-  } catch (trimErr: unknown) {
-    logger.warn(
-      { err: trimErr instanceof Error ? trimErr.message : String(trimErr) },
-      "media_cleanup_runs trim failed — history rows not pruned",
-    );
-  }
+      .update(mediaCleanupRuns)
+      .set({
+        finishedAt,
+        status,
+        errorMessage,
+        scannedFiles: report.scannedFiles,
+        referencedFiles: report.referencedFiles,
+        orphanCount: report.orphanCount,
+        removedCount: report.removedCount,
+        freedBytes: report.freedBytes,
+        errorCount: report.errors.length,
+      })
+      .where(eq(mediaCleanupRuns.id, runId));
 
-  // Row-count cap: keep only the most recent N rows, oldest first out.
-  // Works alongside the day-based retention above; whichever removes more rows wins.
-  const maxRows = Math.max(
-    1,
-    parseInt(process.env.CLEANUP_HISTORY_MAX_ROWS || "1000", 10) || 1000,
-  );
-  try {
-    await db
-      .delete(mediaCleanupRuns)
-      .where(
-        sql`${mediaCleanupRuns.id} NOT IN (
-          SELECT id FROM ${mediaCleanupRuns}
-          ORDER BY ${mediaCleanupRuns.startedAt} DESC
-          LIMIT ${maxRows}
-        )`,
+    // Trim old history rows to keep the table small.
+    const { retentionDays } = await getCleanupHistoryRetentionDays();
+    try {
+      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+      await db
+        .delete(mediaCleanupRuns)
+        .where(lt(mediaCleanupRuns.startedAt, cutoff));
+    } catch (trimErr: unknown) {
+      logger.warn(
+        { err: trimErr instanceof Error ? trimErr.message : String(trimErr) },
+        "media_cleanup_runs trim failed — history rows not pruned",
       );
-  } catch (trimErr: unknown) {
-    logger.warn(
-      { err: trimErr instanceof Error ? trimErr.message : String(trimErr) },
-      "media_cleanup_runs row-count cap trim failed — history rows not pruned",
+    }
+
+    // Row-count cap: keep only the most recent N rows, oldest first out.
+    // Works alongside the day-based retention above; whichever removes more rows wins.
+    const maxRows = Math.max(
+      1,
+      parseInt(process.env.CLEANUP_HISTORY_MAX_ROWS || "1000", 10) || 1000,
     );
+    try {
+      await db
+        .delete(mediaCleanupRuns)
+        .where(
+          sql`${mediaCleanupRuns.id} NOT IN (
+            SELECT id FROM ${mediaCleanupRuns}
+            ORDER BY ${mediaCleanupRuns.startedAt} DESC
+            LIMIT ${maxRows}
+          )`,
+        );
+    } catch (trimErr: unknown) {
+      logger.warn(
+        { err: trimErr instanceof Error ? trimErr.message : String(trimErr) },
+        "media_cleanup_runs row-count cap trim failed — history rows not pruned",
+      );
+    }
+  } finally {
+    // Always reset to idle — even if DB persistence throws — so the progress
+    // indicator does not stay stuck on "finishing" across future runs.
+    setCleanupProgress({ stage: "idle" });
   }
 
   // Re-throw after persisting so callers can return a proper error response.
