@@ -14,6 +14,7 @@ import {
   Plus,
   Upload,
   X,
+  XCircle,
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
@@ -211,6 +212,8 @@ function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
             const { label, isManual } = triggeredByLabel(run.triggeredBy);
             const isError = run.status === "error";
             const isRunningRow = run.status === "running";
+            const isCancelled = run.status === "cancelled";
+            const isDash = isRunningRow || isCancelled;
             return (
               <tr key={run.id} className="border-b border-border/40 last:border-0 hover:bg-secondary/30">
                 <td className="py-1.5 pr-3 text-muted-foreground whitespace-nowrap" title={formatDateTime(run.startedAt)}>
@@ -228,16 +231,21 @@ function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
                   </span>
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums">
-                  {isRunningRow ? "—" : run.removedCount.toLocaleString()}
+                  {isDash ? "—" : run.removedCount.toLocaleString()}
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">
-                  {isRunningRow ? "—" : formatBytes(run.freedBytes)}
+                  {isDash ? "—" : formatBytes(run.freedBytes)}
                 </td>
                 <td className="py-1.5">
                   {isRunningRow ? (
                     <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
                       <Loader2 size={11} className="animate-spin" />
                       Running
+                    </span>
+                  ) : isCancelled ? (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                      <XCircle size={11} />
+                      Cancelled
                     </span>
                   ) : isError && run.errorMessage?.toLowerCase().includes("interrupted") ? (
                     <div>
@@ -325,7 +333,9 @@ function MediaCleanupCard() {
     },
     onSuccess: (data) => {
       void qc.invalidateQueries({ queryKey: ["admin", "cleanup", "runs"] });
-      if (data.status === "error" || !data.ok) {
+      if (data.status === "cancelled") {
+        setFeedback({ kind: "error", message: "Cleanup run was cancelled." });
+      } else if (data.status === "error" || !data.ok) {
         setFeedback({
           kind: "error",
           message: data.errorMessage ?? "Cleanup run failed.",
@@ -345,6 +355,19 @@ function MediaCleanupCard() {
         message: err.message || "Cleanup run failed.",
       });
       scheduleDismiss();
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean }>("/admin/cleanup/orphaned-media/cancel", {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "cleanup"] });
+    },
+    onError: () => {
+      // Silently ignore cancel errors — the run may have finished already.
     },
   });
 
@@ -384,25 +407,34 @@ function MediaCleanupCard() {
             Last nightly orphaned-media run
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => runNowMutation.mutate()}
-          disabled={isRunning}
-          title="Run cleanup now"
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-secondary hover:bg-secondary/80 text-foreground disabled:opacity-60 disabled:cursor-not-allowed transition-colors shrink-0"
-        >
-          {isRunning ? (
-            <>
+        {isRunning ? (
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-secondary text-foreground opacity-60">
               <Loader2 size={11} className="animate-spin" />
               {stageBadgeLabel(cleanupStatusQuery.data)}
-            </>
-          ) : (
-            <>
-              <Play size={11} />
-              Run now
-            </>
-          )}
-        </button>
+            </span>
+            <button
+              type="button"
+              onClick={() => cancelMutation.mutate()}
+              disabled={cancelMutation.isPending}
+              title="Cancel cleanup run"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              <XCircle size={11} />
+              {cancelMutation.isPending ? "Cancelling…" : "Cancel"}
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => runNowMutation.mutate()}
+            title="Run cleanup now"
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-secondary hover:bg-secondary/80 text-foreground transition-colors shrink-0"
+          >
+            <Play size={11} />
+            Run now
+          </button>
+        )}
       </header>
 
       <div className="px-5 py-4 space-y-3 text-sm">

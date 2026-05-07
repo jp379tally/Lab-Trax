@@ -6,7 +6,7 @@ import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import { runOneDriveBackup, getBackupHourUtc, SETTING_BACKUP_HOUR_UTC } from "../lib/backup";
-import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
+import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -2909,6 +2909,15 @@ Important rules:
       const msg = e instanceof Error ? e.message : "Orphaned media cleanup failed.";
       return res.status(500).json({ error: msg });
     }
+  });
+
+  router.post("/admin/cleanup/orphaned-media/cancel", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    cancelCleanup();
+    return res.json({ ok: true });
   });
 
   // ── Admin: cleanup alert settings ────────────────────────────────────────

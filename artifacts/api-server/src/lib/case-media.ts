@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 import { and, eq, lt, sql } from "drizzle-orm";
 import { db, caseAttachments, mediaCleanupRuns, systemSettings, users } from "@workspace/db";
@@ -13,6 +14,36 @@ export class CleanupAlreadyRunningError extends Error {
   constructor() {
     super("Cleanup already in progress.");
     this.name = "CleanupAlreadyRunningError";
+  }
+}
+
+/**
+ * Thrown internally when a cancel has been requested via cancelCleanup().
+ */
+export class CleanupCancelledError extends Error {
+  constructor() {
+    super("Cleanup run cancelled by admin.");
+    this.name = "CleanupCancelledError";
+  }
+}
+
+let _cancelRequested = false;
+
+/**
+ * Signal the currently-running cleanup to abort at its next checkpoint.
+ * No-op if no cleanup is running.
+ */
+export function cancelCleanup(): void {
+  _cancelRequested = true;
+}
+
+function resetCancelFlag(): void {
+  _cancelRequested = false;
+}
+
+function checkCancellation(): void {
+  if (_cancelRequested) {
+    throw new CleanupCancelledError();
   }
 }
 
@@ -268,19 +299,31 @@ export async function cleanupOrphanedCaseMedia(
     errors: [],
   };
 
+  checkCancellation();
   setCleanupProgress({ stage: "scanning" });
 
-  if (!fs.existsSync(caseMediaDir)) {
+  // Use async fs operations throughout so the event loop is never blocked and
+  // cancel requests from the HTTP endpoint can be processed between awaits.
+  let dirExists = false;
+  try {
+    await fsp.access(caseMediaDir);
+    dirExists = true;
+  } catch {
+    // directory doesn't exist
+  }
+
+  if (!dirExists) {
     return report;
   }
   report.mediaDirExists = true;
 
-  const dirEntries = fs.readdirSync(caseMediaDir, { withFileTypes: true });
+  const dirEntries = await fsp.readdir(caseMediaDir, { withFileTypes: true });
   const filesOnDisk = dirEntries
     .filter((e) => e.isFile())
     .map((e) => e.name);
   report.scannedFiles = filesOnDisk.length;
 
+  checkCancellation();
   setCleanupProgress({ stage: "checking-references", scannedFiles: report.scannedFiles });
 
   const rows = await db
@@ -294,10 +337,16 @@ export async function cleanupOrphanedCaseMedia(
   }
   report.referencedFiles = referenced.size;
 
+  checkCancellation();
   const orphanCount = filesOnDisk.filter((f) => !referenced.has(f)).length;
   setCleanupProgress({ stage: "removing", scannedFiles: report.scannedFiles, orphanCount });
 
   for (const fileName of filesOnDisk) {
+    // Check for cancellation on every iteration so the loop can be aborted
+    // promptly — the async stat/rm below yield the event loop between files,
+    // allowing the cancel HTTP request to be processed in between.
+    checkCancellation();
+
     if (referenced.has(fileName)) continue;
     report.orphanCount += 1;
     if (report.sample.length < sampleLimit) {
@@ -315,7 +364,8 @@ export async function cleanupOrphanedCaseMedia(
 
     let size = 0;
     try {
-      size = fs.statSync(resolved).size;
+      const stat = await fsp.stat(resolved);
+      size = stat.size;
     } catch {
       // file may have been removed between readdir and stat
       continue;
@@ -327,7 +377,7 @@ export async function cleanupOrphanedCaseMedia(
     }
 
     try {
-      fs.rmSync(resolved, { force: true });
+      await fsp.rm(resolved, { force: true });
       report.removedCount += 1;
       report.freedBytes += size;
     } catch (err: unknown) {
@@ -461,6 +511,9 @@ export async function runAndPersistCleanup(
 
   const runId = runningRow!.id;
 
+  // Reset any stale cancel flag so a fresh run isn't immediately aborted.
+  resetCancelFlag();
+
   let report: OrphanedMediaReport | null = null;
   let status = "ok";
   let errorMessage: string | null = null;
@@ -469,9 +522,14 @@ export async function runAndPersistCleanup(
   try {
     report = await cleanupOrphanedCaseMedia(opts);
   } catch (err: unknown) {
-    fatalError = err;
-    status = "error";
-    errorMessage = err instanceof Error ? err.message : String(err);
+    if (err instanceof CleanupCancelledError) {
+      status = "cancelled";
+      errorMessage = null;
+    } else {
+      fatalError = err;
+      status = "error";
+      errorMessage = err instanceof Error ? err.message : String(err);
+    }
     // Build a zero-metrics placeholder so the DB update always has valid data.
     report = {
       dryRun: opts.dryRun,
@@ -485,6 +543,7 @@ export async function runAndPersistCleanup(
       errors: [],
     };
   } finally {
+    resetCancelFlag();
     setCleanupProgress({ stage: "finishing" });
   }
 
