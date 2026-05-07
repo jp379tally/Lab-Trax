@@ -6,3 +6,5 @@ artifacts/labtrax/attached_assets/3-drag-contents-third-attached-assets-b_177619
 artifacts/labtrax/attached_assets/3-labtrax-updated-attached-assets-part-b-2026-04-14_1776173817231.zip filter=lfs diff=lfs merge=lfs -text
 artifacts/labtrax/attached_assets/3-labtrax-updated-attached-assets-part-b-case-sync-fix-2026-04_1776188379497.zip filter=lfs diff=lfs merge=lfs -text
 artifacts/labtrax/attached_assets/3-labtrax-upload-third-attached-assets-part-b_1775763194440.zip filter=lfs diff=lfs merge=lfs -text
+artifacts/labtrax-desktop/electron-dist/LabTrax-Windows-Portable.zip filter=lfs diff=lfs merge=lfs -text
+artifacts/labtrax-desktop/electron-dist/win-unpacked/LabTrax.exe filter=lfs diff=lfs merge=lfs -text

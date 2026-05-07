@@ -1,0 +1,45 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: "Production API base URL (e.g. https://your-app.replit.app)"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Vite (Electron config)
+        working-directory: artifacts/labtrax-desktop
+        run: pnpm exec vite build --config vite.electron.config.ts
+        env:
+          VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url }}
+
+      - name: Package Windows installer
+        working-directory: artifacts/labtrax-desktop
+        run: pnpm exec electron-builder --win --config electron-builder.yml
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LabTrax-Windows-Installer
+          path: artifacts/labtrax-desktop/electron-dist/*.exe
+          if-no-files-found: error

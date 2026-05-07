@@ -1,3 +1,12 @@
+const _API_ORIGIN =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
+
+function apiUrl(path: string): string {
+  if (path.startsWith("http")) return path;
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `${_API_ORIGIN}/api${normalized}`;
+}
+
 export type SessionUser = {
   id: string;
   username: string;
@@ -65,7 +74,7 @@ async function refreshAccessToken(): Promise<boolean> {
       };
       const csrf = readCsrfCookie();
       if (csrf) refreshHeaders[CSRF_HEADER_NAME] = csrf;
-      const r = await fetch("/api/auth/refresh", {
+      const r = await fetch(apiUrl("/auth/refresh"), {
         method: "POST",
         credentials: "include",
         headers: refreshHeaders,
@@ -112,7 +121,7 @@ export async function apiFetch<T = unknown>(
     }
     if (csrf) headers[CSRF_HEADER_NAME] = csrf;
   }
-  const url = path.startsWith("http") ? path : `/api${path.startsWith("/") ? path : `/${path}`}`;
+  const url = apiUrl(path);
   const res = await fetch(url, { ...options, headers, credentials: "include" });
 
   if (res.status === 401 && !retried) {
@@ -249,9 +258,7 @@ export async function apiUploadWithProgress<T = unknown>(
   formData: FormData,
   opts: UploadWithProgressOptions = {},
 ): Promise<T> {
-  const url = path.startsWith("http")
-    ? path
-    : `/api${path.startsWith("/") ? path : `/${path}`}`;
+  const url = apiUrl(path);
 
   let csrf = readCsrfCookie();
   if (!csrf) {
@@ -388,7 +395,7 @@ export async function sendUploadChunk(
   offset: number,
   opts: SendChunkOptions = {},
 ): Promise<ChunkUploadResult> {
-  const url = `/api/media/upload-session/${encodeURIComponent(sessionId)}`;
+  const url = apiUrl(`/media/upload-session/${encodeURIComponent(sessionId)}`);
   let csrf = readCsrfCookie();
   if (!csrf) {
     const seeded = await refreshAccessToken();
@@ -415,7 +422,7 @@ export async function sendUploadChunk(
 }
 
 export async function login(username: string, password: string): Promise<SessionUser> {
-  const r = await fetch("/api/auth/login", {
+  const r = await fetch(apiUrl("/auth/login"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
