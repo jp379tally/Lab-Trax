@@ -60,33 +60,47 @@ function formatDuration(start: string, end: string | null, now?: number): string
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatTriggeredBy(value: string): { label: string; isManual: boolean } {
+function formatTriggeredByLabel(
+  triggeredBy: string,
+  run?: Pick<CleanupRun, "status" | "errorMessage">,
+): string {
   if (
-    value === "scheduler" ||
-    value === "scheduled" ||
-    value === "nightly" ||
-    value === "cron"
+    run?.status === "error" &&
+    run.errorMessage?.toLowerCase().includes("interrupted")
   ) {
-    return { label: "Scheduled", isManual: false };
+    return "Automatic (server restart detection)";
   }
-  if (value.startsWith("admin:")) {
-    const name = value.slice("admin:".length).trim();
-    return { label: name ? `Manual (${name})` : "Manual", isManual: true };
+  if (
+    !triggeredBy ||
+    triggeredBy === "scheduler" ||
+    triggeredBy === "scheduled" ||
+    triggeredBy === "nightly" ||
+    triggeredBy === "cron"
+  ) {
+    return "Scheduled";
   }
-  if (value === "api" || value === "script") {
-    return { label: "Script", isManual: false };
+  if (triggeredBy.startsWith("admin:")) {
+    const name = triggeredBy.slice("admin:".length).trim();
+    return name ? `Manual (${name})` : "Manual";
   }
-  return { label: value, isManual: false };
+  if (triggeredBy === "api" || triggeredBy === "script") {
+    return "Script";
+  }
+  return triggeredBy;
 }
 
-function TriggeredByBadge({ value }: { value: string }) {
-  const { label, isManual } = formatTriggeredBy(value);
+function TriggeredByBadge({ run }: { run: CleanupRun }) {
+  const label = formatTriggeredByLabel(run.triggeredBy, run);
+  const isAutomatic = label.startsWith("Automatic");
+  const isManual = label.startsWith("Manual");
   return (
     <span
       className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
-        isManual
-          ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-          : "bg-secondary text-muted-foreground"
+        isAutomatic
+          ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"
+          : isManual
+            ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+            : "bg-secondary text-muted-foreground"
       }`}
     >
       {label}
@@ -522,7 +536,7 @@ export default function MaintenancePage() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <TriggeredByBadge value={run.triggeredBy} />
+                      <TriggeredByBadge run={run} />
                     </td>
                   </tr>
                 ))}
