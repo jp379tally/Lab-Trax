@@ -566,7 +566,27 @@ function MediaCleanupCard() {
               <Loader2 size={11} className="animate-spin shrink-0" />
               <span>{stageDetailLabel(cleanupStatusQuery.data)}</span>
             </div>
-            {isRunningFromQuery && <ElapsedTimer startedAt={lastRun.startedAt} />}
+            {isRunningFromQuery && (() => {
+              const triggerMeta = lastRun.triggeredBy
+                ? triggeredByLabel(lastRun.triggeredBy)
+                : null;
+              return (
+                <div className="flex items-center gap-2">
+                  <ElapsedTimer startedAt={lastRun.startedAt} />
+                  {triggerMeta && (
+                    <span
+                      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                        triggerMeta.isManual
+                          ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                          : "bg-secondary text-muted-foreground"
+                      }`}
+                    >
+                      {triggerMeta.label}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 
