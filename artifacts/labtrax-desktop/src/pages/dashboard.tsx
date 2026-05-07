@@ -458,13 +458,7 @@ function MediaCleanupCard() {
             </span>
             <button
               type="button"
-              onClick={() => {
-                if (cleanupStatusQuery.data?.stage === "removing") {
-                  setShowCancelConfirm(true);
-                } else {
-                  cancelMutation.mutate();
-                }
-              }}
+              onClick={() => setShowCancelConfirm(true)}
               disabled={cancelMutation.isPending}
               title="Cancel cleanup run"
               className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
@@ -492,9 +486,15 @@ function MediaCleanupCard() {
             <div className="flex items-start gap-2">
               <AlertTriangle size={13} className="shrink-0 mt-0.5 text-destructive" />
               <div className="space-y-0.5">
-                <p className="text-xs font-medium text-destructive">Cancel while removing?</p>
+                <p className="text-xs font-medium text-destructive">
+                  {cleanupStatusQuery.data?.stage === "removing"
+                    ? "Cancel while removing?"
+                    : "Cancel this cleanup run?"}
+                </p>
                 <p className="text-xs text-muted-foreground leading-snug">
-                  Files are already being deleted. Cancelling now may leave the run in a partial state — some orphans will have been removed and others will not.
+                  {cleanupStatusQuery.data?.stage === "removing"
+                    ? "Files are being deleted right now. Stopping mid-run may leave some orphans removed and others not — any files already removed will not be restored."
+                    : "Are you sure you want to stop this run? Any files already removed will not be restored."}
                 </p>
               </div>
             </div>
