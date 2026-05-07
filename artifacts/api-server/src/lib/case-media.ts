@@ -47,6 +47,7 @@ function checkCancellation(): void {
   }
 }
 
+
 /**
  * Stages emitted while a cleanup run is in progress.
  * "idle" means no cleanup is currently running.
@@ -324,6 +325,7 @@ export async function cleanupOrphanedCaseMedia(
   report.scannedFiles = filesOnDisk.length;
 
   checkCancellation();
+
   setCleanupProgress({ stage: "checking-references", scannedFiles: report.scannedFiles });
 
   const rows = await db
@@ -338,6 +340,7 @@ export async function cleanupOrphanedCaseMedia(
   report.referencedFiles = referenced.size;
 
   checkCancellation();
+
   const orphanCount = filesOnDisk.filter((f) => !referenced.has(f)).length;
   setCleanupProgress({ stage: "removing", scannedFiles: report.scannedFiles, orphanCount });
 
@@ -530,8 +533,8 @@ export async function runAndPersistCleanup(
       status = "error";
       errorMessage = err instanceof Error ? err.message : String(err);
     }
-    // Build a zero-metrics placeholder so the DB update always has valid data.
-    report = {
+    // Build a partial-metrics placeholder so the DB update always has valid data.
+    report = report ?? {
       dryRun: opts.dryRun,
       mediaDirExists: false,
       scannedFiles: 0,
@@ -545,6 +548,7 @@ export async function runAndPersistCleanup(
   } finally {
     resetCancelFlag();
     setCleanupProgress({ stage: "finishing" });
+    resetCancelFlag();
   }
 
   const finishedAt = new Date();

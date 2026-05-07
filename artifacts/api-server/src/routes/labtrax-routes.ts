@@ -2916,8 +2916,12 @@ Important rules:
     if (!reqUser || reqUser.role !== "admin") {
       return res.status(403).json({ error: "Admin access required." });
     }
+    const progress = getCleanupProgress();
+    if (progress.stage === "idle") {
+      return res.status(409).json({ error: "No cleanup run is currently in progress." });
+    }
     cancelCleanup();
-    return res.json({ ok: true });
+    return res.json({ ok: true, message: "Cancellation requested." });
   });
 
   // ── Admin: cleanup alert settings ────────────────────────────────────────

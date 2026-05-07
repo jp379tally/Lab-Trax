@@ -4,6 +4,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowRight,
+  Ban,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -369,19 +370,21 @@ function MediaCleanupCard() {
       void qc.invalidateQueries({ queryKey: ["admin", "cleanup", "runs"] });
       if (data.status === "cancelled") {
         setFeedback({ kind: "error", message: "Cleanup run was cancelled." });
+        scheduleDismiss();
       } else if (data.status === "error" || !data.ok) {
         setFeedback({
           kind: "error",
           message: data.errorMessage ?? "Cleanup run failed.",
         });
+        scheduleDismiss();
       } else {
         setFeedback({
           kind: "success",
           removedCount: data.removedCount,
           freedBytes: data.freedBytes,
         });
+        scheduleDismiss();
       }
-      scheduleDismiss();
     },
     onError: (err: Error) => {
       setFeedback({
@@ -394,7 +397,7 @@ function MediaCleanupCard() {
 
   const cancelMutation = useMutation({
     mutationFn: () =>
-      apiFetch<{ ok: boolean }>("/admin/cleanup/orphaned-media/cancel", {
+      apiFetch<{ ok: boolean; message: string }>("/admin/cleanup/orphaned-media/cancel", {
         method: "POST",
       }),
     onSuccess: () => {
