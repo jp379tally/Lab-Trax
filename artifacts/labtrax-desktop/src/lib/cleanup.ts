@@ -10,12 +10,16 @@ export function formatTriggeredBy(
   }
   if (
     !value ||
+    value === "schedule" ||
     value === "scheduler" ||
     value === "scheduled" ||
     value === "nightly" ||
     value === "cron"
   ) {
     return { label: "Scheduled", isManual: false, isAutomatic: false };
+  }
+  if (value === "manual") {
+    return { label: "Manual", isManual: true, isAutomatic: false };
   }
   if (value.startsWith("admin:")) {
     const name = value.slice("admin:".length).trim();

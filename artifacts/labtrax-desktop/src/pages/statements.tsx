@@ -6,6 +6,7 @@ import { useLabOrganizations, useSelectedOrg } from "@/lib/finance";
 import type { Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 import { buildStatementPdf, downloadCsv, downloadStatementPdf, safeFilename } from "@/lib/export";
 
 interface StatementSchedule {
@@ -729,8 +730,8 @@ function HistoryModal({ orgId, onClose }: { orgId: string; onClose: () => void }
                   <tr key={r.id} className="border-b border-border">
                     <td className="px-6 py-3 align-top">
                       <div className="font-medium">{r.practiceName}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {r.periodMonth} · {r.invoiceCount} invoice{r.invoiceCount === 1 ? "" : "s"} · {r.triggeredBy === "schedule" ? "Scheduled" : "Manual"}
+                      <div className="text-xs text-muted-foreground flex items-center gap-1 flex-wrap">
+                        {r.periodMonth} · {r.invoiceCount} invoice{r.invoiceCount === 1 ? "" : "s"} · <TriggeredByBadge triggeredBy={r.triggeredBy} />
                       </div>
                       {r.practiceEmail && (
                         <div className="text-xs text-muted-foreground">{r.practiceEmail}</div>
