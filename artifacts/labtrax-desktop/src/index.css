@@ -176,3 +176,9 @@
     background: hsl(var(--muted-foreground) / 0.4);
   }
 }
+
+@keyframes cleanup-pulse {
+  0%   { transform: scaleX(0.4); opacity: 0.7; }
+  50%  { transform: scaleX(1);   opacity: 1;   }
+  100% { transform: scaleX(0.4); opacity: 0.7; }
+}

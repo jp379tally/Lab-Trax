@@ -86,6 +86,72 @@ function stageBadgeLabel(progress: CleanupProgress | null | undefined): string {
   }
 }
 
+const CLEANUP_STAGES: CleanupStage[] = ["scanning", "checking-references", "removing", "finishing"];
+const STAGE_LABELS: Record<CleanupStage, string> = {
+  idle: "Starting",
+  scanning: "Scan",
+  "checking-references": "Check",
+  removing: "Remove",
+  finishing: "Finish",
+};
+
+function stageIndex(stage: CleanupStage): number {
+  const idx = CLEANUP_STAGES.indexOf(stage);
+  return idx === -1 ? -1 : idx;
+}
+
+function CleanupProgressBar({ progress }: { progress: CleanupProgress | null | undefined }) {
+  const stage = progress?.stage ?? "idle";
+  const activeIdx = stageIndex(stage);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-1">
+        {CLEANUP_STAGES.map((s, i) => {
+          const isCompleted = activeIdx > i;
+          const isActive = activeIdx === i;
+          const isPending = activeIdx < i && activeIdx !== -1;
+          const isIndeterminate = activeIdx === -1;
+          return (
+            <div key={s} className="flex-1 flex flex-col gap-1 items-start">
+              <div
+                className={`w-full h-1.5 rounded-full overflow-hidden ${
+                  isCompleted
+                    ? "bg-primary"
+                    : isActive
+                    ? "bg-primary/30"
+                    : "bg-border"
+                }`}
+              >
+                {(isActive || isIndeterminate) && (
+                  <div
+                    className="h-full rounded-full bg-primary origin-left animate-[cleanup-pulse_1.4s_ease-in-out_infinite]"
+                    style={{ width: "60%" }}
+                  />
+                )}
+                {isCompleted && <div className="h-full w-full bg-primary" />}
+              </div>
+              <span
+                className={`text-[10px] leading-none font-medium transition-colors ${
+                  isCompleted
+                    ? "text-primary"
+                    : isActive || isIndeterminate
+                    ? "text-foreground"
+                    : isPending
+                    ? "text-muted-foreground/50"
+                    : "text-muted-foreground/40"
+                }`}
+              >
+                {STAGE_LABELS[s]}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function stageDetailLabel(progress: CleanupProgress | null | undefined): string {
   if (!progress || progress.stage === "idle") return "Starting\u2026";
   switch (progress.stage) {
@@ -372,9 +438,12 @@ function MediaCleanupCard() {
         )}
 
         {isRunning && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 size={12} className="animate-spin shrink-0" />
-            <span>{stageDetailLabel(cleanupStatusQuery.data)}</span>
+          <div className="space-y-2">
+            <CleanupProgressBar progress={cleanupStatusQuery.data} />
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 size={11} className="animate-spin shrink-0" />
+              <span>{stageDetailLabel(cleanupStatusQuery.data)}</span>
+            </div>
           </div>
         )}
 
