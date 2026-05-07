@@ -105,6 +105,7 @@ function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
           {runs.map((run) => {
             const { label, isManual } = triggeredByLabel(run.triggeredBy);
             const isError = run.status === "error";
+            const isRunningRow = run.status === "running";
             return (
               <tr key={run.id} className="border-b border-border/40 last:border-0 hover:bg-secondary/30">
                 <td className="py-1.5 pr-3 text-muted-foreground whitespace-nowrap" title={formatDateTime(run.startedAt)}>
@@ -122,13 +123,18 @@ function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
                   </span>
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums">
-                  {run.removedCount.toLocaleString()}
+                  {isRunningRow ? "—" : run.removedCount.toLocaleString()}
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">
-                  {formatBytes(run.freedBytes)}
+                  {isRunningRow ? "—" : formatBytes(run.freedBytes)}
                 </td>
                 <td className="py-1.5">
-                  {isError ? (
+                  {isRunningRow ? (
+                    <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                      <Loader2 size={11} className="animate-spin" />
+                      Running
+                    </span>
+                  ) : isError ? (
                     <span className="inline-flex items-center gap-1 text-destructive" title={run.errorMessage ?? undefined}>
                       <AlertCircle size={11} />
                       Error
@@ -175,7 +181,10 @@ function MediaCleanupCard() {
       apiFetch<{ runs: MediaCleanupRun[] }>(
         `/admin/cleanup/orphaned-media/runs?limit=${HISTORY_LIMIT}`,
       ),
-    refetchInterval: 5 * 60 * 1000,
+    refetchInterval: (query) => {
+      const latest = query.state.data?.runs?.[0];
+      return latest?.status === "running" ? 5_000 : 5 * 60 * 1000;
+    },
   });
 
   const scheduleQuery = useQuery({
@@ -231,7 +240,8 @@ function MediaCleanupCard() {
   const hasError = lastRun?.status === "error";
   const nextRunLabel =
     scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
-  const isRunning = runNowMutation.isPending;
+  const isRunningFromQuery = lastRun?.status === "running";
+  const isRunning = runNowMutation.isPending || isRunningFromQuery;
   const nextBackupLabel =
     backupScheduleQuery.data != null ? formatNextBackupTime(backupScheduleQuery.data.hourUtc) : null;
 
@@ -332,7 +342,14 @@ function MediaCleanupCard() {
           </div>
         )}
 
-        {lastRun && (
+        {isRunningFromQuery && (
+          <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400">
+            <Loader2 size={13} className="shrink-0 animate-spin" />
+            <span>Cleanup in progress — scanning for orphaned files…</span>
+          </div>
+        )}
+
+        {lastRun && !isRunningFromQuery && (
           <>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               {hasError ? (
