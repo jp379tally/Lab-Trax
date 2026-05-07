@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, HardDrive, KeyRound, Loader2, LogOut, Monitor, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
+import { Building2, BellRing, Clock, HardDrive, KeyRound, Loader2, LogOut, Monitor, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
@@ -411,6 +411,127 @@ interface CleanupAlertSettings {
   envMinFreedMb: number;
 }
 
+interface CleanupScheduleSettings {
+  hourUtc: number;
+  dbHourUtc: number | null;
+  envHourUtc: number;
+  retentionDays: number;
+  dbRetentionDays: number | null;
+  envRetentionDays: number;
+}
+
+function CleanupScheduleSettingsPanel() {
+  const queryClient = useQueryClient();
+  const [hourUtc, setHourUtc] = useState("");
+  const [retentionDays, setRetentionDays] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  const settingsQuery = useQuery({
+    queryKey: ["admin", "cleanup-schedule"],
+    queryFn: () => apiFetch<CleanupScheduleSettings>("/admin/settings/cleanup-schedule"),
+  });
+
+  useEffect(() => {
+    if (settingsQuery.data) {
+      setHourUtc(String(settingsQuery.data.hourUtc));
+      setRetentionDays(String(settingsQuery.data.retentionDays));
+    }
+  }, [settingsQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean; hourUtc: number; retentionDays: number }>(
+        "/admin/settings/cleanup-schedule",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hourUtc: parseInt(hourUtc, 10),
+            retentionDays: parseInt(retentionDays, 10),
+          }),
+        },
+      ),
+    onSuccess: () => {
+      setError(null);
+      setSuccess(true);
+      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-schedule"] });
+      setTimeout(() => setSuccess(false), 2500);
+    },
+    onError: (err: Error) => {
+      setSuccess(false);
+      setError(err.message || "Failed to save settings.");
+    },
+  });
+
+  const data = settingsQuery.data;
+
+  return (
+    <div className="border border-border rounded-lg p-4 space-y-4">
+      <div className="flex items-center gap-2">
+        <Clock size={14} className="text-muted-foreground" />
+        <h3 className="text-sm font-semibold">Cleanup schedule</h3>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Controls when the nightly cleanup runs and how long its history is kept. The cleanup hour takes effect on the next server restart; history retention applies immediately on each run.
+      </p>
+      {error && <Alert tone="danger">{error}</Alert>}
+      {success && <Alert tone="success">Schedule saved.</Alert>}
+      {settingsQuery.isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 size={13} className="animate-spin" />
+          Loading…
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Cleanup hour (UTC, 0–23)">
+            <input
+              className={inputCls}
+              type="number"
+              min={0}
+              max={23}
+              step={1}
+              value={hourUtc}
+              onChange={(e) => setHourUtc(e.target.value)}
+              placeholder={data ? String(data.envHourUtc) : "8"}
+            />
+            {data?.dbHourUtc === null && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Using env default: {data.envHourUtc}:00 UTC
+              </p>
+            )}
+          </Field>
+          <Field label="History retention (days)">
+            <input
+              className={inputCls}
+              type="number"
+              min={1}
+              step={1}
+              value={retentionDays}
+              onChange={(e) => setRetentionDays(e.target.value)}
+              placeholder={data ? String(data.envRetentionDays) : "365"}
+            />
+            {data?.dbRetentionDays === null && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Using env default: {data.envRetentionDays} days
+              </p>
+            )}
+          </Field>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => saveMutation.mutate()}
+        disabled={saveMutation.isPending || settingsQuery.isLoading}
+        className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
+      >
+        {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+        {saveMutation.isPending ? "Saving…" : "Save schedule"}
+      </button>
+    </div>
+  );
+}
+
 function CleanupAlertSettingsPanel() {
   const queryClient = useQueryClient();
   const [minRemoved, setMinRemoved] = useState("");
@@ -707,6 +828,7 @@ function StoragePanel() {
           )}
         </div>
       )}
+      <CleanupScheduleSettingsPanel />
       <CleanupAlertSettingsPanel />
     </PanelShell>
   );

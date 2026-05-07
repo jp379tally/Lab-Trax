@@ -6,7 +6,7 @@ import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import { runOneDriveBackup } from "../lib/backup";
-import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB } from "../lib/case-media";
+import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -2943,6 +2943,102 @@ Important rules:
       return res.json({ success: true, minRemoved, minFreedMb });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to save cleanup alert settings." });
+    }
+  });
+
+  // ── Admin: cleanup schedule settings ─────────────────────────────────────
+  router.get("/admin/settings/cleanup-schedule", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const [hourUtc, { retentionDays, dbRetentionDays, envRetentionDays }] =
+        await Promise.all([
+          getCleanupHourUtc(),
+          getCleanupHistoryRetentionDays(),
+        ]);
+      const envHourUtc = Math.max(
+        0,
+        Math.min(23, parseInt(process.env.CLEANUP_HOUR_UTC || "8", 10) || 8),
+      );
+      const hourRows = await db
+        .select()
+        .from(systemSettings)
+        .where(eq(systemSettings.key, SETTING_CLEANUP_HOUR_UTC));
+      const dbHourRaw = hourRows[0]?.value ?? null;
+      const dbHourUtc =
+        dbHourRaw !== null
+          ? Math.max(0, Math.min(23, parseInt(dbHourRaw, 10) || 0))
+          : null;
+      return res.json({
+        hourUtc,
+        dbHourUtc,
+        envHourUtc,
+        retentionDays,
+        dbRetentionDays,
+        envRetentionDays,
+      });
+    } catch (e: any) {
+      return res
+        .status(500)
+        .json({ error: e?.message || "Failed to fetch cleanup schedule settings." });
+    }
+  });
+
+  router.put("/admin/settings/cleanup-schedule", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const body = req.body as any;
+      const hourUtc =
+        typeof body?.hourUtc === "number"
+          ? body.hourUtc
+          : parseInt(String(body?.hourUtc ?? ""), 10);
+      const retentionDays =
+        typeof body?.retentionDays === "number"
+          ? body.retentionDays
+          : parseInt(String(body?.retentionDays ?? ""), 10);
+      if (
+        !Number.isFinite(hourUtc) ||
+        !Number.isInteger(hourUtc) ||
+        hourUtc < 0 ||
+        hourUtc > 23
+      ) {
+        return res
+          .status(400)
+          .json({ error: "hourUtc must be an integer between 0 and 23." });
+      }
+      if (
+        !Number.isFinite(retentionDays) ||
+        !Number.isInteger(retentionDays) ||
+        retentionDays < 1
+      ) {
+        return res
+          .status(400)
+          .json({ error: "retentionDays must be a positive integer." });
+      }
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_CLEANUP_HOUR_UTC, value: String(hourUtc) })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: String(hourUtc), updatedAt: new Date() },
+        });
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_CLEANUP_HISTORY_RETENTION_DAYS, value: String(retentionDays) })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: String(retentionDays), updatedAt: new Date() },
+        });
+      return res.json({ success: true, hourUtc, retentionDays });
+    } catch (e: any) {
+      return res
+        .status(500)
+        .json({ error: e?.message || "Failed to save cleanup schedule settings." });
     }
   });
 

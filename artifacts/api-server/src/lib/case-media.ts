@@ -12,6 +12,35 @@ export const SETTING_CLEANUP_MIN_REMOVED = "cleanup_alert_min_removed";
 export const SETTING_CLEANUP_MIN_FREED_MB = "cleanup_alert_min_freed_mb";
 
 /**
+ * Key used in the system_settings table for the cleanup history retention
+ * period (days).  When absent the env var CLEANUP_HISTORY_RETENTION_DAYS is
+ * used (default 365).
+ */
+export const SETTING_CLEANUP_HISTORY_RETENTION_DAYS =
+  "cleanup_history_retention_days";
+
+/**
+ * Read the cleanup-history retention window from the DB, falling back to the
+ * CLEANUP_HISTORY_RETENTION_DAYS env var (default 365).
+ */
+export async function getCleanupHistoryRetentionDays(): Promise<{
+  retentionDays: number;
+  dbRetentionDays: number | null;
+  envRetentionDays: number;
+}> {
+  const envRetentionDays =
+    Math.max(1, parseInt(process.env.CLEANUP_HISTORY_RETENTION_DAYS || "365", 10) || 365);
+  const rows = await db
+    .select()
+    .from(systemSettings)
+    .where(eq(systemSettings.key, SETTING_CLEANUP_HISTORY_RETENTION_DAYS));
+  const raw = rows[0]?.value ?? null;
+  const dbRetentionDays = raw !== null ? Math.max(1, parseInt(raw, 10) || 1) : null;
+  const retentionDays = dbRetentionDays !== null ? dbRetentionDays : envRetentionDays;
+  return { retentionDays, dbRetentionDays, envRetentionDays };
+}
+
+/**
  * Read cleanup alert thresholds from the DB, falling back to env vars if no
  * DB value is set.
  */
@@ -187,10 +216,44 @@ export async function cleanupOrphanedCaseMedia(
   return report;
 }
 
+/**
+ * Key used in the system_settings table for the nightly cleanup hour (0–23 UTC).
+ * When absent the env var CLEANUP_HOUR_UTC is used (default 8).
+ */
+export const SETTING_CLEANUP_HOUR_UTC = "cleanup_hour_utc";
+
+/**
+ * Read the nightly cleanup hour from the DB, falling back to the
+ * CLEANUP_HOUR_UTC env var (default 8).
+ */
+export async function getCleanupHourUtc(): Promise<number> {
+  const envHour = Math.max(
+    0,
+    Math.min(23, parseInt(process.env.CLEANUP_HOUR_UTC || "8", 10) || 8),
+  );
+  try {
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_CLEANUP_HOUR_UTC));
+    const raw = rows[0]?.value ?? null;
+    if (raw !== null) {
+      const parsed = parseInt(raw, 10);
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.min(23, parsed));
+      }
+    }
+  } catch {
+    // fall through to env default
+  }
+  return envHour;
+}
+
 // ── Daily orphaned-media cleanup scheduler ──────────────────────────────────
 // Mirrors the daily OneDrive backup scheduler in lib/backup.ts. Runs once per
 // day at the configured UTC hour (default 08:00 UTC, an hour after the
-// backup so we don't compete for IO). Override with CLEANUP_HOUR_UTC.
+// backup so we don't compete for IO). Override with CLEANUP_HOUR_UTC env var
+// or the cleanup_hour_utc system_settings row.
 
 let scheduled = false;
 
@@ -271,10 +334,7 @@ export async function runAndPersistCleanup(
     .returning({ id: mediaCleanupRuns.id });
 
   // Trim old history rows to keep the table small.
-  const retentionDays = Math.max(
-    1,
-    parseInt(process.env.CLEANUP_HISTORY_RETENTION_DAYS || "365", 10) || 365,
-  );
+  const { retentionDays } = await getCleanupHistoryRetentionDays();
   try {
     const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
     await db
@@ -321,11 +381,6 @@ export async function runAndPersistCleanup(
 export function startDailyOrphanedMediaCleanup() {
   if (scheduled) return;
   scheduled = true;
-
-  const hourUtc = Math.max(
-    0,
-    Math.min(23, parseInt(process.env.CLEANUP_HOUR_UTC || "8", 10) || 8),
-  );
 
   const tick = async () => {
     const ranAt = new Date().toISOString();
@@ -412,17 +467,36 @@ export function startDailyOrphanedMediaCleanup() {
         );
       }
     } finally {
-      setTimeout(tick, msUntilNext(hourUtc));
+      // Re-read the hour from DB on each tick so that admin UI changes take
+      // effect on the next scheduled run without a server restart.
+      const nextHour = await getCleanupHourUtc();
+      setTimeout(tick, msUntilNext(nextHour));
     }
   };
 
-  const initialDelay = msUntilNext(hourUtc);
-  logger.info(
-    {
-      hourUtc,
-      firstRunInMinutes: Math.round(initialDelay / 60000),
-    },
-    "Daily orphaned case-media cleanup scheduled",
-  );
-  setTimeout(tick, initialDelay);
+  // Read initial hour from DB (with env fallback) so the first delay is
+  // consistent with any previously saved admin setting.
+  getCleanupHourUtc().then((hourUtc) => {
+    const initialDelay = msUntilNext(hourUtc);
+    logger.info(
+      {
+        hourUtc,
+        firstRunInMinutes: Math.round(initialDelay / 60000),
+      },
+      "Daily orphaned case-media cleanup scheduled",
+    );
+    setTimeout(tick, initialDelay);
+  }).catch((err: unknown) => {
+    // If DB read fails at startup, fall back to env default.
+    const hourUtc = Math.max(
+      0,
+      Math.min(23, parseInt(process.env.CLEANUP_HOUR_UTC || "8", 10) || 8),
+    );
+    const initialDelay = msUntilNext(hourUtc);
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err), hourUtc },
+      "Daily orphaned case-media cleanup: could not read hour from DB at startup, using env default",
+    );
+    setTimeout(tick, initialDelay);
+  });
 }
