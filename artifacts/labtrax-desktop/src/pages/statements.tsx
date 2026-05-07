@@ -731,7 +731,7 @@ function HistoryModal({ orgId, onClose }: { orgId: string; onClose: () => void }
                     <td className="px-6 py-3 align-top">
                       <div className="font-medium">{r.practiceName}</div>
                       <div className="text-xs text-muted-foreground flex items-center gap-1 flex-wrap">
-                        {r.periodMonth} · {r.invoiceCount} invoice{r.invoiceCount === 1 ? "" : "s"} · <TriggeredByBadge triggeredBy={r.triggeredBy} />
+                        {r.periodMonth} · {r.invoiceCount} invoice{r.invoiceCount === 1 ? "" : "s"} · <TriggeredByBadge triggeredBy={r.triggeredBy} /> · <DeliveryStatusBadge status={r.status} />
                       </div>
                       {r.practiceEmail && (
                         <div className="text-xs text-muted-foreground">{r.practiceEmail}</div>
@@ -786,6 +786,20 @@ function HistoryModal({ orgId, onClose }: { orgId: string; onClose: () => void }
         </div>
       </aside>
     </div>
+  );
+}
+
+function DeliveryStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    sent: { label: "Delivered", cls: "bg-success/15 text-success" },
+    failed: { label: "Failed", cls: "bg-destructive/15 text-destructive" },
+    skipped_no_email: { label: "No email", cls: "bg-warning/20 text-warning" },
+  };
+  const m = map[status] || { label: "Pending", cls: "bg-secondary text-muted-foreground" };
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${m.cls}`}>
+      {m.label}
+    </span>
   );
 }
 
