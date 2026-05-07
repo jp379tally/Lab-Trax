@@ -875,7 +875,6 @@ function CaseDrawer({
   labCase: LabCase;
   onClose: () => void;
 }) {
-  const isMobile = labCase._source === "mobile";
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
