@@ -6,7 +6,7 @@ import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import { runOneDriveBackup, getBackupHourUtc, SETTING_BACKUP_HOUR_UTC } from "../lib/backup";
-import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC } from "../lib/case-media";
+import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -3006,10 +3006,11 @@ Important rules:
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
-      const [hourUtc, { retentionDays, dbRetentionDays, envRetentionDays }] =
+      const [hourUtc, { retentionDays, dbRetentionDays, envRetentionDays }, { stuckTimeoutMinutes, dbStuckTimeoutMinutes, envStuckTimeoutMinutes }] =
         await Promise.all([
           getCleanupHourUtc(),
           getCleanupHistoryRetentionDays(),
+          getCleanupStuckTimeoutMinutes(),
         ]);
       const envHourUtc = Math.max(
         0,
@@ -3031,6 +3032,9 @@ Important rules:
         retentionDays,
         dbRetentionDays,
         envRetentionDays,
+        stuckTimeoutMinutes,
+        dbStuckTimeoutMinutes,
+        envStuckTimeoutMinutes,
       });
     } catch (e: any) {
       return res
@@ -3054,6 +3058,10 @@ Important rules:
         typeof body?.retentionDays === "number"
           ? body.retentionDays
           : parseInt(String(body?.retentionDays ?? ""), 10);
+      const stuckTimeoutMinutes =
+        typeof body?.stuckTimeoutMinutes === "number"
+          ? body.stuckTimeoutMinutes
+          : parseInt(String(body?.stuckTimeoutMinutes ?? ""), 10);
       if (
         !Number.isFinite(hourUtc) ||
         !Number.isInteger(hourUtc) ||
@@ -3073,6 +3081,15 @@ Important rules:
           .status(400)
           .json({ error: "retentionDays must be a positive integer." });
       }
+      if (
+        !Number.isFinite(stuckTimeoutMinutes) ||
+        !Number.isInteger(stuckTimeoutMinutes) ||
+        stuckTimeoutMinutes < 1
+      ) {
+        return res
+          .status(400)
+          .json({ error: "stuckTimeoutMinutes must be a positive integer." });
+      }
       await db
         .insert(systemSettings)
         .values({ key: SETTING_CLEANUP_HOUR_UTC, value: String(hourUtc) })
@@ -3087,7 +3104,14 @@ Important rules:
           target: systemSettings.key,
           set: { value: String(retentionDays), updatedAt: new Date() },
         });
-      return res.json({ success: true, hourUtc, retentionDays });
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES, value: String(stuckTimeoutMinutes) })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: String(stuckTimeoutMinutes), updatedAt: new Date() },
+        });
+      return res.json({ success: true, hourUtc, retentionDays, stuckTimeoutMinutes });
     } catch (e: any) {
       return res
         .status(500)
@@ -3104,9 +3128,10 @@ Important rules:
     const validFields: Record<string, string> = {
       hourUtc: SETTING_CLEANUP_HOUR_UTC,
       retentionDays: SETTING_CLEANUP_HISTORY_RETENTION_DAYS,
+      stuckTimeoutMinutes: SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES,
     };
     if (field && !validFields[field]) {
-      return res.status(400).json({ error: "Invalid field. Must be one of: hourUtc, retentionDays." });
+      return res.status(400).json({ error: "Invalid field. Must be one of: hourUtc, retentionDays, stuckTimeoutMinutes." });
     }
     try {
       const keysToDelete = field ? [validFields[field]] : Object.values(validFields);

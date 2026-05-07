@@ -420,12 +420,16 @@ interface CleanupScheduleSettings {
   retentionDays: number;
   dbRetentionDays: number | null;
   envRetentionDays: number;
+  stuckTimeoutMinutes: number;
+  dbStuckTimeoutMinutes: number | null;
+  envStuckTimeoutMinutes: number;
 }
 
 function CleanupScheduleSettingsPanel() {
   const queryClient = useQueryClient();
   const [hourUtc, setHourUtc] = useState("");
   const [retentionDays, setRetentionDays] = useState("");
+  const [stuckTimeoutMinutes, setStuckTimeoutMinutes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
@@ -438,12 +442,13 @@ function CleanupScheduleSettingsPanel() {
     if (settingsQuery.data) {
       setHourUtc(String(settingsQuery.data.hourUtc));
       setRetentionDays(String(settingsQuery.data.retentionDays));
+      setStuckTimeoutMinutes(String(settingsQuery.data.stuckTimeoutMinutes));
     }
   }, [settingsQuery.data]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      apiFetch<{ success: boolean; hourUtc: number; retentionDays: number }>(
+      apiFetch<{ success: boolean; hourUtc: number; retentionDays: number; stuckTimeoutMinutes: number }>(
         "/admin/settings/cleanup-schedule",
         {
           method: "PUT",
@@ -451,6 +456,7 @@ function CleanupScheduleSettingsPanel() {
           body: JSON.stringify({
             hourUtc: parseInt(hourUtc, 10),
             retentionDays: parseInt(retentionDays, 10),
+            stuckTimeoutMinutes: parseInt(stuckTimeoutMinutes, 10),
           }),
         },
       ),
@@ -483,6 +489,20 @@ function CleanupScheduleSettingsPanel() {
   const resetRetentionMutation = useMutation({
     mutationFn: () =>
       apiFetch<{ success: boolean }>("/admin/settings/cleanup-schedule?field=retentionDays", {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-schedule"] });
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Failed to reset setting.");
+    },
+  });
+
+  const resetStuckTimeoutMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean }>("/admin/settings/cleanup-schedule?field=stuckTimeoutMinutes", {
         method: "DELETE",
       }),
     onSuccess: () => {
@@ -572,6 +592,36 @@ function CleanupScheduleSettingsPanel() {
             ) : data ? (
               <p className="text-[11px] text-muted-foreground mt-1">
                 Using env default: {data.envRetentionDays} days
+              </p>
+            ) : null}
+          </Field>
+          <Field label="Crash-recovery timeout (min)">
+            <input
+              className={inputCls}
+              type="number"
+              min={1}
+              step={1}
+              value={stuckTimeoutMinutes}
+              onChange={(e) => setStuckTimeoutMinutes(e.target.value)}
+              placeholder={data ? String(data.envStuckTimeoutMinutes) : "30"}
+            />
+            {data && data.dbStuckTimeoutMinutes !== null ? (
+              <button
+                type="button"
+                onClick={() => resetStuckTimeoutMutation.mutate()}
+                disabled={resetStuckTimeoutMutation.isPending}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+              >
+                {resetStuckTimeoutMutation.isPending ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={11} />
+                )}
+                Reset to default ({data.envStuckTimeoutMinutes} min)
+              </button>
+            ) : data ? (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Using env default: {data.envStuckTimeoutMinutes} min
               </p>
             ) : null}
           </Field>

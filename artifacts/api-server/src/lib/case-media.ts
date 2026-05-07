@@ -50,6 +50,14 @@ export const SETTING_CLEANUP_MIN_REMOVED = "cleanup_alert_min_removed";
 export const SETTING_CLEANUP_MIN_FREED_MB = "cleanup_alert_min_freed_mb";
 
 /**
+ * Key used in the system_settings table for the crash-recovery timeout
+ * (minutes).  When absent the env var CLEANUP_STUCK_TIMEOUT_MINUTES is used
+ * (default 30).
+ */
+export const SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES =
+  "cleanup_stuck_timeout_minutes";
+
+/**
  * Key used in the system_settings table for the cleanup history retention
  * period (days).  When absent the env var CLEANUP_HISTORY_RETENTION_DAYS is
  * used (default 365).
@@ -113,9 +121,38 @@ export async function getCleanupAlertThresholds(): Promise<{
 /**
  * Default timeout (minutes) after which a "running" cleanup row is considered
  * stuck and eligible for recovery.  Override with the
- * CLEANUP_STUCK_TIMEOUT_MINUTES env var.
+ * CLEANUP_STUCK_TIMEOUT_MINUTES env var or the system_settings DB row.
  */
 const DEFAULT_STUCK_TIMEOUT_MINUTES = 30;
+
+/**
+ * Read the crash-recovery stuck-run timeout from the DB, falling back to the
+ * CLEANUP_STUCK_TIMEOUT_MINUTES env var (default 30).  DB value takes
+ * precedence so changes take effect without a server restart.
+ */
+export async function getCleanupStuckTimeoutMinutes(): Promise<{
+  stuckTimeoutMinutes: number;
+  dbStuckTimeoutMinutes: number | null;
+  envStuckTimeoutMinutes: number;
+}> {
+  const envStuckTimeoutMinutes = Math.max(
+    1,
+    parseInt(
+      process.env.CLEANUP_STUCK_TIMEOUT_MINUTES || String(DEFAULT_STUCK_TIMEOUT_MINUTES),
+      10,
+    ) || DEFAULT_STUCK_TIMEOUT_MINUTES,
+  );
+  const rows = await db
+    .select()
+    .from(systemSettings)
+    .where(eq(systemSettings.key, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES));
+  const raw = rows[0]?.value ?? null;
+  const dbStuckTimeoutMinutes =
+    raw !== null ? Math.max(1, parseInt(raw, 10) || 1) : null;
+  const stuckTimeoutMinutes =
+    dbStuckTimeoutMinutes !== null ? dbStuckTimeoutMinutes : envStuckTimeoutMinutes;
+  return { stuckTimeoutMinutes, dbStuckTimeoutMinutes, envStuckTimeoutMinutes };
+}
 
 /**
  * Mark any `media_cleanup_runs` rows that are still in status="running" but
@@ -132,12 +169,9 @@ export async function recoverStuckCleanupRuns(
   timeoutMinutes?: number,
 ): Promise<number> {
   const minutes =
-    timeoutMinutes ??
-    Math.max(
-      1,
-      parseInt(process.env.CLEANUP_STUCK_TIMEOUT_MINUTES || String(DEFAULT_STUCK_TIMEOUT_MINUTES), 10) ||
-        DEFAULT_STUCK_TIMEOUT_MINUTES,
-    );
+    timeoutMinutes !== undefined
+      ? timeoutMinutes
+      : (await getCleanupStuckTimeoutMinutes()).stuckTimeoutMinutes;
   const cutoff = new Date(Date.now() - minutes * 60 * 1000);
   const updated = await db
     .update(mediaCleanupRuns)
