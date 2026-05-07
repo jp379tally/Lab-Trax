@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import {
   AlertCircle,
@@ -11,6 +11,7 @@ import {
   Play,
   Plus,
   Upload,
+  X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
@@ -56,8 +57,37 @@ interface BackupScheduleSettings {
   hourUtc: number;
 }
 
+interface RunNowResult {
+  ok: boolean;
+  status: string;
+  errorMessage: string | null;
+  removedCount: number;
+  freedBytes: number;
+}
+
+type ManualRunFeedback =
+  | { kind: "success"; removedCount: number; freedBytes: number }
+  | { kind: "error"; message: string };
+
+
 function MediaCleanupCard() {
   const qc = useQueryClient();
+  const [feedback, setFeedback] = useState<ManualRunFeedback | null>(null);
+  const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleDismiss = () => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    dismissTimer.current = setTimeout(() => setFeedback(null), 6000);
+  };
+
+  const dismissFeedback = () => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    setFeedback(null);
+  };
+
+  useEffect(() => () => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+  }, []);
 
   const runsQuery = useQuery({
     queryKey: ["admin", "cleanup", "runs", "last"],
@@ -76,11 +106,34 @@ function MediaCleanupCard() {
 
   const runNowMutation = useMutation({
     mutationFn: () =>
-      apiFetch<{ ok: boolean }>("/admin/cleanup/orphaned-media/run", {
+      apiFetch<RunNowResult>("/admin/cleanup/orphaned-media/run", {
         method: "POST",
       }),
-    onSuccess: () => {
+    onMutate: () => {
+      dismissFeedback();
+    },
+    onSuccess: (data) => {
       void qc.invalidateQueries({ queryKey: ["admin", "cleanup", "runs"] });
+      if (data.status === "error" || !data.ok) {
+        setFeedback({
+          kind: "error",
+          message: data.errorMessage ?? "Cleanup run failed.",
+        });
+      } else {
+        setFeedback({
+          kind: "success",
+          removedCount: data.removedCount,
+          freedBytes: data.freedBytes,
+        });
+      }
+      scheduleDismiss();
+    },
+    onError: (err: Error) => {
+      setFeedback({
+        kind: "error",
+        message: err.message || "Cleanup run failed.",
+      });
+      scheduleDismiss();
     },
   });
 
@@ -130,6 +183,37 @@ function MediaCleanupCard() {
       </header>
 
       <div className="px-5 py-4 space-y-3 text-sm">
+        {feedback && (
+          <div
+            className={`flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs ${
+              feedback.kind === "success"
+                ? "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400"
+                : "border-destructive/30 bg-destructive/5 text-destructive"
+            }`}
+          >
+            {feedback.kind === "success" ? (
+              <CheckCircle2 size={13} className="shrink-0 mt-px" />
+            ) : (
+              <AlertCircle size={13} className="shrink-0 mt-px" />
+            )}
+            <span className="flex-1">
+              {feedback.kind === "success"
+                ? feedback.removedCount === 0
+                  ? "No orphaned files found — nothing to remove."
+                  : `Removed ${feedback.removedCount} orphan${feedback.removedCount === 1 ? "" : "s"}, freed ${formatBytes(feedback.freedBytes)}.`
+                : feedback.message}
+            </span>
+            <button
+              type="button"
+              onClick={dismissFeedback}
+              className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+              aria-label="Dismiss"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
         {runsQuery.isLoading && (
           <p className="text-muted-foreground text-xs">Loading…</p>
         )}
