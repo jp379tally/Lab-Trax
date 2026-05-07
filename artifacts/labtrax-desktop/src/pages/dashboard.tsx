@@ -377,22 +377,23 @@ function MediaCleanupCard() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const allRuns = runsQuery.data?.runs ?? [];
+  const lastRun = allRuns[0] ?? null;
+  const isRunningFromQuery = lastRun?.status === "running";
+
   const cleanupStatusQuery = useQuery({
     queryKey: ["admin", "cleanup", "status"],
     queryFn: () => apiFetch<CleanupProgress>("/admin/cleanup/orphaned-media/status"),
-    refetchInterval: runNowMutation.isPending ? 1500 : false,
-    enabled: runNowMutation.isPending,
+    refetchInterval: (runNowMutation.isPending || isRunningFromQuery) ? 1500 : false,
+    enabled: runNowMutation.isPending || isRunningFromQuery,
   });
 
   const isAlreadyRunning =
     runNowMutation.error instanceof ApiError && runNowMutation.error.status === 409;
 
-  const allRuns = runsQuery.data?.runs ?? [];
-  const lastRun = allRuns[0] ?? null;
   const hasError = lastRun?.status === "error";
   const nextRunLabel =
     scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
-  const isRunningFromQuery = lastRun?.status === "running";
   const isRunning = runNowMutation.isPending || isRunningFromQuery;
   const nextBackupLabel =
     backupScheduleQuery.data != null ? formatNextBackupTime(backupScheduleQuery.data.hourUtc) : null;
@@ -510,13 +511,6 @@ function MediaCleanupCard() {
           <div className="flex items-center gap-2 text-muted-foreground text-xs">
             <Clock size={13} />
             Not yet run — no cleanup has completed yet.
-          </div>
-        )}
-
-        {isRunningFromQuery && (
-          <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400">
-            <Loader2 size={13} className="shrink-0 animate-spin" />
-            <span>Cleanup in progress — scanning for orphaned files…</span>
           </div>
         )}
 
