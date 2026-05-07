@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, AlertTriangle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search, XCircle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { formatTriggeredBy } from "@/lib/cleanup";
+import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 
 interface CleanupRun {
   id: string;
@@ -62,22 +62,6 @@ function formatDuration(start: string, end: string | null, now?: number): string
 }
 
 
-function TriggeredByBadge({ run }: { run: CleanupRun }) {
-  const { label, isManual, isAutomatic } = formatTriggeredBy(run.triggeredBy, run);
-  return (
-    <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
-        isAutomatic
-          ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"
-          : isManual
-            ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-            : "bg-secondary text-muted-foreground"
-      }`}
-    >
-      {label}
-    </span>
-  );
-}
 
 type RunState =
   | { kind: "idle" }
@@ -507,7 +491,7 @@ export default function MaintenancePage() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <TriggeredByBadge run={run} />
+                      <TriggeredByBadge triggeredBy={run.triggeredBy} run={run} />
                     </td>
                   </tr>
                 ))}

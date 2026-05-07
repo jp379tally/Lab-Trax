@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
-import { formatTriggeredBy } from "@/lib/cleanup";
+import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LabCase } from "@/lib/types";
@@ -231,7 +231,6 @@ function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
         </thead>
         <tbody>
           {runs.map((run) => {
-            const { label, isManual } = formatTriggeredBy(run.triggeredBy);
             const isError = run.status === "error";
             const isRunningRow = run.status === "running";
             const isCancelled = run.status === "cancelled";
@@ -242,15 +241,7 @@ function RunHistoryTable({ runs }: { runs: MediaCleanupRun[] }) {
                   {relativeTime(run.startedAt)}
                 </td>
                 <td className="py-1.5 pr-3 whitespace-nowrap">
-                  <span
-                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                      isManual
-                        ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                        : "bg-secondary text-muted-foreground"
-                    }`}
-                  >
-                    {label}
-                  </span>
+                  <TriggeredByBadge triggeredBy={run.triggeredBy} run={run} />
                 </td>
                 <td className="py-1.5 pr-3 text-right tabular-nums">
                   {isDash ? "—" : run.removedCount.toLocaleString()}
@@ -555,22 +546,11 @@ function MediaCleanupCard() {
               <span>{stageDetailLabel(cleanupStatusQuery.data)}</span>
             </div>
             {isRunningFromQuery && (() => {
-              const triggerMeta = lastRun.triggeredBy
-                ? formatTriggeredBy(lastRun.triggeredBy)
-                : null;
               return (
                 <div className="flex items-center gap-2">
                   <ElapsedTimer startedAt={lastRun.startedAt} />
-                  {triggerMeta && (
-                    <span
-                      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                        triggerMeta.isManual
-                          ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                          : "bg-secondary text-muted-foreground"
-                      }`}
-                    >
-                      {triggerMeta.label}
-                    </span>
+                  {lastRun.triggeredBy && (
+                    <TriggeredByBadge triggeredBy={lastRun.triggeredBy} run={lastRun} />
                   )}
                 </div>
               );
@@ -625,20 +605,9 @@ function MediaCleanupCard() {
                 <span className="text-foreground/50">·</span>{" "}
                 {formatDateTime(lastRun.startedAt)}
               </span>
-              {lastRun.triggeredBy && (() => {
-                const { label, isManual } = formatTriggeredBy(lastRun.triggeredBy);
-                return (
-                  <span
-                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                      isManual
-                        ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                        : "bg-secondary text-muted-foreground"
-                    }`}
-                  >
-                    {label}
-                  </span>
-                );
-              })()}
+              {lastRun.triggeredBy && (
+                <TriggeredByBadge triggeredBy={lastRun.triggeredBy} run={lastRun} />
+              )}
             </div>
 
             <div className="grid grid-cols-3 gap-3">
