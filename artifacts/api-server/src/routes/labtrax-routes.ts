@@ -2882,6 +2882,22 @@ Important rules:
     }
   });
 
+  router.post("/admin/cleanup/orphaned-media/run", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const triggeredBy = `admin:${reqUser.username || reqUser.id}`;
+    try {
+      const { runId, report, status, errorMessage } = await runAndPersistCleanup(triggeredBy, {
+        dryRun: false,
+      });
+      return res.json({ ok: true, runId, triggeredBy, status, errorMessage, ...report });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Orphaned media cleanup failed." });
+    }
+  });
+
   // ── Admin: cleanup alert settings ────────────────────────────────────────
   router.get("/admin/settings/cleanup-alerts", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;

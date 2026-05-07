@@ -7,12 +7,14 @@ import {
   CheckCircle2,
   Clock,
   HardDrive,
+  Loader2,
+  Play,
   Plus,
   Upload,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LabCase } from "@/lib/types";
 import { formatDate, formatDateTime, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -50,6 +52,8 @@ interface CleanupScheduleSettings {
 }
 
 function MediaCleanupCard() {
+  const qc = useQueryClient();
+
   const runsQuery = useQuery({
     queryKey: ["admin", "cleanup", "runs", "last"],
     queryFn: () =>
@@ -65,21 +69,51 @@ function MediaCleanupCard() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const runNowMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean }>("/admin/cleanup/orphaned-media/run", {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "cleanup", "runs"] });
+    },
+  });
+
   const lastRun = runsQuery.data?.runs[0] ?? null;
   const hasError = lastRun?.status === "error";
   const nextRunLabel =
     scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
+  const isRunning = runNowMutation.isPending;
 
   return (
     <section className="bg-card border border-border rounded-xl">
       <header className="flex items-center gap-2 px-5 py-3.5 border-b border-border">
         <HardDrive size={14} className="text-muted-foreground" />
-        <div>
+        <div className="flex-1 min-w-0">
           <h2 className="text-sm font-semibold">Media Cleanup</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Last nightly orphaned-media run
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => runNowMutation.mutate()}
+          disabled={isRunning}
+          title="Run cleanup now"
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-border bg-secondary hover:bg-secondary/80 text-foreground disabled:opacity-60 disabled:cursor-not-allowed transition-colors shrink-0"
+        >
+          {isRunning ? (
+            <>
+              <Loader2 size={11} className="animate-spin" />
+              Running…
+            </>
+          ) : (
+            <>
+              <Play size={11} />
+              Run now
+            </>
+          )}
+        </button>
       </header>
 
       <div className="px-5 py-4 space-y-3 text-sm">
