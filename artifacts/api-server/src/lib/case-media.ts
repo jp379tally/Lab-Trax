@@ -666,6 +666,7 @@ export function startDailyOrphanedMediaCleanup() {
             .filter((e): e is string => Boolean(e));
           await sendCleanupAlertEmail({
             adminEmails,
+            triggeredBy: "scheduler",
             report: {
               ranAt,
               scannedFiles: report.scannedFiles,
@@ -700,6 +701,7 @@ export function startDailyOrphanedMediaCleanup() {
           .filter((e): e is string => Boolean(e));
         await sendCleanupAlertEmail({
           adminEmails,
+          triggeredBy: "scheduler",
           report: { ranAt, fatalError: errMsg },
         });
       } catch (mailErr: unknown) {

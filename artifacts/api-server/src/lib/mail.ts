@@ -135,6 +135,8 @@ export async function sendInviteEmail(
 
 export interface CleanupAlertParams {
   adminEmails: string[];
+  /** Who triggered the run: "scheduler" for automatic runs, "admin:<name>" for manual ones. */
+  triggeredBy?: string;
   report: {
     ranAt: string;
     /** Set when the cleanup run itself threw a fatal error before producing a report. */
@@ -146,6 +148,15 @@ export interface CleanupAlertParams {
     errorCount?: number;
     errors?: Array<{ fileName: string; error: string }>;
   };
+}
+
+function formatTriggeredByLabel(triggeredBy: string | undefined): string {
+  if (!triggeredBy || triggeredBy === "scheduler") return "Scheduled";
+  if (triggeredBy.startsWith("admin:")) {
+    const name = triggeredBy.slice("admin:".length).trim();
+    return name ? `Manual (${name})` : "Manual";
+  }
+  return triggeredBy;
 }
 
 export async function sendCleanupAlertEmail(
@@ -176,16 +187,23 @@ export async function sendCleanupAlertEmail(
 
   const errors = report.errors ?? [];
   const freedMb = ((report.freedBytes ?? 0) / 1024 / 1024).toFixed(2);
+  const triggeredByLabel = formatTriggeredByLabel(params.triggeredBy);
 
   const statsHtml = isFatal ? "" : `<table style="border-collapse: collapse; width: 100%; font-size: 14px;">
-        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Scanned files</td><td style="padding: 8px 12px;">${report.scannedFiles ?? 0}</td></tr>
-        <tr><td style="padding: 8px 12px; font-weight: bold;">Orphaned files found</td><td style="padding: 8px 12px;">${report.orphanCount ?? 0}</td></tr>
-        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Files removed</td><td style="padding: 8px 12px;">${removedCount}</td></tr>
-        <tr><td style="padding: 8px 12px; font-weight: bold;">Space freed</td><td style="padding: 8px 12px;">${freedMb} MB</td></tr>
-        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Errors</td><td style="padding: 8px 12px; color: ${errorCount > 0 ? "#c0392b" : "inherit"};">${errorCount}</td></tr>
+        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Triggered by</td><td style="padding: 8px 12px;">${escapeHtml(triggeredByLabel)}</td></tr>
+        <tr><td style="padding: 8px 12px; font-weight: bold;">Scanned files</td><td style="padding: 8px 12px;">${report.scannedFiles ?? 0}</td></tr>
+        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Orphaned files found</td><td style="padding: 8px 12px;">${report.orphanCount ?? 0}</td></tr>
+        <tr><td style="padding: 8px 12px; font-weight: bold;">Files removed</td><td style="padding: 8px 12px;">${removedCount}</td></tr>
+        <tr style="background: #f5f5f5;"><td style="padding: 8px 12px; font-weight: bold;">Space freed</td><td style="padding: 8px 12px;">${freedMb} MB</td></tr>
+        <tr><td style="padding: 8px 12px; font-weight: bold;">Errors</td><td style="padding: 8px 12px; color: ${errorCount > 0 ? "#c0392b" : "inherit"};">${errorCount}</td></tr>
       </table>`;
 
-  const statsText = isFatal ? "" : `Scanned files: ${report.scannedFiles ?? 0}\nOrphaned files found: ${report.orphanCount ?? 0}\nFiles removed: ${removedCount}\nSpace freed: ${freedMb} MB\nErrors: ${errorCount}`;
+  const statsText = isFatal ? "" : `Triggered by: ${triggeredByLabel}\nScanned files: ${report.scannedFiles ?? 0}\nOrphaned files found: ${report.orphanCount ?? 0}\nFiles removed: ${removedCount}\nSpace freed: ${freedMb} MB\nErrors: ${errorCount}`;
+
+  const fatalTriggeredByHtml = isFatal
+    ? `<p style="font-size: 14px;"><strong>Triggered by:</strong> ${escapeHtml(triggeredByLabel)}</p>`
+    : "";
+  const fatalTriggeredByText = isFatal ? `Triggered by: ${triggeredByLabel}\n` : "";
 
   const errorRowsHtml = errors.length > 0
     ? `<h3 style="color:#c0392b;">File-level errors</h3><ul>${errors.map((e) => `<li><code>${escapeHtml(e.fileName)}</code>: ${escapeHtml(e.error)}</li>`).join("")}</ul>`
@@ -205,11 +223,11 @@ export async function sendCleanupAlertEmail(
     </div>
     <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
       <p style="color: #555; font-size: 13px;">Run at: ${escapeHtml(report.ranAt)}</p>
-      ${fatalBannerHtml}${statsHtml}${errorRowsHtml}${maintenanceLinkHtml}
+      ${fatalBannerHtml}${fatalTriggeredByHtml}${statsHtml}${errorRowsHtml}${maintenanceLinkHtml}
     </div>
   </div>`;
 
-  const text = `LabTrax Nightly Media Cleanup Report\nRun at: ${report.ranAt}\n\n${fatalBannerText}${statsText}${errorRowsText}${maintenanceLinkText}`;
+  const text = `LabTrax Nightly Media Cleanup Report\nRun at: ${report.ranAt}\n\n${fatalBannerText}${fatalTriggeredByText}${statsText}${errorRowsText}${maintenanceLinkText}`;
 
   for (const email of params.adminEmails) {
     await sendMail({ to: email, subject, html, text });
