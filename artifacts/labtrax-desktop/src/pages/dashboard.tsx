@@ -637,6 +637,20 @@ function MediaCleanupCard() {
                 <span className="text-foreground/50">·</span>{" "}
                 {formatDateTime(lastRun.startedAt)}
               </span>
+              {lastRun.triggeredBy && (() => {
+                const { label, isManual } = triggeredByLabel(lastRun.triggeredBy);
+                return (
+                  <span
+                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      isManual
+                        ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                        : "bg-secondary text-muted-foreground"
+                    }`}
+                  >
+                    {label}
+                  </span>
+                );
+              })()}
             </div>
 
             <div className="grid grid-cols-3 gap-3">
