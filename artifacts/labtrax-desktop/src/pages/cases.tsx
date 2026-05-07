@@ -62,12 +62,7 @@ type SortKey =
 function generateCaseNumber(): string {
   const now = new Date();
   const yy = String(now.getFullYear()).slice(2);
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
-  const rand = Math.floor(Math.random() * 1000)
-    .toString()
-    .padStart(3, "0");
-  return `LT-${yy}${mm}${dd}-${rand}`;
+  return `${yy}-1`;
 }
 
 interface NewCaseFormData {

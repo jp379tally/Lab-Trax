@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Router } from "express";
-import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -105,6 +105,32 @@ const createCaseSchema = z.object({
     )
     .optional(),
 });
+
+router.get(
+  "/next-case-number",
+  asyncHandler(async (req, res) => {
+    const labOrganizationId = String(req.query.labOrganizationId ?? "").trim();
+    if (!labOrganizationId) {
+      throw new HttpError(400, "labOrganizationId is required.");
+    }
+    await requireMembership((req as any).auth.userId, labOrganizationId);
+    const year = String(new Date().getFullYear()).slice(2);
+    const [row] = await db
+      .select({
+        maxCaseNumber: sql<string | null>`max(
+          case
+            when ${cases.caseNumber} ~ ${`^${year}-(\\d+)$`}
+            then regexp_replace(${cases.caseNumber}, ${`^${year}-(\\d+)$`}, '\\1')::int
+            else null
+          end
+        )`,
+      })
+      .from(cases)
+      .where(eq(cases.labOrganizationId, labOrganizationId));
+    const next = (Number(row?.maxCaseNumber ?? 0) || 0) + 1;
+    return ok(res, { caseNumber: `${year}-${next}` });
+  })
+);
 
 router.post(
   "/",

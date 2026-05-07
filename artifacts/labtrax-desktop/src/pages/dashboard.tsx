@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import {
   AlertCircle,
   AlertTriangle,
@@ -755,8 +755,12 @@ const IN_PROGRESS_STATUSES = new Set([
 const COMPLETED_STATUSES = new Set(["delivered", "cancelled"]);
 
 function CaseRow({ c }: { c: LabCase }) {
+  const [, navigate] = useLocation();
   return (
-    <tr className="border-t border-border hover:bg-secondary/40">
+    <tr
+      className="border-t border-border hover:bg-secondary/40 cursor-pointer"
+      onClick={() => navigate(`/cases?caseId=${encodeURIComponent(c.id)}`)}
+    >
       <td className="px-5 py-3 font-mono text-xs">{c.caseNumber}</td>
       <td className="py-3">
         {c.patientFirstName} {c.patientLastName}
