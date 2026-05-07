@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, AlertTriangle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertCircle, AlertTriangle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search, XCircle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -85,6 +85,7 @@ export default function MaintenancePage() {
   const isAdmin = user?.role === "admin";
   const [limit, setLimit] = useState(50);
   const [runState, setRunState] = useState<RunState>({ kind: "idle" });
+  const qc = useQueryClient();
 
   const runsQuery = useQuery({
     queryKey: ["admin", "cleanup-runs", limit],
@@ -115,6 +116,19 @@ export default function MaintenancePage() {
       setRunState({ kind: "error", message, dryRun });
     }
   }
+
+  const cancelMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean }>("/admin/cleanup/orphaned-media/cancel", {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "cleanup-runs"] });
+    },
+    onError: () => {
+      // Silently ignore cancel errors — the run may have finished already.
+    },
+  });
 
   const isRunning = runState.kind === "running";
 
@@ -186,9 +200,21 @@ export default function MaintenancePage() {
       {runState.kind === "running" && (
         <div className="mb-4 flex items-center gap-2 px-4 py-3 rounded-lg border border-border bg-secondary/40 text-sm text-muted-foreground">
           <Loader2 size={15} className="animate-spin flex-shrink-0" />
-          {runState.dryRun
-            ? "Scanning for orphaned files…"
-            : "Deleting orphaned files…"}
+          <span className="flex-1">
+            {runState.dryRun
+              ? "Scanning for orphaned files…"
+              : "Deleting orphaned files…"}
+          </span>
+          <button
+            type="button"
+            onClick={() => cancelMutation.mutate()}
+            disabled={cancelMutation.isPending}
+            title="Cancel cleanup run"
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          >
+            <XCircle size={11} />
+            {cancelMutation.isPending ? "Cancelling…" : "Cancel"}
+          </button>
         </div>
       )}
 
@@ -199,6 +225,8 @@ export default function MaintenancePage() {
               ? runState.result.dryRun
                 ? "border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/40"
                 : "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/40"
+              : runState.result.status === "cancelled"
+              ? "border-border bg-secondary/40"
               : "border-destructive/30 bg-destructive/5"
           }`}
         >
@@ -209,11 +237,23 @@ export default function MaintenancePage() {
               ) : (
                 <CheckCircle2 size={15} className="flex-shrink-0 mt-0.5 text-green-600 dark:text-green-400" />
               )
+            ) : runState.result.status === "cancelled" ? (
+              <XCircle size={15} className="flex-shrink-0 mt-0.5 text-muted-foreground" />
             ) : (
               <AlertCircle size={15} className="flex-shrink-0 mt-0.5 text-destructive" />
             )}
             <div className="flex-1 min-w-0">
-              {runState.result.dryRun ? (
+              {runState.result.status === "cancelled" ? (
+                <>
+                  <p className="font-medium text-foreground">Run cancelled</p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    The cleanup run was cancelled.
+                    {runState.result.scannedFiles > 0 && (
+                      <> {runState.result.scannedFiles.toLocaleString()} files had been scanned before it stopped.</>
+                    )}
+                  </p>
+                </>
+              ) : runState.result.dryRun ? (
                 <>
                   <p className="font-medium text-blue-700 dark:text-blue-300">
                     Dry run complete
@@ -369,6 +409,11 @@ export default function MaintenancePage() {
                         <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
                           <CheckCircle2 size={13} />
                           <span className="text-xs font-medium">OK</span>
+                        </span>
+                      ) : run.status === "cancelled" ? (
+                        <span className="inline-flex items-center gap-1 text-muted-foreground">
+                          <XCircle size={13} />
+                          <span className="text-xs font-medium">Cancelled</span>
                         </span>
                       ) : run.status === "error" && run.errorMessage?.toLowerCase().includes("interrupted") ? (
                         <div>
