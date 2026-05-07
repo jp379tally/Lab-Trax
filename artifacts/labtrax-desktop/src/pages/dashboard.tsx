@@ -11,6 +11,7 @@ import {
   Upload,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { useQuery } from "@tanstack/react-query";
 import type { LabCase } from "@/lib/types";
 import { formatDate, formatDateTime, relativeTime } from "@/lib/format";
@@ -44,6 +45,10 @@ function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
 }
 
+interface CleanupScheduleSettings {
+  hourUtc: number;
+}
+
 function MediaCleanupCard() {
   const runsQuery = useQuery({
     queryKey: ["admin", "cleanup", "runs", "last"],
@@ -54,8 +59,16 @@ function MediaCleanupCard() {
     refetchInterval: 5 * 60 * 1000,
   });
 
+  const scheduleQuery = useQuery({
+    queryKey: ["admin", "cleanup-schedule"],
+    queryFn: () => apiFetch<CleanupScheduleSettings>("/admin/settings/cleanup-schedule"),
+    staleTime: 5 * 60 * 1000,
+  });
+
   const lastRun = runsQuery.data?.runs[0] ?? null;
   const hasError = lastRun?.status === "error";
+  const nextRunLabel =
+    scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
 
   return (
     <section className="bg-card border border-border rounded-xl">
@@ -147,6 +160,13 @@ function MediaCleanupCard() {
               </div>
             )}
           </>
+        )}
+
+        {nextRunLabel && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground pt-1 border-t border-border/60">
+            <Clock size={11} className="shrink-0" />
+            Next run: <span className="text-foreground font-medium">{nextRunLabel}</span>
+          </div>
         )}
       </div>
     </section>

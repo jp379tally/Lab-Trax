@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, BellRing, Clock, HardDrive, KeyRound, Loader2, LogOut, Monitor, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
+import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
 
@@ -575,6 +576,18 @@ function CleanupScheduleSettingsPanel() {
           </Field>
         </div>
       )}
+      {(() => {
+        const parsed = parseInt(hourUtc, 10);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 23) {
+          return (
+            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+              <Clock size={11} className="shrink-0" />
+              Next run: <span className="text-foreground font-medium">{formatNextCleanupTime(parsed)}</span>
+            </p>
+          );
+        }
+        return null;
+      })()}
       <button
         type="button"
         onClick={() => saveMutation.mutate()}
