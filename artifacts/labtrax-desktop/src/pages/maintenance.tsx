@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, AlertTriangle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search, XCircle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -52,9 +52,10 @@ function formatDateTime(iso: string): string {
   });
 }
 
-function formatDuration(start: string, end: string | null): string {
-  if (!end) return "—";
-  const ms = new Date(end).getTime() - new Date(start).getTime();
+function formatDuration(start: string, end: string | null, now?: number): string {
+  const endMs = end ? new Date(end).getTime() : (now ?? Date.now());
+  const ms = endMs - new Date(start).getTime();
+  if (ms < 0) return "—";
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
@@ -85,6 +86,7 @@ export default function MaintenancePage() {
   const isAdmin = user?.role === "admin";
   const [limit, setLimit] = useState(50);
   const [runState, setRunState] = useState<RunState>({ kind: "idle" });
+  const [now, setNow] = useState(() => Date.now());
   const qc = useQueryClient();
 
   const runsQuery = useQuery({
@@ -94,7 +96,21 @@ export default function MaintenancePage() {
         `/admin/cleanup/orphaned-media/runs?limit=${limit}`,
       ),
     enabled: isAdmin,
+    refetchInterval: (query) => {
+      const runs = query.state.data?.runs ?? [];
+      return runs.some((r) => r.status === "running") ? 3000 : 10000;
+    },
   });
+
+  const hasActiveRuns =
+    (runsQuery.data?.runs ?? []).some((r) => r.status === "running") ||
+    runState.kind === "running";
+
+  useEffect(() => {
+    if (!hasActiveRuns) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasActiveRuns]);
 
   async function triggerCleanup(dryRun: boolean) {
     setRunState({ kind: "running", dryRun });
@@ -390,7 +406,14 @@ export default function MaintenancePage() {
               </thead>
               <tbody className="divide-y divide-border">
                 {runs.map((run) => (
-                  <tr key={run.id} className="hover:bg-secondary/30 transition-colors">
+                  <tr
+                    key={run.id}
+                    className={`transition-colors ${
+                      run.status === "running"
+                        ? "bg-primary/5 hover:bg-primary/10"
+                        : "hover:bg-secondary/30"
+                    }`}
+                  >
                     <td className="px-4 py-3 whitespace-nowrap">
                       <div className="font-medium tabular-nums">
                         {formatDateTime(run.startedAt)}
@@ -402,10 +425,15 @@ export default function MaintenancePage() {
                       )}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap tabular-nums text-muted-foreground">
-                      {formatDuration(run.startedAt, run.finishedAt)}
+                      {formatDuration(run.startedAt, run.finishedAt, run.status === "running" ? now : undefined)}
                     </td>
                     <td className="px-4 py-3">
-                      {run.status === "ok" ? (
+                      {run.status === "running" ? (
+                        <span className="inline-flex items-center gap-1.5 text-primary">
+                          <Loader2 size={13} className="animate-spin" />
+                          <span className="text-xs font-medium">Running</span>
+                        </span>
+                      ) : run.status === "ok" ? (
                         <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
                           <CheckCircle2 size={13} />
                           <span className="text-xs font-medium">OK</span>
