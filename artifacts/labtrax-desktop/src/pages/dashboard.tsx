@@ -322,6 +322,7 @@ function MediaCleanupCard() {
   const qc = useQueryClient();
   const [feedback, setFeedback] = useState<ManualRunFeedback | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scheduleDismiss = () => {
@@ -428,6 +429,11 @@ function MediaCleanupCard() {
   const nextRunLabel =
     scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
   const isRunning = runNowMutation.isPending || isRunningFromQuery;
+
+  useEffect(() => {
+    if (!isRunning) setShowCancelConfirm(false);
+  }, [isRunning]);
+
   const nextBackupLabel =
     backupScheduleQuery.data != null ? formatNextBackupTime(backupScheduleQuery.data.hourUtc) : null;
 
@@ -449,7 +455,13 @@ function MediaCleanupCard() {
             </span>
             <button
               type="button"
-              onClick={() => cancelMutation.mutate()}
+              onClick={() => {
+                if (cleanupStatusQuery.data?.stage === "removing") {
+                  setShowCancelConfirm(true);
+                } else {
+                  cancelMutation.mutate();
+                }
+              }}
               disabled={cancelMutation.isPending}
               title="Cancel cleanup run"
               className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
@@ -472,6 +484,40 @@ function MediaCleanupCard() {
       </header>
 
       <div className="px-5 py-4 space-y-3 text-sm">
+        {showCancelConfirm && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-3 space-y-2.5">
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={13} className="shrink-0 mt-0.5 text-destructive" />
+              <div className="space-y-0.5">
+                <p className="text-xs font-medium text-destructive">Cancel while removing?</p>
+                <p className="text-xs text-muted-foreground leading-snug">
+                  Files are already being deleted. Cancelling now may leave the run in a partial state — some orphans will have been removed and others will not.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => setShowCancelConfirm(false)}
+                className="inline-flex items-center h-6 px-2.5 rounded text-xs font-medium border border-border bg-secondary hover:bg-secondary/80 text-foreground transition-colors"
+              >
+                Keep running
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCancelConfirm(false);
+                  cancelMutation.mutate();
+                }}
+                disabled={cancelMutation.isPending}
+                className="inline-flex items-center h-6 px-2.5 rounded text-xs font-medium border border-destructive/40 bg-destructive/10 hover:bg-destructive/20 text-destructive disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              >
+                {cancelMutation.isPending ? "Cancelling…" : "Cancel run"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {feedback && (
           <div
             className={`flex items-start gap-2 rounded-md border px-3 py-2.5 text-xs ${
