@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { and, eq, lt, sql } from "drizzle-orm";
 import { db, caseAttachments, mediaCleanupRuns, systemSettings, users } from "@workspace/db";
 import { logger } from "./logger";
-import { sendCleanupAlertEmail } from "./mail";
+import { sendCleanupAlertEmail, sendCleanupRecoveryAlertEmail } from "./mail";
 
 /**
  * Thrown by runAndPersistCleanup when a concurrent run is already in
@@ -656,12 +656,27 @@ export function startDailyOrphanedMediaCleanup() {
   // On startup, recover any stuck "running" row left over from a server crash.
   // This runs once immediately so that manual runs triggered shortly after
   // restart are not blocked by a stale sentinel.
-  recoverStuckCleanupRuns().then((recovered) => {
+  recoverStuckCleanupRuns().then(async (recovered) => {
     if (recovered > 0) {
       logger.warn(
         { recovered },
         "startDailyOrphanedMediaCleanup: recovered stuck cleanup run(s) from a previous server crash",
       );
+      try {
+        const admins = await db
+          .select({ email: users.email })
+          .from(users)
+          .where(eq(users.role, "admin"));
+        const adminEmails = admins
+          .map((u) => u.email)
+          .filter((e): e is string => Boolean(e));
+        await sendCleanupRecoveryAlertEmail({ adminEmails, recoveredCount: recovered });
+      } catch (mailErr: unknown) {
+        logger.error(
+          { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
+          "startDailyOrphanedMediaCleanup: recovery alert email failed",
+        );
+      }
     }
   }).catch((err: unknown) => {
     logger.warn(

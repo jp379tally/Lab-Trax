@@ -216,6 +216,46 @@ export async function sendCleanupAlertEmail(
   }
 }
 
+export interface CleanupRecoveryAlertParams {
+  adminEmails: string[];
+  recoveredCount: number;
+}
+
+export async function sendCleanupRecoveryAlertEmail(
+  params: CleanupRecoveryAlertParams
+): Promise<void> {
+  if (params.adminEmails.length === 0) return;
+
+  const { recoveredCount } = params;
+  const runWord = recoveredCount === 1 ? "run" : "runs";
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const subject = `LabTrax Media Cleanup: ${recoveredCount} interrupted ${runWord} recovered on ${dateStr}`;
+
+  const maintenanceUrl = `${getAppBaseUrl()}/desktop/maintenance`;
+  const maintenanceLinkHtml = `<p style="margin-top: 20px; font-size: 13px;">You can trigger a fresh cleanup run from the <a href="${maintenanceUrl}" style="color: #4A6CF7;">Maintenance page</a>.</p>`;
+  const maintenanceLinkText = `\nTrigger a fresh cleanup run from the Maintenance page: ${maintenanceUrl}`;
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.85;">Nightly Media Cleanup — Recovery Notice</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <div style="background:#f0ad4e;color:#fff;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
+        <strong>Warning:</strong> ${recoveredCount} cleanup ${runWord} ${recoveredCount === 1 ? "was" : "were"} interrupted by a server crash and ${recoveredCount === 1 ? "has" : "have"} been automatically marked as failed.
+      </div>
+      <p>Orphaned media files may not have been removed during the interrupted ${runWord}. Please review the run history and consider triggering a fresh cleanup to ensure storage is maintained.</p>
+      ${maintenanceLinkHtml}
+    </div>
+  </div>`;
+
+  const text = `LabTrax Nightly Media Cleanup — Recovery Notice\n\nWARNING: ${recoveredCount} cleanup ${runWord} ${recoveredCount === 1 ? "was" : "were"} interrupted by a server crash and ${recoveredCount === 1 ? "has" : "have"} been automatically marked as failed.\n\nOrphaned media files may not have been removed during the interrupted ${runWord}. Please review the run history and consider triggering a fresh cleanup to ensure storage is maintained.${maintenanceLinkText}`;
+
+  for (const email of params.adminEmails) {
+    await sendMail({ to: email, subject, html, text });
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
