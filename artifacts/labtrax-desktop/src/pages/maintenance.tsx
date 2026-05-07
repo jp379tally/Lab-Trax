@@ -60,17 +60,36 @@ function formatDuration(start: string, end: string | null, now?: number): string
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function formatTriggeredBy(value: string): { label: string; isManual: boolean } {
+  if (
+    value === "scheduler" ||
+    value === "scheduled" ||
+    value === "nightly" ||
+    value === "cron"
+  ) {
+    return { label: "Scheduled", isManual: false };
+  }
+  if (value.startsWith("admin:")) {
+    const name = value.slice("admin:".length).trim();
+    return { label: name ? `Manual (${name})` : "Manual", isManual: true };
+  }
+  if (value === "api" || value === "script") {
+    return { label: "Script", isManual: false };
+  }
+  return { label: value, isManual: false };
+}
+
 function TriggeredByBadge({ value }: { value: string }) {
-  const isScheduler = value === "scheduler";
+  const { label, isManual } = formatTriggeredBy(value);
   return (
     <span
       className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${
-        isScheduler
-          ? "bg-secondary text-muted-foreground"
-          : "bg-primary/10 text-primary"
+        isManual
+          ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+          : "bg-secondary text-muted-foreground"
       }`}
     >
-      {isScheduler ? "Scheduled" : value.replace(/^admin:/, "")}
+      {label}
     </span>
   );
 }
