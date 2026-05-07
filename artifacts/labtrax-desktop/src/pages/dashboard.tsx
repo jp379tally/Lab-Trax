@@ -421,9 +421,16 @@ function MediaCleanupCard() {
   const cleanupStatusQuery = useQuery({
     queryKey: ["admin", "cleanup", "status"],
     queryFn: () => apiFetch<CleanupProgress>("/admin/cleanup/orphaned-media/status"),
-    refetchInterval: (runNowMutation.isPending || isRunningFromQuery) ? 1500 : false,
-    enabled: runNowMutation.isPending || isRunningFromQuery,
+    refetchInterval: (query) => {
+      const stage = query.state.data?.stage;
+      return runNowMutation.isPending || isRunningFromQuery || (stage && stage !== "idle")
+        ? 1500
+        : 5_000;
+    },
   });
+
+  const isRunningFromProgress =
+    cleanupStatusQuery.data != null && cleanupStatusQuery.data.stage !== "idle";
 
   const isAlreadyRunning =
     runNowMutation.error instanceof ApiError && runNowMutation.error.status === 409;
@@ -431,7 +438,7 @@ function MediaCleanupCard() {
   const hasError = lastRun?.status === "error";
   const nextRunLabel =
     scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
-  const isRunning = runNowMutation.isPending || isRunningFromQuery;
+  const isRunning = runNowMutation.isPending || isRunningFromQuery || isRunningFromProgress;
 
   useEffect(() => {
     if (!isRunning) setShowCancelConfirm(false);
@@ -597,7 +604,7 @@ function MediaCleanupCard() {
           </div>
         )}
 
-        {lastRun && !isRunningFromQuery && (
+        {lastRun && !isRunningFromQuery && !isRunningFromProgress && (
           <>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               {hasError ? (
