@@ -1,0 +1,147 @@
+Paste this to Replit:
+
+---
+
+**Subject: Desktop case interaction was not implemented after publish**
+
+I published the latest build, but the desktop version still does not have the case interaction changes I requested.
+
+The desktop HUD/interface changed visually, but the actual case functionality is still missing. When I click a case on desktop, I still cannot interact with the case the way I can in the mobile app. I also still do not see invoices that were generated from existing cases.
+
+This needs to be fixed as a functional case-detail workflow, not just a visual desktop UI update.
+
+**What I need the desktop version to do**
+
+When I click any case on desktop, including from the Recent Cases section or the main Cases page, a full case detail screen or drawer should open.
+
+That case detail view must show:
+
+- Case number
+- Patient name
+- Doctor/practice
+- Tooth/teeth
+- Material
+- Shade
+- Case type/restoration type
+- Current status/location
+- Due date
+- Case notes
+- Case photos/videos/documents
+- Case activity/history
+- Linked invoice, if one exists
+
+It also needs action buttons like the mobile app has:
+
+- Add picture
+- Add video
+- Add document from File Explorer
+- Add note
+- Add/edit case item/restoration
+- Assign barcode
+- Locate/change case status
+- View invoice
+- Generate invoice
+- Edit invoice
+- Record/pay invoice if the logged-in user has admin or billing permission
+
+**Important permission behavior**
+
+Admin users should be able to:
+
+- View all case details
+- Edit case details
+- Add photos/videos/documents
+- Add notes
+- Add case items/restorations
+- Assign barcodes
+- Locate/change case status
+- Generate invoices
+- View/edit/pay invoices
+
+Regular users should be able to:
+
+- View case details
+- Add non-financial case data if their permissions allow it
+- Add photos/videos/documents/notes if allowed
+- Not see or use invoice/payment tools unless they have billing/admin permission
+
+**Why I think this still is not fixed**
+
+From the code review, it looks like desktop and mobile are still using different case systems:
+
+- Mobile uses `/api/legacy/cases`, backed by `lab_cases`.
+- Desktop uses `/api/cases`, backed by `cases`.
+- The desktop list can show bridged mobile cases, but clicking them still tries to open `/api/cases/:id`.
+- That means desktop can display a case but still fail to open or interact with it because the real record may live in `lab_cases`, not `cases`.
+
+This explains why I can see cases on desktop but cannot actually interact with them correctly.
+
+Please do not just update the desktop HUD again. The missing part is the actual case-detail functionality behind the click.
+
+**How to fix it**
+
+Please implement one of these two approaches:
+
+**Preferred fix: use one canonical case system**
+
+Make desktop and mobile use the same backend case source of truth. Cases should not be split between `lab_cases` and `cases`.
+
+All platforms should use the same case data, same lab environment, same permissions, same invoice linkage, and same attachment/note/barcode/status logic.
+
+**Fallback fix: bridge legacy cases fully**
+
+If you cannot immediately migrate to one case table, then desktop must fully support legacy/mobile cases too.
+
+That means when a desktop user clicks a case that came from `lab_cases`, the desktop case detail view must still be able to:
+
+- Load the case details
+- Add photos/videos/documents
+- Add notes
+- Add or edit case items
+- Assign barcode
+- Change location/status
+- View/generate/edit invoice
+- Save all updates back to the shared backend so mobile also sees them
+
+Do not leave mobile-created or legacy cases as read-only desktop rows.
+
+**Files/areas to check**
+
+Please specifically review and update:
+
+- `artifacts/labtrax-desktop/src/pages/cases.tsx`
+- `artifacts/labtrax/app/case/[id].tsx`
+- `artifacts/labtrax/lib/app-context.tsx`
+- `artifacts/labtrax/lib/query-client.ts`
+- `artifacts/api-server/src/routes/cases.ts`
+- `artifacts/api-server/src/routes/labtrax-routes.ts`
+
+The mobile case detail screen already has most of the interaction model. The desktop version should carry over the same functional actions, adapted to desktop UI.
+
+**Also verify deployment**
+
+Please confirm that the published desktop version actually includes the new desktop code. If the build only published the mobile app or only changed the HUD, then the desktop functionality would still look unchanged.
+
+Please add a visible version/build marker somewhere in the desktop settings or footer so we can confirm which desktop build is actually live after publishing.
+
+**Acceptance criteria**
+
+This is only fixed when all of the following are true:
+
+- Clicking a case from Recent Cases opens an interactive case detail view.
+- Clicking a case from the Cases page opens the same interactive case detail view.
+- Existing SDR1 cases can be opened and edited on desktop.
+- Existing invoices linked to cases appear on desktop.
+- Admin users can generate, view, edit, and pay invoices from desktop.
+- Users can add pictures to a case from desktop.
+- Users can add videos to a case from desktop.
+- Users can add documents from File Explorer to a case from desktop.
+- Users can add notes to a case from desktop.
+- Users can assign barcodes from desktop.
+- Users can locate/change case status from desktop.
+- Updates made on desktop appear in mobile.
+- Updates made on mobile appear in desktop.
+- SDR1 case count and data match across desktop and mobile.
+- The desktop version no longer only shows cases visually while leaving them non-interactive.
+
+Please explain exactly what was changed, why the previous publish did not include the requested desktop case interaction functionality, and how you verified that the live desktop version now includes it.
