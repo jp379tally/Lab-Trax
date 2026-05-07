@@ -816,7 +816,7 @@ function TechDashboard() {
       />
 
       {isLabAdmin && pendingJoinRequests.length > 0 && (
-        <View style={styles.joinRequestSection}>
+        <View style={invStyles.joinRequestSection}>
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionTitle, { color: themeColors.text }]}>Connection Requests</Text>
             <View style={[styles.dueTodayBadge, { backgroundColor: "#EF4444" }]}>
@@ -829,29 +829,29 @@ function TechDashboard() {
             const displayName = reqUser?.doctorName ? `Dr. ${reqUser.doctorName}` : req.requestingUsername;
             const practiceName = reqUser?.practiceName;
             return (
-              <View key={req.id} style={styles.joinReqCard}>
-                <View style={[styles.joinReqIconWrap, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
+              <View key={req.id} style={invStyles.joinReqCard}>
+                <View style={[invStyles.joinReqIconWrap, { backgroundColor: isProvider ? "#DBEAFE" : "#FEF3C7" }]}>
                   <Ionicons name={isProvider ? "medical" : "person-add"} size={22} color={isProvider ? "#2563EB" : "#D97706"} />
                 </View>
-                <View style={styles.joinReqContent}>
-                  <Text style={styles.joinReqTitle}>{isProvider ? "Provider Connection Request" : "Join Request"}</Text>
-                  <Text style={styles.joinReqName}>{displayName}</Text>
-                  {practiceName ? <Text style={styles.joinReqPractice}>{practiceName}</Text> : null}
-                  <Text style={styles.joinReqMsg}>{req.message}</Text>
-                  <View style={styles.joinReqBtns}>
+                <View style={invStyles.joinReqContent}>
+                  <Text style={invStyles.joinReqTitle}>{isProvider ? "Provider Connection Request" : "Join Request"}</Text>
+                  <Text style={invStyles.joinReqName}>{displayName}</Text>
+                  {practiceName ? <Text style={invStyles.joinReqPractice}>{practiceName}</Text> : null}
+                  <Text style={invStyles.joinReqMsg}>{req.message}</Text>
+                  <View style={invStyles.joinReqBtns}>
                     <Pressable
-                      style={({ pressed }) => [styles.joinReqAcceptBtn, pressed && { opacity: 0.8 }]}
+                      style={({ pressed }) => [invStyles.joinReqAcceptBtn, pressed && { opacity: 0.8 }]}
                       onPress={() => setConfirmJoinReq({ requestId: req.id, username: displayName, accept: true })}
                     >
                       <Ionicons name="checkmark" size={16} color="#FFF" />
-                      <Text style={styles.joinReqAcceptText}>Accept</Text>
+                      <Text style={invStyles.joinReqAcceptText}>Accept</Text>
                     </Pressable>
                     <Pressable
-                      style={({ pressed }) => [styles.joinReqDeclineBtn, pressed && { opacity: 0.8 }]}
+                      style={({ pressed }) => [invStyles.joinReqDeclineBtn, pressed && { opacity: 0.8 }]}
                       onPress={() => setConfirmJoinReq({ requestId: req.id, username: displayName, accept: false })}
                     >
                       <Ionicons name="close" size={16} color="#EF4444" />
-                      <Text style={styles.joinReqDeclineText}>Decline</Text>
+                      <Text style={invStyles.joinReqDeclineText}>Decline</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -1064,14 +1064,14 @@ function TechDashboard() {
 
       <Pressable
         onPress={() => router.push("/chat")}
-        style={({ pressed }) => [styles.aiChatCard, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
+        style={({ pressed }) => [invStyles.aiChatCard, pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] }]}
       >
-        <View style={styles.aiChatIcon}>
+        <View style={invStyles.aiChatIcon}>
           <Ionicons name="sparkles" size={22} color={Colors.light.tint} />
         </View>
-        <View style={styles.aiChatInfo}>
-          <Text style={styles.aiChatTitle}>AI Assistant</Text>
-          <Text style={styles.aiChatSub}>Ask about cases, materials, or workflows</Text>
+        <View style={invStyles.aiChatInfo}>
+          <Text style={invStyles.aiChatTitle}>AI Assistant</Text>
+          <Text style={invStyles.aiChatSub}>Ask about cases, materials, or workflows</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color={Colors.light.textTertiary} />
       </Pressable>
@@ -1351,28 +1351,28 @@ function TechDashboard() {
     </Modal>
 
     <Modal transparent visible={!!confirmJoinReq} animationType="fade" onRequestClose={() => setConfirmJoinReq(null)}>
-      <View style={styles.joinReqOverlay}>
-        <View style={styles.joinReqConfirmCard}>
-          <View style={[styles.joinReqConfirmIconWrap, { backgroundColor: confirmJoinReq?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
+      <View style={invStyles.joinReqOverlay}>
+        <View style={invStyles.joinReqConfirmCard}>
+          <View style={[invStyles.joinReqConfirmIconWrap, { backgroundColor: confirmJoinReq?.accept ? "#DCFCE7" : "#FEE2E2" }]}>
             <Ionicons
               name={confirmJoinReq?.accept ? "person-add" : "close-circle"}
               size={32}
               color={confirmJoinReq?.accept ? "#16A34A" : "#EF4444"}
             />
           </View>
-          <Text style={styles.joinReqConfirmTitle}>
+          <Text style={invStyles.joinReqConfirmTitle}>
             {confirmJoinReq?.accept ? "Accept Request" : "Decline Request?"}
           </Text>
-          <Text style={styles.joinReqConfirmDesc}>
+          <Text style={invStyles.joinReqConfirmDesc}>
             {confirmJoinReq?.accept
               ? `Would you like ${confirmJoinReq?.username} to join as a User or Admin?`
               : `${confirmJoinReq?.username}'s request to join will be declined. They will be notified.`}
           </Text>
           {confirmJoinReq?.accept ? (
-            <View style={styles.joinReqConfirmBtns}>
+            <View style={invStyles.joinReqConfirmBtns}>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmYesBtn, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
                 onPress={async () => {
                   if (!confirmJoinReq || isProcessingJoinReq) return;
                   setIsProcessingJoinReq(true);
@@ -1389,11 +1389,11 @@ function TechDashboard() {
                   }
                 }}
               >
-                <Text style={styles.joinReqConfirmYesText}>Accept as User</Text>
+                <Text style={invStyles.joinReqConfirmYesText}>Accept as User</Text>
               </Pressable>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#7C3AED" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#7C3AED" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
                 onPress={async () => {
                   if (!confirmJoinReq || isProcessingJoinReq) return;
                   setIsProcessingJoinReq(true);
@@ -1410,11 +1410,11 @@ function TechDashboard() {
                   }
                 }}
               >
-                <Text style={styles.joinReqConfirmYesText}>Accept as Admin</Text>
+                <Text style={invStyles.joinReqConfirmYesText}>Accept as Admin</Text>
               </Pressable>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
                 onPress={async () => {
                   if (!confirmJoinReq || isProcessingJoinReq) return;
                   setIsProcessingJoinReq(true);
@@ -1431,21 +1431,21 @@ function TechDashboard() {
                   }
                 }}
               >
-                <Text style={styles.joinReqConfirmYesText}>Decline</Text>
+                <Text style={invStyles.joinReqConfirmYesText}>Decline</Text>
               </Pressable>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
                 onPress={() => { if (!isProcessingJoinReq) setConfirmJoinReq(null); }}
               >
-                <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
+                <Text style={invStyles.joinReqConfirmNoText}>Cancel</Text>
               </Pressable>
             </View>
           ) : (
-            <View style={styles.joinReqConfirmBtns}>
+            <View style={invStyles.joinReqConfirmBtns}>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmYesBtn, { backgroundColor: "#EF4444" }, (pressed || isProcessingJoinReq) && { opacity: 0.6 }]}
                 onPress={async () => {
                   if (!confirmJoinReq || isProcessingJoinReq) return;
                   setIsProcessingJoinReq(true);
@@ -1462,14 +1462,14 @@ function TechDashboard() {
                   }
                 }}
               >
-                <Text style={styles.joinReqConfirmYesText}>Decline</Text>
+                <Text style={invStyles.joinReqConfirmYesText}>Decline</Text>
               </Pressable>
               <Pressable
                 disabled={isProcessingJoinReq}
-                style={({ pressed }) => [styles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
+                style={({ pressed }) => [invStyles.joinReqConfirmNoBtn, pressed && { opacity: 0.85 }]}
                 onPress={() => { if (!isProcessingJoinReq) setConfirmJoinReq(null); }}
               >
-                <Text style={styles.joinReqConfirmNoText}>Cancel</Text>
+                <Text style={invStyles.joinReqConfirmNoText}>Cancel</Text>
               </Pressable>
             </View>
           )}
@@ -1881,7 +1881,7 @@ function AdminDashboard() {
   }, []);
 
   const labPortalUsers = registeredUsers.filter(
-    (u) => (u.userType === "lab" || !u.userType) && u.userType !== "master_admin",
+    (u) => (u.userType === "lab" || !u.userType) && (u.userType as string) !== "master_admin",
   );
 
   function resetClientForm() {
@@ -2385,7 +2385,7 @@ function AdminDashboard() {
       }
 
       function handleSelectTierInEdit(tierName: string) {
-        setEditingClient({ ...editingClient, tier: tierName });
+        setEditingClient({ ...editingClient, tier: tierName } as any);
         const tier = pricingTiers.find(t => t.name === tierName);
         if (tier) {
           const newPrices: Record<string, string> = {};
@@ -3568,7 +3568,7 @@ function AdminDashboard() {
                       <Pressable
                         onPress={() => {
                           const name = editInvBillToSearch.trim();
-                          const newClient = addClient({ practiceName: name, leadDoctor: name, phone: "", email: "", address: "" });
+                          const newClient = addClient({ practiceName: name, leadDoctor: name, phone: "", email: "", address: "" } as any);
                           if (newClient) {
                             setEditInvBillTo(name);
                             setEditInvBillToSearch(name);
@@ -5672,7 +5672,7 @@ function AdminDashboard() {
     const paidInvoices = clientInvoices.filter((inv) => inv.status === "paid");
     const openBalance = openInvoices.reduce((s, inv) => s + inv.amount, 0);
     const paidTotal = paidInvoices.reduce((s, inv) => s + inv.amount, 0);
-    const clientCases = cases.filter((c) => c.clientName === selectedClient.practiceName);
+    const clientCases = cases.filter((c) => (c as any).clientName === selectedClient.practiceName);
 
     return (
       <ScrollView style={{ flex: 1, backgroundColor: Colors.light.background }} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -7621,10 +7621,10 @@ function AdminDashboard() {
               <Pressable key={client.id} onPress={() => { setRpClientId(selected ? null : client.id); setRpSelectedInvIds([]); setRpAmountText(""); }}
                 style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 12, borderBottomWidth: idx < clientsWithOpen.length - 1 ? 1 : 0, borderBottomColor: "#F1F5F9", backgroundColor: selected ? "#EFF6FF" : idx % 2 === 0 ? "#fff" : "#FAFBFC" }}>
                 <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: selected ? "#1D4ED8" : "#F1F5F9", alignItems: "center", justifyContent: "center", marginRight: 12 }}>
-                  {selected ? <Ionicons name="checkmark" size={18} color="#fff" /> : <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#6B7280" }}>{(client.practiceName || client.doctorName || "?")[0].toUpperCase()}</Text>}
+                  {selected ? <Ionicons name="checkmark" size={18} color="#fff" /> : <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#6B7280" }}>{(client.practiceName || (client as any).doctorName || "?")[0].toUpperCase()}</Text>}
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: selected ? "#1D4ED8" : "#111827" }}>{client.practiceName || client.doctorName}</Text>
+                  <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: selected ? "#1D4ED8" : "#111827" }}>{client.practiceName || (client as any).doctorName}</Text>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#6B7280" }}>{invoices.filter(i => i.clientId === client.id && i.status !== "paid").length} open invoice(s)</Text>
                 </View>
                 <Text style={{ fontSize: 14, fontFamily: "Inter_700Bold", color: "#DC2626" }}>{formatCurrency(openAmt)}</Text>
@@ -8370,7 +8370,7 @@ function AdminDashboard() {
         } else {
           const FileSystem = await import("expo-file-system");
           const dateStr = new Date().toISOString().split("T")[0];
-          const destPath = `${FileSystem.documentDirectory}labtrax-backup-${dateStr}.zip`;
+          const destPath = `${(FileSystem as any).documentDirectory}labtrax-backup-${dateStr}.zip`;
 
           const dlRes = await FileSystem.downloadAsync(backupUrl, destPath, {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -8912,7 +8912,7 @@ function ProviderDashboard() {
                 <View style={[provStyles.statusDot, { backgroundColor: getStationInfo(c.status, customStationLabels).color }]} />
                 <View style={{ flex: 1 }}>
                   <Text style={provStyles.caseName}>{c.patientName}</Text>
-                  <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+                  <Text style={provStyles.caseSub}>{c.caseType} · {(c as any).toothNumbers?.join(", ") || "N/A"}</Text>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
@@ -8936,7 +8936,7 @@ function ProviderDashboard() {
                 <View style={[provStyles.statusDot, { backgroundColor: Colors.light.success }]} />
                 <View style={{ flex: 1 }}>
                   <Text style={provStyles.caseName}>{c.patientName}</Text>
-                  <Text style={provStyles.caseSub}>{c.caseType} · {c.toothNumbers?.join(", ") || "N/A"}</Text>
+                  <Text style={provStyles.caseSub}>{c.caseType} · {(c as any).toothNumbers?.join(", ") || "N/A"}</Text>
                   <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.tint, marginTop: 2 }}>{myLabName}</Text>
                 </View>
                 <Ionicons name="checkmark-circle" size={20} color={Colors.light.success} />
@@ -10230,7 +10230,7 @@ function MasterAdminDashboard() {
         }
       >
         {renderBackHeader("All Users")}
-        {registeredUsers.filter((u) => u.userType !== "master_admin").map((u, idx) => (
+        {registeredUsers.filter((u) => (u.userType as string) !== "master_admin").map((u, idx) => (
             <View key={u.username + idx} style={[adm.menuItem, { marginHorizontal: 20 }]}>
               <View style={[adm.menuIcon, { backgroundColor: u.userType === "provider" ? "#DBEAFE" : u.userType === "master_admin" ? "#FEF3C7" : "#E0F2FE" }]}>
                 <Ionicons name={u.userType === "provider" ? "medical" : u.userType === "master_admin" ? "shield-checkmark" : "person"} size={20} color={u.userType === "provider" ? "#3B82F6" : u.userType === "master_admin" ? "#D97706" : "#0EA5E9"} />
@@ -10252,7 +10252,7 @@ function MasterAdminDashboard() {
   function renderLabPortal() {
     const totalRevenue = cases.reduce((sum, c) => sum + c.price, 0);
     const labUsers = registeredUsers.filter(
-      (u) => (u.userType === "lab" || !u.userType) && u.userType !== "master_admin",
+      (u) => (u.userType === "lab" || !u.userType) && (u.userType as string) !== "master_admin",
     );
     const openInvoiceCount = invoices.filter(i => i.status === "open" || i.status === "overdue").length;
     return (
@@ -10914,6 +10914,40 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: Colors.light.tintLight,
   },
+  aiChatCard: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    backgroundColor: Colors.light.surface,
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  aiChatIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center" as const,
+    alignItems: "center" as const,
+  },
+  aiChatInfo: {
+    flex: 1,
+  },
+  aiChatTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  aiChatSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
 });
 
 const adm = StyleSheet.create({
@@ -11413,6 +11447,18 @@ const adm = StyleSheet.create({
     borderColor: Colors.light.border,
     marginBottom: 8,
   },
+  textInput: {
+    backgroundColor: Colors.light.surface,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    marginBottom: 8,
+  },
   clientRevenueAmount: {
     fontSize: 15,
     fontFamily: "Inter_700Bold",
@@ -11621,5 +11667,39 @@ const invStyles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
     color: Colors.light.text,
+  },
+  aiChatCard: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    backgroundColor: Colors.light.surface,
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  aiChatIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: Colors.light.tintLight,
+    justifyContent: "center" as const,
+    alignItems: "center" as const,
+  },
+  aiChatInfo: {
+    flex: 1,
+  },
+  aiChatTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.text,
+  },
+  aiChatSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    marginTop: 2,
   },
 });

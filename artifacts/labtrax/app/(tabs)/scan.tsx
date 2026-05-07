@@ -41,7 +41,7 @@ import { ManualCropOverlay } from "@/components/ManualCropOverlay";
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
 async function normalizePrescriptionImage(uri: string): Promise<{ uri: string; mimeType: string }> {
-  if (Platform.OS === "web") return { uri, mimeType: "image/jpeg" };
+  if ((Platform.OS as string) === "web") return { uri, mimeType: "image/jpeg" };
   try {
     const result = await ImageManipulator.manipulateAsync(
       uri,
@@ -330,14 +330,14 @@ export default function ScanScreen() {
       }
       return sorted;
     });
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }
 
   function handleToothLongPress(num: number) {
     if (!selectedTeeth.includes(num)) {
       setSelectedTeeth((prev) => [...prev, num].sort((a, b) => a - b));
     }
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     Alert.alert(
       `Tooth #${num}`,
       "Select a designation for this tooth:",
@@ -500,7 +500,7 @@ export default function ScanScreen() {
           });
           setCaseAttachments((prev) => [...prev, ...newAttachments]);
           setPhase("form");
-          if (Platform.OS !== "web") {
+          if ((Platform.OS as string) !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
           setTimeout(() => {
@@ -544,7 +544,7 @@ export default function ScanScreen() {
         await new Promise(r => setTimeout(r, 800));
         if (cancelled) return;
         setPhase("review");
-        if (Platform.OS !== "web") {
+        if ((Platform.OS as string) !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }
       };
@@ -592,7 +592,7 @@ export default function ScanScreen() {
       } catch {}
     }
 
-    if (!rawUri && Platform.OS === "web") {
+    if (!rawUri && (Platform.OS as string) === "web") {
       try {
         const videoEl = document.querySelector("video");
         if (videoEl) {
@@ -627,14 +627,14 @@ export default function ScanScreen() {
     cropDoneRef.current = false;
     setCapturedUri(rawUri);
     setPhase("scanning");
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     let dataUri = rawUri;
-    if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
+    if (!rawUri.startsWith("data:") && (Platform.OS as string) !== "web") {
       try {
         const FileSystem = await import("expo-file-system");
         const b64 = await FileSystem.readAsStringAsync(rawUri, {
-          encoding: FileSystem.EncodingType.Base64,
+          encoding: (FileSystem as any).EncodingType.Base64,
         });
         dataUri = `data:image/jpeg;base64,${b64}`;
         setCapturedUri(dataUri);
@@ -728,7 +728,7 @@ export default function ScanScreen() {
           photoUri = photo.uri;
         }
       } catch {
-        if (Platform.OS === "web") {
+        if ((Platform.OS as string) === "web") {
           try {
             const videoEl = document.querySelector("video");
             if (videoEl) {
@@ -754,7 +754,7 @@ export default function ScanScreen() {
         }
       }
     } else {
-      if (Platform.OS === "web") {
+      if ((Platform.OS as string) === "web") {
         try {
           const videoEl = document.querySelector("video");
           if (videoEl) {
@@ -791,7 +791,7 @@ export default function ScanScreen() {
         user: userInitials,
       };
       setActivityEntries((prev) => [...prev, entry]);
-      if (Platform.OS !== "web") {
+      if ((Platform.OS as string) !== "web") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
       Alert.alert("Photo Added", `${casePhotos.length + 1} photo(s) attached to this case.`);
@@ -834,7 +834,7 @@ export default function ScanScreen() {
       };
       appendActivityEntry(entry);
 
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if ((Platform.OS as string) !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       Alert.alert(
         "Media Added",
@@ -871,24 +871,24 @@ export default function ScanScreen() {
       cropDoneRef.current = false;
       setCapturedUri(rawUri);
       setPhase("scanning");
-      if (Platform.OS !== "web") {
+      if ((Platform.OS as string) !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
 
       let dataUri = rawUri;
-      if (!rawUri.startsWith("data:") && Platform.OS !== "web") {
+      if (!rawUri.startsWith("data:") && (Platform.OS as string) !== "web") {
         try {
           const FSystem = await import("expo-file-system");
-          const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: FSystem.EncodingType.Base64 });
+          const b64 = await FSystem.readAsStringAsync(rawUri, { encoding: (FSystem as any).EncodingType.Base64 });
           dataUri = `data:image/jpeg;base64,${b64}`;
           setCapturedUri(dataUri);
         } catch (e: any) {
           console.log("Gallery crop: could not read file:", e?.message);
           try {
             const FSystem = await import("expo-file-system");
-            const destUri = FSystem.cacheDirectory + "gallery_" + Date.now() + ".jpg";
+            const destUri = (FSystem as any).cacheDirectory + "gallery_" + Date.now() + ".jpg";
             await FSystem.copyAsync({ from: rawUri, to: destUri });
-            const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+            const b64 = await FSystem.readAsStringAsync(destUri, { encoding: (FSystem as any).EncodingType.Base64 });
             dataUri = `data:image/jpeg;base64,${b64}`;
             setCapturedUri(dataUri);
             console.log("Gallery crop: copy+read succeeded, length:", b64.length);
@@ -929,7 +929,7 @@ export default function ScanScreen() {
       if (!isValid) continue;
       const isPdf = file.type === "application/pdf" || file.name?.toLowerCase().endsWith(".pdf");
       if (isPdf) {
-        if (Platform.OS !== "web") {
+        if ((Platform.OS as string) !== "web") {
           Alert.alert(
             "PDF upload not supported on mobile",
             "Please upload an image on mobile, or use the web app for PDF files."
@@ -968,7 +968,7 @@ export default function ScanScreen() {
   }
 
   async function handleWebUploadRx() {
-    if (Platform.OS !== "web") return;
+    if ((Platform.OS as string) !== "web") return;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*,.pdf,.jpg,.jpeg,.png,.heic,.heif,.bmp,.tiff,.webp";
@@ -1006,7 +1006,7 @@ export default function ScanScreen() {
   }
 
   useEffect(() => {
-    if (Platform.OS !== "web") return;
+    if ((Platform.OS as string) !== "web") return;
     if (!isFocused) {
       setWebDragOver(false);
       dragCounterRef.current = 0;
@@ -1057,7 +1057,7 @@ export default function ScanScreen() {
       return uri;
     }
 
-    if (Platform.OS === "web") {
+    if ((Platform.OS as string) === "web") {
       try {
         const response = await globalThis.fetch(uri);
         const blob = await response.blob();
@@ -1108,7 +1108,7 @@ export default function ScanScreen() {
 
       if (uri.startsWith("content://") || uri.startsWith("ph://")) {
         try {
-          const destUri = FileSystem.cacheDirectory + "ai_compress_" + Date.now() + ".jpg";
+          const destUri = (FileSystem as any).cacheDirectory + "ai_compress_" + Date.now() + ".jpg";
           await FileSystem.copyAsync({ from: uri, to: destUri });
           urisToTry.push(destUri);
           console.log("AI compress: copied content/ph URI to cache:", destUri);
@@ -1160,7 +1160,7 @@ export default function ScanScreen() {
             );
             console.log("AI compress: manipulator succeeded with:", tryUri);
             const fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
-              encoding: FileSystem.EncodingType.Base64,
+              encoding: (FileSystem as any).EncodingType.Base64,
             });
             console.log("AI compress: base64 length:", fileBase64.length);
             return `data:image/jpeg;base64,${fileBase64}`;
@@ -1171,7 +1171,7 @@ export default function ScanScreen() {
 
         try {
           const fileBase64 = await FileSystem.readAsStringAsync(tryUri, {
-            encoding: FileSystem.EncodingType.Base64,
+            encoding: (FileSystem as any).EncodingType.Base64,
           });
           if (fileBase64 && fileBase64.length > 100) {
             console.log("AI compress: raw read succeeded for", tryUri, "length:", fileBase64.length);
@@ -1187,7 +1187,7 @@ export default function ScanScreen() {
       if (info?.exists && info?.uri) {
         try {
           const fileBase64 = await FileSystem.readAsStringAsync(info.uri, {
-            encoding: FileSystem.EncodingType.Base64,
+            encoding: (FileSystem as any).EncodingType.Base64,
           });
           if (fileBase64 && fileBase64.length > 100) {
             console.log("AI compress: read via getInfoAsync uri succeeded, length:", fileBase64.length);
@@ -1269,10 +1269,10 @@ export default function ScanScreen() {
       for (const photo of casePhotos) {
         if (photo.startsWith("data:")) {
           normalizedImages.push(photo);
-        } else if (Platform.OS !== "web") {
+        } else if ((Platform.OS as string) !== "web") {
           try {
             const FSystem = await import("expo-file-system");
-            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: (FSystem as any).EncodingType.Base64 });
             normalizedImages.push(`data:image/jpeg;base64,${b64}`);
           } catch {
             console.log("Could not read file URI for PDF:", photo);
@@ -1297,11 +1297,11 @@ export default function ScanScreen() {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const fileName = `Scan_${timestamp}.pdf`;
 
-      if (Platform.OS !== "web") {
-        const cacheDir = FileSystem.cacheDirectory;
+      if ((Platform.OS as string) !== "web") {
+        const cacheDir = (FileSystem as any).cacheDirectory;
         if (!cacheDir) throw new Error("Cache directory unavailable");
         const fileUri = `${cacheDir}${fileName}`;
-        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: (FileSystem as any).EncodingType.Base64 });
         if (await Sharing.isAvailableAsync()) {
           await Sharing.shareAsync(fileUri, { mimeType: "application/pdf", UTI: "com.adobe.pdf" });
         } else {
@@ -1316,7 +1316,7 @@ export default function ScanScreen() {
         document.body.removeChild(link);
         Alert.alert("PDF Downloaded", `${data.pageCount} page PDF saved as ${fileName}`);
       }
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if ((Platform.OS as string) !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err: any) {
       console.log("PDF save error:", err?.message || err);
       Alert.alert("PDF Error", "Failed to generate PDF. Please try again.");
@@ -1332,10 +1332,10 @@ export default function ScanScreen() {
       for (const photo of photos) {
         if (photo.startsWith("data:")) {
           normalizedImages.push(photo);
-        } else if (Platform.OS !== "web") {
+        } else if ((Platform.OS as string) !== "web") {
           try {
             const FSystem = await import("expo-file-system");
-            const b64 = await FSystem.readAsStringAsync(photo, { encoding: FSystem.EncodingType.Base64 });
+            const b64 = await FSystem.readAsStringAsync(photo, { encoding: (FSystem as any).EncodingType.Base64 });
             normalizedImages.push(`data:image/jpeg;base64,${b64}`);
           } catch {
             console.log("Auto PDF: could not read file URI:", photo);
@@ -1357,11 +1357,11 @@ export default function ScanScreen() {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const fileName = `Rx_${timestamp}.pdf`;
 
-      if (Platform.OS !== "web") {
-        const cacheDir = FileSystem.cacheDirectory;
+      if ((Platform.OS as string) !== "web") {
+        const cacheDir = (FileSystem as any).cacheDirectory;
         if (!cacheDir) return null;
         const fileUri = `${cacheDir}${fileName}`;
-        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+        await FileSystem.writeAsStringAsync(fileUri, b64, { encoding: (FileSystem as any).EncodingType.Base64 });
         console.log("Auto PDF: saved to", fileUri);
         return fileUri;
       } else {
@@ -1388,12 +1388,12 @@ export default function ScanScreen() {
       if (b64Part.length > 10000) return uri;
       console.log("AI quality: data URI too small (" + b64Part.length + " chars), attempting re-read");
     }
-    if (Platform.OS !== "web" && !uri.startsWith("data:")) {
+    if ((Platform.OS as string) !== "web" && !uri.startsWith("data:")) {
       try {
         const FSystem = await import("expo-file-system");
-        const destUri = FSystem.cacheDirectory + "hq_" + Date.now() + ".jpg";
+        const destUri = (FSystem as any).cacheDirectory + "hq_" + Date.now() + ".jpg";
         await FSystem.copyAsync({ from: uri, to: destUri });
-        const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+        const b64 = await FSystem.readAsStringAsync(destUri, { encoding: (FSystem as any).EncodingType.Base64 });
         if (b64 && b64.length > 10000) {
           console.log("AI quality: re-read succeeded, length:", b64.length);
           return `data:image/jpeg;base64,${b64}`;
@@ -1414,7 +1414,7 @@ export default function ScanScreen() {
         }
         if (manipResult.uri) {
           const FSystem = await import("expo-file-system");
-          const b64 = await FSystem.readAsStringAsync(manipResult.uri, { encoding: FSystem.EncodingType.Base64 });
+          const b64 = await FSystem.readAsStringAsync(manipResult.uri, { encoding: (FSystem as any).EncodingType.Base64 });
           if (b64 && b64.length > 10000) {
             console.log("AI quality: manipulator+read succeeded, length:", b64.length);
             return `data:image/jpeg;base64,${b64}`;
@@ -1475,12 +1475,12 @@ export default function ScanScreen() {
           console.log("AI: Compressed primary image, base64 length:", base64Data.length);
         } catch (compErr: any) {
           console.log("AI: Primary compression failed, trying direct base64 read:", compErr?.message || compErr);
-          if (Platform.OS !== "web" && !analyzeUri.startsWith("data:")) {
+          if ((Platform.OS as string) !== "web" && !analyzeUri.startsWith("data:")) {
             try {
               const FSystem = await import("expo-file-system");
-              const destUri = FSystem.cacheDirectory + "ai_fallback_" + Date.now() + ".jpg";
+              const destUri = (FSystem as any).cacheDirectory + "ai_fallback_" + Date.now() + ".jpg";
               await FSystem.copyAsync({ from: analyzeUri, to: destUri });
-              const b64 = await FSystem.readAsStringAsync(destUri, { encoding: FSystem.EncodingType.Base64 });
+              const b64 = await FSystem.readAsStringAsync(destUri, { encoding: (FSystem as any).EncodingType.Base64 });
               base64Data = `data:image/jpeg;base64,${b64}`;
               console.log("AI: Fallback copy+read succeeded, length:", b64.length);
             } catch (fallbackErr: any) {
@@ -1542,7 +1542,7 @@ export default function ScanScreen() {
           if (d.notes) setNotes(d.notes);
           aiSuccess = true;
 
-          if (Platform.OS !== "web") {
+          if ((Platform.OS as string) !== "web") {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
 
@@ -1757,7 +1757,7 @@ export default function ScanScreen() {
       user: userInitials,
     }]);
     setPhase("form");
-    if (Platform.OS !== "web") {
+    if ((Platform.OS as string) !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
   }
@@ -1842,7 +1842,7 @@ export default function ScanScreen() {
         (printOptions as any).printerUrl = selectedPrinter.url;
       }
       await Print.printAsync(printOptions);
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if ((Platform.OS as string) !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
       const msg = e?.message || "";
       if (!msg.includes("cancelled") && e?.code !== "ERR_CANCELLED") {
@@ -1901,7 +1901,7 @@ export default function ScanScreen() {
     if (barcodeAttachScanned || barcodeAttachProcessingRef.current) return;
     barcodeAttachProcessingRef.current = true;
     setBarcodeAttachScanned(true);
-    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if ((Platform.OS as string) !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     const caseId = barcodeScanForCase;
     if (!caseId) {
@@ -1944,7 +1944,7 @@ export default function ScanScreen() {
   function handleBarcodeScanned({ data }: { data: string }) {
     if (barcodeScanned || barcodeAttachProcessingRef.current || barcodeScanForCase) return;
     setBarcodeScanned(true);
-    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if ((Platform.OS as string) !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     const foundCase = cases.find(c => c.id === data || c.caseNumber === data || c.assignedBarcode === data);
     if (foundCase) {
@@ -1955,7 +1955,7 @@ export default function ScanScreen() {
       }, 400);
     } else {
       setShowBarcodeScanner(false);
-      if (Platform.OS === "web") {
+      if ((Platform.OS as string) === "web") {
         setBarcodeScanned(false);
         setPendingBarcode(data);
         handleManualEntry();
@@ -1979,7 +1979,7 @@ export default function ScanScreen() {
   }
 
   async function openBarcodeScanner() {
-    if (Platform.OS === "web") {
+    if ((Platform.OS as string) === "web") {
       setShowBarcodeScanner(true);
       return;
     }
@@ -2012,7 +2012,7 @@ export default function ScanScreen() {
         user: userInitials,
       }));
       setActivityEntries((prev) => [...newEntries, ...prev]);
-      if (Platform.OS !== "web") {
+      if ((Platform.OS as string) !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
     }
@@ -2057,7 +2057,7 @@ export default function ScanScreen() {
         user: userInitials,
       }));
       setActivityEntries((prev) => [...newEntries, ...prev]);
-      if (Platform.OS !== "web") {
+      if ((Platform.OS as string) !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
     }
@@ -2079,7 +2079,7 @@ export default function ScanScreen() {
             user: userInitials,
           };
           appendActivityEntry(entry);
-          if (Platform.OS !== "web") {
+          if ((Platform.OS as string) !== "web") {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }
           return;
@@ -2103,7 +2103,7 @@ export default function ScanScreen() {
         user: userInitials,
       };
       appendActivityEntry(entry);
-      if (Platform.OS !== "web") {
+      if ((Platform.OS as string) !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
     }
@@ -2126,7 +2126,7 @@ export default function ScanScreen() {
         return;
       }
 
-      if (Platform.OS !== "web") {
+      if ((Platform.OS as string) !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
 
@@ -2137,11 +2137,11 @@ export default function ScanScreen() {
           cropDoneRef.current = false;
           let dataUri = asset.uri;
 
-          if (!asset.uri.startsWith("data:") && Platform.OS !== "web") {
+          if (!asset.uri.startsWith("data:") && (Platform.OS as string) !== "web") {
             try {
               const FSystem = await import("expo-file-system");
               const b64 = await FSystem.readAsStringAsync(asset.uri, {
-                encoding: FSystem.EncodingType.Base64,
+                encoding: (FSystem as any).EncodingType.Base64,
               });
               const mime = asset.mimeType || "image/jpeg";
               dataUri = `data:${mime};base64,${b64}`;
@@ -2204,7 +2204,7 @@ export default function ScanScreen() {
   function handleAddPrescription() {
     setPhase("camera");
     setCapturedUri(null);
-    if (Platform.OS !== "web") {
+    if ((Platform.OS as string) !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
   }
@@ -2259,7 +2259,7 @@ export default function ScanScreen() {
       toothMap: toothMapEntries,
     });
 
-    if (Platform.OS !== "web") {
+    if ((Platform.OS as string) !== "web") {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
 
@@ -2299,7 +2299,7 @@ export default function ScanScreen() {
       assignBarcodeToCase(newCase.id, pendingBarcode);
       setPendingBarcode(null);
       barcodeAlreadyAttachedRef.current = true;
-      if (Platform.OS === "web") {
+      if ((Platform.OS as string) === "web") {
         setLabelData(savedLabel);
         setLabelModalVisible(true);
       } else {
@@ -2715,13 +2715,13 @@ export default function ScanScreen() {
         onRequestClose={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
       >
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
+          <View style={{ paddingTop: (Platform.OS as string) === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Attach Barcode</Text>
             <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}>
               <Ionicons name="close" size={28} color="#FFF" />
             </Pressable>
           </View>
-          {Platform.OS === "web" ? (
+          {(Platform.OS as string) === "web" ? (
             <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
               <Ionicons name="barcode-outline" size={60} color="#FFF" />
               <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
@@ -2785,7 +2785,7 @@ export default function ScanScreen() {
                   </Pressable>
                 </View>
               )}
-              <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, paddingTop: 12, backgroundColor: "rgba(0,0,0,0.85)" }}>
+              <View style={{ paddingHorizontal: 20, paddingBottom: (Platform.OS as string) === "web" ? 34 : insets.bottom + 10, paddingTop: 12, backgroundColor: "rgba(0,0,0,0.85)" }}>
                 <Pressable
                   onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
                   style={({ pressed }) => ({
@@ -2809,7 +2809,7 @@ export default function ScanScreen() {
   if (phase === "form") {
     return (
       <View style={[styles.container, { backgroundColor: Colors.light.backgroundSolid }]}>
-        {Platform.OS === "web" && webDragOver && (
+        {(Platform.OS as string) === "web" && webDragOver && (
           <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(37,99,235,0.12)", zIndex: 999, justifyContent: "center", alignItems: "center", borderWidth: 3, borderColor: "#2563EB", borderStyle: "dashed", borderRadius: 16 }} pointerEvents="none">
             <Ionicons name="arrow-down-circle" size={48} color="#2563EB" />
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#2563EB", marginTop: 12 }}>Drop files to attach</Text>
@@ -2819,7 +2819,7 @@ export default function ScanScreen() {
         <View
           style={[
             styles.formHeader,
-            { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 },
+            { paddingTop: (Platform.OS as string) === "web" ? 67 + 12 : insets.top + 12 },
           ]}
         >
           <Pressable onPress={resetForm} style={styles.backBtn}>
@@ -2849,7 +2849,7 @@ export default function ScanScreen() {
         <KeyboardAwareScrollViewCompat
           style={styles.formScroll}
           contentContainerStyle={{
-            paddingBottom: Platform.OS === "web" ? 84 + 40 : 120,
+            paddingBottom: (Platform.OS as string) === "web" ? 84 + 40 : 120,
           }}
           showsVerticalScrollIndicator={false}
           bottomOffset={32}
@@ -2932,7 +2932,7 @@ export default function ScanScreen() {
           )}
 
           <View style={styles.addPhotoBtnRow}>
-            {Platform.OS === "web" ? (
+            {(Platform.OS as string) === "web" ? (
               <>
                 <Pressable
                   onPress={handleWebUploadRx}
@@ -3023,7 +3023,7 @@ export default function ScanScreen() {
                         setNewDoctorAddress("");
                         setNewDoctorPhone("");
                         setNewDoctorEmail("");
-                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       }}
                       style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
                       testID="add-new-doctor-btn"
@@ -3044,7 +3044,7 @@ export default function ScanScreen() {
                                 setDoctorName(entry.providerName);
                                 setDoctorDropdownOpen(false);
                                 setDoctorSearch("");
-                                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                               }}
                               style={({ pressed }) => [
                                 styles.dropdownItem,
@@ -3171,7 +3171,7 @@ export default function ScanScreen() {
                           setNewDoctorAddress("");
                           setNewDoctorPhone("");
                           setNewDoctorEmail("");
-                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
                         style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
                         testID="confirm-add-doctor-btn"
@@ -3230,7 +3230,7 @@ export default function ScanScreen() {
                       onPress={() => {
                         setAddingNewPatient(true);
                         setNewPatientInput("");
-                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       }}
                       style={({ pressed }) => [styles.addNewPatientBtn, pressed && { opacity: 0.7 }]}
                       testID="add-new-patient-btn"
@@ -3253,7 +3253,7 @@ export default function ScanScreen() {
                                 setPatientName(name);
                                 setPatientDropdownOpen(false);
                                 setPatientSearch("");
-                                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                               }}
                               style={({ pressed }) => [
                                 styles.dropdownItem,
@@ -3345,7 +3345,7 @@ export default function ScanScreen() {
                           setNewPatientMiddle("");
                           setNewPatientLast("");
                           setNewPatientInput("");
-                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
                         style={({ pressed }) => [styles.addNewPatientConfirmBtn, pressed && { opacity: 0.8 }]}
                         testID="confirm-add-patient-btn"
@@ -3398,7 +3398,7 @@ export default function ScanScreen() {
                         setRemovableStageOpen(false);
                         setRemovableArch("");
                       }
-                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                     style={({ pressed }) => [
                       styles.caseTypeItem,
@@ -3443,7 +3443,7 @@ export default function ScanScreen() {
                         onPress={() => {
                           setRemovableSubtype(sub);
                           setRemovableSubtypeOpen(false);
-                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
                         style={({ pressed }) => [
                           styles.dropdownItem,
@@ -3474,7 +3474,7 @@ export default function ScanScreen() {
                     key={arch}
                     onPress={() => {
                       setRemovableArch(removableArch === arch ? "" : arch);
-                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                     style={({ pressed }) => [
                       {
@@ -3537,7 +3537,7 @@ export default function ScanScreen() {
                         onPress={() => {
                           setRemovableStage(stage);
                           setRemovableStageOpen(false);
-                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                         }}
                         style={({ pressed }) => [
                           styles.dropdownItem,
@@ -3967,7 +3967,7 @@ export default function ScanScreen() {
                         onPress={() => {
                           setShade(s);
                           setShadeOpen(false);
-                          if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                           if (s === "Custom") {
                             setTimeout(() => {
                               Alert.alert(
@@ -4099,7 +4099,7 @@ export default function ScanScreen() {
     );
   }
 
-  if (Platform.OS === "web" && phase === "camera") {
+  if ((Platform.OS as string) === "web" && phase === "camera") {
     return (
       <View style={[styles.container, { paddingTop: 67 + 16, backgroundColor: Colors.light.backgroundSolid }]}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 32 }}>
@@ -4282,7 +4282,7 @@ export default function ScanScreen() {
 
         <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
           <View style={{ flex: 1, backgroundColor: "#000" }}>
-            <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{ paddingTop: (Platform.OS as string) === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
               <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
               <Pressable onPress={() => setShowBarcodeScanner(false)}>
                 <Ionicons name="close" size={28} color="#FFF" />
@@ -4421,7 +4421,7 @@ export default function ScanScreen() {
           </View>
         )}
 
-        <View style={[styles.cameraHeaderOverlay, { paddingTop: Platform.OS === "web" ? 67 + 12 : insets.top + 12 }]} pointerEvents="none">
+        <View style={[styles.cameraHeaderOverlay, { paddingTop: (Platform.OS as string) === "web" ? 67 + 12 : insets.top + 12 }]} pointerEvents="none">
           <Text style={styles.scanTitle}>AI Intake</Text>
           <Text style={styles.scanSubtitle}>
             {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "review" ? "Add more pages or continue" : "RX recognized"}
@@ -4443,7 +4443,7 @@ export default function ScanScreen() {
           styles.scanControls,
           {
             paddingBottom:
-              Platform.OS === "web" ? 84 + 20 : insets.bottom + 80,
+              (Platform.OS as string) === "web" ? 84 + 20 : insets.bottom + 80,
           },
         ]}
       >
@@ -4612,13 +4612,13 @@ export default function ScanScreen() {
 
       <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
         <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <View style={{ paddingTop: (Platform.OS as string) === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
             <Pressable onPress={() => setShowBarcodeScanner(false)}>
               <Ionicons name="close" size={28} color="#FFF" />
             </Pressable>
           </View>
-          {Platform.OS !== "web" && permission?.granted ? (
+          {(Platform.OS as string) !== "web" && permission?.granted ? (
             <CameraView
               style={{ flex: 1 }}
               facing="back"
@@ -4669,7 +4669,7 @@ export default function ScanScreen() {
               />
             </View>
           )}
-          <View style={{ padding: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>
+          <View style={{ padding: 20, paddingBottom: (Platform.OS as string) === "web" ? 34 : insets.bottom + 10, alignItems: "center" }}>
             <Text style={{ color: "#999", fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" }}>Point the camera at a barcode or QR code on the case label</Text>
           </View>
         </View>
@@ -4745,7 +4745,7 @@ export default function ScanScreen() {
                       setDoctorName(e.providerName);
                       setProviderPickerOpen(false);
                       setProviderPickerSearch("");
-                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      if ((Platform.OS as string) !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     }}
                     style={({ pressed }) => [
                       { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: Colors.light.borderLight },

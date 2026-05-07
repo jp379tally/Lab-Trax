@@ -106,7 +106,7 @@ async function getSensitiveItem(key: string): Promise<string | null> {
     return null;
   }
 
-  if (Platform.OS !== "web") {
+  if ((Platform.OS as string) !== "web") {
     try {
       const secureValue = await SecureStore.getItemAsync(key);
       if (secureValue !== null) {
@@ -130,7 +130,7 @@ async function setSensitiveItem(key: string, value: string): Promise<void> {
     return;
   }
 
-  if (Platform.OS !== "web") {
+  if ((Platform.OS as string) !== "web") {
     try {
       await SecureStore.setItemAsync(key, value);
       await AsyncStorage.removeItem(key);
@@ -151,7 +151,7 @@ async function removeSensitiveItem(key: string): Promise<void> {
     return;
   }
 
-  if (Platform.OS !== "web") {
+  if ((Platform.OS as string) !== "web") {
     try {
       await SecureStore.deleteItemAsync(key);
     } catch {}

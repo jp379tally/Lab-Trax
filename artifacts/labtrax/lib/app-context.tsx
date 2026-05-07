@@ -43,6 +43,7 @@ import {
   GroupJoinRequest,
   LabInvitation,
   DeletedClientInvoice,
+  InvoiceLineItem,
 } from "./data";
 import { useAuth } from "./auth-context";
 import { reconcileCases } from "./case-reconciliation";
@@ -911,7 +912,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   : Date.now(),
               };
             })
-            .filter((request) => request.status === "pending");
+            .filter((request: any) => request.status === "pending");
 
           setGroupJoinRequests(mappedRequests);
         }
@@ -946,7 +947,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             status: mapInviteStatus(invite.status),
             createdAt: invite.createdAt ? new Date(invite.createdAt).getTime() : Date.now(),
           }))
-          .filter((invite) => invite.status === "pending");
+          .filter((invite: any) => invite.status === "pending");
 
         setLabInvitations(mappedInvites);
       } catch {

@@ -141,7 +141,7 @@ async function resilientFetch(
 ): Promise<Response> {
   const primaryUrl = getApiUrl();
   const primaryFullUrl = new URL(path, primaryUrl).toString();
-  const authedOptions = injectAuthHeaders(options);
+  const authedOptions = injectAuthHeaders(options) as any;
 
   try {
     let res = await fetch(primaryFullUrl, authedOptions);

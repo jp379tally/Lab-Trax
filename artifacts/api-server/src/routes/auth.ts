@@ -312,8 +312,8 @@ router.post(
         .insert(organizations)
         .values({
           type: orgType,
-          name: input.practiceName.trim(),
-          displayName: input.practiceName.trim(),
+          name: input.practiceName!.trim(),
+          displayName: input.practiceName!.trim(),
           addressLine1: input.practiceAddress || null,
           phone: input.practicePhone || null,
           billingEmail: input.email || null,
@@ -321,7 +321,7 @@ router.post(
         })
         .returning();
       await db.insert(organizationMemberships).values({
-        organizationId: org.id,
+        labId: org.id,
         userId: user.id,
         role: "owner",
         status: "active",
@@ -766,7 +766,7 @@ router.get(
       return res.json({ isLabCreator: false });
     }
     const creatorId = await findLabCreatorId(user.practiceName);
-    res.json({ isLabCreator: creatorId === user.id });
+    return res.json({ isLabCreator: creatorId === user.id });
   })
 );
 

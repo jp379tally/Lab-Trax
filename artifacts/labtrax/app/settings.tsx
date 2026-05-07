@@ -1761,6 +1761,27 @@ const styles = StyleSheet.create({
     height: 1,
     marginLeft: 68,
   },
+  input: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    fontFamily: "Inter_400Regular",
+    marginBottom: 16,
+  },
+  sendBtn: {
+    backgroundColor: "#145DA0",
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center" as const,
+    marginTop: 8,
+  },
+  sendBtnText: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    color: "#FFF",
+  },
 });
 
 const joinStyles = StyleSheet.create({

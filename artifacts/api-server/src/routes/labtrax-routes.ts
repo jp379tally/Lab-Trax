@@ -416,7 +416,7 @@ export async function registerRoutes(): Promise<IRouter> {
     if (!reqUser?.id) {
       return res.status(401).json({ error: "Authentication required" });
     }
-    const sessionId = req.params.id;
+    const sessionId = req.params.id as string;
     const meta = readUploadSessionMeta(sessionId);
     if (!meta || meta.userId !== reqUser.id) {
       return res.status(404).json({ error: "Upload session not found" });
@@ -435,7 +435,7 @@ export async function registerRoutes(): Promise<IRouter> {
     if (!reqUser?.id) {
       return res.status(401).json({ error: "Authentication required" });
     }
-    const sessionId = req.params.id;
+    const sessionId = req.params.id as string;
     const meta = readUploadSessionMeta(sessionId);
     if (meta && meta.userId === reqUser.id) {
       destroyUploadSession(sessionId);
@@ -448,7 +448,7 @@ export async function registerRoutes(): Promise<IRouter> {
     if (!reqUser?.id) {
       return res.status(401).json({ error: "Authentication required" });
     }
-    const sessionId = req.params.id;
+    const sessionId = req.params.id as string;
     const meta = readUploadSessionMeta(sessionId);
     if (!meta || meta.userId !== reqUser.id) {
       return res.status(404).json({ error: "Upload session not found" });
@@ -542,6 +542,7 @@ export async function registerRoutes(): Promise<IRouter> {
     });
 
     req.pipe(writeStream);
+    return;
   });
 
   router.post("/media/upload", requireAuth, caseMediaUpload.single("file"), (req, res) => {
@@ -853,7 +854,7 @@ export async function registerRoutes(): Promise<IRouter> {
     }
     const allUsers = await db.select().from(users);
     const existing = allUsers.find(u => u.username.toLowerCase() === username.trim().toLowerCase());
-    res.json({ available: !existing });
+    return res.json({ available: !existing });
   });
 
   router.post("/legacy/cases", requireAuth, async (req, res) => {
@@ -1065,10 +1066,10 @@ export async function registerRoutes(): Promise<IRouter> {
           .status(result.authError.status)
           .json({ error: result.authError.message });
       }
-      res.json({ success: true, restoredFromTrash: !!result.restoredFromTrash });
+      return res.json({ success: true, restoredFromTrash: !!result.restoredFromTrash });
     } catch (error: any) {
       console.error("Legacy upsert case error:", error?.message || error);
-      res.status(500).json({ error: "Failed to save case" });
+      return res.status(500).json({ error: "Failed to save case" });
     }
   });
 
@@ -1124,7 +1125,7 @@ export async function registerRoutes(): Promise<IRouter> {
               .select()
               .from(casesTable)
               .where(inArray(casesTable.labOrganizationId, labIds))
-          : Promise.resolve([]),
+          : Promise.resolve([] as any[]),
       ]);
 
       // Preload organization display info so we can keep the JSON payload
@@ -1255,10 +1256,10 @@ export async function registerRoutes(): Promise<IRouter> {
           `[CASES_SIZE] u=${userId2 || "?"} count=${cases.length} bytes=${bytes}`
         );
       } catch {}
-      res.json(payload);
+      return res.json(payload);
     } catch (error: any) {
       console.error("Legacy get cases error:", error?.message || error);
-      res.status(500).json({ error: "Failed to fetch cases" });
+      return res.status(500).json({ error: "Failed to fetch cases" });
     }
   });
 
@@ -1367,10 +1368,10 @@ export async function registerRoutes(): Promise<IRouter> {
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         );
 
-      res.json({ files });
+      return res.json({ files });
     } catch (error: any) {
       console.error("List pending files error:", error?.message || error);
-      res.status(500).json({ error: "Failed to list pending files" });
+      return res.status(500).json({ error: "Failed to list pending files" });
     }
   });
 
@@ -1428,7 +1429,7 @@ export async function registerRoutes(): Promise<IRouter> {
         })
         .returning();
 
-      res.json({
+      return res.json({
         success: true,
         file: {
           id: inserted.id,
@@ -1450,7 +1451,7 @@ export async function registerRoutes(): Promise<IRouter> {
       });
     } catch (error: any) {
       console.error("Create pending file error:", error?.message || error);
-      res.status(500).json({ error: "Failed to save pending file" });
+      return res.status(500).json({ error: "Failed to save pending file" });
     }
   });
 
@@ -1517,7 +1518,7 @@ export async function registerRoutes(): Promise<IRouter> {
         }
       });
 
-      res.json({
+      return res.json({
         success: true,
         notesUpdatedAt: now.toISOString(),
         notesEditedByUserId: reqUser.id,
@@ -1525,7 +1526,7 @@ export async function registerRoutes(): Promise<IRouter> {
       });
     } catch (error: any) {
       console.error("Update pending file error:", error?.message || error);
-      res.status(500).json({ error: "Failed to update pending file" });
+      return res.status(500).json({ error: "Failed to update pending file" });
     }
   });
 
@@ -1577,13 +1578,13 @@ export async function registerRoutes(): Promise<IRouter> {
               : new Date(row.createdAt as any).toISOString(),
         }));
 
-        res.json({ edits });
+        return res.json({ edits });
       } catch (error: any) {
         console.error(
           "List pending file note history error:",
           error?.message || error
         );
-        res.status(500).json({ error: "Failed to list note history" });
+        return res.status(500).json({ error: "Failed to list note history" });
       }
     }
   );
@@ -1613,10 +1614,10 @@ export async function registerRoutes(): Promise<IRouter> {
       }
 
       await db.delete(labPendingFiles).where(eq(labPendingFiles.id, id));
-      res.json({ success: true });
+      return res.json({ success: true });
     } catch (error: any) {
       console.error("Delete pending file error:", error?.message || error);
-      res.status(500).json({ error: "Failed to delete pending file" });
+      return res.status(500).json({ error: "Failed to delete pending file" });
     }
   });
 
@@ -1677,10 +1678,10 @@ export async function registerRoutes(): Promise<IRouter> {
         await tx.delete(labPendingFiles).where(eq(labPendingFiles.id, id));
       });
 
-      res.json({ success: true });
+      return res.json({ success: true });
     } catch (error: any) {
       console.error("Attach pending file error:", error?.message || error);
-      res.status(500).json({ error: "Failed to attach pending file" });
+      return res.status(500).json({ error: "Failed to attach pending file" });
     }
   });
 
@@ -1754,10 +1755,10 @@ export async function registerRoutes(): Promise<IRouter> {
           deletedBy: reqUser.username || reqUser.id || "unknown",
         })
         .where(eq(labCases.id, caseId));
-      res.json({ success: true });
+      return res.json({ success: true });
     } catch (error: any) {
       console.error("Legacy delete case error:", error?.message || error);
-      res.status(500).json({ error: "Failed to delete case" });
+      return res.status(500).json({ error: "Failed to delete case" });
     }
   });
 
@@ -1830,10 +1831,10 @@ export async function registerRoutes(): Promise<IRouter> {
           const bd = b.deletedAt ? new Date(b.deletedAt as any).getTime() : 0;
           return bd - ad;
         });
-      res.json({ cases: trashed });
+      return res.json({ cases: trashed });
     } catch (error: any) {
       console.error("Trash list error:", error?.message || error);
-      res.status(500).json({ error: "Failed to list trash" });
+      return res.status(500).json({ error: "Failed to list trash" });
     }
   });
 
@@ -1862,10 +1863,10 @@ export async function registerRoutes(): Promise<IRouter> {
         .update(labCases)
         .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
         .where(eq(labCases.id, caseId));
-      res.json({ success: true });
+      return res.json({ success: true });
     } catch (error: any) {
       console.error("Restore case error:", error?.message || error);
-      res.status(500).json({ error: "Failed to restore case" });
+      return res.status(500).json({ error: "Failed to restore case" });
     }
   });
 
@@ -1987,10 +1988,10 @@ export async function registerRoutes(): Promise<IRouter> {
         }))
         .sort((a, b) => a.timestamp - b.timestamp);
 
-      res.json({ conversations, messages });
+      return res.json({ conversations, messages });
     } catch (error: any) {
       console.error("Legacy get chat error:", error?.message || error);
-      res.status(500).json({ error: "Failed to fetch messages" });
+      return res.status(500).json({ error: "Failed to fetch messages" });
     }
   });
 
@@ -2113,10 +2114,10 @@ export async function registerRoutes(): Promise<IRouter> {
       };
       store.messages.push(message);
       await writeLegacyChatStore(store);
-      res.json({ success: true, conversationId, messageId: message.id });
+      return res.json({ success: true, conversationId, messageId: message.id });
     } catch (error: any) {
       console.error("Legacy send chat error:", error?.message || error);
-      res.status(500).json({ error: "Failed to send message" });
+      return res.status(500).json({ error: "Failed to send message" });
     }
   });
 
@@ -2159,10 +2160,10 @@ export async function registerRoutes(): Promise<IRouter> {
         await writeLegacyChatStore(store);
       }
 
-      res.json({ success: true });
+      return res.json({ success: true });
     } catch (error: any) {
       console.error("Legacy read chat error:", error?.message || error);
-      res.status(500).json({ error: "Failed to update message read status" });
+      return res.status(500).json({ error: "Failed to update message read status" });
     }
   });
 
@@ -2206,7 +2207,7 @@ export async function registerRoutes(): Promise<IRouter> {
     }
 
     const isDev = process.env.NODE_ENV === "development";
-    res.json({ success: true, message: "Verification code sent via SMS.", ...(isDev && (!twilioSid || !twilioToken || !twilioFrom) ? { demoCode: code } : {}) });
+    return res.json({ success: true, message: "Verification code sent via SMS.", ...(isDev && (!twilioSid || !twilioToken || !twilioFrom) ? { demoCode: code } : {}) });
   });
 
   router.post("/verify-phone-code", (req, res) => {
@@ -2218,7 +2219,7 @@ export async function registerRoutes(): Promise<IRouter> {
     if (Date.now() > stored.expiresAt) { verificationCodes.delete(key); return res.json({ verified: false, error: "Code expired." }); }
     if (stored.code !== code.trim()) return res.json({ verified: false, error: "Incorrect code." });
     verificationCodes.delete(key);
-    res.json({ verified: true });
+    return res.json({ verified: true });
   });
 
   router.post("/send-email-code", async (req, res) => {
@@ -2269,7 +2270,7 @@ export async function registerRoutes(): Promise<IRouter> {
     }
 
     const isDev = process.env.NODE_ENV === "development";
-    res.json({ success: true, message: "Verification code sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoCode: code } : {}) });
+    return res.json({ success: true, message: "Verification code sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoCode: code } : {}) });
   });
 
   router.post("/verify-email-code", (req, res) => {
@@ -2281,7 +2282,7 @@ export async function registerRoutes(): Promise<IRouter> {
     if (Date.now() > stored.expiresAt) { verificationCodes.delete(key); return res.json({ verified: false, error: "Code expired." }); }
     if (stored.code !== code.trim()) return res.json({ verified: false, error: "Incorrect code." });
     verificationCodes.delete(key);
-    res.json({ verified: true });
+    return res.json({ verified: true });
   });
 
   router.post("/forgot-password", async (req, res) => {
@@ -2326,10 +2327,10 @@ export async function registerRoutes(): Promise<IRouter> {
       }
 
       const isDev = process.env.NODE_ENV === "development";
-      res.json({ success: true, message: "If an account with that email exists, a password reset link has been sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoResetLink: resetLink } : {}) });
+      return res.json({ success: true, message: "If an account with that email exists, a password reset link has been sent.", ...(isDev && (!smtpHost || !smtpUser || !smtpPass) ? { demoResetLink: resetLink } : {}) });
     } catch (error: any) {
       console.error("Forgot password error:", error?.message || error);
-      res.status(500).json({ error: "Failed to process request." });
+      return res.status(500).json({ error: "Failed to process request." });
     }
   });
 
@@ -2364,9 +2365,9 @@ export async function registerRoutes(): Promise<IRouter> {
       } else {
         console.log(`[EMAIL] SMTP not configured. Username reminder generated for ${user.email} — masked for security.`);
       }
-      res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
+      return res.json({ success: true, message: "If an account with that email exists, your username has been sent." });
     } catch (error: any) {
-      res.status(500).json({ error: "Failed to process request." });
+      return res.status(500).json({ error: "Failed to process request." });
     }
   });
 
@@ -2381,9 +2382,9 @@ export async function registerRoutes(): Promise<IRouter> {
       const hashed = await hashPassword(newPassword);
       await db.update(users).set({ password: hashed }).where(eq(users.id, resetData.userId));
       passwordResetTokens.delete(token);
-      res.json({ success: true, message: "Password has been reset successfully." });
+      return res.json({ success: true, message: "Password has been reset successfully." });
     } catch (error: any) {
-      res.status(500).json({ error: "Failed to reset password." });
+      return res.status(500).json({ error: "Failed to reset password." });
     }
   });
 
@@ -2409,9 +2410,9 @@ export async function registerRoutes(): Promise<IRouter> {
         headers: { "Authorization": authHeader, "Content-Type": "application/x-www-form-urlencoded" },
         body: params.toString(),
       });
-      res.json({ success: true, message: `Text sent to ${providerPhone}` });
+      return res.json({ success: true, message: `Text sent to ${providerPhone}` });
     } catch (err: any) {
-      res.status(500).json({ error: "Failed to send text" });
+      return res.status(500).json({ error: "Failed to send text" });
     }
   });
 
@@ -2661,8 +2662,8 @@ Important rules:
       xrefStr += `trailer\n<< /Size ${objCount + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
       output = Buffer.concat([output, Buffer.from(xrefStr)]);
 
-      res.json({ success: true, pdfBase64: `data:application/pdf;base64,${output.toString("base64")}`, pageCount: pageImages.length });
-    } catch (err: any) { res.status(500).json({ error: "PDF generation failed" }); }
+      return res.json({ success: true, pdfBase64: `data:application/pdf;base64,${output.toString("base64")}`, pageCount: pageImages.length });
+    } catch (err: any) { return res.status(500).json({ error: "PDF generation failed" }); }
   });
 
   router.post("/smile-process", requireAuth, async (req, res) => {
@@ -2685,8 +2686,8 @@ Important rules:
       const response = await openai.images.edit({ model: "gpt-image-1", image: imgFile, prompt, size: "1024x1024" });
       const outputBase64 = response.data?.[0]?.b64_json;
       if (!outputBase64) return res.status(500).json({ error: "AI did not return an image." });
-      res.json({ imageBase64: `data:image/png;base64,${outputBase64}` });
-    } catch (err: any) { res.status(500).json({ error: "Failed to process image" }); }
+      return res.json({ imageBase64: `data:image/png;base64,${outputBase64}` });
+    } catch (err: any) { return res.status(500).json({ error: "Failed to process image" }); }
   });
 
   router.delete("/admin/cleanup-email", async (req, res) => {
@@ -2704,8 +2705,8 @@ Important rules:
         await db.delete(users).where(eq(users.id, u.id));
         deletedCount++;
       }
-      res.json({ success: true, deleted: deletedCount, found: matches.length });
-    } catch { res.status(500).json({ error: "Cleanup failed" }); }
+      return res.json({ success: true, deleted: deletedCount, found: matches.length });
+    } catch { return res.status(500).json({ error: "Cleanup failed" }); }
   });
 
   // ── Admin Data Backup ─────────────────────────────────────────────────────
@@ -2763,9 +2764,11 @@ Important rules:
       }
 
       await archive.finalize();
+      return;
     } catch (e: any) {
       console.error("Backup endpoint error:", e?.message);
       if (!res.headersSent) res.status(500).json({ error: "Backup failed." });
+      return;
     }
   });
 

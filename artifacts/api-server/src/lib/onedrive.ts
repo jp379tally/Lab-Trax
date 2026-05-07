@@ -26,7 +26,7 @@ async function getOneDriveAccessToken(): Promise<string> {
     { headers: { Accept: "application/json", "X-Replit-Token": xReplitToken } }
   );
   if (!resp.ok) throw new Error(`Connector fetch failed: ${resp.status}`);
-  const data = await resp.json();
+  const data = await resp.json() as any;
   cachedSettings = data.items?.[0];
 
   if (!cachedSettings) throw new Error("OneDrive connection not found. Please reconnect.");
@@ -64,7 +64,7 @@ export async function ensureOneDriveFolder(folderName: string): Promise<string> 
     token
   );
   if (checkResp.ok) {
-    const item = await checkResp.json();
+    const item = await checkResp.json() as any;
     return item.id;
   }
 
@@ -85,7 +85,7 @@ export async function ensureOneDriveFolder(folderName: string): Promise<string> 
     const err = await createResp.text();
     throw new Error(`Could not create OneDrive folder: ${err}`);
   }
-  const folder = await createResp.json();
+  const folder = await createResp.json() as any;
   return folder.id;
 }
 
@@ -138,7 +138,7 @@ export async function uploadToOneDrive(
       const err = await resp.text();
       throw new Error(`OneDrive upload failed: ${err}`);
     }
-    const item = await resp.json();
+    const item = await resp.json() as any;
     return { webUrl: item.webUrl || "", name: item.name, size: item.size };
   }
 
@@ -161,7 +161,7 @@ export async function uploadToOneDrive(
     const err = await sessionResp.text();
     throw new Error(`Could not create OneDrive upload session: ${err}`);
   }
-  const session = await sessionResp.json();
+  const session = await sessionResp.json() as any;
   const uploadUrl: string = session.uploadUrl;
   if (!uploadUrl) throw new Error("No upload URL returned from OneDrive.");
 

@@ -3,5 +3,5 @@ export function calculateLineTotal(quantity: number, unitPrice: string | number)
 }
 
 export function sumMoney(values: (string | number)[]): string {
-  return values.reduce((acc: number, v) => acc + Number(v), 0).toFixed(2);
+  return values.reduce<number>((acc, v) => acc + Number(v), 0).toFixed(2);
 }

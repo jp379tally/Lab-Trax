@@ -140,9 +140,9 @@ export function ManualCropOverlay({ visible, imageUri, onCancel, onCropped }: Pr
       let uri = imageUri;
       if (uri.startsWith("data:")) {
         const base64 = uri.split(",")[1];
-        const tmpPath = `${FileSystem.documentDirectory}tmp_crop_${Date.now()}.jpg`;
+        const tmpPath = `${(FileSystem as any).documentDirectory}tmp_crop_${Date.now()}.jpg`;
         await FileSystem.writeAsStringAsync(tmpPath, base64, {
-          encoding: FileSystem.EncodingType.Base64,
+          encoding: (FileSystem as any).EncodingType.Base64,
         });
         uri = tmpPath;
       }

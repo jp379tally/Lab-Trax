@@ -290,7 +290,9 @@ router.get(
     });
 
     const organizationIds = [...new Set(invites.map((invite) => invite.labId))];
-    const inviterIds = [...new Set(invites.map((invite) => invite.invitedByUserId))];
+    const inviterIds = [...new Set(invites.map((invite) => invite.invitedByUserId))].filter(
+      (id): id is string => id !== null
+    );
 
     const inviteOrganizations = organizationIds.length
       ? await db
@@ -313,11 +315,11 @@ router.get(
         ...invite,
         organizationId: invite.labId,
         organization: organizationsById.get(invite.labId) ?? null,
-        invitedByUser: invitersById.get(invite.invitedByUserId)
+        invitedByUser: invitersById.get(invite.invitedByUserId as string)
           ? {
-              id: invitersById.get(invite.invitedByUserId)!.id,
-              username: invitersById.get(invite.invitedByUserId)!.username,
-              email: invitersById.get(invite.invitedByUserId)!.email,
+              id: invitersById.get(invite.invitedByUserId as string)!.id,
+              username: invitersById.get(invite.invitedByUserId as string)!.username,
+              email: invitersById.get(invite.invitedByUserId as string)!.email,
             }
           : null,
       }))
@@ -558,13 +560,13 @@ router.post(
             .trim() || inviter.username || inviter.email || null
         : null;
       const result = await sendInviteEmail({
-        to: invite.email,
+        to: invite.email!,
         organizationName:
           organization?.displayName?.trim() ||
           organization?.name ||
           "your organization",
-        roleToAssign: invite.roleToAssign,
-        token: invite.token,
+        roleToAssign: invite.roleToAssign!,
+        token: invite.token!,
         inviterName,
         expiresAt: invite.expiresAt ?? null,
       });
@@ -718,7 +720,7 @@ router.post(
           organization?.name ||
           "your organization",
         roleToAssign: updatedInvite.roleToAssign!,
-        token: updatedInvite.token,
+        token: updatedInvite.token!,
         inviterName,
         expiresAt: updatedInvite.expiresAt ?? null,
       });
@@ -1201,7 +1203,7 @@ router.post(
         requestedByOrgId: isLabMember
           ? input.labOrganizationId
           : input.providerOrganizationId,
-        userId: (req as any).auth.userId,
+        requestedByUserId: (req as any).auth.userId,
       })
       .onConflictDoNothing()
       .returning();

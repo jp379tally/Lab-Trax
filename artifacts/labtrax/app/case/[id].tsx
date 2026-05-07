@@ -910,7 +910,7 @@ export default function CaseDetailScreen() {
   }
 
   function getApplianceUnitPrice(priceKey: string): number {
-    const client = clients.find(c => c.practiceName === caseItem?.clientName);
+    const client = clients.find(c => c.practiceName === (caseItem as any)?.clientName);
     if (client?.customPricing?.[priceKey] !== undefined && client.customPricing[priceKey] > 0) {
       return client.customPricing[priceKey];
     }
