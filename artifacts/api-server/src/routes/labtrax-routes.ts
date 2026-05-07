@@ -6,7 +6,7 @@ import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import { runOneDriveBackup, getBackupHourUtc, SETTING_BACKUP_HOUR_UTC } from "../lib/backup";
-import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC } from "../lib/case-media";
+import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
@@ -2887,14 +2887,19 @@ Important rules:
     if (!reqUser || reqUser.role !== "admin") {
       return res.status(403).json({ error: "Admin access required." });
     }
+
     const triggeredBy = `admin:${reqUser.username || reqUser.id}`;
     try {
       const { runId, report, status, errorMessage } = await runAndPersistCleanup(triggeredBy, {
         dryRun: false,
       });
       return res.json({ ok: true, runId, triggeredBy, status, errorMessage, ...report });
-    } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Orphaned media cleanup failed." });
+    } catch (e: unknown) {
+      if (e instanceof CleanupAlreadyRunningError) {
+        return res.status(409).json({ error: e.message });
+      }
+      const msg = e instanceof Error ? e.message : "Orphaned media cleanup failed.";
+      return res.status(500).json({ error: msg });
     }
   });
 

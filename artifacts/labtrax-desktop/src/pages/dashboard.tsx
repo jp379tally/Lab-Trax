@@ -13,7 +13,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -143,6 +143,9 @@ function MediaCleanupCard() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const isAlreadyRunning =
+    runNowMutation.error instanceof ApiError && runNowMutation.error.status === 409;
+
   const lastRun = runsQuery.data?.runs[0] ?? null;
   const hasError = lastRun?.status === "error";
   const nextRunLabel =
@@ -222,6 +225,22 @@ function MediaCleanupCard() {
           <div className="flex items-center gap-2 text-destructive text-xs">
             <AlertCircle size={13} className="shrink-0" />
             Failed to load cleanup history.
+          </div>
+        )}
+
+        {isAlreadyRunning && (
+          <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-xs">
+            <AlertTriangle size={13} className="shrink-0" />
+            Cleanup already in progress — please wait for it to finish.
+          </div>
+        )}
+
+        {runNowMutation.isError && !isAlreadyRunning && (
+          <div className="flex items-center gap-2 text-destructive text-xs">
+            <AlertCircle size={13} className="shrink-0" />
+            {runNowMutation.error instanceof Error
+              ? runNowMutation.error.message
+              : "Failed to start cleanup."}
           </div>
         )}
 

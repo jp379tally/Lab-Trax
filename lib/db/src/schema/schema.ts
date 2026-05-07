@@ -1038,6 +1038,9 @@ export const mediaCleanupRuns = pgTable(
   },
   (table) => ({
     startedAtIdx: index("media_cleanup_runs_started_at_idx").on(table.startedAt),
+    oneRunningAtATime: uniqueIndex("media_cleanup_runs_one_running_idx")
+      .on(table.status)
+      .where(sql`status = 'running'`),
   })
 );
 

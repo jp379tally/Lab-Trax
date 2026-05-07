@@ -6,6 +6,17 @@ import { logger } from "./logger";
 import { sendCleanupAlertEmail } from "./mail";
 
 /**
+ * Thrown by runAndPersistCleanup when a concurrent run is already in
+ * progress (i.e. the DB unique constraint on status='running' fires).
+ */
+export class CleanupAlreadyRunningError extends Error {
+  constructor() {
+    super("Cleanup already in progress.");
+    this.name = "CleanupAlreadyRunningError";
+  }
+}
+
+/**
  * Keys used in the system_settings table for cleanup alert thresholds.
  */
 export const SETTING_CLEANUP_MIN_REMOVED = "cleanup_alert_min_removed";
@@ -288,6 +299,39 @@ export async function runAndPersistCleanup(
   opts: CleanupOptions = { dryRun: false },
 ): Promise<{ runId: string; report: OrphanedMediaReport; status: string; errorMessage: string | null }> {
   const startedAt = new Date();
+
+  // Insert a "running" sentinel row.  The schema has a partial unique index
+  // on status WHERE status='running', so a second concurrent insert will
+  // fail with a unique-constraint violation (PG code 23505) — the DB
+  // enforces mutual exclusion atomically with no check-then-act race.
+  let runningRow: { id: string } | undefined;
+  try {
+    const [row] = await db
+      .insert(mediaCleanupRuns)
+      .values({
+        startedAt,
+        dryRun: opts.dryRun,
+        status: "running",
+        triggeredBy,
+      })
+      .returning({ id: mediaCleanupRuns.id });
+    runningRow = row;
+  } catch (insertErr: unknown) {
+    // PG error code 23505 = unique_violation — another run is in progress.
+    const pgCode =
+      insertErr != null &&
+      typeof insertErr === "object" &&
+      "code" in insertErr
+        ? (insertErr as { code: unknown }).code
+        : undefined;
+    if (pgCode === "23505") {
+      throw new CleanupAlreadyRunningError();
+    }
+    throw insertErr;
+  }
+
+  const runId = runningRow!.id;
+
   let report: OrphanedMediaReport | null = null;
   let status = "ok";
   let errorMessage: string | null = null;
@@ -299,7 +343,7 @@ export async function runAndPersistCleanup(
     fatalError = err;
     status = "error";
     errorMessage = err instanceof Error ? err.message : String(err);
-    // Build a zero-metrics placeholder so the DB insert always has valid data.
+    // Build a zero-metrics placeholder so the DB update always has valid data.
     report = {
       dryRun: opts.dryRun,
       mediaDirExists: false,
@@ -315,12 +359,11 @@ export async function runAndPersistCleanup(
 
   const finishedAt = new Date();
 
-  const [row] = await db
-    .insert(mediaCleanupRuns)
-    .values({
-      startedAt,
+  // Update the sentinel row with the final outcome.
+  await db
+    .update(mediaCleanupRuns)
+    .set({
       finishedAt,
-      dryRun: opts.dryRun,
       status,
       errorMessage,
       scannedFiles: report.scannedFiles,
@@ -329,9 +372,8 @@ export async function runAndPersistCleanup(
       removedCount: report.removedCount,
       freedBytes: report.freedBytes,
       errorCount: report.errors.length,
-      triggeredBy,
     })
-    .returning({ id: mediaCleanupRuns.id });
+    .where(eq(mediaCleanupRuns.id, runId));
 
   // Trim old history rows to keep the table small.
   const { retentionDays } = await getCleanupHistoryRetentionDays();
@@ -375,7 +417,7 @@ export async function runAndPersistCleanup(
     throw fatalError;
   }
 
-  return { runId: row!.id, report, status, errorMessage };
+  return { runId, report, status, errorMessage };
 }
 
 export function startDailyOrphanedMediaCleanup() {
