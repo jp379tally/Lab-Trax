@@ -262,12 +262,13 @@ export async function sendCleanupRecoveryAlertEmail(
       <div style="background:#f0ad4e;color:#fff;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
         <strong>Warning:</strong> ${recoveredCount} cleanup ${runWord} ${recoveredCount === 1 ? "was" : "were"} interrupted by a server crash and ${recoveredCount === 1 ? "has" : "have"} been automatically marked as failed.
       </div>
+      <p style="font-size: 14px;"><strong>Triggered by:</strong> Automatic (server restart detection)</p>
       <p>Orphaned media files may not have been removed during the interrupted ${runWord}. Please review the run history and consider triggering a fresh cleanup to ensure storage is maintained.</p>
       ${maintenanceLinkHtml}
     </div>
   </div>`;
 
-  const text = `LabTrax Nightly Media Cleanup — Recovery Notice\n\nWARNING: ${recoveredCount} cleanup ${runWord} ${recoveredCount === 1 ? "was" : "were"} interrupted by a server crash and ${recoveredCount === 1 ? "has" : "have"} been automatically marked as failed.\n\nOrphaned media files may not have been removed during the interrupted ${runWord}. Please review the run history and consider triggering a fresh cleanup to ensure storage is maintained.${maintenanceLinkText}`;
+  const text = `LabTrax Nightly Media Cleanup — Recovery Notice\n\nWARNING: ${recoveredCount} cleanup ${runWord} ${recoveredCount === 1 ? "was" : "were"} interrupted by a server crash and ${recoveredCount === 1 ? "has" : "have"} been automatically marked as failed.\n\nTriggered by: Automatic (server restart detection)\n\nOrphaned media files may not have been removed during the interrupted ${runWord}. Please review the run history and consider triggering a fresh cleanup to ensure storage is maintained.${maintenanceLinkText}`;
 
   for (const email of params.adminEmails) {
     await sendMail({ to: email, subject, html, text });
