@@ -1,0 +1,86 @@
+Paste this to Replit:
+
+---
+
+**Subject: Fix desktop case interactivity and SDR1 cross-platform database regression**
+
+The latest build improved the desktop HUD/interface, and I like the new desktop design direction. The problem is that the desktop version is still missing the actual case interaction functionality that already exists in the app.
+
+Please treat this as a **core database, permissions, and platform-sync issue**, not just a UI issue.
+
+**What needs to be fixed**
+
+1. The desktop version must let users open and interact with cases the same way the app does.
+
+When a user clicks a case on desktop, it should open the case detail view and allow all permission-based actions, including:
+
+- View case details
+- Edit case details
+- Add photos
+- Add notes
+- Add videos
+- Add or view location data
+- Assign or scan barcodes
+- Add case activity/items
+- Admin users must be able to view, edit, create, and pay invoices
+- Regular users should not see financial/invoice tools unless their permissions allow it
+
+2. SDR1 lab data must be consistent across all platforms.
+
+Right now, I can see 53 cases in the SDR1 lab environment on the desktop version, but I see no cases in the mobile app. That should not be possible if both are logged into the same lab environment and using the same database.
+
+The database must be the single source of truth across:
+
+- Desktop
+- Mobile app
+- Web app
+- Any device
+
+If a case exists in SDR1, every user assigned to SDR1 should see that case according to their permissions. Cases should not disappear from one platform unless they were actually removed from the database or hidden by a valid permissions rule.
+
+**How to fix it**
+
+Please audit the desktop and mobile app data flow and make sure both platforms are using the same backend APIs, same database tables/collections, same lab environment ID, and same permissions logic.
+
+Specifically:
+
+- Do not use separate desktop-only case data.
+- Do not use local mock/demo data for SDR1.
+- Do not seed, reset, overwrite, or hide SDR1 cases during deployment.
+- Make sure all case queries are filtered by the active `labId` or lab environment membership.
+- Make sure mobile and desktop both resolve the same active lab environment after login.
+- Make sure the desktop case list and mobile case list call the same source of truth.
+- Make sure permissions are enforced by role and lab membership, not by platform.
+- Make sure admin users can access financial tools and invoice actions.
+- Make sure regular users can interact with non-financial case data.
+- Make sure case attachments, notes, videos, locations, and barcodes are saved to the shared backend and appear on all platforms.
+
+**Regression prevention**
+
+This keeps happening: one thing gets fixed, then another core feature breaks. Please add regression checks before publishing future builds.
+
+Before publishing, verify:
+
+- SDR1 cases appear on desktop and mobile.
+- Case count matches across platforms.
+- Clicking a case works on desktop.
+- Clicking a case works on mobile.
+- Admin invoice actions still work.
+- Regular user permissions still work.
+- Photos, notes, videos, barcodes, and locations can be added to a case.
+- Changes made on desktop appear on mobile.
+- Changes made on mobile appear on desktop.
+- Existing SDR1 cases are not deleted, reset, hidden, or replaced during deployment.
+
+**Definition of done**
+
+This issue is fixed only when:
+
+- SDR1 shows the same 40 to 50+ cases on both desktop and mobile.
+- Desktop users can click into a case and perform the same allowed actions as in the app.
+- Admin users can access invoice and financial actions from the case.
+- Regular users can interact with case data but cannot access restricted financial tools.
+- All platforms use the same database and lab environment data.
+- A future build cannot accidentally break case visibility, lab membership, invoices, attachments, or barcode assignment without being caught before publishing.
+
+Please confirm what caused the SDR1 cases to appear on desktop but not mobile, and explain what code changes were made to prevent this from happening again.
