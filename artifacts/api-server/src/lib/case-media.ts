@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { eq, lt, sql } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import { db, caseAttachments, mediaCleanupRuns, systemSettings, users } from "@workspace/db";
 import { logger } from "./logger";
 import { sendCleanupAlertEmail } from "./mail";
@@ -81,6 +81,52 @@ export async function getCleanupAlertThresholds(): Promise<{
       : parseFloat(process.env.CLEANUP_ALERT_MIN_FREED_MB || "0") || 0;
 
   return { minRemoved, minFreedMb };
+}
+
+/**
+ * Default timeout (minutes) after which a "running" cleanup row is considered
+ * stuck and eligible for recovery.  Override with the
+ * CLEANUP_STUCK_TIMEOUT_MINUTES env var.
+ */
+const DEFAULT_STUCK_TIMEOUT_MINUTES = 30;
+
+/**
+ * Mark any `media_cleanup_runs` rows that are still in status="running" but
+ * were started more than `timeoutMinutes` ago as status="error".  This
+ * recovers rows that were never finalised because the server crashed mid-run.
+ *
+ * Safe to call concurrently — the partial unique index on status='running'
+ * means at most one row can be in that state at a time, so the UPDATE will
+ * affect at most one row.
+ *
+ * Returns the number of rows recovered.
+ */
+export async function recoverStuckCleanupRuns(
+  timeoutMinutes?: number,
+): Promise<number> {
+  const minutes =
+    timeoutMinutes ??
+    Math.max(
+      1,
+      parseInt(process.env.CLEANUP_STUCK_TIMEOUT_MINUTES || String(DEFAULT_STUCK_TIMEOUT_MINUTES), 10) ||
+        DEFAULT_STUCK_TIMEOUT_MINUTES,
+    );
+  const cutoff = new Date(Date.now() - minutes * 60 * 1000);
+  const updated = await db
+    .update(mediaCleanupRuns)
+    .set({
+      status: "error",
+      errorMessage: "Run interrupted — server restarted",
+      finishedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(mediaCleanupRuns.status, "running"),
+        lt(mediaCleanupRuns.startedAt, cutoff),
+      ),
+    )
+    .returning({ id: mediaCleanupRuns.id });
+  return updated.length;
 }
 
 export const caseMediaDir = path.resolve(
@@ -300,10 +346,25 @@ export async function runAndPersistCleanup(
 ): Promise<{ runId: string; report: OrphanedMediaReport; status: string; errorMessage: string | null }> {
   const startedAt = new Date();
 
-  // Insert a "running" sentinel row.  The schema has a partial unique index
-  // on status WHERE status='running', so a second concurrent insert will
-  // fail with a unique-constraint violation (PG code 23505) — the DB
-  // enforces mutual exclusion atomically with no check-then-act race.
+  // Recover any stuck run from a previous crashed server before attempting to
+  // insert our own sentinel.  If the prior sentinel is still within the
+  // timeout window we will hit the unique-constraint below and surface a
+  // CleanupAlreadyRunningError to the caller — that is correct behaviour.
+  try {
+    const recovered = await recoverStuckCleanupRuns();
+    if (recovered > 0) {
+      logger.warn(
+        { recovered },
+        "runAndPersistCleanup: recovered stuck cleanup run(s) from a previous server crash",
+      );
+    }
+  } catch (recoverErr: unknown) {
+    logger.warn(
+      { err: recoverErr instanceof Error ? recoverErr.message : String(recoverErr) },
+      "runAndPersistCleanup: stuck-run recovery query failed — continuing anyway",
+    );
+  }
+
   let runningRow: { id: string } | undefined;
   try {
     const [row] = await db
@@ -515,6 +576,23 @@ export function startDailyOrphanedMediaCleanup() {
       setTimeout(tick, msUntilNext(nextHour));
     }
   };
+
+  // On startup, recover any stuck "running" row left over from a server crash.
+  // This runs once immediately so that manual runs triggered shortly after
+  // restart are not blocked by a stale sentinel.
+  recoverStuckCleanupRuns().then((recovered) => {
+    if (recovered > 0) {
+      logger.warn(
+        { recovered },
+        "startDailyOrphanedMediaCleanup: recovered stuck cleanup run(s) from a previous server crash",
+      );
+    }
+  }).catch((err: unknown) => {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "startDailyOrphanedMediaCleanup: startup stuck-run recovery failed",
+    );
+  });
 
   // Read initial hour from DB (with env fallback) so the first delay is
   // consistent with any previously saved admin setting.
