@@ -287,6 +287,29 @@ export async function runAndPersistCleanup(
     );
   }
 
+  // Row-count cap: keep only the most recent N rows, oldest first out.
+  // Works alongside the day-based retention above; whichever removes more rows wins.
+  const maxRows = Math.max(
+    1,
+    parseInt(process.env.CLEANUP_HISTORY_MAX_ROWS || "1000", 10) || 1000,
+  );
+  try {
+    await db
+      .delete(mediaCleanupRuns)
+      .where(
+        sql`${mediaCleanupRuns.id} NOT IN (
+          SELECT id FROM ${mediaCleanupRuns}
+          ORDER BY ${mediaCleanupRuns.startedAt} DESC
+          LIMIT ${maxRows}
+        )`,
+      );
+  } catch (trimErr: unknown) {
+    logger.warn(
+      { err: trimErr instanceof Error ? trimErr.message : String(trimErr) },
+      "media_cleanup_runs row-count cap trim failed — history rows not pruned",
+    );
+  }
+
   // Re-throw after persisting so callers can return a proper error response.
   if (fatalError !== null) {
     throw fatalError;

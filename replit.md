@@ -55,6 +55,7 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `CLEANUP_ALERT_MIN_REMOVED` — minimum files-removed count before a cleanup alert email is sent (default: `1`); raise to reduce noise in active labs
 - `CLEANUP_ALERT_MIN_FREED_MB` — minimum megabytes freed before a cleanup alert email is sent (default: `0`, disabled); works alongside `CLEANUP_ALERT_MIN_REMOVED` — either threshold can trigger the alert
 - `CLEANUP_HISTORY_RETENTION_DAYS` — how many days of `media_cleanup_runs` history to keep (default: `365`); rows older than this are deleted after each run
+- `CLEANUP_HISTORY_MAX_ROWS` — maximum number of `media_cleanup_runs` rows to retain (default: `1000`); oldest rows are removed first; works alongside `CLEANUP_HISTORY_RETENTION_DAYS` — whichever removes more rows wins
 - `BACKUP_HOUR_UTC` — UTC hour (0–23) for the nightly OneDrive backup (default: `7`)
 - `MEDIA_CLEANUP_JOB_TOKEN` — shared secret for the standalone cleanup script (scheduled deployment path only)
 - `MEDIA_CLEANUP_API_URL` — base API URL for the standalone cleanup script (e.g. `https://your.replit.app/api`; scheduled deployment path only)
