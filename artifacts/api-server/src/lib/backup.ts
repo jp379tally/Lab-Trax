@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import archiver from "archiver";
 import { db } from "@workspace/db";
-import { users, labCases } from "@workspace/db";
+import { users, labCases, systemSettings } from "@workspace/db";
+import { eq } from "drizzle-orm";
 import { uploadToOneDrive } from "./onedrive";
 import { logger } from "./logger";
 
@@ -77,9 +78,42 @@ export async function runOneDriveBackup(triggeredBy: string): Promise<BackupResu
   };
 }
 
+/**
+ * Key used in the system_settings table for the nightly backup hour (0–23 UTC).
+ * When absent the env var BACKUP_HOUR_UTC is used (default 7).
+ */
+export const SETTING_BACKUP_HOUR_UTC = "backup_hour_utc";
+
+/**
+ * Read the nightly backup hour from the DB, falling back to the
+ * BACKUP_HOUR_UTC env var (default 7).
+ */
+export async function getBackupHourUtc(): Promise<number> {
+  const envHour = Math.max(
+    0,
+    Math.min(23, parseInt(process.env.BACKUP_HOUR_UTC || "7", 10) || 7),
+  );
+  try {
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_BACKUP_HOUR_UTC));
+    const raw = rows[0]?.value ?? null;
+    if (raw !== null) {
+      const parsed = parseInt(raw, 10);
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.min(23, parsed));
+      }
+    }
+  } catch {
+    // fall through to env default
+  }
+  return envHour;
+}
+
 // ── Daily backup scheduler ───────────────────────────────────────────────────
 // Runs once per day at the configured UTC hour (default 07:00 UTC ≈ 2-3am ET).
-// Override with BACKUP_HOUR_UTC env var (0–23).
+// Override with BACKUP_HOUR_UTC env var (0–23) or the backup_hour_utc system_settings row.
 
 let scheduled = false;
 
@@ -102,14 +136,11 @@ function msUntilNext(hourUtc: number): number {
   return next.getTime() - now.getTime();
 }
 
-export function startDailyOneDriveBackup() {
+export async function startDailyOneDriveBackup() {
   if (scheduled) return;
   scheduled = true;
 
-  const hourUtc = Math.max(
-    0,
-    Math.min(23, parseInt(process.env.BACKUP_HOUR_UTC || "7", 10) || 7),
-  );
+  const hourUtc = await getBackupHourUtc();
 
   const tick = async () => {
     try {

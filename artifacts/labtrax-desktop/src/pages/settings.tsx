@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, BellRing, Clock, HardDrive, KeyRound, Loader2, LogOut, Monitor, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
+import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
 
@@ -768,6 +769,142 @@ function CleanupAlertSettingsPanel() {
   );
 }
 
+interface BackupScheduleSettings {
+  hourUtc: number;
+  dbHourUtc: number | null;
+  envHourUtc: number;
+}
+
+function BackupSchedulePanel() {
+  const queryClient = useQueryClient();
+  const [hourUtc, setHourUtc] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  const scheduleQuery = useQuery({
+    queryKey: ["admin", "backup-schedule"],
+    queryFn: () => apiFetch<BackupScheduleSettings>("/admin/settings/backup-schedule"),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    if (scheduleQuery.data) {
+      setHourUtc(String(scheduleQuery.data.hourUtc));
+    }
+  }, [scheduleQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean; hourUtc: number }>(
+        "/admin/settings/backup-schedule",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hourUtc: parseInt(hourUtc, 10) }),
+        },
+      ),
+    onSuccess: () => {
+      setError(null);
+      setSuccess(true);
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule"] });
+      setTimeout(() => setSuccess(false), 2500);
+    },
+    onError: (err: Error) => {
+      setSuccess(false);
+      setError(err.message || "Failed to save settings.");
+    },
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean }>("/admin/settings/backup-schedule?field=hourUtc", {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule"] });
+    },
+    onError: (err: Error) => {
+      setError(err.message || "Failed to reset setting.");
+    },
+  });
+
+  const data = scheduleQuery.data;
+
+  const parsed = parseInt(hourUtc, 10);
+  const previewLabel =
+    !isNaN(parsed) && parsed >= 0 && parsed <= 23
+      ? formatNextBackupTime(parsed)
+      : null;
+
+  return (
+    <div className="border border-border rounded-lg p-4 space-y-4">
+      <div className="flex items-center gap-2">
+        <Clock size={14} className="text-muted-foreground" />
+        <h3 className="text-sm font-semibold">OneDrive backup schedule</h3>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Controls when the nightly OneDrive backup runs. The backup hour takes effect on the next server restart.
+      </p>
+      {error && <Alert tone="danger">{error}</Alert>}
+      {success && <Alert tone="success">Schedule saved.</Alert>}
+      {scheduleQuery.isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 size={13} className="animate-spin" />
+          Loading…
+        </div>
+      ) : (
+        <Field label="Backup hour (UTC, 0–23)">
+          <input
+            className={inputCls}
+            type="number"
+            min={0}
+            max={23}
+            step={1}
+            value={hourUtc}
+            onChange={(e) => setHourUtc(e.target.value)}
+            placeholder={data ? String(data.envHourUtc) : "7"}
+          />
+          {data && data.dbHourUtc !== null ? (
+            <button
+              type="button"
+              onClick={() => resetMutation.mutate()}
+              disabled={resetMutation.isPending}
+              className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+            >
+              {resetMutation.isPending ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : (
+                <RotateCcw size={11} />
+              )}
+              Reset to default ({data.envHourUtc}:00 UTC)
+            </button>
+          ) : data ? (
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Using env default: {data.envHourUtc}:00 UTC
+            </p>
+          ) : null}
+        </Field>
+      )}
+      {previewLabel && (
+        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+          <Clock size={11} className="shrink-0" />
+          Next backup: <span className="text-foreground font-medium">{previewLabel}</span>
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={() => saveMutation.mutate()}
+        disabled={saveMutation.isPending || scheduleQuery.isLoading}
+        className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
+      >
+        {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+        {saveMutation.isPending ? "Saving…" : "Save schedule"}
+      </button>
+    </div>
+  );
+}
+
 function StoragePanel() {
   const [report, setReport] = useState<CleanupReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -955,6 +1092,7 @@ function StoragePanel() {
       )}
       <CleanupScheduleSettingsPanel />
       <CleanupAlertSettingsPanel />
+      <BackupSchedulePanel />
     </PanelShell>
   );
 }

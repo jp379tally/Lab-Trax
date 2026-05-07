@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
-import { runOneDriveBackup } from "../lib/backup";
+import { runOneDriveBackup, getBackupHourUtc, SETTING_BACKUP_HOUR_UTC } from "../lib/backup";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
@@ -3103,6 +3103,82 @@ Important rules:
       return res.json({ success: true, reset: field ?? "all" });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to reset cleanup schedule settings." });
+    }
+  });
+
+  // ── Admin: backup schedule settings ──────────────────────────────────────
+  router.get("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const hourUtc = await getBackupHourUtc();
+      const envHourUtc = Math.max(
+        0,
+        Math.min(23, parseInt(process.env.BACKUP_HOUR_UTC || "7", 10) || 7),
+      );
+      const hourRows = await db
+        .select()
+        .from(systemSettings)
+        .where(eq(systemSettings.key, SETTING_BACKUP_HOUR_UTC));
+      const dbHourRaw = hourRows[0]?.value ?? null;
+      const dbHourUtc =
+        dbHourRaw !== null
+          ? Math.max(0, Math.min(23, parseInt(dbHourRaw, 10) || 0))
+          : null;
+      return res.json({ hourUtc, dbHourUtc, envHourUtc });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to fetch backup schedule settings." });
+    }
+  });
+
+  router.put("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const body = req.body as any;
+      const hourUtc =
+        typeof body?.hourUtc === "number"
+          ? body.hourUtc
+          : parseInt(String(body?.hourUtc ?? ""), 10);
+      if (
+        !Number.isFinite(hourUtc) ||
+        !Number.isInteger(hourUtc) ||
+        hourUtc < 0 ||
+        hourUtc > 23
+      ) {
+        return res.status(400).json({ error: "hourUtc must be an integer between 0 and 23." });
+      }
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_BACKUP_HOUR_UTC, value: String(hourUtc) })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: String(hourUtc), updatedAt: new Date() },
+        });
+      return res.json({ success: true, hourUtc });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to save backup schedule settings." });
+    }
+  });
+
+  router.delete("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const field = (req.query as any).field as string | undefined;
+    if (field && field !== "hourUtc") {
+      return res.status(400).json({ error: "Invalid field. Must be: hourUtc." });
+    }
+    try {
+      await db.delete(systemSettings).where(eq(systemSettings.key, SETTING_BACKUP_HOUR_UTC));
+      return res.json({ success: true, reset: field ?? "all" });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to reset backup schedule settings." });
     }
   });
 

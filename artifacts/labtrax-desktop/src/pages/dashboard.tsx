@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
+import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { LabCase } from "@/lib/types";
 import { formatDate, formatDateTime, relativeTime } from "@/lib/format";
@@ -51,6 +52,10 @@ interface CleanupScheduleSettings {
   hourUtc: number;
 }
 
+interface BackupScheduleSettings {
+  hourUtc: number;
+}
+
 function MediaCleanupCard() {
   const qc = useQueryClient();
 
@@ -79,11 +84,19 @@ function MediaCleanupCard() {
     },
   });
 
+  const backupScheduleQuery = useQuery({
+    queryKey: ["admin", "backup-schedule"],
+    queryFn: () => apiFetch<BackupScheduleSettings>("/admin/settings/backup-schedule"),
+    staleTime: 5 * 60 * 1000,
+  });
+
   const lastRun = runsQuery.data?.runs[0] ?? null;
   const hasError = lastRun?.status === "error";
   const nextRunLabel =
     scheduleQuery.data != null ? formatNextCleanupTime(scheduleQuery.data.hourUtc) : null;
   const isRunning = runNowMutation.isPending;
+  const nextBackupLabel =
+    backupScheduleQuery.data != null ? formatNextBackupTime(backupScheduleQuery.data.hourUtc) : null;
 
   return (
     <section className="bg-card border border-border rounded-xl">
@@ -196,10 +209,20 @@ function MediaCleanupCard() {
           </>
         )}
 
-        {nextRunLabel && (
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground pt-1 border-t border-border/60">
-            <Clock size={11} className="shrink-0" />
-            Next run: <span className="text-foreground font-medium">{nextRunLabel}</span>
+        {(nextRunLabel || nextBackupLabel) && (
+          <div className="pt-1 border-t border-border/60 space-y-1">
+            {nextRunLabel && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Clock size={11} className="shrink-0" />
+                Next cleanup: <span className="text-foreground font-medium">{nextRunLabel}</span>
+              </div>
+            )}
+            {nextBackupLabel && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Clock size={11} className="shrink-0" />
+                Next backup: <span className="text-foreground font-medium">{nextBackupLabel}</span>
+              </div>
+            )}
           </div>
         )}
       </div>
