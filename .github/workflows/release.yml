@@ -215,14 +215,21 @@ jobs:
           check_file "dist/macos/latest-mac.yml"
           if [[ "$failed" == "true" ]]; then exit 1; fi
 
-      - name: Create unified GitHub Release
+      - name: Create unified GitHub Release (draft)
         uses: softprops/action-gh-release@v2
         with:
           name: LabTrax ${{ github.ref_name }}
-          draft: false
+          draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
             ## LabTrax ${{ github.ref_name }}
+
+            > **This release is a draft.** All installers have been built and attached.
+            > A team member should verify the attached files and edit these release notes
+            > before publishing. To publish, run the **Publish Draft Release** workflow
+            > from the Actions tab and enter `${{ github.ref_name }}` as the tag.
+
+            ---
 
             Download the installer for your platform from the **Assets** section below.
 

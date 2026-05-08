@@ -1,0 +1,41 @@
+name: Publish Draft Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag of the draft release to publish (e.g. v1.2.0)"
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Verify the release is still a draft
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          draft=$(gh release view "${{ inputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --json isDraft \
+            --jq '.isDraft')
+          if [[ "$draft" != "true" ]]; then
+            echo "::error::Release ${{ inputs.tag }} is not a draft (isDraft=$draft). Publish aborted to avoid overwriting an already-live release."
+            exit 1
+          fi
+          echo "Release ${{ inputs.tag }} is a draft — proceeding."
+
+      - name: Publish draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ inputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --draft=false
+          echo "Release ${{ inputs.tag }} is now published."
