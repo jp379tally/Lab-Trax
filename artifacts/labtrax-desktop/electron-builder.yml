@@ -5,6 +5,7 @@ directories:
 files:
   - dist/electron-app/**
   - electron/main.cjs
+  - electron/preload.cjs
   - electron/icon.png
 win:
   target: nsis
@@ -14,3 +15,10 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+# publish.url is a placeholder. The electron-build.mjs script overrides it
+# with the real UPDATE_FEED_URL value when --publish always is used.
+# Do not run electron-builder directly for release builds — use:
+#   VITE_API_BASE_URL=… UPDATE_FEED_URL=https://… pnpm run electron:build
+publish:
+  provider: generic
+  url: https://example.com/updates

@@ -9,8 +9,24 @@
  * zips that directory into electron-dist/LabTrax-Windows-Portable.zip, which
  * is a fully functional Windows distribution users can download and run.
  *
+ * Auto-update publishing:
+ *   Set UPDATE_FEED_URL to the base URL of your static update server (e.g. an
+ *   S3 bucket, GitHub Pages, or any HTTPS host where you place latest.yml and
+ *   the installer file). When set, --publish always is added so electron-builder
+ *   uploads the installer and the latest.yml manifest.
+ *
+ *   For GitHub Releases: set GH_TOKEN instead and switch the publish provider
+ *   in electron-builder.yml to "github". UPDATE_FEED_URL is not required then.
+ *
+ *   The running app reads UPDATE_FEED_URL at launch to know where to poll for
+ *   updates, so it must also be embedded in the installer environment or set
+ *   on the host machine. The simplest approach for the generic provider is to
+ *   host latest.yml and the installer at a stable public URL and set that URL
+ *   both here (for publishing) and in the packaged app's environment.
+ *
  * Usage:
- *   VITE_API_BASE_URL=https://your-app.replit.app node scripts/electron-build.mjs
+ *   VITE_API_BASE_URL=https://your-app.replit.app pnpm run electron:build
+ *   VITE_API_BASE_URL=… UPDATE_FEED_URL=https://cdn.example.com/labtrax-updates pnpm run electron:build
  */
 
 import { spawnSync } from "node:child_process";
@@ -32,9 +48,18 @@ if (!process.env.VITE_API_BASE_URL) {
   process.exit(1);
 }
 
-function run(cmd, args) {
+const updateFeedUrl = process.env.UPDATE_FEED_URL;
+const ghToken = process.env.GH_TOKEN;
+const shouldPublish = Boolean(updateFeedUrl || ghToken);
+
+function run(cmd, args, env = {}) {
   console.log(`\n$ ${cmd} ${args.join(" ")}`);
-  const result = spawnSync(cmd, args, { stdio: "inherit", cwd: root, shell: false });
+  const result = spawnSync(cmd, args, {
+    stdio: "inherit",
+    cwd: root,
+    shell: false,
+    env: { ...process.env, ...env },
+  });
   return result.status ?? 0;
 }
 
@@ -77,16 +102,41 @@ if (viteCode !== 0) {
   process.exit(viteCode);
 }
 
-const buildExitCode = run("pnpm", [
+const builderArgs = [
   "exec",
   "electron-builder",
   "--win",
   "--config",
   "electron-builder.yml",
-]);
+];
+
+if (shouldPublish) {
+  if (updateFeedUrl) {
+    const publishOverride = JSON.stringify({ publish: { provider: "generic", url: updateFeedUrl } });
+    builderArgs.push("--config", publishOverride);
+  }
+  builderArgs.push("--publish", "always");
+  console.log(
+    updateFeedUrl
+      ? `\nPublishing release artifacts to: ${updateFeedUrl}`
+      : "\nPublishing release artifacts to GitHub Releases…",
+  );
+} else {
+  console.log(
+    "\nNote: set UPDATE_FEED_URL (or GH_TOKEN for GitHub Releases) to publish\n" +
+    "release artifacts for auto-update. Without publishing, users must\n" +
+    "download new versions manually.",
+  );
+}
+
+const buildExitCode = run("pnpm", builderArgs);
 
 if (buildExitCode === 0) {
-  console.log("\n✓ NSIS installer produced in electron-dist/");
+  if (shouldPublish) {
+    console.log("\n✓ Installer and latest.yml published. Auto-update is active for this release.");
+  } else {
+    console.log("\n✓ NSIS installer produced in electron-dist/");
+  }
 } else {
   console.warn(
     "\nelectron-builder did not complete (Wine is required on Linux for NSIS).",

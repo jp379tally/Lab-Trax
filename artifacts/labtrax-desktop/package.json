@@ -88,6 +88,8 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.8.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.7"
   }
