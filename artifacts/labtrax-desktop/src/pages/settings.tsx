@@ -1151,6 +1151,8 @@ function StoragePanel() {
 
 interface DesktopInstallerInfo {
   version: string;
+  dbVersion: string | null;
+  envVersion: string;
   downloadUrl: string;
   dbDownloadUrl: string | null;
   envDownloadUrl: string;
@@ -1163,6 +1165,7 @@ interface DesktopInstallerInfo {
 function DesktopInstallerPanel() {
   const queryClient = useQueryClient();
   const [urlInput, setUrlInput] = useState<string>("");
+  const [versionInput, setVersionInput] = useState<string>("");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -1174,6 +1177,7 @@ function DesktopInstallerPanel() {
   useEffect(() => {
     if (query.data) {
       setUrlInput(query.data.downloadUrl);
+      setVersionInput(query.data.version);
     }
   }, [query.data]);
 
@@ -1182,7 +1186,7 @@ function DesktopInstallerPanel() {
       apiFetch<{ success: boolean; downloadUrl: string }>("/admin/settings/desktop-installer", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ downloadUrl: urlInput.trim() }),
+        body: JSON.stringify({ downloadUrl: urlInput.trim(), version: versionInput.trim() }),
       }),
     onSuccess: () => {
       setSaveError(null);
@@ -1192,7 +1196,7 @@ function DesktopInstallerPanel() {
     },
     onError: (err: Error) => {
       setSaveSuccess(false);
-      setSaveError(err.message || "Failed to save installer URL.");
+      setSaveError(err.message || "Failed to save installer settings.");
     },
   });
 
@@ -1205,12 +1209,16 @@ function DesktopInstallerPanel() {
       queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
     },
     onError: (err: Error) => {
-      setSaveError(err.message || "Failed to reset installer URL.");
+      setSaveError(err.message || "Failed to reset installer settings.");
     },
   });
 
   const info = query.data;
   const isZip = info?.downloadUrl.endsWith(".zip") ?? true;
+  const hasDbOverrides = info !== undefined && (info.dbDownloadUrl !== null || info.dbVersion !== null);
+  const inputsUnchanged =
+    urlInput.trim() === (info?.downloadUrl ?? "") &&
+    versionInput.trim() === (info?.version ?? "");
 
   return (
     <PanelShell
@@ -1255,13 +1263,13 @@ function DesktopInstallerPanel() {
           )}
 
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
-            <div className="text-sm font-semibold">Download URL</div>
+            <div className="text-sm font-semibold">Download URL &amp; Version</div>
             <p className="text-xs text-muted-foreground">
               Paste the GitHub Release asset URL (or a <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code> path) here after each build.
               Must start with <code className="font-mono bg-secondary px-1 py-0.5 rounded">https://</code> or <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code>.
             </p>
             {saveError && <Alert tone="danger">{saveError}</Alert>}
-            {saveSuccess && <Alert tone="success">Download URL saved.</Alert>}
+            {saveSuccess && <Alert tone="success">Settings saved.</Alert>}
             <div className="flex gap-2 items-start">
               <input
                 className={`${inputCls} flex-1`}
@@ -1270,17 +1278,25 @@ function DesktopInstallerPanel() {
                 onChange={(e) => setUrlInput(e.target.value)}
                 placeholder="https://github.com/…/releases/download/…/LabTrax-Setup.exe"
               />
+              <input
+                className={`${inputCls} w-28 shrink-0`}
+                type="text"
+                value={versionInput}
+                onChange={(e) => setVersionInput(e.target.value)}
+                placeholder="1.0.0"
+                aria-label="Version"
+              />
               <button
                 type="button"
                 onClick={() => saveMutation.mutate()}
-                disabled={saveMutation.isPending || resetMutation.isPending || !urlInput.trim() || urlInput.trim() === info.downloadUrl}
+                disabled={saveMutation.isPending || resetMutation.isPending || !urlInput.trim() || inputsUnchanged}
                 className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 shrink-0 inline-flex items-center gap-1.5"
               >
                 {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
                 Save
               </button>
             </div>
-            {info.dbDownloadUrl !== null ? (
+            {hasDbOverrides ? (
               <button
                 type="button"
                 onClick={() => resetMutation.mutate()}
@@ -1292,11 +1308,11 @@ function DesktopInstallerPanel() {
                 ) : (
                   <RotateCcw size={11} />
                 )}
-                Reset to env default ({info.envDownloadUrl.split("/").pop()})
+                Reset to env defaults (v{info.envVersion} · {info.envDownloadUrl.split("/").pop()})
               </button>
             ) : (
               <p className="text-[11px] text-muted-foreground">
-                Using env default: <code className="font-mono bg-secondary px-0.5 rounded">{info.envDownloadUrl}</code>
+                Using env defaults: v{info.envVersion} · <code className="font-mono bg-secondary px-0.5 rounded">{info.envDownloadUrl}</code>
               </p>
             )}
           </div>

@@ -3291,25 +3291,33 @@ Important rules:
 
   // ── Admin Desktop Installer ───────────────────────────────────────────────
   const SETTING_DESKTOP_INSTALLER_URL = "desktop_installer_url";
+  const SETTING_DESKTOP_INSTALLER_VERSION = "desktop_installer_version";
 
   function validateInstallerUrl(url: string): string | null {
     if (url.startsWith("https://") || url.startsWith("/downloads/")) return null;
     return "URL must start with https:// or /downloads/.";
   }
 
+  function validateInstallerVersion(version: string): string | null {
+    if (/^\d+\.\d+\.\d+$/.test(version)) return null;
+    return "Version must follow the format X.Y.Z (e.g. 1.2.0).";
+  }
+
   router.get("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
-    const version = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
+    const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
     const envUrl =
       process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
-    const dbRows = await db
-      .select()
-      .from(systemSettings)
-      .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_URL));
-    const dbUrl = dbRows[0]?.value ?? null;
+    const [dbUrlRows, dbVersionRows] = await Promise.all([
+      db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_URL)),
+      db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION)),
+    ]);
+    const dbUrl = dbUrlRows[0]?.value ?? null;
+    const dbVersion = dbVersionRows[0]?.value ?? null;
     const rawUrl = dbUrl ?? envUrl;
+    const version = dbVersion ?? envVersion;
     const urlError = validateInstallerUrl(rawUrl);
     const fileName = urlError ? null : (rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip");
     const repoUrl = process.env.GITHUB_REPO_URL ?? null;
@@ -3318,7 +3326,18 @@ Important rules:
       repoUrl !== null && !githubRepoPattern.test(repoUrl)
         ? "GITHUB_REPO_URL does not look like a valid https://github.com/<owner>/<repo> URL. The Actions link may not work correctly."
         : undefined;
-    return res.json({ version, downloadUrl: rawUrl, dbDownloadUrl: dbUrl, envDownloadUrl: envUrl, fileName, repoUrl, urlError: urlError ?? null, repoUrlWarning });
+    return res.json({
+      version,
+      dbVersion,
+      envVersion,
+      downloadUrl: rawUrl,
+      dbDownloadUrl: dbUrl,
+      envDownloadUrl: envUrl,
+      fileName,
+      repoUrl,
+      urlError: urlError ?? null,
+      repoUrlWarning,
+    });
   });
 
   router.put("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
@@ -3327,24 +3346,45 @@ Important rules:
     }
     const body = req.body as any;
     const downloadUrl = typeof body?.downloadUrl === "string" ? body.downloadUrl.trim() : null;
+    const version = typeof body?.version === "string" ? body.version.trim() : null;
     if (!downloadUrl) {
       return res.status(400).json({ error: "downloadUrl is required." });
     }
-    const validationErr = validateInstallerUrl(downloadUrl);
-    if (validationErr) {
-      return res.status(400).json({ error: validationErr });
+    const urlErr = validateInstallerUrl(downloadUrl);
+    if (urlErr) {
+      return res.status(400).json({ error: urlErr });
+    }
+    if (version !== null && version !== "") {
+      const versionErr = validateInstallerVersion(version);
+      if (versionErr) {
+        return res.status(400).json({ error: versionErr });
+      }
     }
     try {
-      await db
-        .insert(systemSettings)
-        .values({ key: SETTING_DESKTOP_INSTALLER_URL, value: downloadUrl })
-        .onConflictDoUpdate({
-          target: systemSettings.key,
-          set: { value: downloadUrl, updatedAt: new Date() },
-        });
-      return res.json({ success: true, downloadUrl });
+      const ops: Promise<unknown>[] = [
+        db
+          .insert(systemSettings)
+          .values({ key: SETTING_DESKTOP_INSTALLER_URL, value: downloadUrl })
+          .onConflictDoUpdate({
+            target: systemSettings.key,
+            set: { value: downloadUrl, updatedAt: new Date() },
+          }),
+      ];
+      if (version !== null && version !== "") {
+        ops.push(
+          db
+            .insert(systemSettings)
+            .values({ key: SETTING_DESKTOP_INSTALLER_VERSION, value: version })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: version, updatedAt: new Date() },
+            })
+        );
+      }
+      await Promise.all(ops);
+      return res.json({ success: true, downloadUrl, version });
     } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Failed to save installer URL." });
+      return res.status(500).json({ error: e?.message || "Failed to save installer settings." });
     }
   });
 
@@ -3353,10 +3393,13 @@ Important rules:
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
-      await db.delete(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_URL));
+      await Promise.all([
+        db.delete(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_URL)),
+        db.delete(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION)),
+      ]);
       return res.json({ success: true });
     } catch (e: any) {
-      return res.status(500).json({ error: e?.message || "Failed to reset installer URL." });
+      return res.status(500).json({ error: e?.message || "Failed to reset installer settings." });
     }
   });
 
