@@ -80,10 +80,17 @@ dmg:
 
 # ─── Publish ─────────────────────────────────────────────────────────────────
 # Using the GitHub Releases provider so electron-updater can query the
-# GitHub API to discover the latest release and download latest.yml.
-# On release builds the CI workflow passes GH_TOKEN which causes electron-builder
-# to publish the installer and latest.yml manifest to the GitHub Release.
-# Do not run electron-builder directly for release builds — use:
-#   VITE_API_BASE_URL=… GH_TOKEN=… pnpm run electron:build
+# GitHub API to discover the latest release and download latest.yml /
+# latest-mac.yml at runtime.
+#
+# GH_TOKEN is intentionally NOT passed to electron-builder during CI builds.
+# Without it, electron-builder skips the direct upload to GitHub and instead
+# writes all output files (installer, latest.yml / latest-mac.yml, blockmap)
+# to the local electron-dist/ directory. The release.yml workflow captures
+# these files via upload-artifact and then attaches them to a single unified
+# GitHub Release in the publish-release job after both platform builds succeed.
+#
+# This prevents electron-builder from creating a premature partial release
+# (Windows-only or macOS-only) before all assets are ready.
 publish:
   provider: github

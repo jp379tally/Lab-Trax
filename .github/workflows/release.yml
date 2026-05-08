@@ -175,8 +175,18 @@ jobs:
 
   # ── Unified release ──────────────────────────────────────────────────────────
   # Runs only after both platform builds succeed. Downloads all release assets
-  # (installers, auto-update manifests, blockmaps) and attaches them to a
-  # single GitHub Release with combined download instructions.
+  # from both platform build jobs and attaches them to a single GitHub Release.
+  #
+  # Auto-update manifest files (latest.yml, latest-mac.yml) are produced by
+  # electron-builder locally during each platform build (GH_TOKEN is intentionally
+  # omitted from those steps to prevent premature partial releases). The manifests
+  # are captured via upload-artifact and attached here so that electron-updater
+  # in existing installs can discover the new version on next launch.
+  #
+  # Required files for each platform's auto-updater:
+  #   Windows  — latest.yml, *.exe, *.exe.blockmap
+  #   macOS    — latest-mac.yml, *.zip, *.zip.blockmap (DMG is the user download,
+  #              not the updater payload)
   publish-release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
@@ -198,6 +208,12 @@ jobs:
           path: dist/macos
 
       - name: Verify expected release files are present
+        # Fail fast if any required asset is missing before touching the release.
+        # Auto-update manifests (latest.yml, latest-mac.yml) and their matching
+        # payloads (*.exe + blockmap for Windows; *.zip + blockmap for macOS) must
+        # all be present — a missing manifest means existing installs can't detect
+        # the new version; a missing payload or blockmap breaks the download/verify
+        # step inside electron-updater.
         shell: bash
         run: |
           failed=false
@@ -209,9 +225,14 @@ jobs:
               failed=true
             fi
           }
+          # Windows: installer, auto-update manifest, and blockmap
           check_file "dist/windows/*.exe"
+          check_file "dist/windows/*.exe.blockmap"
           check_file "dist/windows/latest.yml"
+          # macOS: DMG (user download), zip + blockmap (auto-updater payload), manifest
           check_file "dist/macos/*.dmg"
+          check_file "dist/macos/*.zip"
+          check_file "dist/macos/*.zip.blockmap"
           check_file "dist/macos/latest-mac.yml"
           if [[ "$failed" == "true" ]]; then exit 1; fi
 
