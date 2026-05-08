@@ -1,0 +1,271 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  # ── Windows build ────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Require signing secrets
+        shell: bash
+        run: |
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
+            echo "::error::WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD secrets must be set for tagged release builds. Add them in Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+      - name: Build and package Windows installer
+        # GH_TOKEN is intentionally omitted — electron-builder would otherwise
+        # try to publish directly to a GitHub Release, creating a partial release
+        # before the macOS build finishes. The publish-release job handles
+        # creating the single unified release after both builds succeed.
+        #
+        # Without GH_TOKEN, electron-builder still writes all output files
+        # (installer, latest.yml, blockmap) to electron-dist locally — we
+        # capture them via upload-artifact below.
+        run: pnpm --filter @workspace/labtrax-desktop run electron:build
+        env:
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+      - name: Verify installer signature
+        if: env.CSC_LINK != ''
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          $installers = Get-ChildItem -Path "artifacts/labtrax-desktop/electron-dist" -Filter "*.exe" -ErrorAction Stop
+          if ($installers.Count -eq 0) {
+            Write-Host "::error::No .exe installer found in artifacts/labtrax-desktop/electron-dist."
+            exit 1
+          }
+          $failed = $false
+          foreach ($installer in $installers) {
+            Write-Host "Verifying signature: $($installer.Name)"
+            signtool verify /pa /v "$($installer.FullName)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::Signature verification FAILED for $($installer.Name)."
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "All installers passed signature verification."
+
+      - name: Upload Windows release assets
+        # Upload the installer, auto-update manifest (latest.yml), and blockmap.
+        # latest.yml is required by electron-updater to discover and verify new
+        # versions — without it, auto-update silently fails for existing installs.
+        uses: actions/upload-artifact@v4
+        with:
+          name: LabTrax-Windows-Assets
+          path: |
+            artifacts/labtrax-desktop/electron-dist/*.exe
+            artifacts/labtrax-desktop/electron-dist/*.exe.blockmap
+            artifacts/labtrax-desktop/electron-dist/latest.yml
+          if-no-files-found: error
+
+  # ── macOS build ──────────────────────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Require signing and notarization secrets
+        shell: bash
+        run: |
+          missing=()
+          [[ -z "$CSC_LINK" ]]                    && missing+=("MACOS_CERTIFICATE")
+          [[ -z "$CSC_KEY_PASSWORD" ]]            && missing+=("MACOS_CERTIFICATE_PASSWORD")
+          [[ -z "$APPLE_ID" ]]                    && missing+=("APPLE_ID")
+          [[ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]] && missing+=("APPLE_APP_SPECIFIC_PASSWORD")
+          [[ -z "$APPLE_TEAM_ID" ]]               && missing+=("APPLE_TEAM_ID")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::The following GitHub Actions secrets must be set for tagged release builds:"
+            for s in "${missing[@]}"; do echo "  • $s"; done
+            echo ""
+            echo "Add them in Settings → Secrets and variables → Actions."
+            echo ""
+            echo "Required secrets:"
+            echo "  MACOS_CERTIFICATE             — base64-encoded .p12 Developer ID Application certificate"
+            echo "                                  (encode with: base64 -i certificate.p12 | tr -d '\\n')"
+            echo "  MACOS_CERTIFICATE_PASSWORD    — password protecting the .p12 file"
+            echo "  APPLE_ID                      — Apple ID email (App Store Connect account)"
+            echo "  APPLE_APP_SPECIFIC_PASSWORD   — app-specific password for the Apple ID"
+            echo "                                  (generate at appleid.apple.com → Sign-In and Security)"
+            echo "  APPLE_TEAM_ID                 — 10-character Team ID from developer.apple.com/account"
+            exit 1
+          fi
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build and notarize macOS DMG
+        # GH_TOKEN is intentionally omitted — see the Windows build job for the
+        # rationale. The zip targets are built alongside the DMG because
+        # electron-updater uses them as the auto-update payload on macOS.
+        run: pnpm --filter @workspace/labtrax-desktop run electron:build
+        env:
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          ELECTRON_PLATFORM: mac
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Upload macOS release assets
+        # Upload DMGs (user download), zip archives (auto-updater payload),
+        # blockmaps (integrity verification), and latest-mac.yml (version
+        # manifest required by electron-updater for macOS auto-update).
+        uses: actions/upload-artifact@v4
+        with:
+          name: LabTrax-macOS-Assets
+          path: |
+            artifacts/labtrax-desktop/electron-dist/*.dmg
+            artifacts/labtrax-desktop/electron-dist/*.dmg.blockmap
+            artifacts/labtrax-desktop/electron-dist/*.zip
+            artifacts/labtrax-desktop/electron-dist/*.zip.blockmap
+            artifacts/labtrax-desktop/electron-dist/latest-mac.yml
+          if-no-files-found: error
+
+  # ── Unified release ──────────────────────────────────────────────────────────
+  # Runs only after both platform builds succeed. Downloads all release assets
+  # (installers, auto-update manifests, blockmaps) and attaches them to a
+  # single GitHub Release with combined download instructions.
+  publish-release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows assets
+        uses: actions/download-artifact@v4
+        with:
+          name: LabTrax-Windows-Assets
+          path: dist/windows
+
+      - name: Download macOS assets
+        uses: actions/download-artifact@v4
+        with:
+          name: LabTrax-macOS-Assets
+          path: dist/macos
+
+      - name: Verify expected release files are present
+        shell: bash
+        run: |
+          failed=false
+          check_file() {
+            if compgen -G "$1" > /dev/null; then
+              echo "✓ Found: $1"
+            else
+              echo "::error::Missing expected release file: $1"
+              failed=true
+            fi
+          }
+          check_file "dist/windows/*.exe"
+          check_file "dist/windows/latest.yml"
+          check_file "dist/macos/*.dmg"
+          check_file "dist/macos/latest-mac.yml"
+          if [[ "$failed" == "true" ]]; then exit 1; fi
+
+      - name: Create unified GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: LabTrax ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## LabTrax ${{ github.ref_name }}
+
+            Download the installer for your platform from the **Assets** section below.
+
+            ---
+
+            ### Windows
+
+            1. Download the **LabTrax Setup \*.exe** file.
+            2. Run the installer and follow the setup wizard (Next → Next → Finish).
+            3. A desktop shortcut and Start Menu entry are created automatically.
+            4. To uninstall, use **Add or Remove Programs** in Windows Settings.
+
+            **Auto-update:** Existing installs are notified on next launch and can update with one click — no manual download needed.
+
+            > The installer is code-signed, which reduces or eliminates Windows SmartScreen prompts.
+
+            ---
+
+            ### macOS
+
+            1. Download the **LabTrax-\*.dmg** file matching your chip:
+               - **Apple Silicon (M1/M2/M3):** download the `arm64` DMG
+               - **Intel Mac:** download the `x64` DMG
+               - If a universal build is provided it runs natively on both.
+            2. Open the DMG and drag **LabTrax** into your **Applications** folder.
+            3. Launch LabTrax from Applications or Spotlight.
+
+            **Auto-update:** Existing installs check for updates on launch.
+
+            > The app is signed with a Developer ID certificate and notarized by Apple — macOS will open it without any security warning.
+
+            ---
+
+            The app connects to your lab's LabTrax server. Make sure your server URL is reachable before launching.
+          files: |
+            dist/windows/*.exe
+            dist/windows/*.exe.blockmap
+            dist/windows/latest.yml
+            dist/macos/*.dmg
+            dist/macos/*.dmg.blockmap
+            dist/macos/*.zip
+            dist/macos/*.zip.blockmap
+            dist/macos/latest-mac.yml
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

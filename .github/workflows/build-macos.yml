@@ -1,4 +1,8 @@
-name: Build macOS Installer
+name: Build macOS Installer (Test)
+
+# Standalone build for local testing and CI smoke checks.
+# For official versioned releases, use the Release workflow (.github/workflows/release.yml),
+# which runs both platform builds in parallel and publishes a single unified GitHub Release.
 
 on:
   workflow_dispatch:
@@ -7,9 +11,6 @@ on:
         description: "Production API base URL (e.g. https://your-app.replit.app)"
         required: true
         type: string
-  push:
-    tags:
-      - "v*"
 
 jobs:
   build:
@@ -33,12 +34,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # ── Certificate & notarization secrets check ─────────────────────────
-      # For tagged release builds all four Apple secrets must be present.
-      # Unsigned DMGs are accepted for manual workflow_dispatch runs so
-      # developers can test the build pipeline without full credentials.
-      - name: Require signing and notarization secrets for release builds
-        if: startsWith(github.ref, 'refs/tags/v')
+      # ── Certificate & notarization secrets check ─────────────────────────────
+      # All Apple secrets are optional for manual test runs — omitting them
+      # produces an ad-hoc-signed DMG suitable for local testing only.
+      # Gatekeeper will block the unsigned build on other machines.
+      - name: Warn when signing secrets are absent
         shell: bash
         run: |
           missing=()
@@ -48,20 +48,8 @@ jobs:
           [[ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]] && missing+=("APPLE_APP_SPECIFIC_PASSWORD")
           [[ -z "$APPLE_TEAM_ID" ]]               && missing+=("APPLE_TEAM_ID")
           if [[ ${#missing[@]} -gt 0 ]]; then
-            echo "::error::The following GitHub Actions secrets must be set for tagged release builds:"
-            for s in "${missing[@]}"; do echo "  • $s"; done
-            echo ""
-            echo "Add them in Settings → Secrets and variables → Actions."
-            echo ""
-            echo "Required secrets:"
-            echo "  MACOS_CERTIFICATE             — base64-encoded .p12 Developer ID Application certificate"
-            echo "                                  (encode with: base64 -i certificate.p12 | tr -d '\\n')"
-            echo "  MACOS_CERTIFICATE_PASSWORD    — password protecting the .p12 file"
-            echo "  APPLE_ID                      — Apple ID email (App Store Connect account)"
-            echo "  APPLE_APP_SPECIFIC_PASSWORD   — app-specific password for the Apple ID"
-            echo "                                  (generate at appleid.apple.com → Sign-In and Security)"
-            echo "  APPLE_TEAM_ID                 — 10-character Team ID from developer.apple.com/account"
-            exit 1
+            echo "::warning::Signing/notarization secrets are missing: ${missing[*]}"
+            echo "::warning::Producing an unsigned ad-hoc build — suitable for local testing only."
           fi
         env:
           CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
@@ -70,7 +58,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      # ── Build ─────────────────────────────────────────────────────────────
+      # ── Build ─────────────────────────────────────────────────────────────────
       # electron-builder reads CSC_LINK / CSC_KEY_PASSWORD to load the signing
       # certificate into a temporary keychain automatically. When those vars are
       # absent (unsigned workflow_dispatch runs) it produces an ad-hoc-signed
@@ -80,62 +68,23 @@ jobs:
       # notarization. electron-builder submits the signed app to Apple's
       # notarization service and staples the resulting ticket into the DMG so
       # Gatekeeper passes without any warning on end-user machines.
-      - name: Build and notarize macOS DMG
+      #
+      # No GH_TOKEN is passed so no GitHub Release is created by this workflow.
+      - name: Build macOS DMG
         run: pnpm --filter @workspace/labtrax-desktop run electron:build
         env:
-          VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url || secrets.VITE_API_BASE_URL }}
+          VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url }}
           ELECTRON_PLATFORM: mac
-          # Signing certificate — electron-builder imports this into a
-          # temporary keychain; no manual keychain steps are required.
           CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          # Notarization credentials. electron-builder submits the app to
-          # Apple's notarization service when all three are present.
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # On tag pushes electron-builder publishes the DMG and latest-mac.yml
-          # to the GitHub Release so that electron-updater can discover new
-          # versions automatically. On workflow_dispatch builds GH_TOKEN is
-          # absent and no auto-update manifest is produced.
-          GH_TOKEN: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.GITHUB_TOKEN || '' }}
 
-      # ── Upload artifacts ──────────────────────────────────────────────────
+      # ── Upload artifacts ──────────────────────────────────────────────────────
       - name: Upload DMG as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: LabTrax-macOS-DMG
           path: artifacts/labtrax-desktop/electron-dist/*.dmg
           if-no-files-found: error
-
-      # ── GitHub Release ────────────────────────────────────────────────────
-      - name: Create GitHub Release and upload DMG
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: LabTrax ${{ github.ref_name }}
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          body: |
-            ## LabTrax ${{ github.ref_name }} — macOS DMG
-
-            ### Installation
-            1. Download the **LabTrax-\*.dmg** file below.
-            2. Open the DMG, drag **LabTrax** into your **Applications** folder.
-            3. Launch LabTrax from Applications or Spotlight.
-
-            > **Gatekeeper:** The app is signed with a Developer ID certificate and
-            > notarized by Apple, so macOS will open it without any security warning.
-
-            ### Auto-Update
-            - Existing installs will be notified automatically on next launch and can
-              update with one click — no manual download needed.
-
-            ### Notes
-            - Both **Apple Silicon (arm64)** and **Intel (x64)** Macs are supported.
-              Download the file matching your architecture, or the universal build if provided.
-            - The app connects to your lab's LabTrax server. Make sure your server URL is reachable.
-          files: artifacts/labtrax-desktop/electron-dist/*.dmg
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

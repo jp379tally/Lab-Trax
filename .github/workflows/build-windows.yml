@@ -1,4 +1,8 @@
-name: Build Windows Installer
+name: Build Windows Installer (Test)
+
+# Standalone unsigned build for local testing and CI smoke checks.
+# For official versioned releases, use the Release workflow (.github/workflows/release.yml),
+# which runs both platform builds in parallel and publishes a single unified GitHub Release.
 
 on:
   workflow_dispatch:
@@ -7,9 +11,6 @@ on:
         description: "Production API base URL (e.g. https://your-app.replit.app)"
         required: true
         type: string
-  push:
-    tags:
-      - "v*"
 
 jobs:
   build:
@@ -33,32 +34,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Require signing secrets for release builds
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
-            echo "::error::WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD secrets must be set for tagged release builds. Add them in Settings → Secrets and variables → Actions."
-            exit 1
-          fi
-        env:
-          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-
       - name: Build and package Windows installer
+        # Signing is optional for test builds — omitting CSC_LINK produces an
+        # unsigned installer. No GH_TOKEN is passed so no release is created.
         run: pnpm --filter @workspace/labtrax-desktop run electron:build
         env:
-          VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url || secrets.VITE_API_BASE_URL }}
-          # electron-builder picks up CSC_LINK / CSC_KEY_PASSWORD automatically.
-          # Omitting these secrets produces an unsigned build (allowed for
-          # workflow_dispatch; blocked for tag pushes by the step above).
+          VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url }}
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          # GH_TOKEN is only set on tag pushes so that electron-builder publishes
-          # the installer and latest.yml directly to the GitHub Release.
-          # On workflow_dispatch builds (no tag) the installer is uploaded as a
-          # workflow artifact instead and no auto-update manifest is produced.
-          GH_TOKEN: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.GITHUB_TOKEN || '' }}
 
       - name: Verify installer signature
         if: env.CSC_LINK != ''
@@ -89,32 +72,3 @@ jobs:
           name: LabTrax-Windows-Installer
           path: artifacts/labtrax-desktop/electron-dist/*.exe
           if-no-files-found: error
-
-      - name: Update GitHub Release notes
-        # electron-builder (with GH_TOKEN) already created the release and uploaded
-        # the .exe and latest.yml. This step only updates the release body with
-        # human-readable install instructions.
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: LabTrax ${{ github.ref_name }}
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          body: |
-            ## LabTrax ${{ github.ref_name }} — Windows Installer
-
-            ### Installation
-            1. Download the **LabTrax Setup \*.exe** file below.
-            2. Run the installer and follow the setup wizard (Next → Next → Finish).
-            3. A desktop shortcut and Start Menu entry are created automatically.
-            4. To remove, use **Add or Remove Programs** in Windows Settings.
-
-            ### Auto-Update
-            - Existing installs will be notified automatically on next launch and can
-              update with one click — no manual download needed.
-
-            ### Notes
-            - The installer is code-signed, which reduces or eliminates Windows SmartScreen prompts.
-            - The installer connects to your lab's LabTrax server. Make sure your server URL is reachable.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
