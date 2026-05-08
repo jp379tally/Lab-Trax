@@ -7,10 +7,16 @@ on:
         description: "Production API base URL (e.g. https://your-app.replit.app)"
         required: true
         type: string
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build:
     runs-on: windows-latest
+
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -27,19 +33,38 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Vite (Electron config)
-        working-directory: artifacts/labtrax-desktop
-        run: pnpm exec vite build --config vite.electron.config.ts
+      - name: Build and package Windows installer
+        run: pnpm --filter @workspace/labtrax-desktop run electron:build
         env:
-          VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url }}
+          VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url || secrets.VITE_API_BASE_URL }}
 
-      - name: Package Windows installer
-        working-directory: artifacts/labtrax-desktop
-        run: pnpm exec electron-builder --win --config electron-builder.yml
-
-      - name: Upload installer artifact
+      - name: Upload installer as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: LabTrax-Windows-Installer
           path: artifacts/labtrax-desktop/electron-dist/*.exe
           if-no-files-found: error
+
+      - name: Create GitHub Release and upload installer
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: LabTrax ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## LabTrax ${{ github.ref_name }} — Windows Installer
+
+            ### Installation
+            1. Download the **LabTrax Setup \*.exe** file below.
+            2. Run the installer and follow the setup wizard (Next → Next → Finish).
+            3. A desktop shortcut and Start Menu entry are created automatically.
+            4. To remove, use **Add or Remove Programs** in Windows Settings.
+
+            ### Notes
+            - Windows may show a SmartScreen prompt on first run — click "More info" → "Run anyway".
+            - The installer connects to your lab's LabTrax server. Make sure your server URL is reachable.
+          files: artifacts/labtrax-desktop/electron-dist/*.exe
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
