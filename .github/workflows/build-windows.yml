@@ -55,6 +55,29 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
+      - name: Verify installer signature
+        if: env.CSC_LINK != ''
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+        run: |
+          $installers = Get-ChildItem -Path "artifacts/labtrax-desktop/electron-dist" -Filter "*.exe" -ErrorAction Stop
+          if ($installers.Count -eq 0) {
+            Write-Host "::error::No .exe installer found in artifacts/labtrax-desktop/electron-dist."
+            exit 1
+          }
+          $failed = $false
+          foreach ($installer in $installers) {
+            Write-Host "Verifying signature: $($installer.Name)"
+            signtool verify /pa /v "$($installer.FullName)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::Signature verification FAILED for $($installer.Name). The certificate may be misconfigured or expired, or electron-builder did not sign the output. Check that WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD are valid and that the CSC_LINK env var was passed to the build step."
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "All installers passed signature verification."
+
       - name: Upload installer as workflow artifact
         uses: actions/upload-artifact@v4
         with:
