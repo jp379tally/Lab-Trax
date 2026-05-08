@@ -17,6 +17,7 @@ import RegisterPage from "@/pages/finance/register";
 import ReconcilePage from "@/pages/finance/reconcile";
 import CashFlowPage from "@/pages/finance/cash-flow";
 import RecurringPage from "@/pages/finance/recurring";
+import DownloadPage from "@/pages/download";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/AppLayout";
 
@@ -57,6 +58,7 @@ function AppLayoutWithUploads() {
         <Route path="/finance/reconcile" component={ReconcilePage} />
         <Route path="/finance/cash-flow" component={CashFlowPage} />
         <Route path="/finance/recurring" component={RecurringPage} />
+        <Route path="/download" component={DownloadPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

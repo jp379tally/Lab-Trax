@@ -20,6 +20,10 @@ app.set("trust proxy", 1);
 const casMediaDir = path.join(process.cwd(), "uploads", "case-media");
 app.use("/uploads/case-media", express.static(casMediaDir));
 
+// Serve the Windows portable zip for download (outside /api, no auth required)
+const electronDistDir = path.resolve(__dirname, "..", "..", "..", "artifacts", "labtrax-desktop", "electron-dist");
+app.use("/downloads", express.static(electronDistDir, { dotfiles: "deny", index: false }));
+
 app.use(
   pinoHttp({
     logger,

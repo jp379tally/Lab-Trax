@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   Loader2,
   LogOut,
+  MonitorDown,
   Receipt,
   Search,
   Settings,
@@ -49,6 +50,7 @@ const NAV: NavItem[] = [
 const SECONDARY: NavItem[] = [
   { label: "Admin Settings", path: "/settings", icon: Settings },
   { label: "Maintenance", path: "/maintenance", icon: HardDrive, adminOnly: true },
+  { label: "Download Desktop App", path: "/download", icon: MonitorDown },
 ];
 
 interface Props {
