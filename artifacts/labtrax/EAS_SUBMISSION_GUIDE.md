@@ -11,12 +11,8 @@ All commands run on **your local machine**, not inside Replit.
 | Bundle ID | `com.allieddl.labtrax` |
 | App Store Connect App ID | `6760672646` |
 | Last uploaded build | `1.0.8 (102)` — May 6 |
-| Next build (in this repo) | `1.0.8 (104)` ← safe, 104 > 102 |
+| Next build (in this repo) | `1.0.7 (104)` ← safe, 104 > 102 |
 | EAS project ID in app.json | Not yet — `eas init` still needed (see Step 4) |
-
-> **Version question**: App Store Connect shows a "Version 1.0.9" entry.
-> If you want this build filed under 1.0.9, update `version` in `app.json`
-> from `"1.0.8"` to `"1.0.9"` before building. Build number stays 104 either way.
 
 ---
 
@@ -60,19 +56,7 @@ or link to an existing one, choose **link to existing** and select `labtrax`.
 
 ---
 
-## Step 5 — (Optional) Bump version to 1.0.9
-
-If you want the App Store to show version 1.0.9, edit `app.json`:
-
-```json
-"version": "1.0.9",
-```
-
-Build number stays `104` — no change needed there.
-
----
-
-## Step 6 — Build for the App Store
+## Step 5 — Build for the App Store
 
 ```bash
 eas build --platform ios --profile production
