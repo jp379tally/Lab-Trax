@@ -7,16 +7,15 @@ All commands run on **your local machine**, not inside Replit.
 
 ## What you need before starting
 
-| Requirement | Where to get it |
+| Requirement | Status |
 |---|---|
+| **Bundle ID** | `com.allieddl.labtrax` ✅ |
+| **App Store Connect app** | App ID `6760672646` ✅ |
+| **Version / build** | `1.0.8 (104)` ✅ |
 | **Expo account** (free) | expo.dev — sign up if you don't have one |
 | **Apple Developer membership** ($99/yr) | developer.apple.com |
 | **Apple Team ID** | developer.apple.com → Account → Membership → Team ID |
-| **App Store Connect app entry** | Create LabTrax at appstoreconnect.apple.com if not already there |
-| **App Store Connect App ID** | appstoreconnect.apple.com → Your app → URL contains the numeric ID |
-
-Your bundle ID is already set: `com.allieddl.labtrax`
-Your current version/build: `1.0.8 (104)`
+| **Apple ID email** | Your Apple Developer account email |
 
 ---
 
@@ -24,18 +23,14 @@ Your current version/build: `1.0.8 (104)`
 
 ```bash
 npm install -g eas-cli
-```
-
-Verify it installed:
-```bash
-eas --version
+eas --version   # confirm it installed
 ```
 
 ---
 
-## Step 2 — Clone/pull the latest code to your local machine
+## Step 2 — Pull the latest code
 
-Make sure you have the latest version of the repo (including the `eas.json` that was just added).
+Make sure you have the latest repo (includes the `eas.json` that was just added).
 
 ---
 
@@ -45,23 +40,19 @@ Make sure you have the latest version of the repo (including the `eas.json` that
 eas login
 ```
 
-Enter your expo.dev email and password.
-
 ---
 
 ## Step 4 — Link the project to your Expo account
 
-Run this from inside the `artifacts/labtrax` directory:
+From the repo root or from inside `artifacts/labtrax`:
 
 ```bash
 cd artifacts/labtrax
 eas init
 ```
 
-This will:
-- Create a project on expo.dev under your account
-- Add your Expo `owner` and `extra.eas.projectId` to `app.json` automatically
-- Commit those changes
+This creates a project on expo.dev under your account and automatically adds
+your Expo `owner` and `extra.eas.projectId` to `app.json`.
 
 ---
 
@@ -71,38 +62,41 @@ This will:
 eas build --platform ios --profile production
 ```
 
-EAS will ask you to log in to your Apple Developer account on first run.  
-Choose **"Let EAS handle credentials"** — it will generate the signing certificate and provisioning profile for you automatically. You will not need Xcode.
+On first run EAS will prompt you to sign in to your Apple Developer account.  
+Choose **"Let EAS handle credentials"** — it generates the signing certificate
+and provisioning profile automatically. No Xcode required.
 
-The build runs on EAS's servers (not your machine). It takes about 15–30 minutes.
-You'll get a link to monitor progress at expo.dev/accounts/[you]/projects/labtrax.
+The build runs on EAS's servers and takes about 15–30 minutes.
+Monitor progress at expo.dev → your account → Projects → labtrax.
 
 ---
 
 ## Step 6 — Submit to App Store Review
 
-Once the build finishes:
+Once the build completes:
 
 ```bash
 eas submit --platform ios --latest
 ```
 
-You'll be prompted for:
-- **Apple ID**: your Apple Developer email
-- **Apple Team ID**: from developer.apple.com → Membership (format: `XXXXXXXXXX`)
-- **App Store Connect App ID**: the 10-digit numeric ID from the App Store Connect URL
+EAS already knows the App Store Connect App ID (`6760672646` — pre-filled in
+`eas.json`). You'll only be prompted for:
 
-EAS will upload the `.ipa` directly to App Store Connect and submit it for review.
+- **Apple ID**: your Apple Developer email address
+- **Apple Team ID**: 10-character string from developer.apple.com → Membership
+
+EAS uploads the `.ipa` directly to App Store Connect and marks it ready for review.
 
 ---
 
 ## Step 7 — Complete metadata in App Store Connect
 
-After submission, go to appstoreconnect.apple.com and fill in anything missing:
-- Screenshots (required: 6.7" iPhone, optionally iPad)
-- App description, keywords, support URL
+Go to appstoreconnect.apple.com → LabTrax and confirm everything is filled in:
+
+- Screenshots (required: 6.7" iPhone; iPad optional)
+- Description, keywords, support URL
 - Privacy policy URL
-- Age rating
+- Export compliance (answer **No** — app uses standard HTTPS only)
 
 Then click **Submit for Review**.
 
@@ -110,27 +104,30 @@ Then click **Submit for Review**.
 
 ## Subsequent releases
 
-For future updates:
-1. Increment `buildNumber` in `app.json` (each submission must be higher than the last)
-2. Increment `version` if you want the App Store to show a new version number
+1. Increment `buildNumber` in `app.json` (must always be higher than last upload)
+2. Increment `version` for a user-visible version bump
 3. Re-run steps 5 and 6
 
 ---
 
 ## Troubleshooting
 
-**"Bundle ID not found"** — Register `com.allieddl.labtrax` at developer.apple.com → Identifiers first.
+**"Bundle ID not found"** — Register `com.allieddl.labtrax` at
+developer.apple.com → Certificates, IDs & Profiles → Identifiers.
 
-**"No distribution certificate"** — Choose "Generate new certificate" when EAS asks. It handles this automatically.
+**"No distribution certificate"** — Choose "Generate new certificate" when
+EAS prompts. It handles this end-to-end.
 
-**"Missing compliance"** — In App Store Connect, answer the export compliance question (answer: No — the app uses standard HTTPS, not custom encryption).
+**"Invalid binary — build number already used"** — The build number in
+`app.json` must be strictly higher than the last uploaded build. Increment it
+and rebuild.
 
-**"Invalid binary"** — Make sure the build number (104) is higher than any previously uploaded build.
+**"Missing compliance"** — Answer the export compliance question in App Store
+Connect: No (standard HTTPS, not custom encryption).
 
 ---
 
 ## Production API
 
-Your production backend is already wired: `https://lab-trax.replit.app/`
-EAS builds fall back to this automatically when `EXPO_PUBLIC_DOMAIN` is not set.
-No extra environment configuration needed.
+Backend URL is already hardcoded: `https://lab-trax.replit.app/`  
+EAS builds use this automatically — no extra environment variables needed.
