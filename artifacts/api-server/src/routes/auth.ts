@@ -183,7 +183,6 @@ const registerSchema = z.object({
   firstName: z.string().optional(),
   lastName: z.string().optional(),
   userType: z.string().optional(),
-  role: z.string().optional(),
   licenseNumber: z.string().optional(),
   practiceName: z.string().optional(),
   doctorName: z.string().optional(),
@@ -205,9 +204,10 @@ router.post(
       !!input.createOrganization &&
       !!input.practiceName?.trim() &&
       (input.userType === "lab" || input.userType === "provider");
-    const normalizedUserRole = shouldCreateOrganization
-      ? "admin"
-      : input.role || "user";
+    // Always register with the base "user" role. Org ownership/admin rights
+    // are tracked via organizationMemberships.role ("owner"/"admin"), not by
+    // elevating the global users.role field via a public endpoint.
+    const normalizedUserRole = "user";
     const normalizedPracticeName = shouldCreateOrganization
       ? input.practiceName?.trim() || null
       : null;
@@ -298,7 +298,7 @@ router.post(
         await db.insert(organizationJoinRequests).values({
           labId: org.id,
           userId: user.id,
-          requestedRole: input.role === "admin" ? "admin" : "user",
+          requestedRole: "user",
           message: `${user.username} would like to join ${org.displayName || org.name}.`,
           status: "pending",
         });
@@ -603,7 +603,12 @@ router.get(
 
 router.get(
   "/users",
-  asyncHandler(async (_req, res) => {
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      throw new HttpError(403, "Forbidden");
+    }
     const allUsers = await db.select().from(users);
     const hydratedUsers = await hydrateUsersWithActiveMemberships(allUsers);
     res.json({
@@ -632,7 +637,6 @@ router.put(
       practicePhone,
       email,
       phone,
-      role,
       firstName,
       lastName,
     } = req.body;
@@ -644,8 +648,6 @@ router.put(
     if (phone !== undefined) updates.phone = phone;
     if (firstName !== undefined) updates.firstName = firstName;
     if (lastName !== undefined) updates.lastName = lastName;
-    if (role !== undefined && (role === "admin" || role === "user"))
-      updates.role = role;
     if (firstName !== undefined || lastName !== undefined) {
       updates.initials = deriveUserInitials({
         firstName: firstName !== undefined ? firstName : user.firstName,
