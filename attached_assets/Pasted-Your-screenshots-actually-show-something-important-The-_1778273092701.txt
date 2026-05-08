@@ -1,0 +1,75 @@
+Your screenshots actually show something important:
+
+The deployment itself is succeeding now.
+
+The right side shows:
+
+* green production status
+* “John published 32 minutes ago”
+* public deployment active
+* health checks passing
+* no active crash loop
+
+So the original API-server termination problem appears resolved.
+
+The NEW problem is different:
+
+> “Something unexpected happened. Contact [support@replit.com](mailto:support@replit.com) if the issue persists.”
+
+That error is happening specifically in Replit’s **App Store publishing workflow**, not your backend deployment.
+
+So there are now two separate systems:
+
+1. ✅ Replit deployment/runtime → working
+2. ❌ Replit App Store packaging/submission flow → failing
+
+That means your app is live, but Replit’s Apple publishing pipeline is breaking.
+
+The fact that:
+
+* LabTrax Desktop exists
+* Electron artifacts exist
+* deployment is healthy
+* production is stable
+
+suggests the issue is likely one of:
+
+* Apple Developer auth/session issue
+* missing App Store metadata
+* invalid bundle identifier
+* signing/certificate issue
+* Electron packaging issue
+* Replit App Store integration bug
+
+Send Replit this exact message:
+
+The deployment/runtime issue appears resolved now. Production is healthy and publishing succeeds.
+
+However, the App Store publishing workflow itself is still failing with:
+
+“Something unexpected happened. Contact [support@replit.com](mailto:support@replit.com) if the issue persists.”
+
+This is now separate from the original `api-server` termination issue.
+
+Current status:
+
+* Production deployment is healthy
+* Health checks pass
+* App is publicly deployed
+* Electron desktop artifacts exist
+* Runtime/server stability appears resolved
+
+The failure now occurs specifically when clicking:
+
+“Start publishing to the App Store”
+
+Please investigate:
+
+1. Apple Developer authentication/session status
+2. Bundle identifier validity
+3. Electron packaging/signing pipeline
+4. Missing App Store metadata requirements
+5. Any hidden App Store Connect API errors
+6. Any internal Replit publishing-service failures tied to this app
+
+This appears to be a failure in the Replit → Apple publishing integration layer, not the application runtime itself.
