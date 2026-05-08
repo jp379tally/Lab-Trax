@@ -1246,21 +1246,15 @@ function DesktopInstallerPanel() {
               Once the workflow finishes, download the <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Installer</code> artifact from the run summary.
               Then set <code className="font-mono bg-secondary px-1 py-0.5 rounded">DESKTOP_INSTALLER_URL</code> on the server to point to that file and the download button will update automatically.
             </p>
-            {info.repoUrl ? (
-              <a
-                href={`${info.repoUrl.replace(/\/$/, "")}/actions`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline font-medium mt-1"
-              >
-                <ExternalLink size={11} />
-                Open GitHub Actions
-              </a>
-            ) : (
-              <p className="text-xs text-muted-foreground mt-1">
-                Set the <code className="font-mono bg-secondary px-1 py-0.5 rounded">GITHUB_REPO_URL</code> environment variable on the server to get a direct link to your repo's Actions tab.
-              </p>
-            )}
+            <a
+              href={info.repoUrl ? `${info.repoUrl.replace(/\/$/, "")}/actions` : "https://github.com/features/actions"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline font-medium mt-1"
+            >
+              <ExternalLink size={11} />
+              Open GitHub Actions
+            </a>
           </div>
 
           <p className="text-xs text-muted-foreground">
