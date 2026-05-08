@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Download, RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Download, RefreshCw, X, Clock } from "lucide-react";
 
 type Phase = "downloading" | "ready";
 
@@ -12,6 +12,8 @@ interface UpdateState {
 export function UpdateBanner() {
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const snoozeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const api = (window as any).electronAPI;
@@ -30,21 +32,35 @@ export function UpdateBanner() {
 
     const unsubDownloaded = api.onUpdateDownloaded((version: string) => {
       setUpdate({ phase: "ready", version, percent: 100 });
+      setDismissed(false);
     });
 
     return () => {
       unsubProgress?.();
       unsubDownloaded?.();
+      if (snoozeTimerRef.current) clearTimeout(snoozeTimerRef.current);
     };
   }, []);
 
-  if (!update) return null;
+  if (!update || dismissed) return null;
 
   async function handleInstall() {
     const api = (window as any).electronAPI;
     if (!api) return;
     setInstalling(true);
     await api.installUpdate();
+  }
+
+  function handleDismiss() {
+    setDismissed(true);
+    if (snoozeTimerRef.current) clearTimeout(snoozeTimerRef.current);
+  }
+
+  function handleSnooze() {
+    setDismissed(true);
+    snoozeTimerRef.current = setTimeout(() => {
+      setDismissed(false);
+    }, 60 * 60 * 1000);
   }
 
   if (update.phase === "downloading") {
@@ -86,6 +102,24 @@ export function UpdateBanner() {
       >
         <RefreshCw size={12} className={installing ? "animate-spin" : ""} />
         {installing ? "Restarting…" : "Restart & Update"}
+      </button>
+      <button
+        type="button"
+        onClick={handleSnooze}
+        title="Remind me in 1 hour"
+        className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-primary/70 text-xs hover:bg-primary/10 hover:text-primary transition-colors"
+      >
+        <Clock size={12} />
+        1 hr
+      </button>
+      <button
+        type="button"
+        onClick={handleDismiss}
+        title="Dismiss"
+        aria-label="Dismiss update banner"
+        className="shrink-0 p-1 rounded-md text-primary/60 hover:bg-primary/10 hover:text-primary transition-colors"
+      >
+        <X size={14} />
       </button>
     </div>
   );
