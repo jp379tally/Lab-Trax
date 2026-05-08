@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Clock, Download, HardDrive, KeyRound, Loader2, LogOut, Monitor, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
+import { Building2, BellRing, Clock, Download, ExternalLink, HardDrive, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
@@ -1153,6 +1153,7 @@ interface DesktopInstallerInfo {
   version: string;
   downloadUrl: string;
   fileName: string;
+  repoUrl: string | null;
 }
 
 function DesktopInstallerPanel() {
@@ -1162,11 +1163,12 @@ function DesktopInstallerPanel() {
   });
 
   const info = query.data;
+  const isZip = info?.downloadUrl.endsWith(".zip") ?? true;
 
   return (
     <PanelShell
       title="Desktop app"
-      subtitle="Download the Windows installer to distribute LabTrax Desktop to staff."
+      subtitle="Download and distribute LabTrax Desktop to staff Windows machines."
     >
       {query.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1178,7 +1180,7 @@ function DesktopInstallerPanel() {
         <Alert tone="danger">{(query.error as Error).message}</Alert>
       )}
       {info && (
-        <div className="space-y-4">
+        <div className="space-y-5">
           <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 flex items-center justify-between gap-4">
             <div>
               <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
@@ -1192,11 +1194,77 @@ function DesktopInstallerPanel() {
               className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
             >
               <Download size={14} />
-              Download
+              {isZip ? "Download Portable ZIP" : "Download Installer"}
             </a>
           </div>
+
+          <div className="rounded-lg border border-border px-5 py-4 space-y-3">
+            <div className="text-sm font-semibold">
+              {isZip ? "How to install (portable ZIP)" : "How to install"}
+            </div>
+            {isZip ? (
+              <ol className="space-y-2 text-sm text-muted-foreground list-none">
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
+                  <span>Download <strong>LabTrax-Windows-Portable.zip</strong> using the button above.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
+                  <span>Right-click the ZIP and choose <strong>Extract All…</strong> — make sure to extract the entire folder, not just the <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">LabTrax.exe</code> file on its own.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
+                  <span>Open the extracted <strong>LabTrax</strong> folder and run <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">LabTrax.exe</code> from inside it.</span>
+                </li>
+              </ol>
+            ) : (
+              <ol className="space-y-2 text-sm text-muted-foreground list-none">
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
+                  <span>Download the installer using the button above.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
+                  <span>Double-click the downloaded <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">.exe</code> file to launch the setup wizard.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
+                  <span>Follow the on-screen steps. LabTrax Desktop will be installed and a shortcut placed on the Desktop.</span>
+                </li>
+              </ol>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border bg-secondary/20 px-5 py-4 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Package size={14} />
+              Need a proper one-click installer?
+            </div>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              An NSIS setup wizard (<code className="font-mono bg-secondary px-1 py-0.5 rounded">.exe</code>) can be produced by running the{" "}
+              <strong>Build Windows Installer (Test)</strong> workflow in GitHub Actions.
+              Once the workflow finishes, download the <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Installer</code> artifact from the run summary.
+              Then set <code className="font-mono bg-secondary px-1 py-0.5 rounded">DESKTOP_INSTALLER_URL</code> on the server to point to that file and the download button will update automatically.
+            </p>
+            {info.repoUrl ? (
+              <a
+                href={`${info.repoUrl.replace(/\/$/, "")}/actions`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline font-medium mt-1"
+              >
+                <ExternalLink size={11} />
+                Open GitHub Actions
+              </a>
+            ) : (
+              <p className="text-xs text-muted-foreground mt-1">
+                Set the <code className="font-mono bg-secondary px-1 py-0.5 rounded">GITHUB_REPO_URL</code> environment variable on the server to get a direct link to your repo's Actions tab.
+              </p>
+            )}
+          </div>
+
           <p className="text-xs text-muted-foreground">
-            Share this installer with staff so they can set up LabTrax Desktop on their Windows machines. The download URL can be overridden via the <code className="font-mono bg-secondary px-1 py-0.5 rounded">DESKTOP_INSTALLER_URL</code> environment variable on the server.
+            The download URL can be overridden via the <code className="font-mono bg-secondary px-1 py-0.5 rounded">DESKTOP_INSTALLER_URL</code> environment variable on the server.
           </p>
         </div>
       )}

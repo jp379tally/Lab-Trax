@@ -36,6 +36,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createWriteStream, existsSync } from "node:fs";
+import { Buffer } from "node:buffer";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import archiver from "archiver";
@@ -80,19 +81,31 @@ async function zipUnpacked() {
   console.log(`\nCreating portable zip from win-unpacked…`);
   console.log(`  ${unpackedDir} → ${outFile}\n`);
 
+  const readme =
+    "LabTrax Desktop for Windows — Portable Edition\r\n" +
+    "===============================================\r\n\r\n" +
+    "Installation steps:\r\n\r\n" +
+    "  1. Extract this ZIP file — right-click and choose \"Extract All...\"\r\n" +
+    "     Make sure to extract the ENTIRE folder, not just LabTrax.exe on its own.\r\n\r\n" +
+    "  2. Open the extracted LabTrax folder.\r\n\r\n" +
+    "  3. Run LabTrax.exe from inside that folder.\r\n\r\n" +
+    "IMPORTANT: LabTrax.exe will not work if moved out of the LabTrax folder.\r\n" +
+    "The entire folder must remain together for the app to function correctly.\r\n";
+
   return new Promise((resolve, reject) => {
     const output = createWriteStream(outFile);
     const archive = archiver("zip", { zlib: { level: 6 } });
     archive.pipe(output);
+    archive.append(Buffer.from(readme, "utf8"), { name: "README.txt" });
     archive.directory(unpackedDir, "LabTrax");
 
     output.on("close", () => {
       const mb = (archive.pointer() / 1024 / 1024).toFixed(1);
       console.log(`✓ LabTrax-Windows-Portable.zip  (${mb} MB)`);
       console.log(`\nInstall on Windows:`);
-      console.log(`  1. Download LabTrax-Windows-Portable.zip`);
-      console.log(`  2. Extract the zip`);
-      console.log(`  3. Run LabTrax\\LabTrax.exe`);
+      console.log(`  1. Extract the ZIP (the entire LabTrax folder, not just LabTrax.exe)`);
+      console.log(`  2. Open the extracted LabTrax folder`);
+      console.log(`  3. Run LabTrax\\LabTrax.exe from inside it`);
       resolve();
     });
 
@@ -155,6 +168,10 @@ if (buildExitCode === 0) {
     } else {
       console.log("\n✓ NSIS installer produced in electron-dist/");
     }
+    // Always produce the portable ZIP alongside the NSIS installer so that
+    // the LabTrax-Windows-Portable workflow artifact is available from every
+    // build run, regardless of whether the installer is signed or published.
+    await zipUnpacked();
   }
 } else if (!isMac) {
   console.warn(

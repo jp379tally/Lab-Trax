@@ -71,4 +71,11 @@ jobs:
         with:
           name: LabTrax-Windows-Installer
           path: artifacts/labtrax-desktop/electron-dist/*.exe
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      - name: Upload portable ZIP as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LabTrax-Windows-Portable
+          path: artifacts/labtrax-desktop/electron-dist/LabTrax-Windows-Portable.zip
+          if-no-files-found: warn

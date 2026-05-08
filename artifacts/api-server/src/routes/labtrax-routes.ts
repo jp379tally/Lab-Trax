@@ -3306,7 +3306,8 @@ Important rules:
       });
     }
     const fileName = rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip";
-    return res.json({ version, downloadUrl: rawUrl, fileName });
+    const repoUrl = process.env.GITHUB_REPO_URL ?? null;
+    return res.json({ version, downloadUrl: rawUrl, fileName, repoUrl });
   });
 
   // ── Admin Backup → OneDrive ───────────────────────────────────────────────

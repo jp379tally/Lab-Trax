@@ -61,6 +61,7 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `MEDIA_CLEANUP_API_URL` — base API URL for the standalone cleanup script (e.g. `https://your.replit.app/api`; scheduled deployment path only)
 - `DESKTOP_INSTALLER_VERSION` — version string shown in the Desktop App settings panel (default: `"1.0.0"`)
 - `DESKTOP_INSTALLER_URL` — direct download URL for the Windows installer (default: `/downloads/LabTrax-Windows-Portable.zip`); set to a GitHub Release asset URL in production
+- `GITHUB_REPO_URL` — optional; GitHub repository URL (e.g. `https://github.com/your-org/your-repo`); when set, the Settings → Desktop App panel shows a direct link to the repo's Actions tab so admins can trigger installer builds in one click
 - `PLATFORM_ADMIN_SECRET` — **required in production**; a strong secret string that must be sent as `X-Platform-Admin-Secret` header to access all `/api/admin/*` platform-wide endpoints (backup, cleanup, system settings). If unset, all admin endpoints return 403.
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
