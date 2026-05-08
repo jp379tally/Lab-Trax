@@ -580,6 +580,22 @@ export default function CasesPage() {
       });
   }, [data, search, statusFilter, priorityFilter, sortKey, sortDir]);
 
+  const distinctDoctorNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of data ?? []) {
+      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [data]);
+
+  const distinctPatientLastNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of data ?? []) {
+      if (c.patientLastName?.trim()) names.add(c.patientLastName.trim());
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [data]);
+
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -748,7 +764,14 @@ export default function CasesPage() {
         </div>
       </div>
 
-      {selected && <CaseDrawer labCase={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <CaseDrawer
+          labCase={selected}
+          onClose={() => setSelected(null)}
+          doctorNames={distinctDoctorNames}
+          patientLastNames={distinctPatientLastNames}
+        />
+      )}
       {showNewCase && <NewCaseModal onClose={() => setShowNewCase(false)} />}
     </div>
   );
@@ -866,9 +889,13 @@ type CaseTab = "overview" | "restorations" | "notes" | "files" | "invoice" | "hi
 function CaseDrawer({
   labCase,
   onClose,
+  doctorNames = [],
+  patientLastNames = [],
 }: {
   labCase: LabCase;
   onClose: () => void;
+  doctorNames?: string[];
+  patientLastNames?: string[];
 }) {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1107,7 +1134,7 @@ function CaseDrawer({
     { id: "notes", label: "Notes", count: noteCount },
     { id: "files", label: "Files", count: fileCount },
     { id: "invoice", label: "Invoice" },
-    { id: "history", label: "History" },
+    { id: "history", label: "History", count: data?.events?.length },
   ];
 
   return (
@@ -1237,6 +1264,7 @@ function CaseDrawer({
                           Last Name
                         </label>
                         <input
+                          list="edit-patient-last-names"
                           value={editForm.patientLastName}
                           onChange={(e) => {
                             setEditForm((f) => ({ ...f, patientLastName: e.target.value }));
@@ -1244,6 +1272,11 @@ function CaseDrawer({
                           }}
                           className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                         />
+                        <datalist id="edit-patient-last-names">
+                          {patientLastNames.map((n) => (
+                            <option key={n} value={n} />
+                          ))}
+                        </datalist>
                       </div>
                     </div>
                     <div>
@@ -1251,13 +1284,20 @@ function CaseDrawer({
                         Doctor
                       </label>
                       <input
+                        list="edit-doctor-names"
                         value={editForm.doctorName}
                         onChange={(e) => {
                           setEditForm((f) => ({ ...f, doctorName: e.target.value }));
                           setEditError(null);
                         }}
+                        placeholder="Type or select a doctor…"
                         className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                       />
+                      <datalist id="edit-doctor-names">
+                        {doctorNames.map((n) => (
+                          <option key={n} value={n} />
+                        ))}
+                      </datalist>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
