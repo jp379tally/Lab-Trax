@@ -21,8 +21,10 @@ args = ["pnpm", "--filter", "@workspace/api-server", "run", "build"]
 NODE_ENV = "production"
 
 [services.production.run]
-# we don't run through pnpm to make startup faster in production
-args = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
+# --max-old-space-size: declare a heap budget so GC runs aggressively before
+# the platform OOM-kills the process. Source maps omitted in production to
+# save ~9 MB of parsed memory; stack traces still have function names.
+args = ["node", "--max-old-space-size=512", "artifacts/api-server/dist/index.mjs"]
 
 [services.production.run.env]
 PORT = "8080"
