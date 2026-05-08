@@ -1,18 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
+  CheckCircle2,
+  CreditCard,
   Download,
   Loader2,
   Mail,
   Plus,
   Search,
   Trash2,
+  TrendingUp,
   X,
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Invoice, InvoiceDisplayMetadata, InvoiceLineItem } from "@/lib/types";
+import type { Invoice, InvoiceDisplayMetadata, InvoiceLineItem, Organization } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import {
@@ -52,6 +56,7 @@ function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMet
 }
 
 export default function InvoicesPage() {
+  const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ["invoices"],
     queryFn: () => apiFetch<Invoice[]>("/invoices"),
@@ -60,6 +65,7 @@ export default function InvoicesPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [editing, setEditing] = useState<Invoice | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const filtered = useMemo(() => {
     const rows = data ?? [];
@@ -81,6 +87,36 @@ export default function InvoicesPage() {
       );
   }, [data, search, status]);
 
+  const stats = useMemo(() => {
+    const rows = data ?? [];
+    const today = new Date();
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    let openBalance = 0, openCount = 0;
+    let overdueBalance = 0, overdueCount = 0;
+    let paidThisMonth = 0, paidCount = 0;
+    for (const inv of rows) {
+      const isOpen = inv.status === "open" || inv.status === "partially_paid";
+      if (isOpen) {
+        const bal = Number(inv.balanceDue ?? inv.total ?? 0);
+        openBalance += bal;
+        openCount++;
+        const due = inv.dueAt ?? inv.dueDate;
+        if (due && new Date(due) < today) {
+          overdueBalance += bal;
+          overdueCount++;
+        }
+      }
+      if (inv.status === "paid") {
+        const ts = inv.updatedAt || inv.issuedAt || inv.createdAt;
+        if (ts && new Date(ts) >= monthStart) {
+          paidThisMonth += Number(inv.total ?? 0);
+          paidCount++;
+        }
+      }
+    }
+    return { openBalance, openCount, overdueBalance, overdueCount, paidThisMonth, paidCount };
+  }, [data]);
+
   return (
     <div className="px-8 py-7">
       <div className="flex items-start justify-between mb-6">
@@ -90,8 +126,44 @@ export default function InvoicesPage() {
             Open balances, payments, and statements.
           </p>
         </div>
-        <div className="text-sm text-muted-foreground">
-          {filtered.length} of {data?.length ?? 0}
+        <button
+          type="button"
+          onClick={() => setCreateOpen(true)}
+          className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+        >
+          <Plus size={14} /> New Invoice
+        </button>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="bg-card border border-border rounded-xl px-5 py-4">
+          <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] uppercase tracking-wide font-medium mb-1.5">
+            <TrendingUp size={12} /> Open Balance
+          </div>
+          <div className="text-2xl font-semibold tabular-nums">{formatMoney(stats.openBalance)}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            {stats.openCount} invoice{stats.openCount !== 1 ? "s" : ""}
+          </div>
+        </div>
+        <div className="bg-card border border-border rounded-xl px-5 py-4">
+          <div className={`flex items-center gap-1.5 text-[11px] uppercase tracking-wide font-medium mb-1.5 ${stats.overdueCount > 0 ? "text-destructive" : "text-muted-foreground"}`}>
+            <AlertCircle size={12} /> Overdue
+          </div>
+          <div className={`text-2xl font-semibold tabular-nums ${stats.overdueCount > 0 ? "text-destructive" : ""}`}>
+            {formatMoney(stats.overdueBalance)}
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            {stats.overdueCount} invoice{stats.overdueCount !== 1 ? "s" : ""}
+          </div>
+        </div>
+        <div className="bg-card border border-border rounded-xl px-5 py-4">
+          <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] uppercase tracking-wide font-medium mb-1.5">
+            <CheckCircle2 size={12} /> Paid This Month
+          </div>
+          <div className="text-2xl font-semibold tabular-nums">{formatMoney(stats.paidThisMonth)}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            {stats.paidCount} invoice{stats.paidCount !== 1 ? "s" : ""}
+          </div>
         </div>
       </div>
 
@@ -202,6 +274,17 @@ export default function InvoicesPage() {
 
       {editing && (
         <InvoiceEditor invoice={editing} onClose={() => setEditing(null)} />
+      )}
+      {createOpen && (
+        <CreateInvoiceDialog
+          knownLabOrgId={data?.[0]?.labOrganizationId}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(inv) => {
+            queryClient.invalidateQueries({ queryKey: ["invoices"] });
+            setCreateOpen(false);
+            setEditing(inv);
+          }}
+        />
       )}
     </div>
   );
@@ -373,6 +456,7 @@ export function InvoiceEditor({
   }
 
   const [emailOpen, setEmailOpen] = useState(false);
+  const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
 
   const practiceName =
     detailQuery.data?.providerOrganization?.name ||
@@ -442,6 +526,14 @@ export function InvoiceEditor({
               className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
             >
               <Mail size={14} /> Email
+            </button>
+            <button
+              type="button"
+              onClick={() => setRecordPaymentOpen(true)}
+              disabled={detailQuery.isLoading || invoice.status === "paid" || invoice.status === "void"}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              <CreditCard size={14} /> Record Payment
             </button>
             <button
               type="button"
@@ -875,6 +967,17 @@ export function InvoiceEditor({
           onClose={() => setEmailOpen(false)}
         />
       )}
+      {recordPaymentOpen && (
+        <RecordPaymentDialog
+          invoice={detailQuery.data ?? invoice}
+          onClose={() => setRecordPaymentOpen(false)}
+          onRecorded={() => {
+            queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
+            queryClient.invalidateQueries({ queryKey: ["invoices"] });
+            setRecordPaymentOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1043,4 +1146,307 @@ function toInputDate(value?: string | null): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+const PAYMENT_METHODS = [
+  { value: "check", label: "Check" },
+  { value: "ach", label: "ACH / Bank Transfer" },
+  { value: "card", label: "Card" },
+  { value: "cash", label: "Cash" },
+  { value: "other", label: "Other" },
+] as const;
+
+function RecordPaymentDialog({
+  invoice,
+  onClose,
+  onRecorded,
+}: {
+  invoice: Invoice;
+  onClose: () => void;
+  onRecorded: () => void;
+}) {
+  const balanceDue = Number(invoice.balanceDue ?? invoice.total ?? 0);
+  const [amount, setAmount] = useState<string>(
+    balanceDue > 0 ? balanceDue.toFixed(2) : "",
+  );
+  const [method, setMethod] = useState<string>("check");
+  const [reference, setReference] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    const parsed = parseFloat(amount);
+    if (!parsed || parsed <= 0) {
+      setError("Enter a valid payment amount.");
+      return;
+    }
+    setError(null);
+    setSaving(true);
+    try {
+      await apiFetch(`/invoices/${invoice.id}/payments`, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: parsed,
+          paymentMethod: method,
+          ...(reference.trim() ? { referenceNumber: reference.trim() } : {}),
+        }),
+      });
+      onRecorded();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to record payment.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-foreground/40">
+      <div className="w-full max-w-md bg-card border border-border rounded-xl shadow-xl flex flex-col">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Record payment</div>
+            <div className="text-sm font-semibold font-mono">{invoice.invoiceNumber}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="px-5 py-4 space-y-4">
+          {balanceDue > 0 && (
+            <div className="rounded-md bg-secondary/60 px-3 py-2 text-sm flex items-center justify-between">
+              <span className="text-muted-foreground">Balance due</span>
+              <span className="font-semibold tabular-nums">{formatMoney(balanceDue)}</span>
+            </div>
+          )}
+          <label className="block">
+            <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Amount</span>
+            <div className="relative mt-1">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+              <input
+                type="number"
+                min={0.01}
+                step="0.01"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className="w-full h-9 pl-7 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary tabular-nums"
+                placeholder="0.00"
+                autoFocus
+              />
+            </div>
+          </label>
+          <label className="block">
+            <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Method</span>
+            <select
+              value={method}
+              onChange={(e) => setMethod(e.target.value)}
+              className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+            >
+              {PAYMENT_METHODS.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+              Reference # <span className="normal-case text-muted-foreground font-normal">(optional)</span>
+            </span>
+            <input
+              type="text"
+              value={reference}
+              onChange={(e) => setReference(e.target.value)}
+              placeholder="Check #, confirmation #…"
+              className="mt-1 w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+            />
+          </label>
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+        </div>
+        <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
+            {saving ? "Saving…" : "Record Payment"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function CreateInvoiceDialog({
+  knownLabOrgId,
+  onClose,
+  onCreated,
+}: {
+  knownLabOrgId?: string;
+  onClose: () => void;
+  onCreated: (inv: Invoice) => void;
+}) {
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+  });
+
+  const labOrgs = (orgsQuery.data ?? []).filter((o) => o.type === "lab");
+  const providerOrgs = (orgsQuery.data ?? []).filter((o) => o.type === "provider");
+
+  const defaultLabId = knownLabOrgId ?? labOrgs[0]?.id ?? "";
+
+  const [labOrgId, setLabOrgId] = useState(defaultLabId);
+  const [providerOrgId, setProviderOrgId] = useState("");
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [issuedAt, setIssuedAt] = useState(toInputDate(new Date().toISOString()));
+  const [dueAt, setDueAt] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!labOrgId && labOrgs.length) setLabOrgId(labOrgs[0].id);
+  }, [labOrgs, labOrgId]);
+
+  async function submit() {
+    if (!invoiceNumber.trim()) { setError("Invoice number is required."); return; }
+    if (!providerOrgId) { setError("Select a client / practice."); return; }
+    if (!labOrgId) { setError("No lab organization found."); return; }
+    setError(null);
+    setSaving(true);
+    try {
+      const inv = await apiFetch<Invoice>("/invoices", {
+        method: "POST",
+        body: JSON.stringify({
+          invoiceNumber: invoiceNumber.trim(),
+          labOrganizationId: labOrgId,
+          providerOrganizationId: providerOrgId,
+          issuedAt: issuedAt ? new Date(issuedAt).toISOString() : undefined,
+          dueAt: dueAt ? new Date(dueAt).toISOString() : undefined,
+        }),
+      });
+      onCreated(inv);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to create invoice.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-foreground/40">
+      <div className="w-full max-w-md bg-card border border-border rounded-xl shadow-xl flex flex-col">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <div className="text-sm font-semibold">New Invoice</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="px-5 py-4 space-y-4">
+          {labOrgs.length > 1 && (
+            <label className="block">
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Lab</span>
+              <select
+                value={labOrgId}
+                onChange={(e) => setLabOrgId(e.target.value)}
+                className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+              >
+                {labOrgs.map((o) => (
+                  <option key={o.id} value={o.id}>{o.displayName || o.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className="block">
+            <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Client / Practice</span>
+            <select
+              value={providerOrgId}
+              onChange={(e) => setProviderOrgId(e.target.value)}
+              className="mt-1 w-full h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+            >
+              <option value="">Select a practice…</option>
+              {providerOrgs.map((o) => (
+                <option key={o.id} value={o.id}>{o.displayName || o.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Invoice Number</span>
+            <input
+              type="text"
+              value={invoiceNumber}
+              onChange={(e) => setInvoiceNumber(e.target.value)}
+              placeholder="e.g. INV-2026-001"
+              className="mt-1 w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary font-mono"
+              autoFocus
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Issue Date</span>
+              <input
+                type="date"
+                value={issuedAt}
+                onChange={(e) => setIssuedAt(e.target.value)}
+                className="mt-1 w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                Due Date <span className="normal-case font-normal">(optional)</span>
+              </span>
+              <input
+                type="date"
+                value={dueAt}
+                onChange={(e) => setDueAt(e.target.value)}
+                className="mt-1 w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+              />
+            </label>
+          </div>
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            The invoice opens as a draft. Add line items in the editor.
+          </p>
+        </div>
+        <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={saving || orgsQuery.isLoading}
+            className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+            {saving ? "Creating…" : "Create Invoice"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
 }

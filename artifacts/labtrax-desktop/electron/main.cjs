@@ -55,9 +55,24 @@ function setupAutoUpdater() {
   autoUpdater.on("update-downloaded", (info) => {
     log.info(`Update downloaded: v${info.version}`);
 
+    // Normalise releaseNotes: electron-updater may return a string, an array
+    // of { version, note } objects, or null/undefined.
+    let releaseNotes = null;
+    if (typeof info.releaseNotes === "string" && info.releaseNotes.trim()) {
+      releaseNotes = info.releaseNotes.trim();
+    } else if (Array.isArray(info.releaseNotes) && info.releaseNotes.length > 0) {
+      // Prefer the entry matching the downloaded version; fall back to the first.
+      const match =
+        info.releaseNotes.find((n) => n.version === info.version) ??
+        info.releaseNotes[0];
+      if (match && typeof match.note === "string" && match.note.trim()) {
+        releaseNotes = match.note.trim();
+      }
+    }
+
     const win = BrowserWindow.getAllWindows()[0];
     if (win) {
-      win.webContents.send("update-downloaded", info.version);
+      win.webContents.send("update-downloaded", { version: info.version, releaseNotes });
     }
   });
 

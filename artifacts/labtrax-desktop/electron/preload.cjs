@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("update-download-progress", listener);
   },
   onUpdateDownloaded: (callback) => {
-    const listener = (_event, version) => callback(version);
+    const listener = (_event, info) => callback(info);
     ipcRenderer.on("update-downloaded", listener);
     return () => ipcRenderer.removeListener("update-downloaded", listener);
   },

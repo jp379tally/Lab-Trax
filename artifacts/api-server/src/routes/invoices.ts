@@ -311,6 +311,62 @@ router.post(
   }),
 );
 
+router.post(
+  "/",
+  asyncHandler(async (req, res) => {
+    const memberships = await db.query.organizationMemberships.findMany({
+      where: eq(organizationMemberships.userId, (req as any).auth.userId),
+    });
+    const labOrgIds = memberships
+      .filter((m: any) => m.status === "active")
+      .map((m: any) => m.labId);
+
+    const input = z
+      .object({
+        invoiceNumber: z.string().min(1).max(100),
+        labOrganizationId: z.string().min(1),
+        providerOrganizationId: z.string().min(1),
+        issuedAt: z.string().datetime().nullable().optional(),
+        dueAt: z.string().datetime().nullable().optional(),
+      })
+      .parse(req.body);
+
+    if (!labOrgIds.includes(input.labOrganizationId)) {
+      throw new HttpError(403, "You do not have access to this organization.");
+    }
+    await requireAnyRole(
+      (req as any).auth.userId,
+      input.labOrganizationId,
+      BILLING_ROLES
+    );
+
+    const [invoice] = await db
+      .insert(invoices)
+      .values({
+        invoiceNumber: input.invoiceNumber,
+        labOrganizationId: input.labOrganizationId,
+        providerOrganizationId: input.providerOrganizationId,
+        status: "draft",
+        issuedAt: input.issuedAt ? new Date(input.issuedAt) : new Date(),
+        dueAt: input.dueAt ? new Date(input.dueAt) : null,
+        createdByUserId: (req as any).auth.userId,
+        updatedByUserId: (req as any).auth.userId,
+      })
+      .returning();
+
+    await writeAuditLog({
+      req,
+      organizationId: input.labOrganizationId,
+      action: "invoice_created",
+      entityType: "invoice",
+      entityId: invoice.id,
+      afterJson: invoice,
+    });
+
+    return ok(res, invoice, 201);
+  })
+);
+
 function nextInvoiceNumber(caseNumber: string) {
   return `INV-${caseNumber}`;
 }
