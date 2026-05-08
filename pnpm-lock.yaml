@@ -161,6 +161,7 @@ overrides:
   postcss: 8.5.14
   follow-redirects: 1.16.0
   '@xmldom/xmldom': 0.9.10
+  nodemailer: 8.0.7
 
 pnpmfileChecksum: sha256-bSWRm3M+2IF5Sc+se4j8hpZsnW0yC9Awz1X0aRsyXLg=
 
@@ -220,7 +221,7 @@ importers:
         specifier: ^3.3.2
         version: 3.3.2
       nodemailer:
-        specifier: ^8.0.1
+        specifier: 8.0.7
         version: 8.0.7
       openai:
         specifier: ^6.19.0
