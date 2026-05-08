@@ -78,6 +78,14 @@ function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+function isPlatformAdmin(req: any): boolean {
+  const reqUser = req.user;
+  if (!reqUser || reqUser.role !== "admin") return false;
+  const secret = process.env.PLATFORM_ADMIN_SECRET;
+  if (!secret) return false;
+  return req.headers["x-platform-admin-secret"] === secret;
+}
+
 function generateResetToken(): string {
   return randomBytes(32).toString("hex");
 }
@@ -1804,7 +1812,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.get("/admin/cases/trash", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;
-      if (!reqUser || reqUser.role !== "admin") {
+      if (!isPlatformAdmin(req)) {
         return res.status(403).json({ error: "Admin access required." });
       }
       const { scope, ownerIds } = await getAdminScopedOwnerIds(reqUser);
@@ -1842,7 +1850,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.post("/admin/cases/:caseId/restore", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;
-      if (!reqUser || reqUser.role !== "admin") {
+      if (!isPlatformAdmin(req)) {
         return res.status(403).json({ error: "Admin access required." });
       }
       const caseId = req.params.caseId as string;
@@ -2713,7 +2721,7 @@ Important rules:
   router.get("/admin/backup", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;
-      if (!reqUser || reqUser.role !== "admin") {
+      if (!isPlatformAdmin(req)) {
         return res.status(403).json({ error: "Admin access required." });
       }
 
@@ -2802,7 +2810,7 @@ Important rules:
     return requireAuth(req, res, (err?: any) => {
       if (err) return next(err);
       const reqUser = (req as any).user;
-      if (!reqUser || reqUser.role !== "admin") {
+      if (!isPlatformAdmin(req)) {
         return res.status(403).json({ error: "Admin access required." });
       }
       (req as any).cleanupTriggeredBy = `admin:${
@@ -2814,7 +2822,7 @@ Important rules:
 
   router.get("/admin/cleanup/orphaned-media/runs", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     const limitRaw = (req.query as any)?.limit;
@@ -2887,7 +2895,7 @@ Important rules:
 
   router.get("/admin/cleanup/orphaned-media/status", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     return res.json(getCleanupProgress());
@@ -2895,7 +2903,7 @@ Important rules:
 
   router.post("/admin/cleanup/orphaned-media/run", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
 
@@ -2916,7 +2924,7 @@ Important rules:
 
   router.post("/admin/cleanup/orphaned-media/cancel", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     const progress = getCleanupProgress();
@@ -2930,7 +2938,7 @@ Important rules:
   // ── Admin: cleanup alert settings ────────────────────────────────────────
   router.get("/admin/settings/cleanup-alerts", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
@@ -2964,7 +2972,7 @@ Important rules:
 
   router.put("/admin/settings/cleanup-alerts", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
@@ -2993,7 +3001,7 @@ Important rules:
 
   router.delete("/admin/settings/cleanup-alerts", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     const field = (req.query as any).field as string | undefined;
@@ -3018,7 +3026,7 @@ Important rules:
   // ── Admin: cleanup schedule settings ─────────────────────────────────────
   router.get("/admin/settings/cleanup-schedule", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
@@ -3061,7 +3069,7 @@ Important rules:
 
   router.put("/admin/settings/cleanup-schedule", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
@@ -3137,7 +3145,7 @@ Important rules:
 
   router.delete("/admin/settings/cleanup-schedule", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     const field = (req.query as any).field as string | undefined;
@@ -3163,7 +3171,7 @@ Important rules:
   // ── Admin: backup schedule settings ──────────────────────────────────────
   router.get("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
@@ -3189,7 +3197,7 @@ Important rules:
 
   router.put("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
@@ -3221,7 +3229,7 @@ Important rules:
 
   router.delete("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     const field = (req.query as any).field as string | undefined;
@@ -3239,7 +3247,7 @@ Important rules:
   // ── Admin Desktop Installer ───────────────────────────────────────────────
   router.get("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!reqUser || reqUser.role !== "admin") {
+    if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     const version = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
@@ -3260,7 +3268,7 @@ Important rules:
   router.post("/admin/backup/onedrive", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;
-      if (!reqUser || reqUser.role !== "admin") {
+      if (!isPlatformAdmin(req)) {
         return res.status(403).json({ error: "Admin access required." });
       }
       const result = await runOneDriveBackup(

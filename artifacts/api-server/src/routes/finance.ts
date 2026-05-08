@@ -49,6 +49,26 @@ async function loadAccountOrThrow(userId: string, accountId: string) {
   return acct;
 }
 
+async function activeBillingLabIds(userId: string): Promise<string[]> {
+  const rows = await db.query.organizationMemberships.findMany({
+    where: and(
+      eq(organizationMemberships.userId, userId),
+      eq(organizationMemberships.status, "active"),
+      inArray(organizationMemberships.role, BILLING_ROLES)
+    ),
+  });
+  return Array.from(new Set(rows.map((r: any) => r.labId)));
+}
+
+async function loadAccountOrThrowBilling(userId: string, accountId: string) {
+  const acct = await db.query.bankAccounts.findFirst({
+    where: eq(bankAccounts.id, accountId),
+  });
+  if (!acct) throw new HttpError(404, "Bank account not found.");
+  await requireAnyRole(userId, acct.labOrganizationId, BILLING_ROLES);
+  return acct;
+}
+
 const orgIdQuery = z.object({ organizationId: z.string().min(1) });
 
 // ───────────────────────────── Finance Settings ──────────────────────────
@@ -57,7 +77,7 @@ router.get(
   "/settings",
   asyncHandler(async (req, res) => {
     const { organizationId } = orgIdQuery.parse(req.query);
-    await requireLabAccess(uid(req), organizationId);
+    await requireAnyRole(uid(req), organizationId, BILLING_ROLES);
     const org = await db.query.organizations.findFirst({
       where: eq(organizations.id, organizationId),
     });
@@ -107,8 +127,8 @@ router.get(
   "/accounts",
   asyncHandler(async (req, res) => {
     const orgId = (req.query.organizationId as string | undefined) || null;
-    const orgIds = orgId ? [orgId] : await activeLabIds(uid(req));
-    if (orgId) await requireLabAccess(uid(req), orgId);
+    const orgIds = orgId ? [orgId] : await activeBillingLabIds(uid(req));
+    if (orgId) await requireAnyRole(uid(req), orgId, BILLING_ROLES);
     if (!orgIds.length) return ok(res, []);
     const accounts = await db.query.bankAccounts.findMany({
       where: inArray(bankAccounts.labOrganizationId, orgIds),
@@ -238,7 +258,7 @@ router.get(
   "/categories",
   asyncHandler(async (req, res) => {
     const { organizationId } = orgIdQuery.parse(req.query);
-    await requireLabAccess(uid(req), organizationId);
+    await requireAnyRole(uid(req), organizationId, BILLING_ROLES);
     const rows = await db.query.transactionCategories.findMany({
       where: eq(transactionCategories.labOrganizationId, organizationId),
       orderBy: [asc(transactionCategories.name)],
@@ -326,7 +346,7 @@ router.get(
   "/transactions",
   asyncHandler(async (req, res) => {
     const q = txnListQuery.parse(req.query);
-    await requireLabAccess(uid(req), q.organizationId);
+    await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
     const conds: any[] = [eq(bankTransactions.labOrganizationId, q.organizationId)];
     if (q.bankAccountId) conds.push(eq(bankTransactions.bankAccountId, q.bankAccountId));
     if (q.status === "posted" || q.status === "projected" || q.status === "void") {
@@ -787,7 +807,7 @@ router.get(
   "/reconciliation/candidates",
   asyncHandler(async (req, res) => {
     const q = reconStartQuery.parse(req.query);
-    const acct = await loadAccountOrThrow(uid(req), q.bankAccountId);
+    const acct = await loadAccountOrThrowBilling(uid(req), q.bankAccountId);
     const stmtDate = new Date(q.statementDate);
     const rows = await db.query.bankTransactions.findMany({
       where: and(
@@ -941,13 +961,13 @@ router.get(
       .parse(req.query);
     let conds: any[] = [];
     if (q.bankAccountId) {
-      const acct = await loadAccountOrThrow(uid(req), q.bankAccountId);
+      const acct = await loadAccountOrThrowBilling(uid(req), q.bankAccountId);
       conds.push(eq(reconciliations.bankAccountId, acct.id));
     } else if (q.organizationId) {
-      await requireLabAccess(uid(req), q.organizationId);
+      await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
       conds.push(eq(reconciliations.labOrganizationId, q.organizationId));
     } else {
-      const ids = await activeLabIds(uid(req));
+      const ids = await activeBillingLabIds(uid(req));
       if (!ids.length) return ok(res, []);
       conds.push(inArray(reconciliations.labOrganizationId, ids));
     }
@@ -966,7 +986,7 @@ router.get(
   "/recurring",
   asyncHandler(async (req, res) => {
     const { organizationId } = orgIdQuery.parse(req.query);
-    await requireLabAccess(uid(req), organizationId);
+    await requireAnyRole(uid(req), organizationId, BILLING_ROLES);
     const rows = await db.query.recurringTransactions.findMany({
       where: eq(recurringTransactions.labOrganizationId, organizationId),
       orderBy: [asc(recurringTransactions.name)],
@@ -1351,7 +1371,7 @@ router.get(
   "/cashflow",
   asyncHandler(async (req, res) => {
     const q = cashflowQuery.parse(req.query);
-    await requireLabAccess(uid(req), q.organizationId);
+    await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
     const { from, to } = rangeWindow(q.range, q.dateFrom, q.dateTo);
     const conds: any[] = [
       eq(bankTransactions.labOrganizationId, q.organizationId),

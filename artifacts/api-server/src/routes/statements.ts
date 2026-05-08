@@ -4,7 +4,7 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import { statementSchedules, statementSendRuns } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
-import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { retryStatementSendRun, runMonthlyStatementsForLab } from "../lib/statements";
@@ -29,7 +29,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId as string;
     const orgId = String(req.params.orgId);
-    await requireMembership(userId, orgId);
+    await requireAnyRole(userId, orgId, BILLING_ROLES);
     const sched = await loadOrCreateSchedule(orgId);
     return ok(res, sched);
   })
@@ -133,7 +133,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const userId = (req as any).auth.userId as string;
     const orgId = String(req.params.orgId);
-    await requireMembership(userId, orgId);
+    await requireAnyRole(userId, orgId, BILLING_ROLES);
     const limit = Math.min(
       500,
       Math.max(1, parseInt(String(req.query.limit ?? "200"), 10) || 200)

@@ -564,6 +564,9 @@ router.get(
       where: eq(payments.invoiceId, invoice.id),
       orderBy: [desc(payments.paidAt)],
     });
+    const safePaymentRows = labMember
+      ? paymentRows
+      : paymentRows.map(({ recordedByUserId: _r, referenceNumber: _ref, ...rest }) => rest);
     const linkedTxns = await db
       .select({
         id: bankTransactions.id,
@@ -590,8 +593,8 @@ router.get(
     return ok(res, {
       ...invoice,
       items,
-      payments: paymentRows,
-      linkedTransactions: linkedTxns,
+      payments: safePaymentRows,
+      linkedTransactions: labMember ? linkedTxns : [],
     });
   })
 );
