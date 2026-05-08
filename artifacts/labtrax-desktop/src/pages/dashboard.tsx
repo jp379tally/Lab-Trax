@@ -26,7 +26,7 @@ import type { LabCase } from "@/lib/types";
 import { formatDate, formatDateTime, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DashboardDropZone } from "@/components/DashboardDropZone";
-import { NewCaseModal } from "./cases";
+import { NewCaseModal, CaseDrawer } from "./cases";
 import { useAuth } from "@/lib/auth-context";
 
 interface MediaCleanupRun {
@@ -723,12 +723,11 @@ const IN_PROGRESS_STATUSES = new Set([
 
 const COMPLETED_STATUSES = new Set(["delivered", "cancelled"]);
 
-function CaseRow({ c }: { c: LabCase }) {
-  const [, navigate] = useLocation();
+function CaseRow({ c, onSelect }: { c: LabCase; onSelect: (c: LabCase) => void }) {
   return (
     <tr
       className="border-t border-border hover:bg-secondary/40 cursor-pointer"
-      onClick={() => navigate(`/cases?caseId=${encodeURIComponent(c.id)}`)}
+      onClick={() => onSelect(c)}
     >
       <td className="px-5 py-3 font-mono text-xs">{c.caseNumber}</td>
       <td className="py-3">
@@ -747,10 +746,12 @@ function CasesTable({
   cases,
   loading,
   emptyText,
+  onSelect,
 }: {
   cases: LabCase[];
   loading: boolean;
   emptyText: string;
+  onSelect: (c: LabCase) => void;
 }) {
   return (
     <div className="overflow-x-auto">
@@ -780,7 +781,7 @@ function CasesTable({
             </tr>
           )}
           {cases.map((c) => (
-            <CaseRow key={c.id} c={c} />
+            <CaseRow key={c.id} c={c} onSelect={onSelect} />
           ))}
         </tbody>
       </table>
@@ -803,6 +804,7 @@ export default function DashboardPage() {
   }, []);
 
   const [showNewCase, setShowNewCase] = useState(false);
+  const [selectedCase, setSelectedCase] = useState<LabCase | null>(null);
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
@@ -901,6 +903,7 @@ export default function DashboardPage() {
               cases={todayCases}
               loading={loading}
               emptyText="No cases logged today."
+              onSelect={setSelectedCase}
             />
           </section>
         </div>
@@ -924,11 +927,18 @@ export default function DashboardPage() {
             cases={recentCases}
             loading={loading}
             emptyText="No active cases."
+            onSelect={setSelectedCase}
           />
         </section>
       </div>
 
       {showNewCase && <NewCaseModal onClose={() => setShowNewCase(false)} />}
+      {selectedCase && (
+        <CaseDrawer
+          labCase={selectedCase}
+          onClose={() => setSelectedCase(null)}
+        />
+      )}
     </div>
   );
 }

@@ -886,7 +886,7 @@ const SHADES = [
 
 type CaseTab = "overview" | "restorations" | "notes" | "files" | "invoice" | "history";
 
-function CaseDrawer({
+export function CaseDrawer({
   labCase,
   onClose,
   doctorNames = [],

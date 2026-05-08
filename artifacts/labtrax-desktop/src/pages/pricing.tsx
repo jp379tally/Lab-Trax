@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
-import type { LabCase, MeResponse } from "@/lib/types";
+import type { LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
 
 type Section = "billed" | "tiers" | "overrides";
@@ -1505,6 +1505,36 @@ function OverrideEditor({
     queryFn: () => apiFetch<TiersResponse>("/pricing/tiers"),
   });
   const availableTiers = tiersQuery.data?.tiers ?? [];
+
+  const casesQuery = useQuery({
+    queryKey: ["cases"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const distinctDoctors = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of casesQuery.data ?? []) {
+      if (c.doctorName?.trim()) names.add(c.doctorName.trim());
+    }
+    return Array.from(names).sort();
+  }, [casesQuery.data]);
+
+  const distinctPractices = useMemo(() => {
+    const names = new Set<string>();
+    for (const o of orgsQuery.data ?? []) {
+      if (o.type === "provider") {
+        const n = (o.displayName || o.name)?.trim();
+        if (n) names.add(n);
+      }
+    }
+    return Array.from(names).sort();
+  }, [orgsQuery.data]);
   const [prices, setPrices] = useState<Record<string, string>>(() => {
     const out: Record<string, string> = {};
     for (const k of keys) {
@@ -1700,12 +1730,20 @@ function OverrideEditor({
         </label>
         <input
           type="text"
+          list={mode === "create" ? "override-doctor-names" : undefined}
           value={doctorName}
           onChange={(e) => setDoctorName(e.target.value)}
           placeholder="Dr. Aris"
           className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
           disabled={mode === "edit"}
         />
+        {mode === "create" && (
+          <datalist id="override-doctor-names">
+            {distinctDoctors.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
+        )}
         {mode === "edit" && (
           <p className="text-xs text-muted-foreground mt-1">
             Doctor name can't be changed once an override exists. Delete and
@@ -1720,11 +1758,17 @@ function OverrideEditor({
         </label>
         <input
           type="text"
+          list="override-practice-names"
           value={practiceName}
           onChange={(e) => setPracticeName(e.target.value)}
           placeholder="Elite Dental Group"
           className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
         />
+        <datalist id="override-practice-names">
+          {distinctPractices.map((n) => (
+            <option key={n} value={n} />
+          ))}
+        </datalist>
       </div>
 
       <div>
