@@ -1157,6 +1157,7 @@ interface DesktopInstallerInfo {
   fileName: string | null;
   repoUrl: string | null;
   urlError: string | null;
+  repoUrlWarning?: string;
 }
 
 function DesktopInstallerPanel() {
@@ -1227,6 +1228,9 @@ function DesktopInstallerPanel() {
       )}
       {info && (
         <div className="space-y-5">
+          {info.repoUrlWarning && (
+            <Alert tone="warning">{info.repoUrlWarning}</Alert>
+          )}
           {info.urlError ? (
             <Alert tone="danger">
               Current download URL is invalid: {info.urlError} Use the field below to fix it.
@@ -1580,7 +1584,12 @@ function Field({ label, full, children }: { label: string; full?: boolean; child
   );
 }
 
-function Alert({ tone, children }: { tone: "danger" | "success"; children: React.ReactNode }) {
-  const cls = tone === "danger" ? "bg-destructive/10 text-destructive" : "bg-success/15 text-success";
+function Alert({ tone, children }: { tone: "danger" | "success" | "warning"; children: React.ReactNode }) {
+  const cls =
+    tone === "danger"
+      ? "bg-destructive/10 text-destructive"
+      : tone === "warning"
+        ? "bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-800/40"
+        : "bg-success/15 text-success";
   return <div className={`text-sm rounded-md px-3 py-2 ${cls}`}>{children}</div>;
 }

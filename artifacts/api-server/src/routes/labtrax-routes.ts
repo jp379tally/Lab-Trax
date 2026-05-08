@@ -3313,7 +3313,12 @@ Important rules:
     const urlError = validateInstallerUrl(rawUrl);
     const fileName = urlError ? null : (rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip");
     const repoUrl = process.env.GITHUB_REPO_URL ?? null;
-    return res.json({ version, downloadUrl: rawUrl, dbDownloadUrl: dbUrl, envDownloadUrl: envUrl, fileName, repoUrl, urlError: urlError ?? null });
+    const githubRepoPattern = /^https:\/\/github\.com\/[^/]+\/[^/]+(\/)?$/;
+    const repoUrlWarning =
+      repoUrl !== null && !githubRepoPattern.test(repoUrl)
+        ? "GITHUB_REPO_URL does not look like a valid https://github.com/<owner>/<repo> URL. The Actions link may not work correctly."
+        : undefined;
+    return res.json({ version, downloadUrl: rawUrl, dbDownloadUrl: dbUrl, envDownloadUrl: envUrl, fileName, repoUrl, urlError: urlError ?? null, repoUrlWarning });
   });
 
   router.put("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
