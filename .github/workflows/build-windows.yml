@@ -33,10 +33,27 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Require signing secrets for release builds
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
+            echo "::error::WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD secrets must be set for tagged release builds. Add them in Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
       - name: Build and package Windows installer
         run: pnpm --filter @workspace/labtrax-desktop run electron:build
         env:
           VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url || secrets.VITE_API_BASE_URL }}
+          # electron-builder picks up CSC_LINK / CSC_KEY_PASSWORD automatically.
+          # Omitting these secrets produces an unsigned build (allowed for
+          # workflow_dispatch; blocked for tag pushes by the step above).
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
       - name: Upload installer as workflow artifact
         uses: actions/upload-artifact@v4
@@ -62,7 +79,7 @@ jobs:
             4. To remove, use **Add or Remove Programs** in Windows Settings.
 
             ### Notes
-            - Windows may show a SmartScreen prompt on first run — click "More info" → "Run anyway".
+            - The installer is code-signed, which reduces or eliminates Windows SmartScreen prompts.
             - The installer connects to your lab's LabTrax server. Make sure your server URL is reachable.
           files: artifacts/labtrax-desktop/electron-dist/*.exe
           fail_on_unmatched_files: true

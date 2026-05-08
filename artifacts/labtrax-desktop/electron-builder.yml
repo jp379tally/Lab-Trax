@@ -10,6 +10,29 @@ files:
 win:
   target: nsis
   icon: electron/icon.png
+  # Code-signing is performed automatically by electron-builder when the
+  # CSC_LINK and CSC_KEY_PASSWORD environment variables are present.
+  #
+  # CSC_LINK     — base64-encoded PFX certificate file (OV or EV).
+  #                Encode your .pfx with:
+  #                  certutil -encode certificate.pfx certificate.b64
+  #                  (Windows) or: base64 -w 0 certificate.pfx
+  #                Store the resulting string as the WINDOWS_CERTIFICATE
+  #                GitHub Actions secret.
+  # CSC_KEY_PASSWORD — password protecting the PFX.
+  #                Store it as the WINDOWS_CERTIFICATE_PASSWORD secret.
+  #
+  # For EV certificates stored on a hardware token or cloud HSM (e.g.
+  # Azure Trusted Signing / DigiCert KeyLocker), set the appropriate
+  # additional env vars for that provider and point signtool at the token.
+  # The SHA-256 timestamp below remains correct for all certificate types.
+  #
+  # signingHashAlgorithms must include sha256 for SmartScreen reputation.
+  signingHashAlgorithms:
+    - sha256
+  # RFC 3161 timestamp server embeds a trusted time into the signature so the
+  # installer remains valid even after the certificate expires.
+  rfc3161TimeStampServer: http://timestamp.sectigo.com
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
