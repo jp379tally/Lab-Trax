@@ -3290,24 +3290,69 @@ Important rules:
   });
 
   // ── Admin Desktop Installer ───────────────────────────────────────────────
+  const SETTING_DESKTOP_INSTALLER_URL = "desktop_installer_url";
+
+  function validateInstallerUrl(url: string): string | null {
+    if (url.startsWith("https://") || url.startsWith("/downloads/")) return null;
+    return "URL must start with https:// or /downloads/.";
+  }
+
   router.get("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
-    const reqUser = (req as any).user;
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
     const version = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
-    const rawUrl =
+    const envUrl =
       process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
-    const isRelativeDownload = rawUrl.startsWith("/downloads/");
-    const isHttps = rawUrl.startsWith("https://");
-    if (!isRelativeDownload && !isHttps) {
-      return res.status(500).json({
-        error: "DESKTOP_INSTALLER_URL must be an https:// URL or a relative /downloads/ path.",
-      });
-    }
-    const fileName = rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip";
+    const dbRows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_URL));
+    const dbUrl = dbRows[0]?.value ?? null;
+    const rawUrl = dbUrl ?? envUrl;
+    const urlError = validateInstallerUrl(rawUrl);
+    const fileName = urlError ? null : (rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip");
     const repoUrl = process.env.GITHUB_REPO_URL ?? null;
-    return res.json({ version, downloadUrl: rawUrl, fileName, repoUrl });
+    return res.json({ version, downloadUrl: rawUrl, dbDownloadUrl: dbUrl, envDownloadUrl: envUrl, fileName, repoUrl, urlError: urlError ?? null });
+  });
+
+  router.put("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const body = req.body as any;
+    const downloadUrl = typeof body?.downloadUrl === "string" ? body.downloadUrl.trim() : null;
+    if (!downloadUrl) {
+      return res.status(400).json({ error: "downloadUrl is required." });
+    }
+    const validationErr = validateInstallerUrl(downloadUrl);
+    if (validationErr) {
+      return res.status(400).json({ error: validationErr });
+    }
+    try {
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_DESKTOP_INSTALLER_URL, value: downloadUrl })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: downloadUrl, updatedAt: new Date() },
+        });
+      return res.json({ success: true, downloadUrl });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to save installer URL." });
+    }
+  });
+
+  router.delete("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      await db.delete(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_URL));
+      return res.json({ success: true });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to reset installer URL." });
+    }
   });
 
   // ── Admin Backup → OneDrive ───────────────────────────────────────────────

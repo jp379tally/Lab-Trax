@@ -1152,14 +1152,60 @@ function StoragePanel() {
 interface DesktopInstallerInfo {
   version: string;
   downloadUrl: string;
-  fileName: string;
+  dbDownloadUrl: string | null;
+  envDownloadUrl: string;
+  fileName: string | null;
   repoUrl: string | null;
+  urlError: string | null;
 }
 
 function DesktopInstallerPanel() {
+  const queryClient = useQueryClient();
+  const [urlInput, setUrlInput] = useState<string>("");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
   const query = useQuery({
     queryKey: ["admin", "desktop-installer"],
     queryFn: () => apiFetch<DesktopInstallerInfo>("/admin/settings/desktop-installer"),
+  });
+
+  useEffect(() => {
+    if (query.data) {
+      setUrlInput(query.data.downloadUrl);
+    }
+  }, [query.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean; downloadUrl: string }>("/admin/settings/desktop-installer", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ downloadUrl: urlInput.trim() }),
+      }),
+    onSuccess: () => {
+      setSaveError(null);
+      setSaveSuccess(true);
+      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
+      setTimeout(() => setSaveSuccess(false), 2500);
+    },
+    onError: (err: Error) => {
+      setSaveSuccess(false);
+      setSaveError(err.message || "Failed to save installer URL.");
+    },
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean }>("/admin/settings/desktop-installer", { method: "DELETE" }),
+    onSuccess: () => {
+      setSaveError(null);
+      setSaveSuccess(false);
+      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
+    },
+    onError: (err: Error) => {
+      setSaveError(err.message || "Failed to reset installer URL.");
+    },
   });
 
   const info = query.data;
@@ -1181,21 +1227,74 @@ function DesktopInstallerPanel() {
       )}
       {info && (
         <div className="space-y-5">
-          <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 flex items-center justify-between gap-4">
-            <div>
-              <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
-              <div className="text-xs text-muted-foreground mt-0.5">
-                Version {info.version} · {info.fileName}
+          {info.urlError ? (
+            <Alert tone="danger">
+              Current download URL is invalid: {info.urlError} Use the field below to fix it.
+            </Alert>
+          ) : (
+            <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Version {info.version} · {info.fileName}
+                </div>
               </div>
+              <a
+                href={info.downloadUrl}
+                download
+                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
+              >
+                <Download size={14} />
+                {isZip ? "Download Portable ZIP" : "Download Installer"}
+              </a>
             </div>
-            <a
-              href={info.downloadUrl}
-              download
-              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
-            >
-              <Download size={14} />
-              {isZip ? "Download Portable ZIP" : "Download Installer"}
-            </a>
+          )}
+
+          <div className="rounded-lg border border-border px-5 py-4 space-y-3">
+            <div className="text-sm font-semibold">Download URL</div>
+            <p className="text-xs text-muted-foreground">
+              Paste the GitHub Release asset URL (or a <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code> path) here after each build.
+              Must start with <code className="font-mono bg-secondary px-1 py-0.5 rounded">https://</code> or <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code>.
+            </p>
+            {saveError && <Alert tone="danger">{saveError}</Alert>}
+            {saveSuccess && <Alert tone="success">Download URL saved.</Alert>}
+            <div className="flex gap-2 items-start">
+              <input
+                className={`${inputCls} flex-1`}
+                type="url"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://github.com/…/releases/download/…/LabTrax-Setup.exe"
+              />
+              <button
+                type="button"
+                onClick={() => saveMutation.mutate()}
+                disabled={saveMutation.isPending || resetMutation.isPending || !urlInput.trim() || urlInput.trim() === info.downloadUrl}
+                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 shrink-0 inline-flex items-center gap-1.5"
+              >
+                {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+                Save
+              </button>
+            </div>
+            {info.dbDownloadUrl !== null ? (
+              <button
+                type="button"
+                onClick={() => resetMutation.mutate()}
+                disabled={resetMutation.isPending || saveMutation.isPending}
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+              >
+                {resetMutation.isPending ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={11} />
+                )}
+                Reset to env default ({info.envDownloadUrl.split("/").pop()})
+              </button>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                Using env default: <code className="font-mono bg-secondary px-0.5 rounded">{info.envDownloadUrl}</code>
+              </p>
+            )}
           </div>
 
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
@@ -1243,8 +1342,7 @@ function DesktopInstallerPanel() {
             <p className="text-xs text-muted-foreground leading-relaxed">
               An NSIS setup wizard (<code className="font-mono bg-secondary px-1 py-0.5 rounded">.exe</code>) can be produced by running the{" "}
               <strong>Build Windows Installer (Test)</strong> workflow in GitHub Actions.
-              Once the workflow finishes, download the <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Installer</code> artifact from the run summary.
-              Then set <code className="font-mono bg-secondary px-1 py-0.5 rounded">DESKTOP_INSTALLER_URL</code> on the server to point to that file and the download button will update automatically.
+              Once the workflow finishes, upload the installer to a GitHub Release and paste the asset URL into the Download URL field above.
             </p>
             <a
               href={info.repoUrl ? `${info.repoUrl.replace(/\/$/, "")}/actions` : "https://github.com/features/actions"}
@@ -1256,10 +1354,6 @@ function DesktopInstallerPanel() {
               Open GitHub Actions
             </a>
           </div>
-
-          <p className="text-xs text-muted-foreground">
-            The download URL can be overridden via the <code className="font-mono bg-secondary px-1 py-0.5 rounded">DESKTOP_INSTALLER_URL</code> environment variable on the server.
-          </p>
         </div>
       )}
     </PanelShell>
