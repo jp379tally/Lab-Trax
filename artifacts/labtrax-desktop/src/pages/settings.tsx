@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Clock, HardDrive, KeyRound, Loader2, LogOut, Monitor, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
+import { Building2, BellRing, Clock, Download, HardDrive, KeyRound, Loader2, LogOut, Monitor, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
@@ -19,7 +19,7 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage" | "desktop";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -31,6 +31,7 @@ export default function SettingsPage() {
     { key: "organizations", label: "Organizations", icon: Building2, show: true },
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
     { key: "storage", label: "Storage", icon: HardDrive, show: isAdmin },
+    { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
   ];
   const [tab, setTab] = useState<TabKey>("profile");
 
@@ -73,6 +74,7 @@ export default function SettingsPage() {
           {tab === "organizations" && <OrganizationsPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
           {tab === "storage" && isAdmin && <StoragePanel />}
+          {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
         </div>
       </div>
     </div>
@@ -1143,6 +1145,61 @@ function StoragePanel() {
       <CleanupScheduleSettingsPanel />
       <CleanupAlertSettingsPanel />
       <BackupSchedulePanel />
+    </PanelShell>
+  );
+}
+
+interface DesktopInstallerInfo {
+  version: string;
+  downloadUrl: string;
+  fileName: string;
+}
+
+function DesktopInstallerPanel() {
+  const query = useQuery({
+    queryKey: ["admin", "desktop-installer"],
+    queryFn: () => apiFetch<DesktopInstallerInfo>("/admin/settings/desktop-installer"),
+  });
+
+  const info = query.data;
+
+  return (
+    <PanelShell
+      title="Desktop app"
+      subtitle="Download the Windows installer to distribute LabTrax Desktop to staff."
+    >
+      {query.isLoading && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 size={13} className="animate-spin" />
+          Loading…
+        </div>
+      )}
+      {query.error && (
+        <Alert tone="danger">{(query.error as Error).message}</Alert>
+      )}
+      {info && (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Version {info.version} · {info.fileName}
+              </div>
+            </div>
+            <a
+              href={info.downloadUrl}
+              download
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
+            >
+              <Download size={14} />
+              Download
+            </a>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Share this installer with staff so they can set up LabTrax Desktop on their Windows machines. The download URL can be overridden via the <code className="font-mono bg-secondary px-1 py-0.5 rounded">DESKTOP_INSTALLER_URL</code> environment variable on the server.
+          </p>
+        </div>
+      )}
     </PanelShell>
   );
 }

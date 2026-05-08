@@ -3236,6 +3236,26 @@ Important rules:
     }
   });
 
+  // ── Admin Desktop Installer ───────────────────────────────────────────────
+  router.get("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const version = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
+    const rawUrl =
+      process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
+    const isRelativeDownload = rawUrl.startsWith("/downloads/");
+    const isHttps = rawUrl.startsWith("https://");
+    if (!isRelativeDownload && !isHttps) {
+      return res.status(500).json({
+        error: "DESKTOP_INSTALLER_URL must be an https:// URL or a relative /downloads/ path.",
+      });
+    }
+    const fileName = rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip";
+    return res.json({ version, downloadUrl: rawUrl, fileName });
+  });
+
   // ── Admin Backup → OneDrive ───────────────────────────────────────────────
   router.post("/admin/backup/onedrive", requireAuth, async (req, res) => {
     try {

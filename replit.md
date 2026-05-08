@@ -59,5 +59,7 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `BACKUP_HOUR_UTC` — UTC hour (0–23) for the nightly OneDrive backup (default: `7`)
 - `MEDIA_CLEANUP_JOB_TOKEN` — shared secret for the standalone cleanup script (scheduled deployment path only)
 - `MEDIA_CLEANUP_API_URL` — base API URL for the standalone cleanup script (e.g. `https://your.replit.app/api`; scheduled deployment path only)
+- `DESKTOP_INSTALLER_VERSION` — version string shown in the Desktop App settings panel (default: `"1.0.0"`)
+- `DESKTOP_INSTALLER_URL` — direct download URL for the Windows installer (default: `/downloads/LabTrax-Windows-Portable.zip`); set to a GitHub Release asset URL in production
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
