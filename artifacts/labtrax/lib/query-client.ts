@@ -2,6 +2,7 @@ import { fetch } from "expo/fetch";
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 
 let cachedBaseUrl: string | null = null;
 
@@ -53,9 +54,69 @@ let _accessToken: string | null = null;
 let _refreshToken: string | null = null;
 let _refreshPromise: Promise<string | null> | null = null;
 
+async function secureGetItem(key: string): Promise<string | null> {
+  if (Platform.OS === "web") {
+    try {
+      return await AsyncStorage.getItem(key);
+    } catch (e) {
+      console.warn(`[token-store] AsyncStorage.getItem failed for key "${key}":`, e);
+      return null;
+    }
+  }
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch (e) {
+    console.warn(`[token-store] SecureStore.getItemAsync failed for key "${key}":`, e);
+    return null;
+  }
+}
+
+async function secureSetItem(key: string, value: string): Promise<void> {
+  if (Platform.OS === "web") {
+    try {
+      await AsyncStorage.setItem(key, value);
+    } catch (e) {
+      console.warn(`[token-store] AsyncStorage.setItem failed for key "${key}":`, e);
+    }
+    return;
+  }
+  try {
+    await SecureStore.setItemAsync(key, value);
+    await AsyncStorage.removeItem(key);
+  } catch (e) {
+    console.warn(`[token-store] SecureStore.setItemAsync failed for key "${key}":`, e);
+  }
+}
+
+async function secureRemoveItem(key: string): Promise<void> {
+  if (Platform.OS === "web") {
+    try {
+      await AsyncStorage.removeItem(key);
+    } catch (e) {
+      console.warn(`[token-store] AsyncStorage.removeItem failed for key "${key}":`, e);
+    }
+    return;
+  }
+  try {
+    await SecureStore.deleteItemAsync(key);
+  } catch (e) {
+    console.warn(`[token-store] SecureStore.deleteItemAsync failed for key "${key}":`, e);
+  }
+  try {
+    await AsyncStorage.removeItem(key);
+  } catch {}
+}
+
 export async function loadTokens() {
   try {
-    const raw = await AsyncStorage.getItem(TOKEN_KEY);
+    let raw = await secureGetItem(TOKEN_KEY);
+    if (!raw && Platform.OS !== "web") {
+      raw = await AsyncStorage.getItem(TOKEN_KEY);
+      if (raw) {
+        await SecureStore.setItemAsync(TOKEN_KEY, raw);
+        await AsyncStorage.removeItem(TOKEN_KEY);
+      }
+    }
     if (raw) {
       const parsed = JSON.parse(raw);
       _accessToken = parsed.accessToken || null;
@@ -67,13 +128,13 @@ export async function loadTokens() {
 export async function saveTokens(accessToken: string, refreshToken: string) {
   _accessToken = accessToken;
   _refreshToken = refreshToken;
-  await AsyncStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken, refreshToken }));
+  await secureSetItem(TOKEN_KEY, JSON.stringify({ accessToken, refreshToken }));
 }
 
 export async function clearTokens() {
   _accessToken = null;
   _refreshToken = null;
-  await AsyncStorage.removeItem(TOKEN_KEY);
+  await secureRemoveItem(TOKEN_KEY);
 }
 
 export function getAccessToken() {
@@ -110,7 +171,7 @@ async function refreshAccessToken(): Promise<string | null> {
         if (newRefreshToken) {
           _refreshToken = newRefreshToken;
         }
-        await AsyncStorage.setItem(
+        await secureSetItem(
           TOKEN_KEY,
           JSON.stringify({ accessToken: _accessToken, refreshToken: _refreshToken }),
         );
