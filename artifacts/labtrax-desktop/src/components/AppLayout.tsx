@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { UpdateBanner } from "./UpdateBanner";
 import { Link, useLocation } from "wouter";
 import {
   Bell,
@@ -348,6 +349,7 @@ export function AppLayout({ children }: Props) {
             )}
           </div>
         </header>
+        <UpdateBanner />
         <main className="flex-1 overflow-y-auto scrollbar-thin">{children}</main>
       </div>
     </div>

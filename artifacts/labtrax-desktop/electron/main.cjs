@@ -55,35 +55,9 @@ function setupAutoUpdater() {
   autoUpdater.on("update-downloaded", (info) => {
     log.info(`Update downloaded: v${info.version}`);
 
-    if (Notification.isSupported()) {
-      const notif = new Notification({
-        title: "LabTrax Update Ready",
-        body: `v${info.version} has been downloaded. Click to restart and install.`,
-        silent: false,
-      });
-
-      notif.on("click", () => {
-        autoUpdater.quitAndInstall();
-      });
-
-      notif.show();
-    } else {
-      dialog
-        .showMessageBox({
-          type: "info",
-          title: "Update Ready",
-          message: `LabTrax v${info.version} has been downloaded.`,
-          detail:
-            "Restart the app now to apply the update, or continue and it will be applied on the next launch.",
-          buttons: ["Restart Now", "Later"],
-          defaultId: 0,
-          cancelId: 1,
-        })
-        .then(({ response }) => {
-          if (response === 0) {
-            autoUpdater.quitAndInstall();
-          }
-        });
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      win.webContents.send("update-downloaded", info.version);
     }
   });
 
@@ -158,6 +132,11 @@ function createWindow() {
 }
 
 ipcMain.handle("get-app-version", () => app.getVersion());
+
+ipcMain.handle("install-update", () => {
+  const { autoUpdater } = require("electron-updater");
+  autoUpdater.quitAndInstall();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

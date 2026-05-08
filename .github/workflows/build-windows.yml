@@ -54,6 +54,11 @@ jobs:
           # workflow_dispatch; blocked for tag pushes by the step above).
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          # GH_TOKEN is only set on tag pushes so that electron-builder publishes
+          # the installer and latest.yml directly to the GitHub Release.
+          # On workflow_dispatch builds (no tag) the installer is uploaded as a
+          # workflow artifact instead and no auto-update manifest is produced.
+          GH_TOKEN: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.GITHUB_TOKEN || '' }}
 
       - name: Verify installer signature
         if: env.CSC_LINK != ''
@@ -85,7 +90,10 @@ jobs:
           path: artifacts/labtrax-desktop/electron-dist/*.exe
           if-no-files-found: error
 
-      - name: Create GitHub Release and upload installer
+      - name: Update GitHub Release notes
+        # electron-builder (with GH_TOKEN) already created the release and uploaded
+        # the .exe and latest.yml. This step only updates the release body with
+        # human-readable install instructions.
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
@@ -101,10 +109,12 @@ jobs:
             3. A desktop shortcut and Start Menu entry are created automatically.
             4. To remove, use **Add or Remove Programs** in Windows Settings.
 
+            ### Auto-Update
+            - Existing installs will be notified automatically on next launch and can
+              update with one click — no manual download needed.
+
             ### Notes
             - The installer is code-signed, which reduces or eliminates Windows SmartScreen prompts.
             - The installer connects to your lab's LabTrax server. Make sure your server URL is reachable.
-          files: artifacts/labtrax-desktop/electron-dist/*.exe
-          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

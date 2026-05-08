@@ -38,10 +38,11 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-# publish.url is a placeholder. The electron-build.mjs script overrides it
-# with the real UPDATE_FEED_URL value when --publish always is used.
+# Using the GitHub Releases provider so electron-updater can query the
+# GitHub API to discover the latest release and download latest.yml.
+# On release builds the CI workflow passes GH_TOKEN which causes electron-builder
+# to publish the installer and latest.yml manifest to the GitHub Release.
 # Do not run electron-builder directly for release builds — use:
-#   VITE_API_BASE_URL=… UPDATE_FEED_URL=https://… pnpm run electron:build
+#   VITE_API_BASE_URL=… GH_TOKEN=… pnpm run electron:build
 publish:
-  provider: generic
-  url: https://example.com/updates
+  provider: github

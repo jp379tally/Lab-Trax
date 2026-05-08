@@ -9,24 +9,20 @@
  * zips that directory into electron-dist/LabTrax-Windows-Portable.zip, which
  * is a fully functional Windows distribution users can download and run.
  *
- * Auto-update publishing:
- *   Set UPDATE_FEED_URL to the base URL of your static update server (e.g. an
- *   S3 bucket, GitHub Pages, or any HTTPS host where you place latest.yml and
- *   the installer file). When set, --publish always is added so electron-builder
- *   uploads the installer and the latest.yml manifest.
+ * Auto-update publishing (GitHub Releases):
+ *   The publish provider is set to "github" in electron-builder.yml. When
+ *   GH_TOKEN is present, electron-builder runs with --publish always and
+ *   uploads the installer (.exe) and the auto-update manifest (latest.yml)
+ *   directly to the GitHub Release. electron-updater in the packaged app
+ *   queries the GitHub Releases API to discover new versions automatically.
  *
- *   For GitHub Releases: set GH_TOKEN instead and switch the publish provider
- *   in electron-builder.yml to "github". UPDATE_FEED_URL is not required then.
- *
- *   The running app reads UPDATE_FEED_URL at launch to know where to poll for
- *   updates, so it must also be embedded in the installer environment or set
- *   on the host machine. The simplest approach for the generic provider is to
- *   host latest.yml and the installer at a stable public URL and set that URL
- *   both here (for publishing) and in the packaged app's environment.
+ *   The CI workflow (.github/workflows/build-windows.yml) supplies GH_TOKEN
+ *   automatically on tag pushes so that every versioned release is published
+ *   with both artifacts. No additional configuration is required.
  *
  * Usage:
  *   VITE_API_BASE_URL=https://your-app.replit.app pnpm run electron:build
- *   VITE_API_BASE_URL=… UPDATE_FEED_URL=https://cdn.example.com/labtrax-updates pnpm run electron:build
+ *   VITE_API_BASE_URL=… GH_TOKEN=ghp_… pnpm run electron:build
  */
 
 import { spawnSync } from "node:child_process";
