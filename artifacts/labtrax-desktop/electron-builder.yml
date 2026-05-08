@@ -7,6 +7,8 @@ files:
   - electron/main.cjs
   - electron/preload.cjs
   - electron/icon.png
+
+# ─── Windows ────────────────────────────────────────────────────────────────
 win:
   target: nsis
   icon: electron/icon.png
@@ -38,6 +40,45 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+
+# ─── macOS ──────────────────────────────────────────────────────────────────
+mac:
+  target:
+    # DMG for standard distribution; zip is used by the auto-updater.
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  icon: electron/icon.png
+  # Hardened Runtime is mandatory for notarization. Without it Apple's
+  # notarization service rejects the submission.
+  hardenedRuntime: true
+  # Skip the local Gatekeeper assessment during the build — the assessment
+  # runs against the developer's own machine and is irrelevant in CI.
+  gatekeeperAssess: false
+  # Entitlements grant the specific runtime permissions Electron needs while
+  # staying within the Hardened Runtime sandbox. See
+  # electron/entitlements.mac.plist for the full list.
+  entitlements: electron/entitlements.mac.plist
+  entitlementsInherit: electron/entitlements.mac.plist
+  # Signing identity is resolved automatically from the certificate loaded via
+  # CSC_LINK / CSC_KEY_PASSWORD. To pin a specific identity (e.g. when
+  # multiple Developer ID certificates are present in the keychain), set:
+  #   identity: "Developer ID Application: Your Name (TEAMID)"
+  # Notarization: electron-builder submits the signed app to Apple's
+  # notarization service and staples the ticket. Required env vars:
+  #   APPLE_ID                  — Apple ID email used to sign in to App Store Connect
+  #   APPLE_APP_SPECIFIC_PASSWORD — app-specific password for that Apple ID
+  #   APPLE_TEAM_ID             — 10-character Team ID from developer.apple.com
+  # See .github/workflows/build-macos.yml for how these are wired up.
+  notarize:
+    teamId: ${APPLE_TEAM_ID}
+dmg:
+  # The DMG itself does not need a separate signature — the app bundle inside
+  # it is already signed and notarized.
+  sign: false
+
+# ─── Publish ─────────────────────────────────────────────────────────────────
 # Using the GitHub Releases provider so electron-updater can query the
 # GitHub API to discover the latest release and download latest.yml.
 # On release builds the CI workflow passes GH_TOKEN which causes electron-builder

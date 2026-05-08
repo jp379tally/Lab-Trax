@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!--
+      Allows Electron's V8 JIT compiler to write executable memory. Without
+      this entitlement Node.js and Chromium cannot function under Hardened
+      Runtime.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!--
+      Permits mapping memory pages as both writable and executable at the same
+      time. Required by certain Chromium internals and some native Node modules.
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!--
+      Allows DYLD environment variables (e.g. DYLD_INSERT_LIBRARIES) to affect
+      the process. Electron's helper processes rely on this for correct library
+      loading.
+    -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!--
+      Permits loading unsigned or ad-hoc-signed frameworks and plug-ins.
+      Required for Electron's bundled Chromium and Node.js binaries, which are
+      signed separately from the host app bundle.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!--
+      Grants outgoing network connections so the app can reach the LabTrax API
+      server. Remove this entitlement only if you intend to run fully offline.
+    -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+  </dict>
+</plist>

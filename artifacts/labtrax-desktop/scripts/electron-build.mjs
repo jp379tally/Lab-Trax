@@ -1,6 +1,12 @@
 /**
  * Smart electron build script.
  *
+ * Platform selection:
+ *   The target platform is chosen by the ELECTRON_PLATFORM environment variable:
+ *     ELECTRON_PLATFORM=mac  → macOS DMG (signed + notarized when Apple creds present)
+ *     ELECTRON_PLATFORM=win  → Windows NSIS installer (default)
+ *   When not set, the script falls back to the host OS: darwin → mac, all others → win.
+ *
  * On Windows (or Linux with Wine): runs electron-builder to produce the full
  * NSIS installer exe → electron-dist/LabTrax Setup *.exe
  *
@@ -20,9 +26,12 @@
  *   automatically on tag pushes so that every versioned release is published
  *   with both artifacts. No additional configuration is required.
  *
- * Usage:
+ * Usage (Windows):
  *   VITE_API_BASE_URL=https://your-app.replit.app pnpm run electron:build
  *   VITE_API_BASE_URL=… GH_TOKEN=ghp_… pnpm run electron:build
+ *
+ * Usage (macOS — via GitHub Actions build-macos.yml or locally on a Mac):
+ *   ELECTRON_PLATFORM=mac VITE_API_BASE_URL=https://your-app.replit.app pnpm run electron:build
  */
 
 import { spawnSync } from "node:child_process";
@@ -92,6 +101,13 @@ async function zipUnpacked() {
   });
 }
 
+// Determine target platform.
+// Priority: ELECTRON_PLATFORM env var → host OS → default to win.
+const platformEnv = process.env.ELECTRON_PLATFORM;
+const isMac =
+  platformEnv === "mac" ||
+  (!platformEnv && process.platform === "darwin");
+
 const viteCode = run("pnpm", ["exec", "vite", "build", "--config", "vite.electron.config.ts"]);
 if (viteCode !== 0) {
   console.error("\nERROR: Vite build failed.");
@@ -101,7 +117,7 @@ if (viteCode !== 0) {
 const builderArgs = [
   "exec",
   "electron-builder",
-  "--win",
+  isMac ? "--mac" : "--win",
   "--config",
   "electron-builder.yml",
 ];
@@ -119,24 +135,34 @@ if (shouldPublish) {
   );
 } else {
   console.log(
-    "\nNote: set UPDATE_FEED_URL (or GH_TOKEN for GitHub Releases) to publish\n" +
-    "release artifacts for auto-update. Without publishing, users must\n" +
-    "download new versions manually.",
+    "\nNote: set GH_TOKEN to publish release artifacts to GitHub Releases\n" +
+    "for auto-update. Without publishing, users must download new versions manually.",
   );
 }
 
 const buildExitCode = run("pnpm", builderArgs);
 
 if (buildExitCode === 0) {
-  if (shouldPublish) {
-    console.log("\n✓ Installer and latest.yml published. Auto-update is active for this release.");
+  if (isMac) {
+    if (shouldPublish) {
+      console.log("\n✓ macOS DMG and latest-mac.yml published. Auto-update is active for this release.");
+    } else {
+      console.log("\n✓ macOS DMG produced in electron-dist/");
+    }
   } else {
-    console.log("\n✓ NSIS installer produced in electron-dist/");
+    if (shouldPublish) {
+      console.log("\n✓ Installer and latest.yml published. Auto-update is active for this release.");
+    } else {
+      console.log("\n✓ NSIS installer produced in electron-dist/");
+    }
   }
-} else {
+} else if (!isMac) {
   console.warn(
     "\nelectron-builder did not complete (Wine is required on Linux for NSIS).",
   );
   console.warn("Creating portable zip from win-unpacked instead…");
   await zipUnpacked();
+} else {
+  console.error("\nERROR: macOS build failed. Check that Xcode command-line tools are installed.");
+  process.exit(buildExitCode);
 }
