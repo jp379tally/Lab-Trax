@@ -66,8 +66,16 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-    log.warn("Update check failed (will retry on next launch):", err.message);
+    log.warn("Update check failed (will retry):", err.message);
   });
+
+  // Re-check every 4 hours while the app is open.
+  const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
+  setInterval(() => {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      log.warn("Periodic update check failed:", err.message);
+    });
+  }, FOUR_HOURS_MS);
 }
 
 app.whenReady().then(() => {

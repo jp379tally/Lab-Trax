@@ -94,6 +94,11 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # On tag pushes electron-builder publishes the DMG and latest-mac.yml
+          # to the GitHub Release so that electron-updater can discover new
+          # versions automatically. On workflow_dispatch builds GH_TOKEN is
+          # absent and no auto-update manifest is produced.
+          GH_TOKEN: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.GITHUB_TOKEN || '' }}
 
       # ── Upload artifacts ──────────────────────────────────────────────────
       - name: Upload DMG as workflow artifact
@@ -121,6 +126,10 @@ jobs:
 
             > **Gatekeeper:** The app is signed with a Developer ID certificate and
             > notarized by Apple, so macOS will open it without any security warning.
+
+            ### Auto-Update
+            - Existing installs will be notified automatically on next launch and can
+              update with one click — no manual download needed.
 
             ### Notes
             - Both **Apple Silicon (arm64)** and **Intel (x64)** Macs are supported.
