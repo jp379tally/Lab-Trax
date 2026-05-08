@@ -1160,12 +1160,15 @@ interface DesktopInstallerInfo {
   repoUrl: string | null;
   urlError: string | null;
   repoUrlWarning?: string;
+  releaseNotes: string | null;
+  dbReleaseNotes: string | null;
 }
 
 function DesktopInstallerPanel() {
   const queryClient = useQueryClient();
   const [urlInput, setUrlInput] = useState<string>("");
   const [versionInput, setVersionInput] = useState<string>("");
+  const [releaseNotesInput, setReleaseNotesInput] = useState<string>("");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -1178,6 +1181,7 @@ function DesktopInstallerPanel() {
     if (query.data) {
       setUrlInput(query.data.downloadUrl);
       setVersionInput(query.data.version);
+      setReleaseNotesInput(query.data.releaseNotes ?? "");
     }
   }, [query.data]);
 
@@ -1186,7 +1190,11 @@ function DesktopInstallerPanel() {
       apiFetch<{ success: boolean; downloadUrl: string }>("/admin/settings/desktop-installer", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ downloadUrl: urlInput.trim(), version: versionInput.trim() }),
+        body: JSON.stringify({
+          downloadUrl: urlInput.trim(),
+          version: versionInput.trim(),
+          releaseNotes: releaseNotesInput.trim() || null,
+        }),
       }),
     onSuccess: () => {
       setSaveError(null);
@@ -1215,10 +1223,13 @@ function DesktopInstallerPanel() {
 
   const info = query.data;
   const isZip = info?.downloadUrl.endsWith(".zip") ?? true;
-  const hasDbOverrides = info !== undefined && (info.dbDownloadUrl !== null || info.dbVersion !== null);
-  const inputsUnchanged =
-    urlInput.trim() === (info?.downloadUrl ?? "") &&
-    versionInput.trim() === (info?.version ?? "");
+  const hasDbOverrides = info !== undefined && (info.dbDownloadUrl !== null || info.dbVersion !== null || info.dbReleaseNotes !== null);
+
+  const hasChanges =
+    !!info &&
+    (urlInput.trim() !== info.downloadUrl ||
+      versionInput.trim() !== info.version ||
+      (releaseNotesInput.trim() || null) !== info.releaseNotes);
 
   return (
     <PanelShell
@@ -1244,26 +1255,38 @@ function DesktopInstallerPanel() {
               Current download URL is invalid: {info.urlError} Use the field below to fix it.
             </Alert>
           ) : (
-            <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 flex items-center justify-between gap-4">
-              <div>
-                <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  Version {info.version} · {info.fileName}
+            <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    Version {info.version} · {info.fileName}
+                  </div>
                 </div>
+                <a
+                  href={info.downloadUrl}
+                  download
+                  className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
+                >
+                  <Download size={14} />
+                  {isZip ? "Download Portable ZIP" : "Download Installer"}
+                </a>
               </div>
-              <a
-                href={info.downloadUrl}
-                download
-                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
-              >
-                <Download size={14} />
-                {isZip ? "Download Portable ZIP" : "Download Installer"}
-              </a>
+              {info.releaseNotes && (
+                <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
+                  <div className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground">
+                    Release notes
+                  </div>
+                  <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+                    {info.releaseNotes}
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
-            <div className="text-sm font-semibold">Download URL &amp; Version</div>
+            <div className="text-sm font-semibold">Download URL, Version &amp; Release Notes</div>
             <p className="text-xs text-muted-foreground">
               Paste the GitHub Release asset URL (or a <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code> path) here after each build.
               Must start with <code className="font-mono bg-secondary px-1 py-0.5 rounded">https://</code> or <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code>.
@@ -1286,35 +1309,55 @@ function DesktopInstallerPanel() {
                 placeholder="1.0.0"
                 aria-label="Version"
               />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">
+                Release notes <span className="font-normal">(optional)</span>
+              </label>
+              <textarea
+                className="w-full px-2.5 py-2 rounded-md bg-background border border-input text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+                rows={3}
+                value={releaseNotesInput}
+                onChange={(e) => setReleaseNotesInput(e.target.value)}
+                placeholder="e.g. v1.2.0 — fixed PDF print crash, improved startup time"
+                maxLength={1000}
+              />
+              <p className="text-[11px] text-muted-foreground text-right">
+                {releaseNotesInput.length}/1000
+              </p>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                {hasDbOverrides ? (
+                  <button
+                    type="button"
+                    onClick={() => resetMutation.mutate()}
+                    disabled={resetMutation.isPending || saveMutation.isPending}
+                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+                  >
+                    {resetMutation.isPending ? (
+                      <Loader2 size={11} className="animate-spin" />
+                    ) : (
+                      <RotateCcw size={11} />
+                    )}
+                    Reset to env defaults (v{info.envVersion} · {info.envDownloadUrl.split("/").pop()})
+                  </button>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">
+                    Using env defaults: v{info.envVersion} · <code className="font-mono bg-secondary px-0.5 rounded">{info.envDownloadUrl}</code>
+                  </p>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => saveMutation.mutate()}
-                disabled={saveMutation.isPending || resetMutation.isPending || !urlInput.trim() || inputsUnchanged}
+                disabled={saveMutation.isPending || resetMutation.isPending || !urlInput.trim() || !hasChanges}
                 className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 shrink-0 inline-flex items-center gap-1.5"
               >
                 {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
                 Save
               </button>
             </div>
-            {hasDbOverrides ? (
-              <button
-                type="button"
-                onClick={() => resetMutation.mutate()}
-                disabled={resetMutation.isPending || saveMutation.isPending}
-                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-              >
-                {resetMutation.isPending ? (
-                  <Loader2 size={11} className="animate-spin" />
-                ) : (
-                  <RotateCcw size={11} />
-                )}
-                Reset to env defaults (v{info.envVersion} · {info.envDownloadUrl.split("/").pop()})
-              </button>
-            ) : (
-              <p className="text-[11px] text-muted-foreground">
-                Using env defaults: v{info.envVersion} · <code className="font-mono bg-secondary px-0.5 rounded">{info.envDownloadUrl}</code>
-              </p>
-            )}
           </div>
 
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">

@@ -3292,6 +3292,7 @@ Important rules:
   // ── Admin Desktop Installer ───────────────────────────────────────────────
   const SETTING_DESKTOP_INSTALLER_URL = "desktop_installer_url";
   const SETTING_DESKTOP_INSTALLER_VERSION = "desktop_installer_version";
+  const SETTING_DESKTOP_INSTALLER_RELEASE_NOTES = "desktop_installer_release_notes";
 
   function validateInstallerUrl(url: string): string | null {
     if (url.startsWith("https://") || url.startsWith("/downloads/")) return null;
@@ -3310,12 +3311,20 @@ Important rules:
     const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
     const envUrl =
       process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
-    const [dbUrlRows, dbVersionRows] = await Promise.all([
-      db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_URL)),
-      db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION)),
-    ]);
-    const dbUrl = dbUrlRows[0]?.value ?? null;
-    const dbVersion = dbVersionRows[0]?.value ?? null;
+    const dbRows = await db
+      .select()
+      .from(systemSettings)
+      .where(
+        inArray(systemSettings.key, [
+          SETTING_DESKTOP_INSTALLER_URL,
+          SETTING_DESKTOP_INSTALLER_VERSION,
+          SETTING_DESKTOP_INSTALLER_RELEASE_NOTES,
+        ]),
+      );
+    const byKey = Object.fromEntries(dbRows.map((r) => [r.key, r.value]));
+    const dbUrl = byKey[SETTING_DESKTOP_INSTALLER_URL] ?? null;
+    const dbVersion = byKey[SETTING_DESKTOP_INSTALLER_VERSION] ?? null;
+    const dbReleaseNotes = byKey[SETTING_DESKTOP_INSTALLER_RELEASE_NOTES] ?? null;
     const rawUrl = dbUrl ?? envUrl;
     const version = dbVersion ?? envVersion;
     const urlError = validateInstallerUrl(rawUrl);
@@ -3337,6 +3346,8 @@ Important rules:
       repoUrl,
       urlError: urlError ?? null,
       repoUrlWarning,
+      releaseNotes: dbReleaseNotes,
+      dbReleaseNotes,
     });
   });
 
@@ -3360,6 +3371,8 @@ Important rules:
         return res.status(400).json({ error: versionErr });
       }
     }
+    const releaseNotes =
+      typeof body?.releaseNotes === "string" ? body.releaseNotes.trim() || null : null;
     try {
       const ops: Promise<unknown>[] = [
         db
@@ -3378,11 +3391,28 @@ Important rules:
             .onConflictDoUpdate({
               target: systemSettings.key,
               set: { value: version, updatedAt: new Date() },
-            })
+            }),
+        );
+      }
+      if (releaseNotes !== null) {
+        ops.push(
+          db
+            .insert(systemSettings)
+            .values({ key: SETTING_DESKTOP_INSTALLER_RELEASE_NOTES, value: releaseNotes })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: releaseNotes, updatedAt: new Date() },
+            }),
+        );
+      } else {
+        ops.push(
+          db
+            .delete(systemSettings)
+            .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_RELEASE_NOTES)),
         );
       }
       await Promise.all(ops);
-      return res.json({ success: true, downloadUrl, version });
+      return res.json({ success: true, downloadUrl, version, releaseNotes });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to save installer settings." });
     }
@@ -3393,10 +3423,15 @@ Important rules:
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
-      await Promise.all([
-        db.delete(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_URL)),
-        db.delete(systemSettings).where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION)),
-      ]);
+      await db
+        .delete(systemSettings)
+        .where(
+          inArray(systemSettings.key, [
+            SETTING_DESKTOP_INSTALLER_URL,
+            SETTING_DESKTOP_INSTALLER_VERSION,
+            SETTING_DESKTOP_INSTALLER_RELEASE_NOTES,
+          ]),
+        );
       return res.json({ success: true });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to reset installer settings." });
