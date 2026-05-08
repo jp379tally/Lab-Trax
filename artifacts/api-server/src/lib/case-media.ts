@@ -238,12 +238,16 @@ export const caseMediaDir = path.resolve(
  * media directory (e.g. an external URL).
  */
 export function extractMediaFileName(storageKey: string): string | null {
-  const marker = "/uploads/case-media/";
-  const idx = storageKey.indexOf(marker);
+  const markers = ["/uploads/case-media/", "/api/cases/attachment-file/"];
   let fileName: string | null = null;
-  if (idx >= 0) {
-    fileName = storageKey.slice(idx + marker.length).split(/[?#]/)[0] ?? null;
-  } else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(storageKey)) {
+  for (const marker of markers) {
+    const idx = storageKey.indexOf(marker);
+    if (idx >= 0) {
+      fileName = storageKey.slice(idx + marker.length).split(/[?#]/)[0] ?? null;
+      break;
+    }
+  }
+  if (fileName === null && !/^[a-z][a-z0-9+.-]*:\/\//i.test(storageKey)) {
     fileName = path.basename(storageKey);
   }
   if (!fileName) return null;

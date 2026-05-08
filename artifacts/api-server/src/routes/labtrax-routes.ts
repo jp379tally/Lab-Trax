@@ -347,7 +347,7 @@ export async function registerRoutes(): Promise<IRouter> {
     const protocol = forwardedProto
       ? forwardedProto.split(",")[0].trim()
       : (req.protocol || "https");
-    return `${protocol}://${host}/uploads/case-media/${filename}`;
+    return `${protocol}://${host}/api/cases/attachment-file/${filename}`;
   }
 
   // --- Resumable upload session lifecycle ----------------------------------
@@ -554,7 +554,7 @@ export async function registerRoutes(): Promise<IRouter> {
       const host = forwardedHost || req.get("host") || "localhost";
       const forwardedProto = req.header("x-forwarded-proto");
       const protocol = forwardedProto ? forwardedProto.split(",")[0].trim() : (req.protocol || "https");
-      const url = `${protocol}://${host}/uploads/case-media/${req.file.filename}`;
+      const url = `${protocol}://${host}/api/cases/attachment-file/${req.file.filename}`;
       return res.json({ url, filename: req.file.filename, size: req.file.size });
     } catch (error: any) {
       console.error("Media upload error:", error?.message || error);

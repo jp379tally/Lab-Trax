@@ -16,9 +16,19 @@ import { startDailyOneDriveBackup } from "./lib/backup";
 const app: Express = express();
 app.set("trust proxy", 1);
 
-// Serve uploaded case media files directly (outside /api prefix)
-const casMediaDir = path.join(process.cwd(), "uploads", "case-media");
-app.use("/uploads/case-media", express.static(casMediaDir));
+// Redirect legacy unauthenticated case-media URLs to the authenticated API
+// endpoint. Existing attachment records may have storageKey values of the form
+// "https://host/uploads/case-media/<filename>". Those URLs now hit this handler
+// instead of the (removed) public static mount, so authorised clients that
+// follow redirects are transparently routed to the authenticated compat route.
+// No credentials are validated here — auth is enforced by the redirect target.
+app.use("/uploads/case-media", (req: Request, res: Response) => {
+  const filename = path.basename(req.path);
+  if (!filename || filename === "." || filename.includes("..")) {
+    return res.status(400).json({ ok: false, message: "Invalid path." });
+  }
+  return res.redirect(302, `/api/cases/attachment-file/${encodeURIComponent(filename)}`);
+});
 
 // Serve the Windows portable zip for download (outside /api, no auth required)
 const electronDistDir = path.resolve(__dirname, "..", "..", "..", "artifacts", "labtrax-desktop", "electron-dist");

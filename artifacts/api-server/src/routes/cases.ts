@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -28,6 +28,132 @@ import { requireAuth } from "../middlewares/auth";
 
 const router = Router();
 router.use(requireAuth);
+
+// Canonical authenticated file-download route.
+// Authorizes by exact (caseId, attachmentId) identity from the DB record,
+// then derives the on-disk filename from storageKey via extractMediaFileName.
+// The served file path comes from the authoritative DB record, never from the
+// raw URL, preventing any decoupled-authorization / confused-deputy attacks.
+router.get(
+  "/:caseId/attachments/:attachmentId/file",
+  asyncHandler(async (req: Request, res: Response) => {
+    const caseId = String(req.params["caseId"] ?? "");
+    const attachmentId = String(req.params["attachmentId"] ?? "");
+
+    const { labMembership } = await assertCaseAccessWithMemberships(
+      (req as any).auth.userId,
+      caseId,
+    );
+
+    const attachment = await db.query.caseAttachments.findFirst({
+      where: and(
+        eq(caseAttachments.id, attachmentId),
+        eq(caseAttachments.caseId, caseId),
+      ),
+    });
+
+    if (!attachment) {
+      throw new HttpError(404, "Attachment not found.");
+    }
+
+    if (attachment.visibility === "internal_lab_only" && !labMembership) {
+      throw new HttpError(403, "You do not have access to this file.");
+    }
+
+    const filename = extractMediaFileName(attachment.storageKey);
+    if (!filename) {
+      throw new HttpError(404, "File not found.");
+    }
+
+    const resolvedPath = path.resolve(caseMediaDir, filename);
+    if (
+      resolvedPath === caseMediaDir ||
+      !resolvedPath.startsWith(caseMediaDir + path.sep)
+    ) {
+      throw new HttpError(400, "Invalid file path.");
+    }
+
+    if (!fs.existsSync(resolvedPath)) {
+      throw new HttpError(404, "File not found.");
+    }
+
+    return res.sendFile(resolvedPath);
+  })
+);
+
+// Legacy compatibility route for URLs stored before the ID-based route was
+// introduced (storageKeys of the form
+// "https://host/uploads/case-media/<filename>" or
+// "https://host/api/cases/attachment-file/<filename>").
+// Strategy:
+//   1. Narrow DB scan to rows whose storageKey plausibly contains the filename.
+//   2. Filter in memory via extractMediaFileName for exact canonical match.
+//   3. Enforce uniqueness — reject if 0 or >1 records claim the same filename
+//      (>1 would indicate a crafted storageKey alongside the legitimate one).
+//   4. Perform auth (case membership + visibility) against the matched record
+//      BEFORE serving — no case/attachment IDs are ever exposed in redirects.
+//   5. Derive the on-disk path from the record's storageKey, not the raw URL.
+router.get(
+  "/attachment-file/:filename",
+  asyncHandler(async (req: Request, res: Response) => {
+    const filename = String(req.params["filename"] ?? "");
+
+    if (!filename || /[/\\]|\.\./.test(filename)) {
+      throw new HttpError(400, "Invalid filename.");
+    }
+
+    // Narrow the SQL scan to rows whose storageKey plausibly ends with the
+    // filename preceded by a slash, or equals the bare filename.
+    const slashPattern = `%/${filename}`;
+    const candidateRows = await db
+      .select()
+      .from(caseAttachments)
+      .where(
+        or(
+          sql`${caseAttachments.storageKey} LIKE ${slashPattern}`,
+          eq(caseAttachments.storageKey, filename),
+        ),
+      );
+
+    // Exact canonical match — prevents suffix-based confused-deputy attacks.
+    const matching = candidateRows.filter(
+      (r) => extractMediaFileName(r.storageKey) === filename,
+    );
+
+    // Reject ambiguous matches.
+    if (matching.length !== 1) {
+      throw new HttpError(404, "Attachment not found.");
+    }
+
+    const attachment = matching[0]!;
+
+    // Auth check before any response — no case/attachment IDs exposed.
+    const { labMembership } = await assertCaseAccessWithMemberships(
+      (req as any).auth.userId,
+      attachment.caseId,
+    );
+
+    if (attachment.visibility === "internal_lab_only" && !labMembership) {
+      throw new HttpError(403, "You do not have access to this file.");
+    }
+
+    // Derive the file path from the authoritative DB record, not the URL param.
+    const resolvedFilename = extractMediaFileName(attachment.storageKey)!;
+    const resolvedPath = path.resolve(caseMediaDir, resolvedFilename);
+    if (
+      resolvedPath === caseMediaDir ||
+      !resolvedPath.startsWith(caseMediaDir + path.sep)
+    ) {
+      throw new HttpError(400, "Invalid file path.");
+    }
+
+    if (!fs.existsSync(resolvedPath)) {
+      throw new HttpError(404, "File not found.");
+    }
+
+    return res.sendFile(resolvedPath);
+  })
+);
 
 async function assertCaseAccess(userId: string, caseId: string) {
   const access = await assertCaseAccessWithMemberships(userId, caseId);
