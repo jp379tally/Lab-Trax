@@ -45,3 +45,8 @@ externalPort = 4200
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.development]
+EXPO_TOKEN = "icq8v4vFQYQhYoq_txeX6trL5qVJZvYdFlbj5KEo"

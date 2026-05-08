@@ -23,25 +23,36 @@
         "NSMicrophoneUsageDescription": "This app uses the microphone to record video of dental cases for documentation and lab communication.",
         "NSLocationWhenInUseUsageDescription": "This app uses your location to auto-fill your practice or lab address during account setup.",
         "NSFaceIDUsageDescription": "This app uses Face ID to securely unlock access to patient case data and HIPAA-protected information.",
+        "ITSAppUsesNonExemptEncryption": false,
         "UIFileSharingEnabled": true,
         "LSSupportsOpeningDocumentsInPlace": true,
         "CFBundleDocumentTypes": [
           {
             "CFBundleTypeName": "Image",
             "LSHandlerRank": "Alternate",
-            "LSItemContentTypes": ["public.image", "public.jpeg", "public.png", "public.heic"],
+            "LSItemContentTypes": [
+              "public.image",
+              "public.jpeg",
+              "public.png",
+              "public.heic"
+            ],
             "CFBundleTypeRole": "Viewer"
           },
           {
             "CFBundleTypeName": "PDF Document",
             "LSHandlerRank": "Alternate",
-            "LSItemContentTypes": ["com.adobe.pdf"],
+            "LSItemContentTypes": [
+              "com.adobe.pdf"
+            ],
             "CFBundleTypeRole": "Viewer"
           },
           {
             "CFBundleTypeName": "Video",
             "LSHandlerRank": "Alternate",
-            "LSItemContentTypes": ["public.movie", "public.video"],
+            "LSItemContentTypes": [
+              "public.movie",
+              "public.video"
+            ],
             "CFBundleTypeRole": "Viewer"
           }
         ]
@@ -76,8 +87,12 @@
             "NSExtensionActivationSupportsMovieWithMaxCount": 5,
             "NSExtensionActivationSupportsFileWithMaxCount": 10
           },
-          "androidIntentFilters": ["image/*"],
-          "androidMultiIntentFilters": ["image/*"],
+          "androidIntentFilters": [
+            "image/*"
+          ],
+          "androidMultiIntentFilters": [
+            "image/*"
+          ],
           "iosShareExtensionName": "LabTrax"
         }
       ]
@@ -86,6 +101,12 @@
       "typedRoutes": true,
       "reactCompiler": true,
       "baseUrl": "/app"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "a22db9d5-6925-4348-9827-3455a22d2ca0"
+      }
+    },
+    "owner": "jp379"
   }
 }
