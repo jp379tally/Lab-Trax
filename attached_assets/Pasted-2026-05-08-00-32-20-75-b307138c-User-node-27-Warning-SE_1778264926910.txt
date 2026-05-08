@@ -1,0 +1,141 @@
+2026-05-08 00:32:20.75
+b307138c
+User
+(node:27) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 01:05:55.40
+b307138c
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 01:10:26.94
+b307138c
+User
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-05-08 01:10:26.94
+b307138c
+User
+To prepare for this change:
+2026-05-08 01:10:26.94
+b307138c
+User
+(node:26) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 01:25:35.40
+b307138c
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 02:14:07.71
+b307138c
+User
+(node:26) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 02:29:15.41
+b307138c
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 02:52:38.56
+b307138c
+User
+(node:25) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 03:07:45.42
+b307138c
+System
+artifact process exited with error artifact=artifacts/api-server error=signal: terminated
+2026-05-08 09:12:45.45
+b307138c
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 09:41:34.97
+b307138c
+User
+(node:26) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 09:56:45.46
+b307138c
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 10:24:51.30
+b307138c
+User
+(node:25) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 10:24:51.30
+b307138c
+User
+- If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-05-08 10:24:51.30
+b307138c
+User
+To prepare for this change:
+2026-05-08 10:24:51.30
+b307138c
+User
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-05-08 10:46:35.47
+b307138c
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 11:25:21.83
+b307138c
+User
+To prepare for this change:
+2026-05-08 11:25:21.83
+b307138c
+User
+(node:25) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 11:25:21.83
+b307138c
+User
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-05-08 11:40:25.49
+b307138c
+System
+artifact process exited with error artifact=artifacts/api-server error=signal: terminated
+2026-05-08 12:07:15.50
+b307138c
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 12:58:15.51
+b307138c
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 13:30:00.64
+0f64db73
+System
+artifact process exited with error error=signal: terminated artifact=artifacts/api-server
+2026-05-08 13:40:49.66
+0f64db73
+User
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-05-08 13:40:49.66
+0f64db73
+User
+(node:26) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 13:52:07.14
+d23eaccb
+User
+To prepare for this change:
+2026-05-08 13:52:07.14
+d23eaccb
+User
+(node:27) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+
+2026-05-08 13:52:07.14
+d23eaccb
+User
+- If you want the current behavior, explicitly use 'sslmode=verify-full'
+2026-05-08 13:52:07.14
+d23eaccb
+User
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-05-08 13:54:14.05
+0f64db73
+System
+artifact process exited with error artifact=artifacts/api-server error=signal: terminated
+2026-05-08 14:07:46.10
+efcf8fcd
+User
+In the next major version (pg-connection-string v3.0.0 and pg v9.0.0), these modes will adopt standard libpq semantics, which have weaker security guarantees.
+2026-05-08 14:07:46.10
+efcf8fcd
+User
+(node:28) Warning: SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'.
+2026-05-08 14:12:51.68
+d23eaccb
+System
+artifact process exited with error artifact=artifacts/api-server error=signal: terminated

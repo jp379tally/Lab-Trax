@@ -1200,6 +1200,13 @@ export async function registerRoutes(): Promise<IRouter> {
                 parsed.affiliationName = null;
               }
             }
+            // Strip large binary fields from the list payload — photos and
+            // activityLog can each be several MB per case (base64-encoded
+            // images). The detail endpoint (GET /legacy/cases/:id) returns
+            // full data; the list only needs metadata for the case list view.
+            delete parsed.photos;
+            delete parsed.videos;
+            delete parsed.activityLog;
             return parsed;
           } catch {
             return null;
@@ -1690,6 +1697,44 @@ export async function registerRoutes(): Promise<IRouter> {
     } catch (error: any) {
       console.error("Attach pending file error:", error?.message || error);
       return res.status(500).json({ error: "Failed to attach pending file" });
+    }
+  });
+
+  // ── Single-case fetch: returns full caseData including photos and
+  //    activityLog that are stripped from the list endpoint to keep it lean.
+  router.get("/legacy/cases/:caseId", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).auth?.userId as string | undefined;
+      if (!userId) return res.status(401).json({ error: "Authentication required." });
+
+      const caseId = req.params.caseId as string;
+      const labIds = await fetchUserActiveLabIds(userId);
+
+      const rows = await db
+        .select()
+        .from(labCases)
+        .where(and(eq(labCases.id, caseId), isNull(labCases.deletedAt)));
+
+      if (!rows.length) return res.status(404).json({ error: "Case not found." });
+      const row = rows[0]!;
+
+      // Enforce the same visibility rule as the list endpoint
+      const isOwner = row.ownerId === userId;
+      const isLabMember = row.organizationId ? labIds.includes(row.organizationId) : false;
+      if (!isOwner && !isLabMember) {
+        return res.status(403).json({ error: "Access denied." });
+      }
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(row.caseData);
+      } catch {
+        return res.status(500).json({ error: "Failed to parse case data." });
+      }
+      return res.json({ case: parsed });
+    } catch (error: any) {
+      console.error("Legacy get case by id error:", error?.message || error);
+      return res.status(500).json({ error: "Failed to fetch case." });
     }
   });
 

@@ -28,9 +28,10 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
+import { resilientFetch } from "@/lib/query-client";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum } from "@/lib/data";
+import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
@@ -90,6 +91,7 @@ export default function CaseDetailScreen() {
     });
   }, []);
   const [refreshing, setRefreshing] = useState(false);
+  const [fullCaseData, setFullCaseData] = useState<any>(null);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [showAddSomethingModal, setShowAddSomethingModal] = useState(false);
@@ -187,7 +189,15 @@ export default function CaseDetailScreen() {
   const [qeDueDate, setQeDueDate] = useState("");
   const [qeNotes, setQeNotes] = useState("");
 
-  const caseItem = cases.find((c) => c.id === id);
+  const caseItemBase = cases.find((c) => c.id === id);
+  const caseItem = caseItemBase && fullCaseData
+    ? {
+        ...caseItemBase,
+        photos: (fullCaseData.photos ?? caseItemBase.photos) as string[],
+        videos: (fullCaseData.videos ?? caseItemBase.videos) as string[] | undefined,
+        activityLog: (fullCaseData.activityLog ?? caseItemBase.activityLog) as ActivityEntry[],
+      }
+    : caseItemBase;
   const isAdmin = role === "admin";
   const showPrice = isAdmin;
 
@@ -195,6 +205,20 @@ export default function CaseDetailScreen() {
     if (caseItem && currentUser) {
       logAudit("VIEW_CASE", currentUser, `Case ${caseItem.caseNumber} - Patient: ${caseItem.patientName}`);
     }
+  }, [id]);
+
+  // Fetch full case data (photos + activityLog) for the detail view.
+  // The list endpoint strips these large fields to keep it lean.
+  React.useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    resilientFetch(`/api/legacy/cases/${encodeURIComponent(id)}`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (!cancelled && data?.case) setFullCaseData(data.case);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [id]);
 
   if (!caseItem) {
