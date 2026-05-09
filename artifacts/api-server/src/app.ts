@@ -34,9 +34,10 @@ app.use("/uploads/case-media", (req: Request, res: Response) => {
   return res.redirect(302, `/api/cases/attachment-file/${encodeURIComponent(filename)}`);
 });
 
-// Serve the Windows installers for download (outside /api, no auth required).
-// The files live in App Storage and are uploaded by an admin (via the upload
-// endpoint or the upload-desktop-installer script) so they survive deploys.
+// Serve the desktop installers for download (Windows zip + exe, macOS dmg)
+// outside /api with no auth required. The files live in App Storage and are
+// uploaded by an admin (via the upload endpoint, the upload-desktop-installer
+// script, or the CI auto-publish steps) so they survive deploys.
 function serveInstaller(
   kind: DesktopInstallerKind,
   missingMessage: string,
@@ -87,6 +88,13 @@ app.get(
   serveInstaller(
     "exe",
     "The Windows installer has not been uploaded yet. An admin must upload LabTrax-Setup.exe via Settings → Desktop App.",
+  ),
+);
+app.get(
+  "/downloads/LabTrax.dmg",
+  serveInstaller(
+    "dmg",
+    "The macOS installer has not been uploaded yet. An admin must upload LabTrax.dmg via Settings → Desktop App.",
   ),
 );
 

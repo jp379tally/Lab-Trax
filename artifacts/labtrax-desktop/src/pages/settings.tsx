@@ -1442,9 +1442,9 @@ function DesktopInstallerPanel() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (!/\.(zip|exe)$/i.test(file.name)) {
+    if (!/\.(zip|exe|dmg)$/i.test(file.name)) {
       setUploadError(
-        "Pick a .zip (LabTrax-Windows-Portable.zip) or .exe (LabTrax-Setup.exe) file.",
+        "Pick a .zip (LabTrax-Windows-Portable.zip), .exe (LabTrax-Setup.exe), or .dmg (LabTrax.dmg) file.",
       );
       return;
     }
@@ -1454,7 +1454,8 @@ function DesktopInstallerPanel() {
 
   const info = query.data;
   const isExe = info?.downloadUrl.toLowerCase().endsWith(".exe") ?? false;
-  const isZip = info?.downloadUrl.toLowerCase().endsWith(".zip") ?? !isExe;
+  const isDmg = info?.downloadUrl.toLowerCase().endsWith(".dmg") ?? false;
+  const isZip = info?.downloadUrl.toLowerCase().endsWith(".zip") ?? (!isExe && !isDmg);
   const hasDbOverrides = info !== undefined && (info.dbDownloadUrl !== null || info.dbVersion !== null || info.dbReleaseNotes !== null);
 
   const hasChanges =
@@ -1466,7 +1467,11 @@ function DesktopInstallerPanel() {
   return (
     <PanelShell
       title="Desktop app"
-      subtitle="Download and distribute LabTrax Desktop to staff Windows machines."
+      subtitle={
+        isDmg
+          ? "Download and distribute LabTrax Desktop to staff Mac machines."
+          : "Download and distribute LabTrax Desktop to staff Windows machines."
+      }
     >
       {query.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1491,7 +1496,7 @@ function DesktopInstallerPanel() {
               <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
+                    <div className="text-sm font-semibold">{isDmg ? "LabTrax Desktop for Mac" : "LabTrax Desktop for Windows"}</div>
                     <InstallerStatusBadge status={info.installerStatus} />
                   </div>
                   <div className="text-xs text-muted-foreground mt-0.5">
@@ -1504,7 +1509,7 @@ function DesktopInstallerPanel() {
                   className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-2 shrink-0"
                 >
                   <Download size={14} />
-                  {isZip ? "Download Portable ZIP" : "Download Installer"}
+                  {isZip ? "Download Portable ZIP" : isDmg ? "Download macOS DMG" : "Download Installer"}
                 </a>
               </div>
               {info.installerStatusMessage && info.installerStatus !== "ok" && (
@@ -1530,7 +1535,7 @@ function DesktopInstallerPanel() {
                   <>External download — file is hosted outside App Storage.</>
                 ) : (
                   <span className="text-amber-600 dark:text-amber-400">
-                    No {isExe ? "installer" : "portable zip"} has been uploaded to App Storage yet — the download link will return 404 until an admin uploads <code className="font-mono bg-secondary px-1 py-0.5 rounded">{isExe ? "LabTrax-Setup.exe" : "LabTrax-Windows-Portable.zip"}</code> below.
+                    No {isExe ? "installer" : isDmg ? "macOS installer" : "portable zip"} has been uploaded to App Storage yet — the download link will return 404 until an admin uploads <code className="font-mono bg-secondary px-1 py-0.5 rounded">{isExe ? "LabTrax-Setup.exe" : isDmg ? "LabTrax.dmg" : "LabTrax-Windows-Portable.zip"}</code> below.
                   </span>
                 )}
               </div>
@@ -1625,10 +1630,13 @@ function DesktopInstallerPanel() {
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
             <div className="text-sm font-semibold">Upload a refreshed installer</div>
             <p className="text-xs text-muted-foreground">
-              After a fresh electron build, upload either the one-click{" "}
+              After a fresh electron build, upload one of the Windows installers —{" "}
+              the one-click{" "}
               <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code>{" "}
-              installer or the portable{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code>.
+              or the portable{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code>{" "}
+              — or the macOS{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax.dmg</code>.
               The file is stored in App Storage and served at the matching{" "}
               <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code>{" "}
               URL without any redeploy. Max size 300 MB. Remember to update the
@@ -1640,7 +1648,7 @@ function DesktopInstallerPanel() {
               <input
                 ref={uploadInputRef}
                 type="file"
-                accept=".zip,application/zip,.exe,application/vnd.microsoft.portable-executable,application/x-msdownload"
+                accept=".zip,application/zip,.exe,application/vnd.microsoft.portable-executable,application/x-msdownload,.dmg,application/x-apple-diskimage"
                 className="hidden"
                 onChange={handleUploadInputChange}
               />
@@ -1655,7 +1663,7 @@ function DesktopInstallerPanel() {
                 ) : (
                   <Upload size={13} />
                 )}
-                {uploadMutation.isPending ? "Uploading…" : "Choose ZIP or EXE and upload"}
+                {uploadMutation.isPending ? "Uploading…" : "Choose ZIP, EXE, or DMG and upload"}
               </button>
               {info.installerObject && (
                 <span className="text-[11px] text-muted-foreground">
@@ -1700,9 +1708,24 @@ function DesktopInstallerPanel() {
 
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
             <div className="text-sm font-semibold">
-              {isZip ? "How to install (portable ZIP)" : "How to install"}
+              {isZip ? "How to install (portable ZIP)" : isDmg ? "How to install (macOS)" : "How to install"}
             </div>
-            {isZip ? (
+            {isDmg ? (
+              <ol className="space-y-2 text-sm text-muted-foreground list-none">
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>
+                  <span>Download <strong>LabTrax.dmg</strong> using the button above.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">2</span>
+                  <span>Double-click the downloaded <code className="font-mono bg-secondary px-1 py-0.5 rounded text-xs">.dmg</code> file to mount the disk image.</span>
+                </li>
+                <li className="flex gap-3">
+                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">3</span>
+                  <span>Drag the <strong>LabTrax</strong> icon into the <strong>Applications</strong> folder, then launch LabTrax from Applications or Spotlight.</span>
+                </li>
+              </ol>
+            ) : isZip ? (
               <ol className="space-y-2 text-sm text-muted-foreground list-none">
                 <li className="flex gap-3">
                   <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center">1</span>

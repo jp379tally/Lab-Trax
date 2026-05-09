@@ -3505,9 +3505,12 @@ Important rules:
         "External URL — LabTrax can't verify whether this download still works.";
     } else if (!installerObject) {
       installerStatus = "missing";
-      installerStatusMessage = activeKind === "exe"
-        ? "No LabTrax-Setup.exe is uploaded — this download link will return 404."
-        : "No LabTrax-Windows-Portable.zip is uploaded — this download link will return 404.";
+      installerStatusMessage =
+        activeKind === "exe"
+          ? "No LabTrax-Setup.exe is uploaded — this download link will return 404."
+          : activeKind === "dmg"
+            ? "No LabTrax.dmg is uploaded — this download link will return 404."
+            : "No LabTrax-Windows-Portable.zip is uploaded — this download link will return 404.";
     } else if (
       settingsUpdatedAt &&
       new Date(installerObject.uploadedAt).getTime() < settingsUpdatedAt.getTime() - 1000
@@ -3569,15 +3572,16 @@ Important rules:
       if (!file || !file.buffer || file.size === 0) {
         return res
           .status(400)
-          .json({ error: "Missing 'file' field — attach the portable zip or installer exe." });
+          .json({ error: "Missing 'file' field — attach the portable zip, Windows .exe, or macOS .dmg installer." });
       }
       const name = file.originalname || "";
       const isZipName = /\.zip$/i.test(name);
       const isExeName = /\.exe$/i.test(name);
-      if (!isZipName && !isExeName) {
+      const isDmgName = /\.dmg$/i.test(name);
+      if (!isZipName && !isExeName && !isDmgName) {
         return res.status(400).json({
           error:
-            "File must be either LabTrax-Windows-Portable.zip or LabTrax-Setup.exe.",
+            "File must be one of LabTrax-Windows-Portable.zip, LabTrax-Setup.exe, or LabTrax.dmg.",
         });
       }
       let kind: DesktopInstallerKind;
@@ -3597,6 +3601,27 @@ Important rules:
           return res.status(400).json({
             error:
               "File must be a Windows .exe installer (LabTrax-Setup.exe).",
+          });
+        }
+      } else if (isDmgName) {
+        kind = "dmg";
+        const isDmgMime =
+          file.mimetype === "application/x-apple-diskimage" ||
+          file.mimetype === "application/octet-stream";
+        // Apple DMG files end with a 512-byte "koly" trailer; the magic
+        // signature ("koly" = 0x6B 0x6F 0x6C 0x79) sits at the start of
+        // that trailing block. This is the standard way to validate a DMG
+        // since the file's leading bytes vary by encoding.
+        const isDmgMagic =
+          file.buffer.length >= 512 &&
+          file.buffer[file.buffer.length - 512] === 0x6b &&
+          file.buffer[file.buffer.length - 511] === 0x6f &&
+          file.buffer[file.buffer.length - 510] === 0x6c &&
+          file.buffer[file.buffer.length - 509] === 0x79;
+        if (!isDmgMime || !isDmgMagic) {
+          return res.status(400).json({
+            error:
+              "File must be a macOS .dmg installer (LabTrax.dmg).",
           });
         }
       } else {

@@ -293,6 +293,79 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      # Auto-publish the freshly built DMG to the live download page so
+      # admins don't have to download → upload → update URL by hand. Mirrors
+      # the Windows build job's publish step. Gated by the same secrets — if
+      # either is unset, this step logs a notice and exits 0 (safe to disable).
+      - name: Publish DMG to live download page
+        if: success()
+        shell: bash
+        env:
+          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+        run: |
+          if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
+            echo "::notice::Skipping auto-publish — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL secret not set."
+            exit 0
+          fi
+          BASE_URL="${PUBLISH_API_BASE_URL%/}"
+          # electron-builder produces one DMG per arch (arm64 + x64), plus a
+          # universal DMG if configured. The live download page exposes a
+          # single /downloads/LabTrax.dmg slot, so we have to pick one for
+          # broadest compatibility:
+          #   1. universal — runs natively on both chips, ideal if present
+          #   2. x64      — runs natively on Intel and via Rosetta 2 on
+          #                 Apple Silicon (Rosetta translates x64→arm64,
+          #                 NOT the reverse, so an arm64 DMG would be
+          #                 unusable on Intel Macs)
+          #   3. arm64    — last-resort fallback (Apple-Silicon-only)
+          # nullglob keeps unmatched globs from leaving literal patterns
+          # in the array (which would otherwise trip the [[ -f ]] check).
+          shopt -s nullglob
+          DIST_DIR="artifacts/labtrax-desktop/electron-dist"
+          UNIVERSAL=( "$DIST_DIR"/*universal*.dmg )
+          X64=( "$DIST_DIR"/*x64*.dmg )
+          ARM64=( "$DIST_DIR"/*arm64*.dmg )
+          ANY=( "$DIST_DIR"/*.dmg )
+          shopt -u nullglob
+          INSTALLER_PATH=""
+          if   (( ${#UNIVERSAL[@]} > 0 )); then INSTALLER_PATH="${UNIVERSAL[0]}"
+          elif (( ${#X64[@]} > 0 ));       then INSTALLER_PATH="${X64[0]}"
+          elif (( ${#ARM64[@]} > 0 ));     then INSTALLER_PATH="${ARM64[0]}"
+          elif (( ${#ANY[@]} > 0 ));       then INSTALLER_PATH="${ANY[0]}"
+          fi
+          if [[ -z "$INSTALLER_PATH" || ! -f "$INSTALLER_PATH" ]]; then
+            echo "::error::No DMG found in $DIST_DIR; cannot publish."
+            exit 1
+          fi
+          # Prefer the git tag (e.g. v1.2.3 → 1.2.3); fall back to package.json.
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VERSION="$TAG_VERSION"
+          else
+            VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
+          fi
+          echo "Uploading $INSTALLER_PATH to $BASE_URL/api/admin/desktop-installer/upload"
+          # The API normalises the stored filename to LabTrax.dmg regardless
+          # of the original arch-suffixed name, so the upload itself doesn't
+          # need a rename. Set the content-type explicitly because some macOS
+          # runners report DMGs as application/octet-stream.
+          curl --fail-with-body --show-error --silent \
+            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
+            -F "file=@${INSTALLER_PATH};type=application/x-apple-diskimage;filename=LabTrax.dmg" \
+            "$BASE_URL/api/admin/desktop-installer/upload"
+          echo
+          echo "Updating live download URL → /downloads/LabTrax.dmg (version $VERSION)"
+          NOTES="Auto-published from release ${GITHUB_REF_NAME} (run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA})."
+          curl --fail-with-body --show-error --silent \
+            -X PUT \
+            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n --arg url "/downloads/LabTrax.dmg" --arg ver "$VERSION" --arg notes "$NOTES" '{downloadUrl:$url, version:$ver, releaseNotes:$notes}')" \
+            "$BASE_URL/api/admin/settings/desktop-installer"
+          echo
+          echo "::notice::Published LabTrax.dmg v$VERSION to $BASE_URL"
+
       - name: Upload macOS release assets
         # Upload DMGs (user download), zip archives (auto-updater payload),
         # blockmaps (integrity verification), and latest-mac.yml (version

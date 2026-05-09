@@ -27,6 +27,7 @@ export default function DownloadPage() {
   const releaseNotes = info?.releaseNotes ?? null;
   const isExe = downloadUrl.toLowerCase().endsWith(".exe");
   const isZip = downloadUrl.toLowerCase().endsWith(".zip");
+  const isDmg = downloadUrl.toLowerCase().endsWith(".dmg");
   const unavailable = info?.available === false;
 
   return (
@@ -34,7 +35,9 @@ export default function DownloadPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">Download LabTrax Desktop</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Install the native Windows desktop app for the best LabTrax experience.
+          {isDmg
+            ? "Install the native Mac desktop app for the best LabTrax experience."
+            : "Install the native Windows desktop app for the best LabTrax experience."}
         </p>
       </div>
 
@@ -45,7 +48,7 @@ export default function DownloadPage() {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-baseline gap-3 flex-wrap">
-              <h2 className="text-lg font-semibold">LabTrax Desktop for Windows</h2>
+              <h2 className="text-lg font-semibold">{isDmg ? "LabTrax Desktop for Mac" : "LabTrax Desktop for Windows"}</h2>
               <span className="text-xs font-medium bg-secondary text-muted-foreground px-2 py-0.5 rounded-full">
                 v{version}
               </span>
@@ -55,7 +58,9 @@ export default function DownloadPage() {
                 ? "One-click Windows installer. Works on Windows 10 and 11 (64-bit)."
                 : isZip
                   ? "Portable ZIP — no installer required. Works on Windows 10 and 11 (64-bit)."
-                  : "Windows download. Works on Windows 10 and 11 (64-bit)."}
+                  : isDmg
+                    ? "macOS disk image. Works on macOS 11 Big Sur and later (Apple Silicon and Intel)."
+                    : "Desktop download."}
             </p>
             {unavailable ? (
               <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-2.5 text-sm">
@@ -105,7 +110,56 @@ export default function DownloadPage() {
       <div className="bg-card border border-border rounded-lg divide-y divide-border">
         <div className="px-6 py-4">
           <h3 className="text-sm font-semibold mb-3">Installation instructions</h3>
-          {isExe ? (
+          {isDmg ? (
+            <ol className="space-y-4">
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  1
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Download size={14} className="text-muted-foreground" />
+                    Download the disk image
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Click the download button above to save{" "}
+                    <strong>{fileName}</strong>.
+                  </p>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  2
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Package size={14} className="text-muted-foreground" />
+                    Open the DMG
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Double-click <strong>{fileName}</strong> to mount the disk
+                    image, then drag the <strong>LabTrax</strong> icon into the
+                    <strong> Applications</strong> folder in the window that opens.
+                  </p>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  3
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Rocket size={14} className="text-muted-foreground" />
+                    Launch LabTrax
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Open <strong>LabTrax</strong> from the Applications folder or
+                    Spotlight. You can eject the mounted disk image afterwards.
+                  </p>
+                </div>
+              </li>
+            </ol>
+          ) : isExe ? (
             <ol className="space-y-4">
               <li className="flex gap-3">
                 <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
@@ -205,14 +259,27 @@ export default function DownloadPage() {
         <div className="px-6 py-4">
           <h3 className="text-sm font-semibold mb-1">Notes</h3>
           <ul className="space-y-1.5 text-sm text-muted-foreground list-disc list-inside">
-            <li>
-              Windows may show a SmartScreen warning on first launch — click{" "}
-              <strong>More info</strong> then <strong>Run anyway</strong> to proceed.
-            </li>
+            {isDmg ? (
+              <li>
+                If macOS Gatekeeper blocks the app on first launch, right-click{" "}
+                <strong>LabTrax</strong> in Applications and choose{" "}
+                <strong>Open</strong>, then confirm.
+              </li>
+            ) : (
+              <li>
+                Windows may show a SmartScreen warning on first launch — click{" "}
+                <strong>More info</strong> then <strong>Run anyway</strong> to proceed.
+              </li>
+            )}
             <li>
               The app connects to your LabTrax server automatically — no extra configuration needed.
             </li>
-            {isExe ? (
+            {isDmg ? (
+              <li>
+                To remove LabTrax later, drag <strong>LabTrax</strong> from the
+                Applications folder to the Trash.
+              </li>
+            ) : isExe ? (
               <li>
                 To remove LabTrax later, use <strong>Add or Remove Programs</strong> in
                 Windows Settings.

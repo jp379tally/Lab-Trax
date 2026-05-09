@@ -23,7 +23,7 @@ const storageClient = new Storage({
   projectId: "",
 });
 
-export type DesktopInstallerKind = "zip" | "exe";
+export type DesktopInstallerKind = "zip" | "exe" | "dmg";
 
 interface InstallerKindConfig {
   objectKeySuffix: string;
@@ -41,6 +41,11 @@ const INSTALLER_KIND_CONFIG: Record<DesktopInstallerKind, InstallerKindConfig> =
     objectKeySuffix: "desktop-installer/LabTrax-Setup.exe",
     fileName: "LabTrax-Setup.exe",
     contentType: "application/vnd.microsoft.portable-executable",
+  },
+  dmg: {
+    objectKeySuffix: "desktop-installer/LabTrax.dmg",
+    fileName: "LabTrax.dmg",
+    contentType: "application/x-apple-diskimage",
   },
 };
 
@@ -174,5 +179,6 @@ export function installerKindFromUrl(url: string): DesktopInstallerKind | null {
   const lower = url.toLowerCase();
   if (lower.endsWith(".exe")) return "exe";
   if (lower.endsWith(".zip")) return "zip";
+  if (lower.endsWith(".dmg")) return "dmg";
   return null;
 }
