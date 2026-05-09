@@ -1,0 +1,36 @@
+C:\Users\sdrsm\Downloads>dir
+ Volume in drive C is Windows
+ Volume Serial Number is 4EA9-EBD8
+
+ Directory of C:\Users\sdrsm\Downloads
+
+05/08/2026  07:30 PM    <DIR>          .
+05/08/2026  03:24 PM    <DIR>          ..
+03/19/2026  11:53 PM        13,434,317 2026-03-20T03_38_19Z-3d05a5ef-5fbd-4f0e-b545-8854a18a1a22-xcode.txt
+05/02/2026  04:29 PM         2,422,977 20260502_202829848_iOS.png
+05/08/2026  07:01 PM               257 AuthKey_DUR33VZHP7.p8
+12/30/2025  11:09 AM        10,752,440 ChromeSetup.exe
+05/08/2026  03:23 PM         1,294,880 Codex Installer (1).exe
+05/08/2026  03:23 PM         1,294,880 Codex Installer (2).exe
+03/08/2026  07:19 AM         1,123,872 Codex Installer.exe
+05/08/2026  02:35 PM               288 debug.log
+05/08/2026  05:19 PM        65,175,776 Git-2.54.0-64-bit.exe
+05/08/2026  07:42 PM    <DIR>          Lab-Trax
+05/08/2026  07:29 PM    14,224,767,380 Lab-Trax.zip
+05/02/2026  10:53 AM           743,115 labtrax-daily-2026-04-29T14-42-16.zip
+04/17/2026  10:28 AM         5,987,032 labtrax-rx-scanner-fix.zip
+05/08/2026  02:32 PM       226,578,432 LabTrax.exe
+03/08/2026  07:19 AM             4,608 Microsoft.Services.Store.winmd
+05/08/2026  05:18 PM        32,497,664 node-v24.15.0-x64.msi
+05/02/2026  10:24 PM    <DIR>          OneDrive_1_5-2-2026
+05/02/2026  10:21 PM         4,241,769 OneDrive_1_5-2-2026.zip
+04/04/2026  02:15 PM             2,748 Rx_2026-04-04T18-15-10.pdf
+04/04/2026  02:19 PM           425,689 Rx_2026-04-04T18-19-34.pdf
+05/02/2026  04:30 PM           280,172 Screenshot 2026-05-02 at 4.27.38 PM.png
+03/29/2026  07:18 PM         1,658,650 Screenshot-0329-113620.png
+04/04/2026  08:04 AM            79,987 Statement1_from_Southern_Dental_Restoration15596.pdf
+04/04/2026  01:56 PM            87,502 Statement1_from_Southern_Dental_Restoration18708.pdf
+03/08/2026  07:36 AM         3,764,238 takeout-20250123T164348Z-001.zip
+03/25/2026  06:57 PM         2,981,824 Wound-to-Need Worksheet _ Beyond Driven.pdf
+              24 File(s) 14,599,600,497 bytes
+               4 Dir(s)  375,018,545,152 bytes free
