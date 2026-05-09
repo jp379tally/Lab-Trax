@@ -29,6 +29,11 @@ export default function DownloadPage() {
   const isZip = downloadUrl.toLowerCase().endsWith(".zip");
   const isDmg = downloadUrl.toLowerCase().endsWith(".dmg");
   const unavailable = info?.available === false;
+  const queryFailed = !info && query.isError;
+  // Don't render the download button until we've confirmed availability with
+  // the API — otherwise an early click would hit the JSON 404 and surface as
+  // a generic browser-level "Site wasn't available" error.
+  const showDownloadButton = !!info && !unavailable;
 
   return (
     <div className="px-8 py-7 max-w-[760px] mx-auto">
@@ -72,7 +77,33 @@ export default function DownloadPage() {
                   </p>
                 </div>
               </div>
-            ) : (
+            ) : queryFailed ? (
+              <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 flex items-start gap-2.5 text-sm">
+                <AlertTriangle size={16} className="text-destructive mt-0.5 shrink-0" />
+                <div className="text-destructive flex-1">
+                  <div className="font-semibold">Couldn't check for the latest installer</div>
+                  <p className="text-xs mt-1 text-destructive/90">
+                    {(query.error as Error | undefined)?.message ||
+                      "We couldn't reach the LabTrax server to confirm the installer is available."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => query.refetch()}
+                    disabled={query.isFetching}
+                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium underline disabled:opacity-50"
+                  >
+                    {query.isFetching ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        Retrying…
+                      </>
+                    ) : (
+                      "Try again"
+                    )}
+                  </button>
+                </div>
+              </div>
+            ) : showDownloadButton ? (
               <a
                 href={downloadUrl}
                 download={fileName}
@@ -81,6 +112,15 @@ export default function DownloadPage() {
                 <Download size={16} />
                 Download {fileName}
               </a>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="mt-4 inline-flex items-center gap-2 bg-primary/60 text-primary-foreground text-sm font-medium px-5 py-2.5 rounded-md cursor-not-allowed"
+              >
+                <Loader2 size={16} className="animate-spin" />
+                Checking availability…
+              </button>
             )}
           </div>
         </div>

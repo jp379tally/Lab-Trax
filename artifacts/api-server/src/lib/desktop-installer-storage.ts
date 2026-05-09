@@ -122,12 +122,21 @@ export interface DesktopInstallerStream {
   fileName: string;
 }
 
+export interface DesktopInstallerRangeOptions {
+  /** Inclusive start byte offset. */
+  start?: number;
+  /** Inclusive end byte offset. */
+  end?: number;
+}
+
 /**
  * Returns a read stream + metadata for the stored installer of the given kind,
- * or null if missing.
+ * or null if missing. Pass `range` to stream a sub-range (used for HTTP Range
+ * requests / resumable downloads).
  */
 export async function openDesktopInstallerStream(
   kind: DesktopInstallerKind = "zip",
+  range?: DesktopInstallerRangeOptions,
 ): Promise<DesktopInstallerStream | null> {
   if (!process.env.PRIVATE_OBJECT_DIR) {
     return null;
@@ -139,11 +148,56 @@ export async function openDesktopInstallerStream(
   const [metadata] = await file.getMetadata();
   const sizeRaw = metadata.size;
   const size = typeof sizeRaw === "string" ? Number.parseInt(sizeRaw, 10) : Number(sizeRaw ?? 0);
+  const streamOpts: { start?: number; end?: number } = {};
+  if (range && typeof range.start === "number") streamOpts.start = range.start;
+  if (range && typeof range.end === "number") streamOpts.end = range.end;
   return {
     size: Number.isFinite(size) ? size : 0,
-    stream: file.createReadStream(),
+    stream: file.createReadStream(streamOpts),
     contentType: cfg.contentType,
     fileName: cfg.fileName,
+  };
+}
+
+export interface DesktopInstallerHandle {
+  size: number;
+  uploadedAt: string;
+  contentType: string;
+  fileName: string;
+  /** Strong ETag derived from size + uploadedAt. */
+  etag: string;
+}
+
+/**
+ * Returns metadata + ETag for the stored installer of the given kind without
+ * opening a stream. Used by the download endpoint to answer conditional
+ * (`If-None-Match`) and `Range` requests before allocating a read stream.
+ */
+export async function getDesktopInstallerHandle(
+  kind: DesktopInstallerKind = "zip",
+): Promise<DesktopInstallerHandle | null> {
+  if (!process.env.PRIVATE_OBJECT_DIR) {
+    return null;
+  }
+  const cfg = INSTALLER_KIND_CONFIG[kind];
+  const file = getInstallerFile(kind);
+  const [exists] = await file.exists();
+  if (!exists) return null;
+  const [metadata] = await file.getMetadata();
+  const sizeRaw = metadata.size;
+  const size = typeof sizeRaw === "string" ? Number.parseInt(sizeRaw, 10) : Number(sizeRaw ?? 0);
+  const uploadedAt =
+    (metadata.updated as string) || (metadata.timeCreated as string) || new Date().toISOString();
+  const uploadedAtMs = Date.parse(uploadedAt);
+  const etag = `"${(Number.isFinite(size) ? size : 0).toString(16)}-${
+    Number.isFinite(uploadedAtMs) ? uploadedAtMs.toString(16) : "0"
+  }"`;
+  return {
+    size: Number.isFinite(size) ? size : 0,
+    uploadedAt,
+    contentType: cfg.contentType,
+    fileName: cfg.fileName,
+    etag,
   };
 }
 
