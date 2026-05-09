@@ -1384,6 +1384,7 @@ function DesktopInstallerPanel() {
       setUploadError(null);
       setUploadSuccess(true);
       queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer", "uploads"] });
       setTimeout(() => setUploadSuccess(false), 3000);
     },
     onError: (err: Error) => {
@@ -1666,10 +1667,112 @@ function DesktopInstallerPanel() {
             </a>
           </div>
 
+          <DesktopInstallerUploadsPanel />
           <DesktopInstallerHistoryPanel />
         </div>
       )}
     </PanelShell>
+  );
+}
+
+interface InstallerUploadEntry {
+  id: string;
+  sizeBytes: number;
+  version: string | null;
+  uploadedByUserId: string | null;
+  uploadedByUsername: string | null;
+  createdAt: string;
+}
+
+function DesktopInstallerUploadsPanel() {
+  const [open, setOpen] = useState(false);
+  const query = useQuery({
+    queryKey: ["admin", "desktop-installer", "uploads"],
+    queryFn: () =>
+      apiFetch<{ uploads: InstallerUploadEntry[] }>(
+        "/admin/desktop-installer/uploads?limit=20",
+      ),
+    enabled: open,
+  });
+
+  const uploads = query.data?.uploads ?? [];
+
+  return (
+    <div className="rounded-lg border border-border px-5 py-4 space-y-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-3 text-left"
+        aria-expanded={open}
+      >
+        <div className="flex items-center gap-2">
+          <History size={14} className="text-muted-foreground" />
+          <div className="text-sm font-semibold">Recent uploads</div>
+          <span className="text-xs text-muted-foreground">
+            (last 20 zip uploads)
+          </span>
+        </div>
+        {open ? (
+          <ChevronDown size={14} className="text-muted-foreground" />
+        ) : (
+          <ChevronRight size={14} className="text-muted-foreground" />
+        )}
+      </button>
+
+      {open && (
+        <div className="space-y-2">
+          {query.isLoading && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 size={12} className="animate-spin" />
+              Loading uploads…
+            </div>
+          )}
+          {query.error && (
+            <Alert tone="danger">{(query.error as Error).message}</Alert>
+          )}
+          {!query.isLoading && !query.error && uploads.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              No installer uploads yet. Each time an admin uploads a refreshed
+              zip above, an entry will appear here.
+            </p>
+          )}
+          {uploads.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b border-border">
+                    <th className="font-medium py-2 pr-3">When</th>
+                    <th className="font-medium py-2 pr-3">Version</th>
+                    <th className="font-medium py-2 pr-3">Size</th>
+                    <th className="font-medium py-2">Uploaded by</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {uploads.map((u) => (
+                    <tr key={u.id} className="border-b border-border/60 align-top">
+                      <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
+                        {formatHistoryTimestamp(u.createdAt)}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap font-mono">
+                        {u.version ?? "—"}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap">
+                        {formatInstallerSize(u.sizeBytes)}
+                      </td>
+                      <td className="py-2 whitespace-nowrap">
+                        {u.uploadedByUsername ?? (
+                          <span className="text-muted-foreground">unknown</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

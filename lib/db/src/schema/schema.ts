@@ -1133,6 +1133,25 @@ export const installerChangelog = pgTable(
   }),
 );
 
+export const installerUploads = pgTable(
+  "installer_uploads",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    sizeBytes: integer("size_bytes").notNull(),
+    version: text("version"),
+    uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    uploadedByUsername: text("uploaded_by_username"),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    createdAtIdx: index("installer_uploads_created_at_idx").on(table.createdAt),
+  }),
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

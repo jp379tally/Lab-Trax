@@ -19,7 +19,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, mediaCleanupRuns, systemSettings, installerChangelog } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads } from "@workspace/db";
 import { eq, and, inArray, or, isNull, sql, desc } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
@@ -3537,6 +3537,30 @@ Important rules:
       }
       try {
         const meta = await uploadDesktopInstaller(file.buffer, kind);
+        try {
+          let activeVersion: string | null = null;
+          try {
+            const rows = await db
+              .select({ key: systemSettings.key, value: systemSettings.value })
+              .from(systemSettings)
+              .where(eq(systemSettings.key, SETTING_DESKTOP_INSTALLER_VERSION));
+            activeVersion = rows[0]?.value ?? null;
+          } catch {
+            activeVersion = null;
+          }
+          if (!activeVersion) {
+            activeVersion = process.env.DESKTOP_INSTALLER_VERSION || null;
+          }
+          const reqUser = (req as any).user as { id?: string; username?: string } | undefined;
+          await db.insert(installerUploads).values({
+            sizeBytes: meta.size,
+            version: activeVersion,
+            uploadedByUserId: reqUser?.id ?? null,
+            uploadedByUsername: reqUser?.username ?? null,
+          });
+        } catch (logErr) {
+          req.log?.warn?.({ err: logErr }, "Failed to record installer upload entry");
+        }
         return res.json({ success: true, kind, installerObject: meta });
       } catch (e: any) {
         if (e instanceof DesktopInstallerNotConfiguredError) {
@@ -3652,6 +3676,31 @@ Important rules:
       return res.json({ entries: rows });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to load installer history." });
+    }
+  });
+
+  router.get("/admin/desktop-installer/uploads", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const limitRaw = Number((req.query as any).limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 100) : 20;
+    try {
+      const rows = await db
+        .select({
+          id: installerUploads.id,
+          sizeBytes: installerUploads.sizeBytes,
+          version: installerUploads.version,
+          uploadedByUserId: installerUploads.uploadedByUserId,
+          uploadedByUsername: installerUploads.uploadedByUsername,
+          createdAt: installerUploads.createdAt,
+        })
+        .from(installerUploads)
+        .orderBy(desc(installerUploads.createdAt))
+        .limit(limit);
+      return res.json({ uploads: rows });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to load installer uploads." });
     }
   });
 
