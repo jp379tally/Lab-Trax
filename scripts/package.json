@@ -8,6 +8,7 @@
     "run-finance-cron": "tsx ./src/run-finance-cron.ts",
     "cleanup-orphaned-case-media": "tsx ./src/cleanup-orphaned-case-media.ts",
     "upload-desktop-installer": "tsx ./src/upload-desktop-installer.ts",
+    "lint-protected-tables": "tsx ./src/lint-protected-tables.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

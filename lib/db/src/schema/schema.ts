@@ -45,6 +45,8 @@ export const users = pgTable("users", {
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
   workStatus: text("work_status").default("available"),
   createdAt: timestamp("created_at").defaultNow(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  deletedByUserId: varchar("deleted_by_user_id"),
 });
 
 export const labCases = pgTable("lab_cases", {
@@ -129,6 +131,8 @@ export const organizations = pgTable("organizations", {
   }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  deletedByUserId: varchar("deleted_by_user_id"),
 });
 
 export const organizationMemberships = pgTable(
@@ -155,12 +159,15 @@ export const organizationMemberships = pgTable(
     joinedAt: timestamp("joined_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
   },
   (table) => ({
-    uniqueMemberPerOrg: uniqueIndex("memberships_org_user_unique").on(
-      table.labId,
-      table.userId
-    ),
+    uniqueMemberPerOrg: uniqueIndex("memberships_org_user_unique")
+      .on(table.labId, table.userId)
+      .where(sql`deleted_at IS NULL`),
     orgIdx: index("memberships_org_idx").on(table.labId),
     userIdx: index("memberships_user_idx").on(table.userId),
   })
@@ -292,11 +299,16 @@ export const cases = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
   },
   (table) => ({
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(
       table.caseNumber
     ),
+    casesDeletedAtIdx: index("cases_deleted_at_idx").on(table.deletedAt),
     caseLabIdx: index("cases_lab_idx").on(table.labOrganizationId),
     caseProviderIdx: index("cases_provider_idx").on(
       table.providerOrganizationId
@@ -394,6 +406,10 @@ export const caseAttachments = pgTable("case_attachments", {
   fileType: text("file_type").notNull(),
   visibility: text("visibility").default("shared_with_provider").notNull(),
   createdAt: createdAt(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
 });
 
 export const caseLocations = pgTable("case_locations", {
@@ -481,11 +497,16 @@ export const invoices = pgTable(
     }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
   },
   (table) => ({
     invoiceNumberUnique: uniqueIndex("invoices_invoice_number_unique").on(
       table.invoiceNumber
     ),
+    invoicesDeletedAtIdx: index("invoices_deleted_at_idx").on(table.deletedAt),
   })
 );
 
@@ -546,14 +567,20 @@ export const pricingTiers = pgTable(
     }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
   },
   (table) => ({
     pricingTiersLabIdx: index("pricing_tiers_lab_idx").on(
       table.labOrganizationId
     ),
-    pricingTiersLabNameUnique: uniqueIndex("pricing_tiers_lab_name_unique").on(
-      table.labOrganizationId,
-      table.name
+    pricingTiersLabNameUnique: uniqueIndex("pricing_tiers_lab_name_unique")
+      .on(table.labOrganizationId, table.name)
+      .where(sql`deleted_at IS NULL`),
+    pricingTiersDeletedAtIdx: index("pricing_tiers_deleted_at_idx").on(
+      table.deletedAt
     ),
   })
 );
@@ -581,6 +608,10 @@ export const pricingOverrides = pgTable(
     }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
   },
   (table) => ({
     pricingOverridesLabIdx: index("pricing_overrides_lab_idx").on(
@@ -588,7 +619,12 @@ export const pricingOverrides = pgTable(
     ),
     pricingOverridesLabDoctorUnique: uniqueIndex(
       "pricing_overrides_lab_doctor_unique"
-    ).on(table.labOrganizationId, table.doctorName),
+    )
+      .on(table.labOrganizationId, table.doctorName)
+      .where(sql`deleted_at IS NULL`),
+    pricingOverridesDeletedAtIdx: index(
+      "pricing_overrides_deleted_at_idx"
+    ).on(table.deletedAt),
   })
 );
 
@@ -873,6 +909,10 @@ export const bankTransactions = pgTable(
     }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
   },
   (table) => ({
     bankTxnLabIdx: index("bank_transactions_lab_idx").on(
@@ -884,6 +924,9 @@ export const bankTransactions = pgTable(
     bankTxnDateIdx: index("bank_transactions_date_idx").on(table.txnDate),
     bankTxnTransferIdx: index("bank_transactions_transfer_idx").on(
       table.transferGroupId
+    ),
+    bankTxnDeletedAtIdx: index("bank_transactions_deleted_at_idx").on(
+      table.deletedAt
     ),
   })
 );

@@ -10,6 +10,7 @@ import {
   users,
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
+import { softDeleteById } from "../lib/soft-delete";
 import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, requireAnyRole } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
@@ -193,14 +194,13 @@ router.delete(
     if (!tier) throw new HttpError(404, "Tier not found.");
     await requireAnyRole((req as any).auth.userId, tier.labOrganizationId, ADMIN_ROLES);
 
-    await db.delete(pricingTiers).where(eq(pricingTiers.id, tier.id));
-
-    await writeAuditLog({
+    await softDeleteById({
+      table: pricingTiers,
+      id: tier.id,
+      actorUserId: (req as any).auth.userId,
       req,
       organizationId: tier.labOrganizationId,
-      action: "pricing_tier_deleted",
       entityType: "pricing_tier",
-      entityId: tier.id,
       beforeJson: tier,
     });
 
@@ -380,14 +380,13 @@ router.delete(
     if (!row) throw new HttpError(404, "Override not found.");
     await requireAnyRole((req as any).auth.userId, row.labOrganizationId, ADMIN_ROLES);
 
-    await db.delete(pricingOverrides).where(eq(pricingOverrides.id, row.id));
-
-    await writeAuditLog({
+    await softDeleteById({
+      table: pricingOverrides,
+      id: row.id,
+      actorUserId: (req as any).auth.userId,
       req,
       organizationId: row.labOrganizationId,
-      action: "pricing_override_deleted",
       entityType: "pricing_override",
-      entityId: row.id,
       beforeJson: row,
     });
 

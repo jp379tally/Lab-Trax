@@ -18,6 +18,7 @@ import {
   users,
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
+import { softDeleteById } from "../lib/soft-delete";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import { deleteFromOneDrive } from "../lib/onedrive";
 import { HttpError, ok } from "../lib/http";
@@ -883,13 +884,14 @@ router.delete(
       ADMIN_ROLES
     );
 
-    await db.delete(cases).where(eq(cases.id, found.id));
-    await writeAuditLog({
+    await softDeleteById({
+      table: cases,
+      id: found.id,
+      actorUserId: (req as any).auth.userId,
       req,
       organizationId: found.labOrganizationId,
-      action: "case_deleted",
       entityType: "case",
-      entityId: found.id,
+      beforeJson: found,
     });
     return ok(res, { deleted: true });
   })

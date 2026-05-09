@@ -61,7 +61,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteUser(id: string): Promise<boolean> {
-    const result = await db.delete(users).where(eq(users.id, id)).returning();
+    // Soft-delete: users is a protected table. See lib/soft-delete.ts.
+    const result = await db
+      .update(users)
+      .set({ deletedAt: new Date() })
+      .where(eq(users.id, id))
+      .returning();
     return result.length > 0;
   }
 

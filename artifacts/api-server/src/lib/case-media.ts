@@ -383,8 +383,16 @@ export async function cleanupOrphanedCaseMedia(
       continue;
     }
 
+    // Move orphan file to a trash folder instead of unlinking, so an
+    // operator can recover from a false-positive cleanup. The nightly
+    // cleanup job is responsible for eventually pruning .trash/ contents
+    // older than the retention window.
     try {
-      await fsp.rm(resolved, { force: true });
+      const trashDir = path.resolve(caseMediaDir, ".trash");
+      await fsp.mkdir(trashDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const trashedName = `${stamp}__${fileName}`;
+      await fsp.rename(resolved, path.resolve(trashDir, trashedName));
       report.removedCount += 1;
       report.freedBytes += size;
     } catch (err: unknown) {

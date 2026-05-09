@@ -27,6 +27,7 @@ import { HttpError, ok } from "../lib/http";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { writeAuditLog } from "../lib/audit";
+import { softDeleteById } from "../lib/soft-delete";
 import { notifications } from "@workspace/db";
 
 const router = Router();
@@ -731,13 +732,13 @@ router.delete(
     });
     if (!user) throw new HttpError(404, "User not found");
 
-    await db.delete(users).where(eq(users.id, id));
-    await writeAuditLog({
+    await softDeleteById({
+      table: users,
+      id,
+      actorUserId: authUserId,
       req,
-      userId: id,
-      action: "user_deleted",
       entityType: "user",
-      entityId: id,
+      beforeJson: { ...user, password: undefined },
     });
     res.json({ success: true });
   })

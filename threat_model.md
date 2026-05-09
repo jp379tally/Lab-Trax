@@ -53,6 +53,29 @@ The application stores sensitive case media, user contact details, financial rec
 
 Public auth and verification endpoints can trigger expensive or abuse-prone work such as password reset email, SMS/email verification, AI processing, file upload, and archive generation. These endpoints require size limits, abuse controls, and strong authorization before invoking costly downstream work.
 
+### Destructive Data Loss (Lab Data Protection)
+
+Past incidents have lost customer data to hard `db.delete(...)` calls and
+to filesystem cleanups that unlinked files irrecoverably. The mitigation
+is enforced in two layers:
+
+- **Soft-delete only** for protected tables: `users`, `organizations`,
+  `lab_memberships`, `cases`, `case_attachments`, `invoices`,
+  `bank_transactions`, `pricing_tiers`, `pricing_overrides`. All deletions
+  go through `softDelete()` / `softDeleteById()` in
+  `artifacts/api-server/src/lib/soft-delete.ts`, which sets
+  `deleted_at` + `deleted_by_user_id` and writes an audit entry. The
+  single source of truth for the list is `PROTECTED_TABLES` in that file.
+- **Case-media files** are moved to `uploads/case-media/.trash/` instead
+  of being unlinked, so a false-positive orphan cleanup can be reversed.
+- A CI lint guard (`pnpm --filter @workspace/scripts run
+  lint-protected-tables`) scans the API source tree for
+  `db.delete(<protected>)` and direct `fs.unlink|rm` of case-media files
+  and fails the build on a regression.
+
+Reads on protected tables should still be filtered with `notDeleted(table)`
+so soft-deleted rows do not leak back into normal API responses.
+
 ### Elevation of Privilege
 
 This codebase has multiple privilege tiers: unauthenticated users, authenticated users, organization members, organization admins/billing users, and maintenance/system-level operators. The core guarantee is that no user can obtain broader tenant visibility or system-wide capabilities by editing profile fields, selecting privileged registration values, accepting crafted invites, or calling maintenance endpoints that only check a coarse global role flag.

@@ -2760,7 +2760,11 @@ Important rules:
       if (matches.length === 0) return res.json({ success: true, deleted: 0, message: "No users found" });
       let deletedCount = 0;
       for (const u of matches) {
-        await db.delete(users).where(eq(users.id, u.id));
+        // Soft-delete: users is a protected table. See lib/soft-delete.ts.
+        await db
+          .update(users)
+          .set({ deletedAt: new Date() })
+          .where(eq(users.id, u.id));
         deletedCount++;
       }
       return res.json({ success: true, deleted: deletedCount, found: matches.length });

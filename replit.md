@@ -76,4 +76,45 @@ After running a fresh electron build, refresh the hosted zip in one of two ways:
 
 The Settings → Desktop App panel shows the current installer's size and uploaded-at timestamp so admins can verify freshness. If no zip has been uploaded yet, `/downloads/LabTrax-Windows-Portable.zip` returns a 404 JSON body explaining that an admin must upload one.
 
+## Lab data protection (regression watch list)
+
+Customer lab data has been lost in the past to overly-eager `db.delete(...)`
+calls and to filesystem cleanups. To stop those regressions from coming back:
+
+**Protected tables — soft-delete only.** Direct `db.delete(<table>)` against
+any table in this list is forbidden. Use `softDelete()` / `softDeleteById()`
+from `artifacts/api-server/src/lib/soft-delete.ts`.
+
+  - `users`
+  - `organizations`
+  - `lab_memberships` (organizationMemberships)
+  - `cases`
+  - `case_attachments`
+  - `invoices`
+  - `bank_transactions`
+  - `pricing_tiers`
+  - `pricing_overrides`
+
+Each of these tables carries `deleted_at` + `deleted_by_user_id` columns
+and a soft-delete audit log entry (`<entity>_soft_deleted`). The single
+source of truth for the protected list is `PROTECTED_TABLES` in
+`artifacts/api-server/src/lib/soft-delete.ts`.
+
+**Case-media files — trash, don't unlink.** The orphan-media cleanup
+moves files to `uploads/case-media/.trash/<timestamp>__<name>` instead of
+unlinking, so a false-positive cleanup can be reversed.
+
+**CI guard.** Run `pnpm --filter @workspace/scripts run lint-protected-tables`
+to scan the API tree for `db.delete(<protected>)` and direct
+`fs.unlink|rm` of case-media. Add this to your CI pipeline; it exits
+non-zero on any violation.
+
+**Adding a new protected table** requires three steps:
+  1. Add `deleted_at` + `deleted_by_user_id` columns in
+     `lib/db/src/schema/schema.ts` (and re-push the schema).
+  2. Filter reads with `notDeleted(table)` from `lib/soft-delete.ts`.
+  3. Add the table + its Drizzle export name to `PROTECTED_TABLES` and
+     `PROTECTED_DRIZZLE_EXPORTS` in `lib/soft-delete.ts` so the lint
+     guard picks it up.
+
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

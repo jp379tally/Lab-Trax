@@ -15,6 +15,7 @@ import {
   transactionCategories,
 } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
+import { softDelete, softDeleteById } from "../lib/soft-delete";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -609,7 +610,15 @@ router.delete(
     await requireAnyRole(uid(req), txn.labOrganizationId, ADMIN_ROLES);
     if (txn.reconciled)
       throw new HttpError(400, "Reconciled entries cannot be deleted.");
-    await db.delete(bankTransactions).where(eq(bankTransactions.id, txn.id));
+    await softDeleteById({
+      table: bankTransactions,
+      id: txn.id,
+      actorUserId: uid(req),
+      req,
+      organizationId: txn.labOrganizationId,
+      entityType: "bank_transaction",
+      beforeJson: txn,
+    });
     return ok(res, { deleted: true });
   })
 );
@@ -1224,7 +1233,12 @@ async function replaceMatchingProjected(
     ids.push(c.id);
   }
   if (ids.length) {
-    await db.delete(bankTransactions).where(inArray(bankTransactions.id, ids));
+    await softDelete({
+      table: bankTransactions,
+      where: inArray(bankTransactions.id, ids),
+      actorUserId: null,
+      entityType: "bank_transaction",
+    });
   }
 }
 
