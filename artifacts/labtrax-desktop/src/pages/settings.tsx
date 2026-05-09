@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Clock, Download, ExternalLink, HardDrive, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
+import { Building2, BellRing, ChevronDown, ChevronRight, Clock, Download, ExternalLink, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
@@ -1200,6 +1200,7 @@ function DesktopInstallerPanel() {
       setSaveError(null);
       setSaveSuccess(true);
       queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer", "history"] });
       setTimeout(() => setSaveSuccess(false), 2500);
     },
     onError: (err: Error) => {
@@ -1417,9 +1418,135 @@ function DesktopInstallerPanel() {
               Open GitHub Actions
             </a>
           </div>
+
+          <DesktopInstallerHistoryPanel />
         </div>
       )}
     </PanelShell>
+  );
+}
+
+interface InstallerHistoryEntry {
+  id: string;
+  downloadUrl: string;
+  version: string | null;
+  releaseNotes: string | null;
+  savedByUserId: string | null;
+  savedByUsername: string | null;
+  createdAt: string;
+}
+
+function formatHistoryTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+function DesktopInstallerHistoryPanel() {
+  const [open, setOpen] = useState(false);
+  const query = useQuery({
+    queryKey: ["admin", "desktop-installer", "history"],
+    queryFn: () =>
+      apiFetch<{ entries: InstallerHistoryEntry[] }>(
+        "/admin/settings/desktop-installer/history?limit=20",
+      ),
+    enabled: open,
+  });
+
+  const entries = query.data?.entries ?? [];
+
+  return (
+    <div className="rounded-lg border border-border px-5 py-4 space-y-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-3 text-left"
+        aria-expanded={open}
+      >
+        <div className="flex items-center gap-2">
+          <History size={14} className="text-muted-foreground" />
+          <div className="text-sm font-semibold">Change history</div>
+          <span className="text-xs text-muted-foreground">
+            (last 20 saves)
+          </span>
+        </div>
+        {open ? (
+          <ChevronDown size={14} className="text-muted-foreground" />
+        ) : (
+          <ChevronRight size={14} className="text-muted-foreground" />
+        )}
+      </button>
+
+      {open && (
+        <div className="space-y-2">
+          {query.isLoading && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 size={12} className="animate-spin" />
+              Loading history…
+            </div>
+          )}
+          {query.error && (
+            <Alert tone="danger">{(query.error as Error).message}</Alert>
+          )}
+          {!query.isLoading && !query.error && entries.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              No previous saves yet. Each time you save a new download URL, version, or release notes, a history entry will appear here.
+            </p>
+          )}
+          {entries.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b border-border">
+                    <th className="font-medium py-2 pr-3">When</th>
+                    <th className="font-medium py-2 pr-3">Version</th>
+                    <th className="font-medium py-2 pr-3">Download URL</th>
+                    <th className="font-medium py-2 pr-3">Release notes</th>
+                    <th className="font-medium py-2">Saved by</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((e) => (
+                    <tr key={e.id} className="border-b border-border/60 align-top">
+                      <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
+                        {formatHistoryTimestamp(e.createdAt)}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap font-mono">
+                        {e.version ?? "—"}
+                      </td>
+                      <td className="py-2 pr-3 max-w-[280px]">
+                        <a
+                          href={e.downloadUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:underline break-all font-mono"
+                        >
+                          {e.downloadUrl}
+                        </a>
+                      </td>
+                      <td className="py-2 pr-3 max-w-[260px]">
+                        {e.releaseNotes ? (
+                          <span className="whitespace-pre-wrap text-foreground">
+                            {e.releaseNotes}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="py-2 whitespace-nowrap">
+                        {e.savedByUsername ?? (
+                          <span className="text-muted-foreground">unknown</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

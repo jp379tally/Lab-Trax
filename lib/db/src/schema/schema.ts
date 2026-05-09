@@ -1050,6 +1050,26 @@ export const systemSettings = pgTable("system_settings", {
   updatedAt: updatedAt(),
 });
 
+export const installerChangelog = pgTable(
+  "installer_changelog",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    downloadUrl: text("download_url").notNull(),
+    version: text("version"),
+    releaseNotes: text("release_notes"),
+    savedByUserId: varchar("saved_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    savedByUsername: text("saved_by_username"),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    createdAtIdx: index("installer_changelog_created_at_idx").on(table.createdAt),
+  }),
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

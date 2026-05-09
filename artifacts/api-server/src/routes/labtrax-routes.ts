@@ -12,7 +12,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, mediaCleanupRuns, systemSettings } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, mediaCleanupRuns, systemSettings, installerChangelog } from "@workspace/db";
 import { eq, and, inArray, or, isNull, sql, desc } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
@@ -3443,9 +3443,47 @@ Important rules:
         );
       }
       await Promise.all(ops);
+      try {
+        const reqUser = (req as any).user as { id?: string; username?: string } | undefined;
+        await db.insert(installerChangelog).values({
+          downloadUrl,
+          version: version || null,
+          releaseNotes,
+          savedByUserId: reqUser?.id ?? null,
+          savedByUsername: reqUser?.username ?? null,
+        });
+      } catch (logErr) {
+        req.log?.warn?.({ err: logErr }, "Failed to record installer changelog entry");
+      }
       return res.json({ success: true, downloadUrl, version, releaseNotes });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to save installer settings." });
+    }
+  });
+
+  router.get("/admin/settings/desktop-installer/history", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const limitRaw = Number((req.query as any).limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 100) : 20;
+    try {
+      const rows = await db
+        .select({
+          id: installerChangelog.id,
+          downloadUrl: installerChangelog.downloadUrl,
+          version: installerChangelog.version,
+          releaseNotes: installerChangelog.releaseNotes,
+          savedByUserId: installerChangelog.savedByUserId,
+          savedByUsername: installerChangelog.savedByUsername,
+          createdAt: installerChangelog.createdAt,
+        })
+        .from(installerChangelog)
+        .orderBy(desc(installerChangelog.createdAt))
+        .limit(limit);
+      return res.json({ entries: rows });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to load installer history." });
     }
   });
 
