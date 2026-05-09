@@ -758,6 +758,48 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
+  // Public lab lookup used by the signup flow when a provider needs to find
+  // their lab by name to enter an account number against. Returns a small
+  // shape — id + name + display name + city/state — so the client can let
+  // the user confirm they picked the right lab. Limited to 20 matches to
+  // bound abuse.
+  router.get("/labs/lookup", async (req, res) => {
+    try {
+      const q = String(req.query.q || "").trim();
+      if (q.length < 2) {
+        return res.json({ labs: [] });
+      }
+      const allLabs = await db
+        .select()
+        .from(organizations)
+        .where(
+          and(
+            eq(organizations.type, "lab"),
+            eq(organizations.isActive, true)
+          )
+        );
+      const needle = q.toLowerCase();
+      const matches = allLabs
+        .filter((lab) => {
+          const haystack = `${lab.name} ${lab.displayName ?? ""} ${lab.city ?? ""}`
+            .toLowerCase();
+          return haystack.includes(needle);
+        })
+        .slice(0, 20)
+        .map((lab) => ({
+          id: lab.id,
+          name: lab.name,
+          displayName: lab.displayName || lab.name,
+          city: lab.city || null,
+          state: lab.state || null,
+        }));
+      return res.json({ labs: matches });
+    } catch (error: any) {
+      console.error("Lab lookup error:", error?.message || error);
+      return res.status(500).json({ error: "Lab lookup failed" });
+    }
+  });
+
   router.use("/auth", authRoutes);
   router.use("/organizations", organizationRoutes);
   router.use("/cases", caseRoutes);

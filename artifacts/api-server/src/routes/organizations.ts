@@ -15,6 +15,10 @@ import { generateInviteToken } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
 import { sendInviteEmail } from "../lib/mail";
+import {
+  assertCustomAccountNumberAvailable,
+  generateProviderAccountNumber,
+} from "../lib/provider-account-number";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -34,7 +38,40 @@ const createOrgSchema = z.object({
   state: z.string().optional(),
   zip: z.string().optional(),
   isActive: z.boolean().optional(),
+  // Doctor name is used (alongside the address) to derive the auto account
+  // number when the lab admin doesn't supply one. It's optional and not
+  // persisted on the org row directly — it just feeds the derivation.
+  doctorName: z.string().optional(),
+  // Optional caller-supplied account number override. When present, must be
+  // unique within the parent lab.
+  accountNumber: z.string().optional(),
+  // Optional explicit parent lab; falls back to the caller's primary lab
+  // membership if omitted. Provider orgs only.
+  parentLabOrganizationId: z.string().optional(),
 });
+
+// PATCH does not allow changing the parent lab — that would silently move a
+// practice between labs and re-key its account-number namespace.
+const updateOrgSchema = createOrgSchema
+  .omit({ type: true, parentLabOrganizationId: true, doctorName: true })
+  .partial();
+
+async function findCallerPrimaryLabId(userId: string): Promise<string | null> {
+  const memberships = await db.query.organizationMemberships.findMany({
+    where: and(
+      eq(organizationMemberships.userId, userId),
+      eq(organizationMemberships.status, "active")
+    ),
+  });
+  if (memberships.length === 0) return null;
+  const orgIds = memberships.map((m) => m.labId);
+  const orgs = await db
+    .select()
+    .from(organizations)
+    .where(inArray(organizations.id, orgIds));
+  const labOrg = orgs.find((o) => o.type === "lab");
+  return labOrg?.id ?? null;
+}
 
 function mapMembershipRoleToUserRole(role?: string | null): "admin" | "user" {
   return role === "owner" || role === "admin" ? "admin" : "user";
@@ -214,21 +251,69 @@ router.post(
   "/",
   asyncHandler(async (req, res) => {
     const input = createOrgSchema.parse(req.body);
+    const callerId = (req as any).auth.userId;
+
+    let parentLabOrganizationId: string | null = null;
+    let accountNumber: string | null = null;
+
+    if (input.type === "provider") {
+      // Resolve the parent lab. Either supplied explicitly (and the caller
+      // must be an admin of that lab) or inferred from the caller's primary
+      // lab membership.
+      if (input.parentLabOrganizationId) {
+        await requireAnyRole(
+          callerId,
+          input.parentLabOrganizationId,
+          ADMIN_ROLES
+        );
+        parentLabOrganizationId = input.parentLabOrganizationId;
+      } else {
+        parentLabOrganizationId = await findCallerPrimaryLabId(callerId);
+      }
+
+      if (parentLabOrganizationId) {
+        if (input.accountNumber && input.accountNumber.trim()) {
+          accountNumber = await assertCustomAccountNumberAvailable(
+            parentLabOrganizationId,
+            input.accountNumber,
+            null
+          );
+        } else {
+          accountNumber = await generateProviderAccountNumber(
+            parentLabOrganizationId,
+            {
+              addressLine1: input.addressLine1 ?? null,
+              doctorName: input.doctorName ?? null,
+              practiceName: input.displayName || input.name,
+            }
+          );
+        }
+      }
+    }
+
+    const {
+      doctorName: _doctorName,
+      accountNumber: _accountNumberInput,
+      parentLabOrganizationId: _parentLabInput,
+      ...persistableInput
+    } = input;
 
     const [organization] = await db
       .insert(organizations)
       .values({
-        ...input,
-        createdByUserId: (req as any).auth.userId,
+        ...persistableInput,
+        parentLabOrganizationId,
+        accountNumber,
+        createdByUserId: callerId,
       })
       .returning();
 
     await db.insert(organizationMemberships).values({
       labId: organization.id,
-      userId: (req as any).auth.userId,
+      userId: callerId,
       role: "owner",
       status: "active",
-      approvedByUserId: (req as any).auth.userId,
+      approvedByUserId: callerId,
       joinedAt: new Date(),
     });
 
@@ -415,16 +500,48 @@ router.patch(
       organizationId,
       ADMIN_ROLES
     );
-    const input = createOrgSchema.partial().parse(req.body);
+    const input = updateOrgSchema.parse(req.body);
 
     const existing = await db.query.organizations.findFirst({
       where: eq(organizations.id, organizationId),
     });
     if (!existing) throw new HttpError(404, "Organization not found.");
 
+    // If the caller is changing the account number, validate format and
+    // lab-scoped uniqueness. We only allow this for orgs that have a parent
+    // lab (i.e. provider orgs created under a lab); other orgs ignore the
+    // field on PATCH.
+    let nextAccountNumber: string | null | undefined = undefined;
+    if (input.accountNumber !== undefined) {
+      if (!existing.parentLabOrganizationId) {
+        throw new HttpError(
+          400,
+          "Account numbers are only supported on provider practices created under a lab."
+        );
+      }
+      const trimmed = (input.accountNumber ?? "").trim();
+      if (!trimmed) {
+        nextAccountNumber = null;
+      } else if (trimmed === existing.accountNumber) {
+        nextAccountNumber = existing.accountNumber;
+      } else {
+        nextAccountNumber = await assertCustomAccountNumberAvailable(
+          existing.parentLabOrganizationId,
+          trimmed,
+          existing.id
+        );
+      }
+    }
+
+    const { accountNumber: _accountNumberInput, ...rest } = input;
+    const updateValues: Record<string, unknown> = { ...rest };
+    if (nextAccountNumber !== undefined) {
+      updateValues.accountNumber = nextAccountNumber;
+    }
+
     const [updated] = await db
       .update(organizations)
-      .set(input)
+      .set(updateValues)
       .where(eq(organizations.id, organizationId))
       .returning();
 

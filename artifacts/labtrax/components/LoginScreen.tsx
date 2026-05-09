@@ -109,6 +109,16 @@ export default function LoginScreen() {
   const [browseExistingLabs, setBrowseExistingLabs] = useState(false);
   const [allLabGroups, setAllLabGroups] = useState<{ organizationId: string; practiceName: string; username: string; practiceAddress?: string; memberCount?: number }[]>([]);
   const [labSearchFilter, setLabSearchFilter] = useState("");
+  // Claim-existing-practice flow: a provider supplies the lab they belong to
+  // and the account number their lab gave them. We submit this to the server
+  // as `claimProvider` on /auth/register, which files a join request against
+  // the existing practice org instead of creating a new one.
+  const [claimMode, setClaimMode] = useState(false);
+  const [claimLab, setClaimLab] = useState<{ id: string; displayName: string } | null>(null);
+  const [claimLabSearch, setClaimLabSearch] = useState("");
+  const [claimLabResults, setClaimLabResults] = useState<Array<{ id: string; displayName: string; city?: string | null; state?: string | null }>>([]);
+  const [claimLabLoading, setClaimLabLoading] = useState(false);
+  const [claimAccountNumber, setClaimAccountNumber] = useState("");
 
   const codeInputRefs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -466,6 +476,12 @@ export default function LoginScreen() {
       const resolvedPhone = isLab ? labPhone.trim() : practicePhone.trim();
       const resolvedEmail = isLab ? (labEmail.trim() || signUpEmail.trim()) : signUpEmail.trim();
 
+      // When the provider is claiming an existing practice their lab already
+      // created, we send claim info instead of asking the server to create a
+      // new organization. The server files a join request against the
+      // existing provider org.
+      const isClaim = !isLab && claimMode && !!claimLab && !!claimAccountNumber.trim();
+
       const result = await register({
         username: signUpUsername.trim(),
         password: signUpPassword,
@@ -481,7 +497,13 @@ export default function LoginScreen() {
         phoneContactName: wantsUpdates ? phoneContactName.trim() : undefined,
         role: selectedRole || "user",
         accountNumber: acctNum,
-        createOrganization: true,
+        createOrganization: !isClaim,
+        claimProvider: isClaim
+          ? {
+              labId: claimLab!.id,
+              accountNumber: claimAccountNumber.trim(),
+            }
+          : undefined,
       });
       if (!result.success) {
         setSignUpError(result.error || "Registration failed.");
@@ -1291,6 +1313,135 @@ export default function LoginScreen() {
     }
   }
 
+  async function searchClaimLabs(query: string) {
+    setClaimLabSearch(query);
+    setClaimLab(null);
+    if (query.trim().length < 2) {
+      setClaimLabResults([]);
+      return;
+    }
+    setClaimLabLoading(true);
+    try {
+      const res = await apiRequest(
+        "GET",
+        `/api/labs/lookup?q=${encodeURIComponent(query.trim())}`
+      );
+      const data = await res.json();
+      setClaimLabResults(Array.isArray(data?.labs) ? data.labs : []);
+    } catch {
+      setClaimLabResults([]);
+    } finally {
+      setClaimLabLoading(false);
+    }
+  }
+
+  function renderClaimPracticeForm() {
+    return (
+      <View style={styles.inputGroup}>
+        <View style={styles.inputWrapper}>
+          <Ionicons
+            name="search"
+            size={18}
+            color="rgba(255,255,255,0.4)"
+            style={styles.inputIcon}
+          />
+          <TextInput
+            style={styles.input}
+            value={claimLab ? claimLab.displayName : claimLabSearch}
+            onChangeText={(t) => {
+              if (claimLab) setClaimLab(null);
+              searchClaimLabs(t);
+              setSignUpError(null);
+            }}
+            placeholder="Find your lab by name"
+            placeholderTextColor="rgba(255,255,255,0.3)"
+            autoCapitalize="words"
+            testID="claim-lab-search"
+          />
+          {claimLabLoading && (
+            <ActivityIndicator size={16} color="rgba(255,255,255,0.6)" />
+          )}
+        </View>
+
+        {!claimLab && claimLabResults.length > 0 && (
+          <View style={{ gap: 6 }}>
+            {claimLabResults.map((lab) => (
+              <Pressable
+                key={lab.id}
+                onPress={() => {
+                  setClaimLab({ id: lab.id, displayName: lab.displayName });
+                  setClaimLabResults([]);
+                  setClaimLabSearch(lab.displayName);
+                }}
+                style={({ pressed }) => [
+                  {
+                    paddingVertical: 10,
+                    paddingHorizontal: 12,
+                    borderRadius: 8,
+                    backgroundColor: pressed
+                      ? "rgba(255,255,255,0.12)"
+                      : "rgba(255,255,255,0.06)",
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.1)",
+                  },
+                ]}
+                testID={`claim-lab-result-${lab.id}`}
+              >
+                <Text style={{ color: "#FFF", fontSize: 14, fontWeight: "600" }}>
+                  {lab.displayName}
+                </Text>
+                {(lab.city || lab.state) && (
+                  <Text
+                    style={{
+                      color: "rgba(255,255,255,0.5)",
+                      fontSize: 12,
+                      marginTop: 2,
+                    }}
+                  >
+                    {[lab.city, lab.state].filter(Boolean).join(", ")}
+                  </Text>
+                )}
+              </Pressable>
+            ))}
+          </View>
+        )}
+
+        <View style={styles.inputWrapper}>
+          <Ionicons
+            name="key-outline"
+            size={18}
+            color="rgba(255,255,255,0.4)"
+            style={styles.inputIcon}
+          />
+          <TextInput
+            style={styles.input}
+            value={claimAccountNumber}
+            onChangeText={(t) => {
+              setClaimAccountNumber(t);
+              setSignUpError(null);
+            }}
+            placeholder="Account number from your lab"
+            placeholderTextColor="rgba(255,255,255,0.3)"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            testID="claim-account-number"
+          />
+        </View>
+
+        <Text
+          style={{
+            color: "rgba(255,255,255,0.5)",
+            fontSize: 12,
+            lineHeight: 18,
+          }}
+        >
+          Ask your lab for your practice's account number. Once they approve
+          your request, you'll see your existing cases automatically.
+        </Text>
+      </View>
+    );
+  }
+
   function renderPracticeInfo() {
     return (
       <View style={styles.formSection}>
@@ -1301,7 +1452,51 @@ export default function LoginScreen() {
           </View>
         )}
 
-        <View style={styles.inputGroup}>
+        <Pressable
+          onPress={() => {
+            setClaimMode((v) => !v);
+            setSignUpError(null);
+          }}
+          style={({ pressed }) => [
+            {
+              paddingVertical: 10,
+              paddingHorizontal: 12,
+              borderRadius: 8,
+              backgroundColor: claimMode
+                ? "rgba(74,144,217,0.18)"
+                : "rgba(255,255,255,0.06)",
+              borderWidth: 1,
+              borderColor: claimMode
+                ? "rgba(74,144,217,0.5)"
+                : "rgba(255,255,255,0.12)",
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 10,
+              opacity: pressed ? 0.85 : 1,
+            },
+          ]}
+          testID="claim-mode-toggle"
+        >
+          <Ionicons
+            name={claimMode ? "checkbox" : "square-outline"}
+            size={20}
+            color={claimMode ? "#4A90D9" : "rgba(255,255,255,0.6)"}
+          />
+          <Text
+            style={{
+              color: "#FFF",
+              fontSize: 13,
+              flex: 1,
+            }}
+          >
+            My lab already created my practice — I have an account number
+          </Text>
+        </Pressable>
+
+        {claimMode ? (
+          renderClaimPracticeForm()
+        ) : (
+          <View style={styles.inputGroup}>
           <View style={styles.inputWrapper}>
             <Ionicons name="business-outline" size={18} color="rgba(255,255,255,0.4)" style={styles.inputIcon} />
             <TextInput
@@ -1395,9 +1590,23 @@ export default function LoginScreen() {
             />
           </View>
         </View>
+        )}
 
         <Pressable
           onPress={() => {
+            if (claimMode) {
+              if (!claimLab) {
+                setSignUpError("Please pick your lab from the search results.");
+                return;
+              }
+              if (!claimAccountNumber.trim()) {
+                setSignUpError("Please enter the account number your lab gave you.");
+                return;
+              }
+              setSignUpError(null);
+              sendEmailCode();
+              return;
+            }
             if (!practiceName.trim() || !doctorName.trim() || !streetAddress.trim() || !city.trim() || !zipCode.trim() || !practicePhone.trim()) {
               setSignUpError("All fields are required.");
               return;

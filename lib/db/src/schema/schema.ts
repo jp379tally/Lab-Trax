@@ -110,30 +110,50 @@ export const labPendingFileNoteEdits = pgTable(
   })
 );
 
-export const organizations = pgTable("organizations", {
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  type: text("type").notNull(),
-  name: text("name").notNull(),
-  displayName: text("display_name"),
-  billingEmail: text("billing_email"),
-  phone: text("phone"),
-  addressLine1: text("address_line_1"),
-  addressLine2: text("address_line_2"),
-  city: text("city"),
-  state: text("state"),
-  zip: text("zip"),
-  isActive: boolean("is_active").default(true).notNull(),
-  defaultBankAccountId: varchar("default_bank_account_id"),
-  createdByUserId: varchar("created_by_user_id").references(() => users.id, {
-    onDelete: "set null",
-  }),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }),
-  deletedByUserId: varchar("deleted_by_user_id"),
-});
+export const organizations = pgTable(
+  "organizations",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    type: text("type").notNull(),
+    name: text("name").notNull(),
+    displayName: text("display_name"),
+    billingEmail: text("billing_email"),
+    phone: text("phone"),
+    addressLine1: text("address_line_1"),
+    addressLine2: text("address_line_2"),
+    city: text("city"),
+    state: text("state"),
+    zip: text("zip"),
+    isActive: boolean("is_active").default(true).notNull(),
+    defaultBankAccountId: varchar("default_bank_account_id"),
+    // Provider organizations are created by a specific lab. We persist the
+    // creating lab's id here (nullable for non-provider orgs / legacy rows)
+    // so account-number uniqueness can be scoped per lab.
+    parentLabOrganizationId: varchar("parent_lab_organization_id"),
+    // Stable, lab-scoped account number for provider organizations. Either
+    // server-derived from the practice address + doctor initials, or a custom
+    // value supplied by a lab admin. Unique within (parentLabOrganizationId).
+    accountNumber: text("account_number"),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id"),
+  },
+  (table) => ({
+    parentLabAccountNumberUnique: uniqueIndex(
+      "organizations_parent_lab_account_number_unique"
+    )
+      .on(table.parentLabOrganizationId, table.accountNumber)
+      .where(
+        sql`${table.parentLabOrganizationId} is not null and ${table.accountNumber} is not null`
+      ),
+  })
+);
 
 export const organizationMemberships = pgTable(
   "lab_memberships",

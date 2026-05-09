@@ -212,6 +212,8 @@ export interface Organization {
   state?: string | null;
   zip?: string | null;
   isActive?: boolean;
+  parentLabOrganizationId?: string | null;
+  accountNumber?: string | null;
   createdByUserId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;

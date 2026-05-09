@@ -245,6 +245,7 @@ interface PracticeFields {
   state: string;
   zip: string;
   isActive: boolean;
+  accountNumber: string;
 }
 
 function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => void }) {
@@ -262,6 +263,7 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
     state: org.state || "",
     zip: org.zip || "",
     isActive: org.isActive ?? true,
+    accountNumber: org.accountNumber || "",
   });
 
   const detailQuery = useQuery({
@@ -288,15 +290,25 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
       state: d.state || "",
       zip: d.zip || "",
       isActive: d.isActive ?? true,
+      accountNumber: d.accountNumber || "",
     });
   }, [detailQuery.data]);
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<Organization>(`/organizations/${org.id}`, {
+    mutationFn: () => {
+      // Only send `accountNumber` for provider practices that already have a
+      // parent lab — the server rejects it otherwise. For other orgs we drop
+      // it from the payload entirely.
+      const { accountNumber, ...rest } = fields;
+      const payload =
+        org.type === "provider" && org.parentLabOrganizationId
+          ? { ...rest, accountNumber }
+          : rest;
+      return apiFetch<Organization>(`/organizations/${org.id}`, {
         method: "PATCH",
-        body: JSON.stringify(fields),
-      }),
+        body: JSON.stringify(payload),
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
       queryClient.invalidateQueries({ queryKey: ["organization", org.id] });
@@ -379,6 +391,20 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
                 Active
               </label>
             </FormField>
+            {org.type === "provider" && org.parentLabOrganizationId && (
+              <FormField label="Account number" full>
+                <input
+                  value={fields.accountNumber}
+                  onChange={(e) => update("accountNumber", e.target.value)}
+                  className={inputCls}
+                  placeholder="e.g. 123-JS-1"
+                />
+                <div className="text-[11px] text-muted-foreground mt-1">
+                  Share this with the practice so they can claim their existing
+                  cases when signing up. Must be unique within your lab.
+                </div>
+              </FormField>
+            )}
           </section>
 
           {org.type === "provider" && (

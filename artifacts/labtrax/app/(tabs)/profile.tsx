@@ -210,7 +210,10 @@ export default function ProfileScreen() {
           </Pressable>
           {currentUser && (() => {
             const userData = registeredUsers.find(u => u.username.toLowerCase() === currentUser.toLowerCase());
-            return userData?.practiceName ? (
+            if (!userData?.practiceName) return null;
+            const acctNum =
+              userData.practiceAccountNumber || userData.accountNumber || null;
+            return (
               <>
                 <View style={styles.menuDivider} />
                 <View style={styles.menuItem}>
@@ -223,10 +226,20 @@ export default function ProfileScreen() {
                       <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: "#10B981" }} />
                       <Text style={[styles.menuSub, { marginTop: 0 }]}>{userData.practiceName}</Text>
                     </View>
+                    {acctNum ? (
+                      <Text
+                        style={[
+                          styles.menuSub,
+                          { marginTop: 4, fontFamily: "Inter_400Regular" },
+                        ]}
+                      >
+                        Account #{acctNum}
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
               </>
-            ) : null;
+            );
           })()}
         </View>
       </View>

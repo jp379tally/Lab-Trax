@@ -169,6 +169,12 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
       practiceAddress:
         base.practiceAddress || buildOrganizationAddress(primaryOrganization),
       practicePhone: base.practicePhone || primaryOrganization?.phone || null,
+      // Surface the lab-scoped account number from the user's primary
+      // practice organization so providers can see it in their profile.
+      // Falls back to the legacy per-user accountNumber field.
+      practiceAccountNumber: primaryOrganization?.accountNumber || null,
+      accountNumber:
+        base.accountNumber || primaryOrganization?.accountNumber || null,
       role: primaryMembership
         ? mapMembershipRoleToUserRole(primaryMembership.role)
         : base.role,
@@ -194,6 +200,16 @@ const registerSchema = z.object({
   wantsUpdates: z.boolean().optional(),
   joinOrganizationId: z.string().optional(),
   createOrganization: z.boolean().optional(),
+  // Optional claim-by-account-number flow: a new provider user identifies the
+  // existing practice their lab created for them by lab id + account number.
+  // We then file a join request against that provider org, which the lab
+  // admin can approve from the practices page.
+  claimProvider: z
+    .object({
+      labId: z.string().min(1),
+      accountNumber: z.string().min(1),
+    })
+    .optional(),
   clientType: z.enum(["web", "mobile"]).optional(),
 });
 
@@ -229,6 +245,61 @@ router.post(
           409,
           "An account with this email already exists."
         );
+    }
+
+    // Resolve any join-target organization BEFORE we persist the user. If the
+    // claim/join lookup fails we want to bail out without leaving a half-
+    // created account behind — otherwise a retry would hit a "username
+    // already taken" 409 even though no successful registration occurred.
+    let joinTargetOrg:
+      | {
+          id: string;
+          name: string;
+          displayName: string | null;
+        }
+      | null = null;
+    if (input.joinOrganizationId) {
+      const [org] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, input.joinOrganizationId));
+      if (!org) {
+        throw new HttpError(404, "We couldn't find that organization.");
+      }
+      joinTargetOrg = {
+        id: org.id,
+        name: org.name,
+        displayName: org.displayName,
+      };
+    } else if (input.claimProvider) {
+      const claimLab = await db.query.organizations.findFirst({
+        where: and(
+          eq(organizations.id, input.claimProvider.labId),
+          eq(organizations.type, "lab")
+        ),
+      });
+      const trimmedAccountNumber = input.claimProvider.accountNumber.trim();
+      const practice = claimLab
+        ? await db.query.organizations.findFirst({
+            where: and(
+              eq(organizations.parentLabOrganizationId, claimLab.id),
+              eq(organizations.accountNumber, trimmedAccountNumber),
+              eq(organizations.type, "provider")
+            ),
+          })
+        : null;
+      if (!practice) {
+        // Generic 404 so callers cannot probe for valid account numbers.
+        throw new HttpError(
+          404,
+          "We couldn't find a practice with that lab and account number. Please double-check with your lab."
+        );
+      }
+      joinTargetOrg = {
+        id: practice.id,
+        name: practice.name,
+        displayName: practice.displayName,
+      };
     }
 
     const initials = deriveUserInitials({
@@ -290,23 +361,18 @@ router.post(
     let pendingJoinRequest = false;
     let organizationInfo: any = null;
 
-    if (input.joinOrganizationId) {
-      const [org] = await db
-        .select()
-        .from(organizations)
-        .where(eq(organizations.id, input.joinOrganizationId));
-      if (org) {
-        await db.insert(organizationJoinRequests).values({
-          labId: org.id,
-          userId: user.id,
-          requestedRole: "user",
-          message: `${user.username} would like to join ${org.displayName || org.name}.`,
-          status: "pending",
-        });
-        organizationInfo = { id: org.id, name: org.displayName || org.name };
-        pendingJoinRequest = true;
-        responseMessage = `Your request to join ${org.displayName || org.name} has been sent to the lab admin.`;
-      }
+    if (joinTargetOrg) {
+      const targetName = joinTargetOrg.displayName || joinTargetOrg.name;
+      await db.insert(organizationJoinRequests).values({
+        labId: joinTargetOrg.id,
+        userId: user.id,
+        requestedRole: "user",
+        message: `${user.username} would like to join ${targetName}.`,
+        status: "pending",
+      });
+      organizationInfo = { id: joinTargetOrg.id, name: targetName };
+      pendingJoinRequest = true;
+      responseMessage = `Your request to join ${targetName} has been sent to the lab admin.`;
     } else if (shouldCreateOrganization) {
       const orgType = input.userType === "provider" ? "provider" : "lab";
       const [org] = await db
