@@ -34,8 +34,8 @@
     "production": {
       "ios": {
         "ascAppId": "6760672646",
-        "ascApiKeyPath": "./AuthKey_DUR33VZHP7.p8",
-        "ascApiKeyId": "DUR33VZHP7",
+        "ascApiKeyPath": "./AuthKey_R6PFFXT9TN.p8",
+        "ascApiKeyId": "R6PFFXT9TN",
         "ascApiKeyIssuerId": "1d2faabc-3d66-4e64-b514-c234043e143a"
       }
     }
