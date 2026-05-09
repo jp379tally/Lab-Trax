@@ -1,0 +1,31 @@
+# Node modules — EAS installs these fresh on its build servers
+node_modules/
+.pnpm-store/
+
+# Git history
+.git/
+
+# Build outputs
+dist/
+build/
+.expo/
+*.tsbuildinfo
+
+# Uploaded case media (server-side only)
+artifacts/api-server/uploads/
+
+# Large assets not needed for mobile build
+attached_assets/
+
+# Binaries and archives
+*.exe
+*.zip
+*.tar.gz
+*.tar.xz
+*.dmg
+*.pkg
+
+# Logs and temp files
+*.log
+logs/
+.local/
