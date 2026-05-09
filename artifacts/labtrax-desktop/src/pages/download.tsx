@@ -1,10 +1,31 @@
-import { Download, FolderOpen, Monitor, Package } from "lucide-react";
+import { Download, FileText, FolderOpen, Loader2, Monitor, Package } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api";
 
-const VERSION = "1.0.0";
-const ZIP_NAME = "LabTrax-Windows-Portable.zip";
-const DOWNLOAD_URL = "/downloads/" + ZIP_NAME;
+interface DesktopInstallerPublicInfo {
+  version: string;
+  downloadUrl: string;
+  fileName: string;
+  releaseNotes: string | null;
+}
+
+const FALLBACK_VERSION = "1.0.0";
+const FALLBACK_FILE_NAME = "LabTrax-Windows-Portable.zip";
+const FALLBACK_DOWNLOAD_URL = "/downloads/" + FALLBACK_FILE_NAME;
 
 export default function DownloadPage() {
+  const query = useQuery({
+    queryKey: ["desktop-installer", "public"],
+    queryFn: () => apiFetch<DesktopInstallerPublicInfo>("/desktop-installer"),
+  });
+
+  const info = query.data;
+  const version = info?.version ?? FALLBACK_VERSION;
+  const fileName = info?.fileName ?? FALLBACK_FILE_NAME;
+  const downloadUrl = info?.downloadUrl ?? FALLBACK_DOWNLOAD_URL;
+  const releaseNotes = info?.releaseNotes ?? null;
+  const isZip = downloadUrl.endsWith(".zip");
+
   return (
     <div className="px-8 py-7 max-w-[760px] mx-auto">
       <div className="mb-6">
@@ -23,22 +44,45 @@ export default function DownloadPage() {
             <div className="flex items-baseline gap-3 flex-wrap">
               <h2 className="text-lg font-semibold">LabTrax Desktop for Windows</h2>
               <span className="text-xs font-medium bg-secondary text-muted-foreground px-2 py-0.5 rounded-full">
-                v{VERSION}
+                v{version}
               </span>
             </div>
             <p className="text-sm text-muted-foreground mt-1">
-              Portable ZIP — no installer required. Works on Windows 10 and 11 (64-bit).
+              {isZip
+                ? "Portable ZIP — no installer required. Works on Windows 10 and 11 (64-bit)."
+                : "Windows installer. Works on Windows 10 and 11 (64-bit)."}
             </p>
             <a
-              href={DOWNLOAD_URL}
-              download={ZIP_NAME}
+              href={downloadUrl}
+              download={fileName}
               className="mt-4 inline-flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium px-5 py-2.5 rounded-md transition-colors"
             >
               <Download size={16} />
-              Download LabTrax-Windows-Portable.zip
+              Download {fileName}
             </a>
           </div>
         </div>
+      </div>
+
+      <div className="bg-card border border-border rounded-lg p-6 mb-6">
+        <div className="flex items-center gap-2 mb-3">
+          <FileText size={16} className="text-muted-foreground" />
+          <h3 className="text-sm font-semibold">What's new in v{version}</h3>
+        </div>
+        {query.isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 size={13} className="animate-spin" />
+            Loading release notes…
+          </div>
+        ) : releaseNotes ? (
+          <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+            {releaseNotes}
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground italic">
+            No release notes are available for this version yet.
+          </p>
+        )}
       </div>
 
       <div className="bg-card border border-border rounded-lg divide-y divide-border">

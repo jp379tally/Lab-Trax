@@ -3304,6 +3304,37 @@ Important rules:
     return "Version must follow the format X.Y.Z (e.g. 1.2.0).";
   }
 
+  router.get("/desktop-installer", requireAuth, async (_req, res) => {
+    const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
+    const envUrl =
+      process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
+    const dbRows = await db
+      .select()
+      .from(systemSettings)
+      .where(
+        inArray(systemSettings.key, [
+          SETTING_DESKTOP_INSTALLER_URL,
+          SETTING_DESKTOP_INSTALLER_VERSION,
+          SETTING_DESKTOP_INSTALLER_RELEASE_NOTES,
+        ]),
+      );
+    const byKey = Object.fromEntries(dbRows.map((r) => [r.key, r.value]));
+    const rawUrl = byKey[SETTING_DESKTOP_INSTALLER_URL] ?? envUrl;
+    const version = byKey[SETTING_DESKTOP_INSTALLER_VERSION] ?? envVersion;
+    const releaseNotes = byKey[SETTING_DESKTOP_INSTALLER_RELEASE_NOTES] ?? null;
+    const urlError = validateInstallerUrl(rawUrl);
+    if (urlError) {
+      return res.status(503).json({ error: "Desktop installer is not configured." });
+    }
+    const fileName = rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip";
+    return res.json({
+      version,
+      downloadUrl: rawUrl,
+      fileName,
+      releaseNotes,
+    });
+  });
+
   router.get("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
