@@ -2024,6 +2024,7 @@ function formatHistoryTimestamp(iso: string): string {
 
 function DesktopInstallerHistoryPanel({ repoUrl }: { repoUrl: string | null }) {
   const [open, setOpen] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<"all" | "manual" | "ci">("all");
   const repoBase = repoUrl ? repoUrl.replace(/\/$/, "") : null;
   const query = useQuery({
     queryKey: ["admin", "desktop-installer", "history"],
@@ -2034,7 +2035,19 @@ function DesktopInstallerHistoryPanel({ repoUrl }: { repoUrl: string | null }) {
     enabled: open,
   });
 
-  const entries = query.data?.entries ?? [];
+  const allEntries = query.data?.entries ?? [];
+  const entries =
+    sourceFilter === "all"
+      ? allEntries
+      : allEntries.filter((e) => (e.source ?? "manual") === sourceFilter);
+  const manualCount = allEntries.filter((e) => (e.source ?? "manual") === "manual").length;
+  const ciCount = allEntries.filter((e) => e.source === "ci").length;
+
+  const filterOptions: { value: "all" | "manual" | "ci"; label: string; count: number }[] = [
+    { value: "all", label: "All", count: allEntries.length },
+    { value: "manual", label: "Manual", count: manualCount },
+    { value: "ci", label: "GitHub Actions", count: ciCount },
+  ];
 
   return (
     <div className="rounded-lg border border-border px-5 py-4 space-y-3">
@@ -2069,9 +2082,43 @@ function DesktopInstallerHistoryPanel({ repoUrl }: { repoUrl: string | null }) {
           {query.error && (
             <Alert tone="danger">{(query.error as Error).message}</Alert>
           )}
-          {!query.isLoading && !query.error && entries.length === 0 && (
+          {!query.isLoading && !query.error && allEntries.length > 0 && (
+            <div
+              role="radiogroup"
+              aria-label="Filter history by source"
+              className="inline-flex rounded-md border border-border bg-muted/30 p-0.5 text-xs"
+            >
+              {filterOptions.map((opt) => {
+                const active = sourceFilter === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setSourceFilter(opt.value)}
+                    className={
+                      "px-2.5 py-1 rounded-sm transition-colors " +
+                      (active
+                        ? "bg-background text-foreground shadow-sm font-medium"
+                        : "text-muted-foreground hover:text-foreground")
+                    }
+                  >
+                    {opt.label}
+                    <span className="ml-1 text-muted-foreground">({opt.count})</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {!query.isLoading && !query.error && allEntries.length === 0 && (
             <p className="text-xs text-muted-foreground">
               No previous saves yet. Each time you save a new download URL, version, or release notes, a history entry will appear here.
+            </p>
+          )}
+          {!query.isLoading && !query.error && allEntries.length > 0 && entries.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              No {sourceFilter === "ci" ? "GitHub Actions" : "manual"} entries in the last {allEntries.length} saves.
             </p>
           )}
           {entries.length > 0 && (
