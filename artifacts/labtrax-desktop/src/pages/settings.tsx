@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, ChevronDown, ChevronRight, Clock, Download, ExternalLink, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, Upload, User as UserIcon } from "lucide-react";
+import { Building2, BellRing, ChevronDown, ChevronRight, Clock, Download, ExternalLink, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
@@ -249,25 +259,141 @@ function OrganizationsPanel() {
         )}
         {memberships.map((m) => {
           const org = m.organization || orgsById.get(m.organizationId);
+          const canBackfill =
+            org?.type === "lab" &&
+            m.status === "active" &&
+            (m.role === "owner" || m.role === "admin");
           return (
-            <div key={m.id} className="px-3 py-3 flex items-center justify-between text-sm">
-              <div className="min-w-0">
-                <div className="font-medium">{org?.displayName || org?.name || "Unknown"}</div>
-                <div className="text-xs text-muted-foreground capitalize">
-                  {org?.type || "—"} · {org?.billingEmail || "no billing email"}
+            <div key={m.id} className="px-3 py-3 text-sm">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <div className="font-medium">{org?.displayName || org?.name || "Unknown"}</div>
+                  <div className="text-xs text-muted-foreground capitalize">
+                    {org?.type || "—"} · {org?.billingEmail || "no billing email"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground capitalize">{m.role}</span>
+                  <span className={`px-2 py-0.5 rounded-full ${m.status === "active" ? "bg-success/15 text-success" : "bg-warning/20 text-warning"}`}>
+                    {m.status}
+                  </span>
                 </div>
               </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground capitalize">{m.role}</span>
-                <span className={`px-2 py-0.5 rounded-full ${m.status === "active" ? "bg-success/15 text-success" : "bg-warning/20 text-warning"}`}>
-                  {m.status}
-                </span>
-              </div>
+              {canBackfill && (
+                <BackfillInvoicesRow
+                  labOrganizationId={m.organizationId}
+                  labName={org?.displayName || org?.name || "this lab"}
+                />
+              )}
             </div>
           );
         })}
       </div>
     </PanelShell>
+  );
+}
+
+interface BackfillSummary {
+  labOrganizationId: string;
+  casesScanned: number;
+  created: number;
+  skippedExisting: number;
+  skippedNoRestorations: number;
+  skippedNumberTaken: number;
+  createdInvoiceIds: string[];
+}
+
+function BackfillInvoicesRow({ labOrganizationId, labName }: { labOrganizationId: string; labName: string }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [summary, setSummary] = useState<BackfillSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiFetch<BackfillSummary>(`/invoices/lab-orgs/${labOrganizationId}/backfill`, {
+        method: "POST",
+      }),
+    onSuccess: (data) => {
+      setError(null);
+      setSummary(data);
+    },
+    onError: (err: Error) => {
+      setSummary(null);
+      setError(err.message || "Backfill failed.");
+    },
+  });
+
+  return (
+    <div className="mt-3 pt-3 border-t border-border/60">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs text-muted-foreground max-w-md">
+          Generate missing invoices for every case in this lab that doesn't already have one. Safe to re-run — existing invoices and case statuses are not touched.
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setError(null);
+            setSummary(null);
+            setConfirmOpen(true);
+          }}
+          disabled={mutation.isPending}
+          className="h-8 px-3 rounded-md bg-secondary text-secondary-foreground text-xs font-semibold inline-flex items-center gap-1.5 hover:bg-secondary/80 disabled:opacity-60"
+        >
+          {mutation.isPending ? (
+            <>
+              <Loader2 size={12} className="animate-spin" />
+              Backfilling…
+            </>
+          ) : (
+            <>
+              <Wrench size={12} />
+              Backfill missing invoices
+            </>
+          )}
+        </button>
+      </div>
+
+      {error && (
+        <div className="mt-2">
+          <Alert tone="danger">{error}</Alert>
+        </div>
+      )}
+
+      {summary && (
+        <div className="mt-2 rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs">
+          <div className="font-medium mb-1">Backfill complete</div>
+          <ul className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
+            <li>Cases scanned: <span className="text-foreground font-medium">{summary.casesScanned}</span></li>
+            <li>Invoices created: <span className="text-foreground font-medium">{summary.created}</span></li>
+            <li>Skipped (already invoiced): <span className="text-foreground font-medium">{summary.skippedExisting}</span></li>
+            <li>Skipped (no restorations): <span className="text-foreground font-medium">{summary.skippedNoRestorations}</span></li>
+            <li>Skipped (number taken): <span className="text-foreground font-medium">{summary.skippedNumberTaken}</span></li>
+          </ul>
+        </div>
+      )}
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Backfill missing invoices?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will scan every case in <span className="font-medium text-foreground">{labName}</span> and generate an invoice for any case that doesn't have one yet. Cases that already have an invoice, have no restorations, or whose invoice number is already taken will be skipped. This is safe to re-run.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmOpen(false);
+                mutation.mutate();
+              }}
+            >
+              Run backfill
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   );
 }
 
