@@ -1833,6 +1833,19 @@ function DesktopInstallerUploadsPanel() {
     },
   });
 
+  const clearAllMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean; deletedCount: number }>(
+        "/admin/desktop-installer/uploads",
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "desktop-installer", "uploads"],
+      });
+    },
+  });
+
   const uploads = query.data?.uploads ?? [];
   const pendingDeleteId = deleteMutation.isPending
     ? (deleteMutation.variables as string | undefined)
@@ -1881,6 +1894,38 @@ function DesktopInstallerUploadsPanel() {
             <Alert tone="danger">
               {(deleteMutation.error as Error).message}
             </Alert>
+          )}
+          {clearAllMutation.error && (
+            <Alert tone="danger">
+              {(clearAllMutation.error as Error).message}
+            </Alert>
+          )}
+          {uploads.length > 0 && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      "Clear ALL upload history entries? The uploaded zips themselves are not affected. This cannot be undone.",
+                    )
+                  ) {
+                    return;
+                  }
+                  clearAllMutation.mutate();
+                }}
+                disabled={clearAllMutation.isPending}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-destructive hover:border-destructive disabled:opacity-50 disabled:cursor-not-allowed"
+                aria-label="Clear all upload history"
+              >
+                {clearAllMutation.isPending ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <Trash2 size={11} />
+                )}
+                Clear all
+              </button>
+            </div>
           )}
           {uploads.length > 0 && (
             <div className="overflow-x-auto">

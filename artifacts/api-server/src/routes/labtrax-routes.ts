@@ -3847,6 +3847,20 @@ Important rules:
     }
   });
 
+  router.delete("/admin/desktop-installer/uploads", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const deleted = await db
+        .delete(installerUploads)
+        .returning({ id: installerUploads.id });
+      return res.json({ success: true, deletedCount: deleted.length });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to clear installer upload history." });
+    }
+  });
+
   router.delete("/admin/desktop-installer/uploads/:id", requireAuth, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
