@@ -176,6 +176,10 @@ overrides:
   # follow-redirects: GHSA-r4q5-vmmm-2653
   "follow-redirects": "1.16.0"
   # @xmldom/xmldom: GHSA-2v35-w6hq-6mfw, GHSA-f6ww-3ggp-fr8h, GHSA-j759-j44w-7fr8, GHSA-x6wf-f3px-wcqx
-  "@xmldom/xmldom": "0.9.10"
+  # Pinned to 0.8.10 (not 0.9.x) — 0.9.0 introduced a breaking change where
+  # DOMParser.parseFromString requires a valid mimeType argument. @expo/plist
+  # calls it without one, causing expo prebuild to fail during EAS builds.
+  # 0.8.10 includes the same security patches without the breaking API change.
+  "@xmldom/xmldom": "0.8.10"
   # nodemailer: GHSA-vvjj-xcjg-gr5g
   "nodemailer": "8.0.7"

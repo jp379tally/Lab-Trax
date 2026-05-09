@@ -1,0 +1,21 @@
+- Creating native directory (./ios)
+✔ Created native directory
+- Updating package.json
+✔ Updated package.json
+- Running prebuild
+[expo-share-intent] add ios share extension (scheme:labtrax groupIdentifier:group.com.allieddl.labtrax)
+- Running prebuild
+[expo-share-intent] LabTrax already exists in project. Skipping…
+- Running prebuild
+✖ Prebuild failed
+TypeError: [ios.infoPlist]: withIosInfoPlistBaseMod: DOMParser.parseFromString: the provided mimeType "undefined" is not valid.
+TypeError: [ios.infoPlist]: withIosInfoPlistBaseMod: DOMParser.parseFromString: the provided mimeType "undefined" is not valid.
+    at DOMParser.parseFromString (/Users/expo/workingdir/build/node_modules/.pnpm/@xmldom+xmldom@0.9.10/node_modules/@xmldom/xmldom/lib/dom-parser.js:222:9)
+    at Object.parse (/Users/expo/workingdir/build/node_modules/.pnpm/@expo+plist@0.4.8/node_modules/@expo/plist/build/parse.js:69:64)
+    at read (/Users/expo/workingdir/build/node_modules/.pnpm/@expo+config-plugins@54.0.4/node_modules/@expo/config-plugins/build/plugins/withIosBaseMods.js:292:39)
+    at async action (/Users/expo/workingdir/build/node_modules/.pnpm/@expo+config-plugins@54.0.4/node_modules/@expo/config-plugins/build/plugins/createBaseMod.js:59:30)
+    at async interceptingMod (/Users/expo/workingdir/build/node_modules/.pnpm/@expo+config-plugins@54.0.4/node_modules/@expo/config-plugins/build/plugins/withMod.js:104:21)
+    at async evalModsAsync (/Users/expo/workingdir/build/node_modules/.pnpm/@expo+config-plugins@54.0.4/node_modules/@expo/config-plugins/build/plugins/mod-compiler.js:206:25)
+    at async compileModsAsync (/Users/expo/workingdir/build/node_modules/.pnpm/@expo+config-plugins@54.0.4/node_modules/@expo/config-plugins/build/plugins/mod-compiler.js:123:10)
+    at async configureProjectAsync (/Users/expo/workingdir/build/node_modules/.pnpm/@expo+cli@54.0.24_expo-router@6.0.23_expo@54.0.34_react-native@0.81.5_@babel+core@7.29._a5b3c719bb5ccdac93692d80fc3c093b/node_modules/@expo/cli/build/src/prebuild/configureProjectAsync.js:92:14)
+    at async prebuildAsync (/Users/expo/workingdir/build/node_modules/.pnpm/@expo+cli@54.0.24_expo-router@6.0.23_expo@54.0.34_react-native@0.81.5_@babel+core@7.29._a5b3c719bb5ccdac93692d80fc3c093b/node_modules/@expo/cli/build/src/prebuild/prebuildAsync.js:164:9)
