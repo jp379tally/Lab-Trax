@@ -67,11 +67,15 @@ jobs:
           Write-Host "All installers passed signature verification."
 
       - name: Upload installer as workflow artifact
+        # electron-builder is configured (electron-builder.yml → nsis.artifactName)
+        # to produce a stable filename: LabTrax-Setup.exe. Admins download this
+        # zip from the GitHub Actions run summary and then upload the contained
+        # LabTrax-Setup.exe through Settings → Desktop App.
         uses: actions/upload-artifact@v4
         with:
           name: LabTrax-Windows-Installer
-          path: artifacts/labtrax-desktop/electron-dist/*.exe
-          if-no-files-found: warn
+          path: artifacts/labtrax-desktop/electron-dist/LabTrax-Setup.exe
+          if-no-files-found: error
 
       - name: Upload portable ZIP as workflow artifact
         uses: actions/upload-artifact@v4

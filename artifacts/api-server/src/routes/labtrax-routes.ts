@@ -8,7 +8,9 @@ import { uploadToOneDrive } from "../lib/onedrive";
 import {
   getDesktopInstallerMetadata,
   uploadDesktopInstaller,
+  installerKindFromUrl,
   DesktopInstallerNotConfiguredError,
+  type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
 import { runOneDriveBackup, getBackupHourUtc, SETTING_BACKUP_HOUR_UTC } from "../lib/backup";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
@@ -3336,10 +3338,13 @@ Important rules:
       return res.status(503).json({ error: "Desktop installer is not configured." });
     }
     const fileName = rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip";
-    const installerObject = await getDesktopInstallerMetadata().catch((err) => {
-      req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
-      return null;
-    });
+    const activeKind = installerKindFromUrl(rawUrl);
+    const installerObject = activeKind
+      ? await getDesktopInstallerMetadata(activeKind).catch((err) => {
+          req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
+          return null;
+        })
+      : null;
     return res.json({
       version,
       downloadUrl: rawUrl,
@@ -3380,14 +3385,17 @@ Important rules:
       repoUrl !== null && !githubRepoPattern.test(repoUrl)
         ? "GITHUB_REPO_URL does not look like a valid https://github.com/<owner>/<repo> URL. The Actions link may not work correctly."
         : undefined;
+    const activeKind = urlError ? null : installerKindFromUrl(rawUrl);
     let installerObject: Awaited<ReturnType<typeof getDesktopInstallerMetadata>> | null = null;
     let installerObjectError: string | null = null;
-    try {
-      installerObject = await getDesktopInstallerMetadata();
-    } catch (err) {
-      req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
-      installerObjectError =
-        (err as Error)?.message || "Could not read installer metadata from storage.";
+    if (activeKind) {
+      try {
+        installerObject = await getDesktopInstallerMetadata(activeKind);
+      } catch (err) {
+        req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
+        installerObjectError =
+          (err as Error)?.message || "Could not read installer metadata from storage.";
+      }
     }
     return res.json({
       version,
@@ -3404,6 +3412,7 @@ Important rules:
       releaseNotes: dbReleaseNotes,
       dbReleaseNotes,
       installerObject,
+      activeKind,
     });
   });
 
@@ -3437,27 +3446,56 @@ Important rules:
       if (!file || !file.buffer || file.size === 0) {
         return res
           .status(400)
-          .json({ error: "Missing 'file' field — attach the portable zip." });
+          .json({ error: "Missing 'file' field — attach the portable zip or installer exe." });
       }
       const name = file.originalname || "";
       const isZipName = /\.zip$/i.test(name);
-      const isZipMime =
-        file.mimetype === "application/zip" ||
-        file.mimetype === "application/x-zip-compressed" ||
-        file.mimetype === "application/octet-stream";
-      const isZipMagic =
-        file.buffer.length >= 4 &&
-        file.buffer[0] === 0x50 &&
-        file.buffer[1] === 0x4b &&
-        (file.buffer[2] === 0x03 || file.buffer[2] === 0x05 || file.buffer[2] === 0x07);
-      if (!isZipName || !isZipMime || !isZipMagic) {
-        return res
-          .status(400)
-          .json({ error: "File must be a .zip archive (LabTrax-Windows-Portable.zip)." });
+      const isExeName = /\.exe$/i.test(name);
+      if (!isZipName && !isExeName) {
+        return res.status(400).json({
+          error:
+            "File must be either LabTrax-Windows-Portable.zip or LabTrax-Setup.exe.",
+        });
+      }
+      let kind: DesktopInstallerKind;
+      if (isExeName) {
+        kind = "exe";
+        const isExeMime =
+          file.mimetype === "application/vnd.microsoft.portable-executable" ||
+          file.mimetype === "application/x-msdownload" ||
+          file.mimetype === "application/x-msdos-program" ||
+          file.mimetype === "application/octet-stream";
+        // Windows PE files start with the "MZ" magic bytes (0x4D 0x5A).
+        const isExeMagic =
+          file.buffer.length >= 2 &&
+          file.buffer[0] === 0x4d &&
+          file.buffer[1] === 0x5a;
+        if (!isExeMime || !isExeMagic) {
+          return res.status(400).json({
+            error:
+              "File must be a Windows .exe installer (LabTrax-Setup.exe).",
+          });
+        }
+      } else {
+        kind = "zip";
+        const isZipMime =
+          file.mimetype === "application/zip" ||
+          file.mimetype === "application/x-zip-compressed" ||
+          file.mimetype === "application/octet-stream";
+        const isZipMagic =
+          file.buffer.length >= 4 &&
+          file.buffer[0] === 0x50 &&
+          file.buffer[1] === 0x4b &&
+          (file.buffer[2] === 0x03 || file.buffer[2] === 0x05 || file.buffer[2] === 0x07);
+        if (!isZipMime || !isZipMagic) {
+          return res
+            .status(400)
+            .json({ error: "File must be a .zip archive (LabTrax-Windows-Portable.zip)." });
+        }
       }
       try {
-        const meta = await uploadDesktopInstaller(file.buffer);
-        return res.json({ success: true, installerObject: meta });
+        const meta = await uploadDesktopInstaller(file.buffer, kind);
+        return res.json({ success: true, kind, installerObject: meta });
       } catch (e: any) {
         if (e instanceof DesktopInstallerNotConfiguredError) {
           return res.status(503).json({ error: e.message });

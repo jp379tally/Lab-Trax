@@ -40,6 +40,11 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  # Stable filename so admins (and users with bookmarked URLs) always pull
+  # the same asset name. The default name embeds the version
+  # ("LabTrax Setup 1.2.3.exe"), which breaks the stable /downloads/
+  # URL the API serves.
+  artifactName: LabTrax-Setup.${ext}
 
 # ─── macOS ──────────────────────────────────────────────────────────────────
 mac:

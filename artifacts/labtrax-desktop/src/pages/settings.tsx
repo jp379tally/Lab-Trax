@@ -1276,15 +1276,18 @@ function DesktopInstallerPanel() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (!/\.zip$/i.test(file.name)) {
-      setUploadError("Pick a .zip file (LabTrax-Windows-Portable.zip).");
+    if (!/\.(zip|exe)$/i.test(file.name)) {
+      setUploadError(
+        "Pick a .zip (LabTrax-Windows-Portable.zip) or .exe (LabTrax-Setup.exe) file.",
+      );
       return;
     }
     uploadMutation.mutate(file);
   }
 
   const info = query.data;
-  const isZip = info?.downloadUrl.endsWith(".zip") ?? true;
+  const isExe = info?.downloadUrl.toLowerCase().endsWith(".exe") ?? false;
+  const isZip = info?.downloadUrl.toLowerCase().endsWith(".zip") ?? !isExe;
   const hasDbOverrides = info !== undefined && (info.dbDownloadUrl !== null || info.dbVersion !== null || info.dbReleaseNotes !== null);
 
   const hasChanges =
@@ -1342,7 +1345,7 @@ function DesktopInstallerPanel() {
                   </>
                 ) : (
                   <span className="text-amber-600 dark:text-amber-400">
-                    No installer has been uploaded to App Storage yet — the download link will return 404 until an admin uploads <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code> below.
+                    No {isExe ? "installer" : "portable zip"} has been uploaded to App Storage yet — the download link will return 404 until an admin uploads <code className="font-mono bg-secondary px-1 py-0.5 rounded">{isExe ? "LabTrax-Setup.exe" : "LabTrax-Windows-Portable.zip"}</code> below.
                   </span>
                 )}
               </div>
@@ -1437,11 +1440,14 @@ function DesktopInstallerPanel() {
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
             <div className="text-sm font-semibold">Upload a refreshed installer</div>
             <p className="text-xs text-muted-foreground">
-              After running a new electron build, upload the resulting{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code>{" "}
-              here. It is stored in App Storage and served at{" "}
-              <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/LabTrax-Windows-Portable.zip</code>{" "}
-              without any redeploy. Max size 300 MB.
+              After a fresh electron build, upload either the one-click{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code>{" "}
+              installer or the portable{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code>.
+              The file is stored in App Storage and served at the matching{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/</code>{" "}
+              URL without any redeploy. Max size 300 MB. Remember to update the
+              <em> Download URL</em> above to match.
             </p>
             {uploadError && <Alert tone="danger">{uploadError}</Alert>}
             {uploadSuccess && <Alert tone="success">Installer uploaded.</Alert>}
@@ -1449,7 +1455,7 @@ function DesktopInstallerPanel() {
               <input
                 ref={uploadInputRef}
                 type="file"
-                accept=".zip,application/zip"
+                accept=".zip,application/zip,.exe,application/vnd.microsoft.portable-executable,application/x-msdownload"
                 className="hidden"
                 onChange={handleUploadInputChange}
               />
@@ -1464,7 +1470,7 @@ function DesktopInstallerPanel() {
                 ) : (
                   <Upload size={13} />
                 )}
-                {uploadMutation.isPending ? "Uploading…" : "Choose ZIP and upload"}
+                {uploadMutation.isPending ? "Uploading…" : "Choose ZIP or EXE and upload"}
               </button>
               {info.installerObject && (
                 <span className="text-[11px] text-muted-foreground">
@@ -1514,12 +1520,14 @@ function DesktopInstallerPanel() {
           <div className="rounded-lg border border-border bg-secondary/20 px-5 py-4 space-y-2">
             <div className="flex items-center gap-2 text-sm font-semibold">
               <Package size={14} />
-              Need a proper one-click installer?
+              Build a one-click installer
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              An NSIS setup wizard (<code className="font-mono bg-secondary px-1 py-0.5 rounded">.exe</code>) can be produced by running the{" "}
+              The NSIS setup wizard (<code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code>) is built by the{" "}
               <strong>Build Windows Installer (Test)</strong> workflow in GitHub Actions.
-              Once the workflow finishes, upload the installer to a GitHub Release and paste the asset URL into the Download URL field above.
+              Download <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Setup.exe</code> from the workflow run summary,
+              upload it here, and set the <em>Download URL</em> above to{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/LabTrax-Setup.exe</code>.
             </p>
             <a
               href={info.repoUrl ? `${info.repoUrl.replace(/\/$/, "")}/actions` : "https://github.com/features/actions"}

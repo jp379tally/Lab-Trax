@@ -1,4 +1,4 @@
-import { Download, FileText, FolderOpen, Loader2, Monitor, Package } from "lucide-react";
+import { Download, FileText, FolderOpen, Loader2, Monitor, Package, Rocket } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 
@@ -24,7 +24,8 @@ export default function DownloadPage() {
   const fileName = info?.fileName ?? FALLBACK_FILE_NAME;
   const downloadUrl = info?.downloadUrl ?? FALLBACK_DOWNLOAD_URL;
   const releaseNotes = info?.releaseNotes ?? null;
-  const isZip = downloadUrl.endsWith(".zip");
+  const isExe = downloadUrl.toLowerCase().endsWith(".exe");
+  const isZip = downloadUrl.toLowerCase().endsWith(".zip");
 
   return (
     <div className="px-8 py-7 max-w-[760px] mx-auto">
@@ -48,9 +49,11 @@ export default function DownloadPage() {
               </span>
             </div>
             <p className="text-sm text-muted-foreground mt-1">
-              {isZip
-                ? "Portable ZIP — no installer required. Works on Windows 10 and 11 (64-bit)."
-                : "Windows installer. Works on Windows 10 and 11 (64-bit)."}
+              {isExe
+                ? "One-click Windows installer. Works on Windows 10 and 11 (64-bit)."
+                : isZip
+                  ? "Portable ZIP — no installer required. Works on Windows 10 and 11 (64-bit)."
+                  : "Windows download. Works on Windows 10 and 11 (64-bit)."}
             </p>
             <a
               href={downloadUrl}
@@ -88,52 +91,102 @@ export default function DownloadPage() {
       <div className="bg-card border border-border rounded-lg divide-y divide-border">
         <div className="px-6 py-4">
           <h3 className="text-sm font-semibold mb-3">Installation instructions</h3>
-          <ol className="space-y-4">
-            <li className="flex gap-3">
-              <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
-                1
-              </span>
-              <div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <Download size={14} className="text-muted-foreground" />
-                  Download the ZIP
+          {isExe ? (
+            <ol className="space-y-4">
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  1
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Download size={14} className="text-muted-foreground" />
+                    Download the installer
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Click the download button above to save{" "}
+                    <strong>{fileName}</strong>.
+                  </p>
                 </div>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  Click the download button above. The file is approximately 145 MB.
-                </p>
-              </div>
-            </li>
-            <li className="flex gap-3">
-              <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
-                2
-              </span>
-              <div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <Package size={14} className="text-muted-foreground" />
-                  Extract the ZIP
+              </li>
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  2
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Rocket size={14} className="text-muted-foreground" />
+                    Run the setup wizard
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Double-click <strong>{fileName}</strong> and follow the on-screen
+                    steps (Next → Next → Finish).
+                  </p>
                 </div>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  Right-click the downloaded ZIP and choose <strong>Extract All…</strong> to unzip
-                  it to a folder of your choice (e.g. <code className="text-xs bg-secondary px-1 py-0.5 rounded">C:\LabTrax</code>).
-                </p>
-              </div>
-            </li>
-            <li className="flex gap-3">
-              <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
-                3
-              </span>
-              <div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <FolderOpen size={14} className="text-muted-foreground" />
-                  Run LabTrax.exe
+              </li>
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  3
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <FolderOpen size={14} className="text-muted-foreground" />
+                    Launch LabTrax
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Setup creates a Desktop shortcut and a Start Menu entry. Click
+                    either one to start using LabTrax.
+                  </p>
                 </div>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  Open the extracted folder and double-click <strong>LabTrax.exe</strong> to launch
-                  the app. No installation or admin rights required.
-                </p>
-              </div>
-            </li>
-          </ol>
+              </li>
+            </ol>
+          ) : (
+            <ol className="space-y-4">
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  1
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Download size={14} className="text-muted-foreground" />
+                    Download the ZIP
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Click the download button above. The file is approximately 145 MB.
+                  </p>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  2
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Package size={14} className="text-muted-foreground" />
+                    Extract the ZIP
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Right-click the downloaded ZIP and choose <strong>Extract All…</strong> to unzip
+                    it to a folder of your choice (e.g. <code className="text-xs bg-secondary px-1 py-0.5 rounded">C:\LabTrax</code>).
+                  </p>
+                </div>
+              </li>
+              <li className="flex gap-3">
+                <span className="shrink-0 h-6 w-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  3
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <FolderOpen size={14} className="text-muted-foreground" />
+                    Run LabTrax.exe
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Open the extracted folder and double-click <strong>LabTrax.exe</strong> to launch
+                    the app. No installation or admin rights required.
+                  </p>
+                </div>
+              </li>
+            </ol>
+          )}
         </div>
         <div className="px-6 py-4">
           <h3 className="text-sm font-semibold mb-1">Notes</h3>
@@ -145,10 +198,17 @@ export default function DownloadPage() {
             <li>
               The app connects to your LabTrax server automatically — no extra configuration needed.
             </li>
-            <li>
-              Keep the entire extracted folder together; <strong>LabTrax.exe</strong> requires the
-              other files in that folder to run.
-            </li>
+            {isExe ? (
+              <li>
+                To remove LabTrax later, use <strong>Add or Remove Programs</strong> in
+                Windows Settings.
+              </li>
+            ) : (
+              <li>
+                Keep the entire extracted folder together; <strong>LabTrax.exe</strong> requires the
+                other files in that folder to run.
+              </li>
+            )}
           </ul>
         </div>
       </div>

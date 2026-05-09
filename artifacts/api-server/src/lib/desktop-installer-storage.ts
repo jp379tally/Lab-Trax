@@ -23,7 +23,26 @@ const storageClient = new Storage({
   projectId: "",
 });
 
-const OBJECT_KEY_SUFFIX = "desktop-installer/LabTrax-Windows-Portable.zip";
+export type DesktopInstallerKind = "zip" | "exe";
+
+interface InstallerKindConfig {
+  objectKeySuffix: string;
+  fileName: string;
+  contentType: string;
+}
+
+const INSTALLER_KIND_CONFIG: Record<DesktopInstallerKind, InstallerKindConfig> = {
+  zip: {
+    objectKeySuffix: "desktop-installer/LabTrax-Windows-Portable.zip",
+    fileName: "LabTrax-Windows-Portable.zip",
+    contentType: "application/zip",
+  },
+  exe: {
+    objectKeySuffix: "desktop-installer/LabTrax-Setup.exe",
+    fileName: "LabTrax-Setup.exe",
+    contentType: "application/vnd.microsoft.portable-executable",
+  },
+};
 
 export class DesktopInstallerNotConfiguredError extends Error {
   constructor() {
@@ -54,8 +73,9 @@ function parseObjectPath(fullPath: string): { bucketName: string; objectName: st
   };
 }
 
-function getInstallerFile(): File {
-  const fullPath = `${getPrivateObjectDir()}/${OBJECT_KEY_SUFFIX}`;
+function getInstallerFile(kind: DesktopInstallerKind): File {
+  const cfg = INSTALLER_KIND_CONFIG[kind];
+  const fullPath = `${getPrivateObjectDir()}/${cfg.objectKeySuffix}`;
   const { bucketName, objectName } = parseObjectPath(fullPath);
   return storageClient.bucket(bucketName).file(objectName);
 }
@@ -66,18 +86,21 @@ export interface DesktopInstallerObjectMetadata {
 }
 
 /**
- * Returns metadata about the currently-stored installer zip, or null if no
- * installer has been uploaded yet (or if Object Storage is not configured).
+ * Returns metadata about the currently-stored installer of the given kind, or
+ * null if no installer has been uploaded (or if Object Storage is not
+ * configured).
  *
  * Throws on real storage errors (network/auth/quota) so callers can decide
  * whether to surface the failure or treat it as "missing" — do NOT silently
  * collapse those into null here, that hides production misconfiguration.
  */
-export async function getDesktopInstallerMetadata(): Promise<DesktopInstallerObjectMetadata | null> {
+export async function getDesktopInstallerMetadata(
+  kind: DesktopInstallerKind = "zip",
+): Promise<DesktopInstallerObjectMetadata | null> {
   if (!process.env.PRIVATE_OBJECT_DIR) {
     return null;
   }
-  const file = getInstallerFile();
+  const file = getInstallerFile(kind);
   const [exists] = await file.exists();
   if (!exists) return null;
   const [metadata] = await file.getMetadata();
@@ -90,16 +113,22 @@ export async function getDesktopInstallerMetadata(): Promise<DesktopInstallerObj
 export interface DesktopInstallerStream {
   size: number;
   stream: NodeJS.ReadableStream;
+  contentType: string;
+  fileName: string;
 }
 
 /**
- * Returns a read stream + size for the stored installer, or null if missing.
+ * Returns a read stream + metadata for the stored installer of the given kind,
+ * or null if missing.
  */
-export async function openDesktopInstallerStream(): Promise<DesktopInstallerStream | null> {
+export async function openDesktopInstallerStream(
+  kind: DesktopInstallerKind = "zip",
+): Promise<DesktopInstallerStream | null> {
   if (!process.env.PRIVATE_OBJECT_DIR) {
     return null;
   }
-  const file = getInstallerFile();
+  const cfg = INSTALLER_KIND_CONFIG[kind];
+  const file = getInstallerFile(kind);
   const [exists] = await file.exists();
   if (!exists) return null;
   const [metadata] = await file.getMetadata();
@@ -108,24 +137,42 @@ export async function openDesktopInstallerStream(): Promise<DesktopInstallerStre
   return {
     size: Number.isFinite(size) ? size : 0,
     stream: file.createReadStream(),
+    contentType: cfg.contentType,
+    fileName: cfg.fileName,
   };
 }
 
 /**
- * Uploads a zip buffer to App Storage, replacing any existing installer.
+ * Uploads an installer buffer to App Storage, replacing any existing installer
+ * of the same kind.
  */
-export async function uploadDesktopInstaller(buffer: Buffer): Promise<DesktopInstallerObjectMetadata> {
-  const file = getInstallerFile();
+export async function uploadDesktopInstaller(
+  buffer: Buffer,
+  kind: DesktopInstallerKind = "zip",
+): Promise<DesktopInstallerObjectMetadata> {
+  const cfg = INSTALLER_KIND_CONFIG[kind];
+  const file = getInstallerFile(kind);
   await file.save(buffer, {
-    contentType: "application/zip",
+    contentType: cfg.contentType,
     resumable: false,
     metadata: {
-      contentDisposition: 'attachment; filename="LabTrax-Windows-Portable.zip"',
+      contentDisposition: `attachment; filename="${cfg.fileName}"`,
     },
   });
-  const meta = await getDesktopInstallerMetadata();
+  const meta = await getDesktopInstallerMetadata(kind);
   if (!meta) {
     throw new Error("Upload succeeded but metadata could not be read back.");
   }
   return meta;
+}
+
+/**
+ * Maps a download URL or filename to the corresponding installer kind.
+ * Returns null when the URL doesn't reference a locally-stored installer.
+ */
+export function installerKindFromUrl(url: string): DesktopInstallerKind | null {
+  const lower = url.toLowerCase();
+  if (lower.endsWith(".exe")) return "exe";
+  if (lower.endsWith(".zip")) return "zip";
+  return null;
 }
