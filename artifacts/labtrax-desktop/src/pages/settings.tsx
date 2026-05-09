@@ -11,7 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { apiFetch, notifySessionCleared } from "@/lib/api";
+import { apiFetch, ApiError, notifySessionCleared } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useAuth } from "@/lib/auth-context";
@@ -1338,6 +1338,10 @@ function DesktopInstallerPanel() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [duplicatePrompt, setDuplicatePrompt] = useState<{
+    file: File;
+    message: string;
+  } | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const query = useQuery({
@@ -1391,23 +1395,39 @@ function DesktopInstallerPanel() {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async ({ file, force }: { file: File; force?: boolean }) => {
       const fd = new FormData();
       fd.append("file", file);
+      const path = force
+        ? "/admin/desktop-installer/upload?force=1"
+        : "/admin/desktop-installer/upload";
       return apiFetch<{ success: boolean; installerObject: { size: number; uploadedAt: string } }>(
-        "/admin/desktop-installer/upload",
+        path,
         { method: "POST", body: fd },
       );
     },
     onSuccess: () => {
       setUploadError(null);
       setUploadSuccess(true);
+      setDuplicatePrompt(null);
       queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer", "uploads"] });
       setTimeout(() => setUploadSuccess(false), 3000);
     },
-    onError: (err: Error) => {
+    onError: (err: Error, variables) => {
       setUploadSuccess(false);
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        err.body &&
+        typeof err.body === "object" &&
+        (err.body as { code?: unknown }).code === "duplicate_installer" &&
+        !variables.force
+      ) {
+        setUploadError(null);
+        setDuplicatePrompt({ file: variables.file, message: err.message });
+        return;
+      }
       setUploadError(err.message || "Failed to upload installer.");
     },
   });
@@ -1428,7 +1448,8 @@ function DesktopInstallerPanel() {
       );
       return;
     }
-    uploadMutation.mutate(file);
+    setDuplicatePrompt(null);
+    uploadMutation.mutate({ file });
   }
 
   const info = query.data;
@@ -1643,6 +1664,39 @@ function DesktopInstallerPanel() {
               )}
             </div>
           </div>
+
+          <AlertDialog
+            open={duplicatePrompt !== null}
+            onOpenChange={(open) => {
+              if (!open) setDuplicatePrompt(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Upload the same file again?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {duplicatePrompt?.message ??
+                    "This is the same file as your previous upload — did you forget to rebuild?"}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel onClick={() => setDuplicatePrompt(null)}>
+                  Cancel
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    if (duplicatePrompt) {
+                      const { file } = duplicatePrompt;
+                      setDuplicatePrompt(null);
+                      uploadMutation.mutate({ file, force: true });
+                    }
+                  }}
+                >
+                  Upload anyway
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
           <div className="rounded-lg border border-border px-5 py-4 space-y-3">
             <div className="text-sm font-semibold">

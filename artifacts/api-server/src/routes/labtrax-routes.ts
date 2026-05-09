@@ -3615,6 +3615,41 @@ Important rules:
             .json({ error: "File must be a .zip archive (LabTrax-Windows-Portable.zip)." });
         }
       }
+      const checksumSha256 = createHash("sha256").update(file.buffer).digest("hex");
+      const forceRaw =
+        (req.query as any)?.force ?? (req.body as any)?.force;
+      const forceUpload =
+        forceRaw === true ||
+        forceRaw === "1" ||
+        forceRaw === "true";
+      if (!forceUpload) {
+        try {
+          const previous = await db
+            .select({
+              checksumSha256: installerUploads.checksumSha256,
+              createdAt: installerUploads.createdAt,
+              uploadedByUsername: installerUploads.uploadedByUsername,
+            })
+            .from(installerUploads)
+            .orderBy(desc(installerUploads.createdAt))
+            .limit(1);
+          const last = previous[0];
+          if (last?.checksumSha256 && last.checksumSha256 === checksumSha256) {
+            return res.status(409).json({
+              error:
+                "This is the same file as your previous upload — did you forget to rebuild?",
+              code: "duplicate_installer",
+              previousUpload: {
+                checksumSha256: last.checksumSha256,
+                createdAt: last.createdAt,
+                uploadedByUsername: last.uploadedByUsername ?? null,
+              },
+            });
+          }
+        } catch (dupErr) {
+          req.log?.warn?.({ err: dupErr }, "Failed to check for duplicate installer upload");
+        }
+      }
       try {
         const meta = await uploadDesktopInstaller(file.buffer, kind);
         try {
@@ -3632,7 +3667,6 @@ Important rules:
             activeVersion = process.env.DESKTOP_INSTALLER_VERSION || null;
           }
           const reqUser = (req as any).user as { id?: string; username?: string } | undefined;
-          const checksumSha256 = createHash("sha256").update(file.buffer).digest("hex");
           await db.insert(installerUploads).values({
             sizeBytes: meta.size,
             version: activeVersion,

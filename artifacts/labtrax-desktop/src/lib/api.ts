@@ -43,9 +43,11 @@ export function notifySessionCleared() {
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  body: unknown;
+  constructor(message: string, status: number, body: unknown = null) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -154,7 +156,7 @@ export async function apiFetch<T = unknown>(
       (fromObj && typeof fromObj.message === "string" && fromObj.message) ||
       (fromObj && typeof fromObj.error === "string" && fromObj.error) ||
       `Request failed (${res.status})`;
-    throw new ApiError(msg, res.status);
+    throw new ApiError(msg, res.status, parsed);
   }
 
   if (
