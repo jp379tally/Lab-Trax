@@ -93,7 +93,7 @@
           "androidMultiIntentFilters": [
             "image/*"
           ],
-          "iosShareExtensionName": "LabTrax"
+          "iosShareExtensionName": "LabTraxShare"
         }
       ]
     ],
