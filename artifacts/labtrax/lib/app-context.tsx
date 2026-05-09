@@ -959,13 +959,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Preserve the current invite list if the refresh fails.
   }
 
-  useEffect(() => {
-    const profileRole = currentUserProfile?.role;
-    if (profileRole === "admin" && role !== "admin") {
-      setRoleState("admin");
-      AsyncStorage.setItem(ROLE_KEY, "admin").catch(() => {});
-    }
-  }, [currentUserProfile?.role, role]);
+  // NOTE: admin mode is opt-in. Do NOT auto-promote role to "admin" just
+  // because the profile says role==="admin". The previous auto-promote
+  // effect created an infinite loop where tapping the Dashboard tab
+  // (which resets role to "user") was immediately undone, sending the
+  // user back to the Admin Vault lock screen. Admins enter admin mode
+  // by tapping "Admin" from the side drawer.
 
   useEffect(() => {
     loadData();
