@@ -73,6 +73,7 @@ After running a fresh electron build, refresh the hosted zip in one of two ways:
 
 1. **In-app (preferred):** Settings → Desktop App → "Choose ZIP and upload". Hits `POST /api/admin/desktop-installer/upload` (admin-only, 300 MB max, zip-only).
 2. **CLI fallback / first-time bootstrap:** `pnpm --filter @workspace/scripts run upload-desktop-installer` — uploads `artifacts/labtrax-desktop/electron-dist/LabTrax-Windows-Portable.zip` to App Storage. Pass a custom path as the first arg if needed.
+3. **CI auto-publish (preferred for tagged releases):** the GitHub Actions Windows build jobs (`.github/workflows/build-windows.yml`, `.github/workflows/release.yml`) include a "Publish installer to live download page" step that POSTs the freshly built `LabTrax-Setup.exe` to `/api/admin/desktop-installer/upload` and PUTs the matching URL/version to `/api/admin/settings/desktop-installer`. The step is gated by two GitHub Actions secrets — `PLATFORM_ADMIN_SECRET` (must equal the API server's env var of the same name) and `PUBLISH_API_BASE_URL` (e.g. `https://your.replit.app`). If either secret is unset, the step logs a notice and exits 0, so it's safe to disable. The two endpoints accept the `X-Platform-Admin-Secret` header alone (no JWT required) so CI doesn't need a user account.
 
 The Settings → Desktop App panel shows the current installer's size and uploaded-at timestamp so admins can verify freshness. If no zip has been uploaded yet, `/downloads/LabTrax-Windows-Portable.zip` returns a 404 JSON body explaining that an admin must upload one.
 

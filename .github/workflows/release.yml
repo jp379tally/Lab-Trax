@@ -77,6 +77,55 @@ jobs:
           if ($failed) { exit 1 }
           Write-Host "All installers passed signature verification."
 
+      # Auto-publish the freshly built installer to the live download page so
+      # admins don't have to download → upload → update URL by hand. Gated by
+      # the PLATFORM_ADMIN_SECRET and PUBLISH_API_BASE_URL secrets — if either
+      # is unset, this step logs a notice and exits 0 (safe to disable).
+      - name: Publish installer to live download page
+        if: success()
+        shell: bash
+        env:
+          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+        run: |
+          if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
+            echo "::notice::Skipping auto-publish — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL secret not set."
+            exit 0
+          fi
+          BASE_URL="${PUBLISH_API_BASE_URL%/}"
+          # electron-builder is configured to emit a stable filename
+          # (electron-builder.yml → nsis.artifactName: LabTrax-Setup.exe), so
+          # select it explicitly rather than globbing — avoids ambiguity if
+          # additional .exe artifacts ever land in electron-dist.
+          INSTALLER_PATH="artifacts/labtrax-desktop/electron-dist/LabTrax-Setup.exe"
+          if [[ ! -f "$INSTALLER_PATH" ]]; then
+            echo "::error::Installer not found at $INSTALLER_PATH; cannot publish."
+            exit 1
+          fi
+          # Prefer the git tag (e.g. v1.2.3 → 1.2.3); fall back to package.json.
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VERSION="$TAG_VERSION"
+          else
+            VERSION=$(node -p "require('./artifacts/labtrax-desktop/package.json').version")
+          fi
+          echo "Uploading $INSTALLER_PATH to $BASE_URL/api/admin/desktop-installer/upload"
+          curl --fail-with-body --show-error --silent \
+            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
+            -F "file=@${INSTALLER_PATH};type=application/vnd.microsoft.portable-executable" \
+            "$BASE_URL/api/admin/desktop-installer/upload"
+          echo
+          echo "Updating live download URL → /downloads/LabTrax-Setup.exe (version $VERSION)"
+          NOTES="Auto-published from release ${GITHUB_REF_NAME} (run ${GITHUB_RUN_ID}, commit ${GITHUB_SHA})."
+          curl --fail-with-body --show-error --silent \
+            -X PUT \
+            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n --arg url "/downloads/LabTrax-Setup.exe" --arg ver "$VERSION" --arg notes "$NOTES" '{downloadUrl:$url, version:$ver, releaseNotes:$notes}')" \
+            "$BASE_URL/api/admin/settings/desktop-installer"
+          echo
+          echo "::notice::Published LabTrax-Setup.exe v$VERSION to $BASE_URL"
+
       - name: Upload Windows release assets
         # Upload the installer, auto-update manifest (latest.yml), and blockmap.
         # latest.yml is required by electron-updater to discover and verify new

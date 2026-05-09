@@ -93,6 +93,34 @@ function isPlatformAdmin(req: any): boolean {
   return req.headers["x-platform-admin-secret"] === secret;
 }
 
+// Service-to-service auth for a tiny, explicit set of admin endpoints that are
+// safe to drive from CI/automation (e.g. the GitHub Actions "publish desktop
+// installer" step). When the X-Platform-Admin-Secret header matches the env
+// secret, attach a synthetic admin user and skip the JWT/session check.
+// Otherwise fall through to the normal user requireAuth flow. The downstream
+// isPlatformAdmin() call then succeeds for both paths because (a) the
+// synthetic user has role:"admin" and (b) the header still matches.
+//
+// Disabling the CI path: unset PLATFORM_ADMIN_SECRET in the environment.
+// Note: the existing isPlatformAdmin() check also requires PLATFORM_ADMIN_SECRET
+// to be set, so unsetting it locks out CI **and** human admins; a deployment
+// that wants only human admins on these endpoints should leave the secret set
+// and simply not configure it on the GitHub Actions side.
+function platformAdminUserOrSecret(req: any, res: any, next: any) {
+  const secret = process.env.PLATFORM_ADMIN_SECRET;
+  const header = req.headers["x-platform-admin-secret"];
+  if (secret && header === secret && !req.user) {
+    req.user = {
+      id: null,
+      username: "ci:platform-admin-secret",
+      role: "admin",
+      isActive: true,
+    };
+    return next();
+  }
+  return requireAuth(req, res, next);
+}
+
 function generateResetToken(): string {
   return randomBytes(32).toString("hex");
 }
@@ -3518,7 +3546,7 @@ Important rules:
   });
   router.post(
     "/admin/desktop-installer/upload",
-    requireAuth,
+    platformAdminUserOrSecret,
     (req, res, next) => {
       if (!isPlatformAdmin(req)) {
         res.status(403).json({ error: "Admin access required." });
@@ -3628,7 +3656,7 @@ Important rules:
     },
   );
 
-  router.put("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
+  router.put("/admin/settings/desktop-installer", platformAdminUserOrSecret, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });
     }
