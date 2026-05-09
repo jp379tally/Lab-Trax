@@ -21,7 +21,7 @@ import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { HttpError, ok } from "../lib/http";
 import { createTransport, getMailerConfig } from "../lib/mailer";
-import { BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 
@@ -370,6 +370,147 @@ router.post(
 function nextInvoiceNumber(caseNumber: string) {
   return `INV-${caseNumber}`;
 }
+
+// Admin-only batch backfill: for a given lab org, find every case that does
+// not yet have an invoice and generate one for it using the same per-case
+// generation logic. Idempotent: relies on the unique index on
+// invoices.invoice_number plus a per-case existence check, so re-running on
+// the same lab is a no-op (no duplicate invoices, no status mutation, no
+// double deposit). Skips cases with zero restorations and cases whose
+// expected invoice number is already taken.
+router.post(
+  "/lab-orgs/:labOrganizationId/backfill",
+  asyncHandler(async (req, res) => {
+    const labOrganizationId = req.params.labOrganizationId;
+    // Lab-admin only: this is a batch maintenance operation that mints
+    // invoices across the entire lab, so we restrict it to owner/admin
+    // even though normal per-case generation allows the broader billing
+    // role set.
+    await requireAnyRole(
+      (req as any).auth.userId,
+      labOrganizationId,
+      ADMIN_ROLES
+    );
+
+    const labCases = await db.query.cases.findMany({
+      where: eq(cases.labOrganizationId, labOrganizationId),
+    });
+
+    let created = 0;
+    let skippedExisting = 0;
+    let skippedNoRestorations = 0;
+    let skippedNumberTaken = 0;
+    const createdInvoiceIds: string[] = [];
+
+    for (const found of labCases) {
+      const existingForCase = await db.query.invoices.findFirst({
+        where: eq(invoices.caseId, found.id),
+      });
+      if (existingForCase) {
+        skippedExisting++;
+        continue;
+      }
+
+      const restorations = await db.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, found.id),
+      });
+      if (!restorations.length) {
+        skippedNoRestorations++;
+        continue;
+      }
+
+      const invoiceNumber = nextInvoiceNumber(found.caseNumber);
+      const [invoice] = await db
+        .insert(invoices)
+        .values({
+          invoiceNumber,
+          caseId: found.id,
+          labOrganizationId: found.labOrganizationId,
+          providerOrganizationId: found.providerOrganizationId,
+          status: "draft",
+          createdByUserId: (req as any).auth.userId,
+          updatedByUserId: (req as any).auth.userId,
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      if (!invoice) {
+        // Invoice number collided with a row not linked to this case (e.g.
+        // a manual invoice created with the same number). Do nothing — we
+        // refuse to silently retitle or relink an existing invoice.
+        skippedNumberTaken++;
+        continue;
+      }
+
+      const itemsToInsert = restorations.map((restoration, index) => ({
+        invoiceId: invoice.id,
+        caseRestorationId: restoration.id,
+        description: `${restoration.restorationType} - Tooth ${restoration.toothNumber}`,
+        quantity: restoration.quantity,
+        unitPrice: restoration.unitPrice,
+        lineTotal: calculateLineTotal(
+          restoration.quantity,
+          restoration.unitPrice
+        ),
+        sortOrder: index,
+      }));
+      await db.insert(invoiceLineItems).values(itemsToInsert);
+
+      const subtotal = sumMoney(itemsToInsert.map((item) => item.lineTotal));
+      await db
+        .update(invoices)
+        .set({
+          subtotal,
+          total: subtotal,
+          balanceDue: subtotal,
+          updatedByUserId: (req as any).auth.userId,
+          issuedAt: new Date(),
+          status: "open",
+        })
+        .where(eq(invoices.id, invoice.id));
+
+      const user = (req as any).user;
+      await db.insert(caseEvents).values({
+        caseId: found.id,
+        eventType: "invoice_generated",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: found.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          source: "backfill",
+        },
+      });
+
+      created++;
+      createdInvoiceIds.push(invoice.id);
+    }
+
+    const summary = {
+      labOrganizationId,
+      casesScanned: labCases.length,
+      created,
+      skippedExisting,
+      skippedNoRestorations,
+      skippedNumberTaken,
+      createdInvoiceIds,
+    };
+
+    req.log?.info?.({ summary }, "[INVOICE BACKFILL] completed");
+
+    await writeAuditLog({
+      req,
+      organizationId: labOrganizationId,
+      action: "invoices_backfilled",
+      entityType: "organization",
+      entityId: labOrganizationId,
+      metadataJson: summary,
+    });
+
+    return ok(res, summary);
+  })
+);
 
 router.post(
   "/cases/:caseId/generate-invoice",

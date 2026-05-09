@@ -1051,6 +1051,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const fetchingRef = useRef(false);
   const inFlightSyncIdsRef = useRef<Set<string>>(new Set());
   const inFlightInvoiceGenIdsRef = useRef<Set<string>>(new Set());
+  // One-shot per signed-in session: after the initial server fetch lands, push
+  // every local invoice that has no serverId but whose linked case is on the
+  // server. This catches invoices stranded on devices because their cases
+  // were synced before the invoice-sync work landed (#19, #21, #22, #58),
+  // so the desktop web app eventually sees the same invoices the device
+  // already shows. Safe to re-run: generateServerInvoiceForCase short-
+  // circuits on serverId and the server endpoint is idempotent on case
+  // number.
+  const invoiceBackfillSweepRanRef = useRef(false);
+  // Set to true once the initial server cases fetch has completed for the
+  // current session (success OR empty). The sweep effect depends on this
+  // state value so it re-runs deterministically once boot finishes,
+  // instead of waiting for an unrelated `cases` change.
+  const [initialCasesFetchComplete, setInitialCasesFetchComplete] =
+    useState(false);
 
   function pushCaseToServerOnce(c: LabCase) {
     if (!c.ownerId) return;
@@ -1545,6 +1560,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!currentUserId) {
       syncReadyRef.current = false;
+      invoiceBackfillSweepRanRef.current = false;
       return;
     }
 
@@ -1552,6 +1568,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const localCasesSnapshot = allCases;
     syncReadyRef.current = false;
     fetchingRef.current = true;
+    // New session — let the one-shot invoice sweep run again.
+    invoiceBackfillSweepRanRef.current = false;
+    setInitialCasesFetchComplete(false);
 
     fetchCasesFromServer()
       .then((result) => {
@@ -1589,6 +1608,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         fetchingRef.current = false;
         syncReadyRef.current = true;
+        setInitialCasesFetchComplete(true);
       });
 
     return () => {
@@ -1596,6 +1616,58 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fetchingRef.current = false;
     };
   }, [currentUserId]);
+
+  // One-shot invoice backfill sweep. After cases are reconciled with the
+  // server (i.e. once `cases` includes lab-tagged rows the server returned),
+  // walk every local invoice that has no serverId and call the existing
+  // generate-invoice endpoint for any whose linked case is now on the
+  // server. This pushes invoices that were stranded on devices because
+  // their cases were synced before the invoice-sync work landed, so the
+  // desktop web app picks them up. Runs at most once per signed-in
+  // session, batched, and silent on success.
+  useEffect(() => {
+    if (!currentUserId) return;
+    if (invoiceBackfillSweepRanRef.current) return;
+    if (!initialCasesFetchComplete) return;
+
+    // Build the set of case ids the server has authorized for us. A
+    // lab-tagged case in our local cache is one the server returned, so
+    // we know calling generate-invoice for it will succeed (or no-op).
+    const syncedCaseIds = new Set<string>();
+    for (const c of cases) {
+      const key =
+        typeof c.affiliationKey === "string" ? c.affiliationKey.trim() : "";
+      if (key.startsWith("org:")) {
+        syncedCaseIds.add(c.id);
+      }
+    }
+    if (syncedCaseIds.size === 0) {
+      // Nothing on the server yet to sweep against; try again next session.
+      return;
+    }
+
+    invoiceBackfillSweepRanRef.current = true;
+
+    void (async () => {
+      const targets: { invoiceId: string; caseId: string }[] = [];
+      for (const inv of invoicesRef.current) {
+        if (inv.serverId) continue;
+        const caseId = inv.caseIds?.find((id) => syncedCaseIds.has(id));
+        if (!caseId) continue;
+        targets.push({ invoiceId: inv.id, caseId });
+      }
+      if (targets.length === 0) return;
+      // Batch sequentially to avoid spamming the API in one burst when a
+      // device has hundreds of stranded invoices.
+      for (const t of targets) {
+        try {
+          await generateServerInvoiceForCase(t.caseId, t.invoiceId);
+        } catch {
+          // ignore per-invoice failures; the next session's sweep will retry
+        }
+      }
+    })();
+  }, [cases, currentUserId, initialCasesFetchComplete]);
 
   // TEMP DIAGNOSTIC: posts a snapshot of the device's React state to the
   // server so we can read it from deployment logs and find where the
