@@ -3821,6 +3821,28 @@ Important rules:
     }
   });
 
+  router.delete("/admin/desktop-installer/uploads/:id", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const id = req.params.id;
+    if (!id || typeof id !== "string") {
+      return res.status(400).json({ error: "Upload id is required." });
+    }
+    try {
+      const deleted = await db
+        .delete(installerUploads)
+        .where(eq(installerUploads.id, id))
+        .returning({ id: installerUploads.id });
+      if (deleted.length === 0) {
+        return res.status(404).json({ error: "Upload entry not found." });
+      }
+      return res.json({ success: true });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to delete installer upload entry." });
+    }
+  });
+
   router.delete("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });

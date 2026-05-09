@@ -1810,6 +1810,7 @@ function ChecksumCell({ checksum }: { checksum: string | null }) {
 
 function DesktopInstallerUploadsPanel() {
   const [open, setOpen] = useState(false);
+  const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: ["admin", "desktop-installer", "uploads"],
     queryFn: () =>
@@ -1819,7 +1820,23 @@ function DesktopInstallerUploadsPanel() {
     enabled: open,
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ success: boolean }>(
+        `/admin/desktop-installer/uploads/${id}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["admin", "desktop-installer", "uploads"],
+      });
+    },
+  });
+
   const uploads = query.data?.uploads ?? [];
+  const pendingDeleteId = deleteMutation.isPending
+    ? (deleteMutation.variables as string | undefined)
+    : undefined;
 
   return (
     <div className="rounded-lg border border-border px-5 py-4 space-y-3">
@@ -1860,6 +1877,11 @@ function DesktopInstallerUploadsPanel() {
               zip above, an entry will appear here.
             </p>
           )}
+          {deleteMutation.error && (
+            <Alert tone="danger">
+              {(deleteMutation.error as Error).message}
+            </Alert>
+          )}
           {uploads.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -1869,31 +1891,60 @@ function DesktopInstallerUploadsPanel() {
                     <th className="font-medium py-2 pr-3">Version</th>
                     <th className="font-medium py-2 pr-3">Size</th>
                     <th className="font-medium py-2 pr-3">SHA-256</th>
-                    <th className="font-medium py-2">Uploaded by</th>
+                    <th className="font-medium py-2 pr-3">Uploaded by</th>
+                    <th className="font-medium py-2 w-px"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {uploads.map((u) => (
-                    <tr key={u.id} className="border-b border-border/60 align-top">
-                      <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
-                        {formatHistoryTimestamp(u.createdAt)}
-                      </td>
-                      <td className="py-2 pr-3 whitespace-nowrap font-mono">
-                        {u.version ?? "—"}
-                      </td>
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        {formatInstallerSize(u.sizeBytes)}
-                      </td>
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        <ChecksumCell checksum={u.checksumSha256} />
-                      </td>
-                      <td className="py-2 whitespace-nowrap">
-                        {u.uploadedByUsername ?? (
-                          <span className="text-muted-foreground">unknown</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {uploads.map((u) => {
+                    const isDeleting = pendingDeleteId === u.id;
+                    return (
+                      <tr key={u.id} className="border-b border-border/60 align-top">
+                        <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
+                          {formatHistoryTimestamp(u.createdAt)}
+                        </td>
+                        <td className="py-2 pr-3 whitespace-nowrap font-mono">
+                          {u.version ?? "—"}
+                        </td>
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          {formatInstallerSize(u.sizeBytes)}
+                        </td>
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          <ChecksumCell checksum={u.checksumSha256} />
+                        </td>
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          {u.uploadedByUsername ?? (
+                            <span className="text-muted-foreground">unknown</span>
+                          )}
+                        </td>
+                        <td className="py-2 whitespace-nowrap text-right">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (
+                                !window.confirm(
+                                  "Remove this upload entry from the history? The uploaded zip itself is not affected.",
+                                )
+                              ) {
+                                return;
+                              }
+                              deleteMutation.mutate(u.id);
+                            }}
+                            disabled={isDeleting}
+                            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-destructive hover:border-destructive disabled:opacity-50 disabled:cursor-not-allowed"
+                            aria-label="Delete upload entry"
+                          >
+                            {isDeleting ? (
+                              <Loader2 size={11} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={11} />
+                            )}
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
