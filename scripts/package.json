@@ -7,10 +7,15 @@
     "hello": "tsx ./src/hello.ts",
     "run-finance-cron": "tsx ./src/run-finance-cron.ts",
     "cleanup-orphaned-case-media": "tsx ./src/cleanup-orphaned-case-media.ts",
+    "upload-desktop-installer": "tsx ./src/upload-desktop-installer.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.19.0"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "google-auth-library": "^10.6.2",
     "tsx": "catalog:"
   }
 }

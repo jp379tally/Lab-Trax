@@ -5,6 +5,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
+import {
+  getDesktopInstallerMetadata,
+  uploadDesktopInstaller,
+  DesktopInstallerNotConfiguredError,
+} from "../lib/desktop-installer-storage";
 import { runOneDriveBackup, getBackupHourUtc, SETTING_BACKUP_HOUR_UTC } from "../lib/backup";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -3304,7 +3309,7 @@ Important rules:
     return "Version must follow the format X.Y.Z (e.g. 1.2.0).";
   }
 
-  router.get("/desktop-installer", requireAuth, async (_req, res) => {
+  router.get("/desktop-installer", requireAuth, async (req, res) => {
     const envVersion = process.env.DESKTOP_INSTALLER_VERSION ?? "1.0.0";
     const envUrl =
       process.env.DESKTOP_INSTALLER_URL ?? "/downloads/LabTrax-Windows-Portable.zip";
@@ -3327,11 +3332,16 @@ Important rules:
       return res.status(503).json({ error: "Desktop installer is not configured." });
     }
     const fileName = rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip";
+    const installerObject = await getDesktopInstallerMetadata().catch((err) => {
+      req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
+      return null;
+    });
     return res.json({
       version,
       downloadUrl: rawUrl,
       fileName,
       releaseNotes,
+      installerObject,
     });
   });
 
@@ -3366,6 +3376,15 @@ Important rules:
       repoUrl !== null && !githubRepoPattern.test(repoUrl)
         ? "GITHUB_REPO_URL does not look like a valid https://github.com/<owner>/<repo> URL. The Actions link may not work correctly."
         : undefined;
+    let installerObject: Awaited<ReturnType<typeof getDesktopInstallerMetadata>> | null = null;
+    let installerObjectError: string | null = null;
+    try {
+      installerObject = await getDesktopInstallerMetadata();
+    } catch (err) {
+      req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
+      installerObjectError =
+        (err as Error)?.message || "Could not read installer metadata from storage.";
+    }
     return res.json({
       version,
       dbVersion,
@@ -3374,13 +3393,78 @@ Important rules:
       dbDownloadUrl: dbUrl,
       envDownloadUrl: envUrl,
       fileName,
+      installerObjectError,
       repoUrl,
       urlError: urlError ?? null,
       repoUrlWarning,
       releaseNotes: dbReleaseNotes,
       dbReleaseNotes,
+      installerObject,
     });
   });
+
+  // Admin upload of the Windows portable installer zip → App Storage.
+  // Guarded by the standard X-Platform-Admin-Secret check via isPlatformAdmin().
+  const installerUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 300 * 1024 * 1024 }, // 300 MB
+  });
+  router.post(
+    "/admin/desktop-installer/upload",
+    requireAuth,
+    (req, res, next) => {
+      if (!isPlatformAdmin(req)) {
+        res.status(403).json({ error: "Admin access required." });
+        return;
+      }
+      installerUpload.single("file")(req, res, (err: any) => {
+        if (err) {
+          const status = err?.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+          res.status(status).json({ error: err?.message || "Upload failed." });
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      const file = (req as any).file as
+        | { originalname: string; mimetype: string; buffer: Buffer; size: number }
+        | undefined;
+      if (!file || !file.buffer || file.size === 0) {
+        return res
+          .status(400)
+          .json({ error: "Missing 'file' field — attach the portable zip." });
+      }
+      const name = file.originalname || "";
+      const isZipName = /\.zip$/i.test(name);
+      const isZipMime =
+        file.mimetype === "application/zip" ||
+        file.mimetype === "application/x-zip-compressed" ||
+        file.mimetype === "application/octet-stream";
+      const isZipMagic =
+        file.buffer.length >= 4 &&
+        file.buffer[0] === 0x50 &&
+        file.buffer[1] === 0x4b &&
+        (file.buffer[2] === 0x03 || file.buffer[2] === 0x05 || file.buffer[2] === 0x07);
+      if (!isZipName || !isZipMime || !isZipMagic) {
+        return res
+          .status(400)
+          .json({ error: "File must be a .zip archive (LabTrax-Windows-Portable.zip)." });
+      }
+      try {
+        const meta = await uploadDesktopInstaller(file.buffer);
+        return res.json({ success: true, installerObject: meta });
+      } catch (e: any) {
+        if (e instanceof DesktopInstallerNotConfiguredError) {
+          return res.status(503).json({ error: e.message });
+        }
+        req.log?.error?.({ err: e }, "Desktop installer upload failed");
+        return res
+          .status(500)
+          .json({ error: e?.message || "Failed to upload installer." });
+      }
+    },
+  );
 
   router.put("/admin/settings/desktop-installer", requireAuth, async (req, res) => {
     if (!isPlatformAdmin(req)) {

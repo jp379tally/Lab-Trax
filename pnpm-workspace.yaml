@@ -183,3 +183,7 @@ overrides:
   "@xmldom/xmldom": "0.8.10"
   # nodemailer: GHSA-vvjj-xcjg-gr5g
   "nodemailer": "8.0.7"
+  # Dedupe to the version @google-cloud/storage@7.x ships with, so the typed
+  # ExternalAccountClientOptions we pass to `new Storage({ credentials })`
+  # comes from the same module instance the Storage SDK consumes.
+  "google-auth-library": "9.15.1"

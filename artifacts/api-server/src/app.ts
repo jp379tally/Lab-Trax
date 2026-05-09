@@ -12,6 +12,7 @@ import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
 import { startDailyOneDriveBackup } from "./lib/backup";
+import { openDesktopInstallerStream } from "./lib/desktop-installer-storage";
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -30,9 +31,50 @@ app.use("/uploads/case-media", (req: Request, res: Response) => {
   return res.redirect(302, `/api/cases/attachment-file/${encodeURIComponent(filename)}`);
 });
 
-// Serve the Windows portable zip for download (outside /api, no auth required)
-const electronDistDir = path.resolve(__dirname, "..", "..", "..", "artifacts", "labtrax-desktop", "electron-dist");
-app.use("/downloads", express.static(electronDistDir, { dotfiles: "deny", index: false }));
+// Serve the Windows portable zip for download (outside /api, no auth required).
+// The zip lives in App Storage and is uploaded by an admin (via the upload
+// endpoint or the upload-desktop-installer script) so it survives deploys.
+app.get("/downloads/LabTrax-Windows-Portable.zip", async (_req: Request, res: Response) => {
+  try {
+    const obj = await openDesktopInstallerStream();
+    if (!obj) {
+      res.status(404).json({
+        ok: false,
+        message:
+          "The Windows installer has not been uploaded yet. An admin must upload LabTrax-Windows-Portable.zip via Settings → Desktop App.",
+      });
+      return;
+    }
+    res.setHeader("Content-Type", "application/zip");
+    if (obj.size > 0) res.setHeader("Content-Length", String(obj.size));
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="LabTrax-Windows-Portable.zip"',
+    );
+    res.setHeader("Cache-Control", "no-store");
+    obj.stream.on("error", (err) => {
+      logger.error({ err }, "Desktop installer stream error");
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, message: "Failed to stream installer." });
+      } else {
+        res.destroy(err);
+      }
+    });
+    obj.stream.pipe(res);
+  } catch (err) {
+    logger.error({ err }, "Desktop installer download failed");
+    if (!res.headersSent) {
+      res
+        .status(500)
+        .json({ ok: false, message: (err as Error)?.message || "Download failed." });
+    }
+  }
+});
+
+// Reject any other /downloads/* path with a clear 404 (legacy static mount removed).
+app.get("/downloads/{*rest}", (_req: Request, res: Response) => {
+  res.status(404).json({ ok: false, message: "Not found." });
+});
 
 app.use(
   pinoHttp({

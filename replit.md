@@ -60,8 +60,20 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `MEDIA_CLEANUP_JOB_TOKEN` — shared secret for the standalone cleanup script (scheduled deployment path only)
 - `MEDIA_CLEANUP_API_URL` — base API URL for the standalone cleanup script (e.g. `https://your.replit.app/api`; scheduled deployment path only)
 - `DESKTOP_INSTALLER_VERSION` — version string shown in the Desktop App settings panel (default: `"1.0.0"`)
-- `DESKTOP_INSTALLER_URL` — direct download URL for the Windows installer (default: `/downloads/LabTrax-Windows-Portable.zip`); set to a GitHub Release asset URL in production
+- `DESKTOP_INSTALLER_URL` — direct download URL for the Windows installer (default: `/downloads/LabTrax-Windows-Portable.zip`); the default path is served by the API from App Storage (see "Desktop installer download" below). Override to a GitHub Release asset URL if you'd rather host the zip on GitHub.
+- `DEFAULT_OBJECT_STORAGE_BUCKET_ID`, `PRIVATE_OBJECT_DIR`, `PUBLIC_OBJECT_SEARCH_PATHS` — App Storage configuration (auto-set when Object Storage is provisioned). The API server reads/writes the desktop installer zip in App Storage via these.
 - `GITHUB_REPO_URL` — optional; GitHub repository URL (e.g. `https://github.com/your-org/your-repo`); when set, the Settings → Desktop App panel shows a direct link to the repo's Actions tab so admins can trigger installer builds in one click
 - `PLATFORM_ADMIN_SECRET` — **required in production**; a strong secret string that must be sent as `X-Platform-Admin-Secret` header to access all `/api/admin/*` platform-wide endpoints (backup, cleanup, system settings). If unset, all admin endpoints return 403.
+
+## Desktop installer download
+
+The Windows portable zip (`LabTrax-Windows-Portable.zip`) is stored in App Storage so it survives deploys, and the API serves it publicly at `GET /downloads/LabTrax-Windows-Portable.zip` (no auth required — same URL as before). Object key: `<PRIVATE_OBJECT_DIR>/desktop-installer/LabTrax-Windows-Portable.zip`.
+
+After running a fresh electron build, refresh the hosted zip in one of two ways:
+
+1. **In-app (preferred):** Settings → Desktop App → "Choose ZIP and upload". Hits `POST /api/admin/desktop-installer/upload` (admin-only, 300 MB max, zip-only).
+2. **CLI fallback / first-time bootstrap:** `pnpm --filter @workspace/scripts run upload-desktop-installer` — uploads `artifacts/labtrax-desktop/electron-dist/LabTrax-Windows-Portable.zip` to App Storage. Pass a custom path as the first arg if needed.
+
+The Settings → Desktop App panel shows the current installer's size and uploaded-at timestamp so admins can verify freshness. If no zip has been uploaded yet, `/downloads/LabTrax-Windows-Portable.zip` returns a 404 JSON body explaining that an admin must upload one.
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

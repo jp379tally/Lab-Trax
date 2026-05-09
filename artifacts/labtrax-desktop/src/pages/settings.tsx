@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, ChevronDown, ChevronRight, Clock, Download, ExternalLink, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, User as UserIcon } from "lucide-react";
+import { Building2, BellRing, ChevronDown, ChevronRight, Clock, Download, ExternalLink, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, Upload, User as UserIcon } from "lucide-react";
 import { apiFetch, notifySessionCleared } from "@/lib/api";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
@@ -1162,6 +1162,26 @@ interface DesktopInstallerInfo {
   repoUrlWarning?: string;
   releaseNotes: string | null;
   dbReleaseNotes: string | null;
+  installerObject: { size: number; uploadedAt: string } | null;
+}
+
+function formatInstallerSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function formatInstallerTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function DesktopInstallerPanel() {
@@ -1171,6 +1191,9 @@ function DesktopInstallerPanel() {
   const [releaseNotesInput, setReleaseNotesInput] = useState<string>("");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const query = useQuery({
     queryKey: ["admin", "desktop-installer"],
@@ -1222,6 +1245,44 @@ function DesktopInstallerPanel() {
     },
   });
 
+  const uploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      return apiFetch<{ success: boolean; installerObject: { size: number; uploadedAt: string } }>(
+        "/admin/desktop-installer/upload",
+        { method: "POST", body: fd },
+      );
+    },
+    onSuccess: () => {
+      setUploadError(null);
+      setUploadSuccess(true);
+      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
+      setTimeout(() => setUploadSuccess(false), 3000);
+    },
+    onError: (err: Error) => {
+      setUploadSuccess(false);
+      setUploadError(err.message || "Failed to upload installer.");
+    },
+  });
+
+  function handleUploadButtonClick() {
+    setUploadError(null);
+    setUploadSuccess(false);
+    uploadInputRef.current?.click();
+  }
+
+  function handleUploadInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!/\.zip$/i.test(file.name)) {
+      setUploadError("Pick a .zip file (LabTrax-Windows-Portable.zip).");
+      return;
+    }
+    uploadMutation.mutate(file);
+  }
+
   const info = query.data;
   const isZip = info?.downloadUrl.endsWith(".zip") ?? true;
   const hasDbOverrides = info !== undefined && (info.dbDownloadUrl !== null || info.dbVersion !== null || info.dbReleaseNotes !== null);
@@ -1272,6 +1333,18 @@ function DesktopInstallerPanel() {
                   <Download size={14} />
                   {isZip ? "Download Portable ZIP" : "Download Installer"}
                 </a>
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                {info.installerObject ? (
+                  <>
+                    Current installer: {formatInstallerSize(info.installerObject.size)} · uploaded{" "}
+                    {formatInstallerTimestamp(info.installerObject.uploadedAt)}
+                  </>
+                ) : (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    No installer has been uploaded to App Storage yet — the download link will return 404 until an admin uploads <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code> below.
+                  </span>
+                )}
               </div>
               {info.releaseNotes && (
                 <div className="rounded-md border border-border bg-background px-4 py-3 space-y-1">
@@ -1358,6 +1431,46 @@ function DesktopInstallerPanel() {
                 {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
                 Save
               </button>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border px-5 py-4 space-y-3">
+            <div className="text-sm font-semibold">Upload a refreshed installer</div>
+            <p className="text-xs text-muted-foreground">
+              After running a new electron build, upload the resulting{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">LabTrax-Windows-Portable.zip</code>{" "}
+              here. It is stored in App Storage and served at{" "}
+              <code className="font-mono bg-secondary px-1 py-0.5 rounded">/downloads/LabTrax-Windows-Portable.zip</code>{" "}
+              without any redeploy. Max size 300 MB.
+            </p>
+            {uploadError && <Alert tone="danger">{uploadError}</Alert>}
+            {uploadSuccess && <Alert tone="success">Installer uploaded.</Alert>}
+            <div className="flex items-center gap-3">
+              <input
+                ref={uploadInputRef}
+                type="file"
+                accept=".zip,application/zip"
+                className="hidden"
+                onChange={handleUploadInputChange}
+              />
+              <button
+                type="button"
+                onClick={handleUploadButtonClick}
+                disabled={uploadMutation.isPending}
+                className="h-9 px-4 rounded-md border border-border text-sm font-semibold hover:bg-secondary/40 disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {uploadMutation.isPending ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Upload size={13} />
+                )}
+                {uploadMutation.isPending ? "Uploading…" : "Choose ZIP and upload"}
+              </button>
+              {info.installerObject && (
+                <span className="text-[11px] text-muted-foreground">
+                  Replaces the current {formatInstallerSize(info.installerObject.size)} file.
+                </span>
+              )}
             </div>
           </div>
 
