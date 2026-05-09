@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Github, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1759,7 +1759,7 @@ function DesktopInstallerPanel() {
           </div>
 
           <DesktopInstallerUploadsPanel />
-          <DesktopInstallerHistoryPanel />
+          <DesktopInstallerHistoryPanel repoUrl={info.repoUrl} />
         </div>
       )}
     </PanelShell>
@@ -1963,6 +1963,12 @@ interface InstallerHistoryEntry {
   savedByUserId: string | null;
   savedByUsername: string | null;
   createdAt: string;
+  source?: "ci" | "manual";
+  ciMetadata?: {
+    runId: string | null;
+    commitSha: string | null;
+    releaseTag: string | null;
+  } | null;
 }
 
 function formatHistoryTimestamp(iso: string): string {
@@ -1971,8 +1977,9 @@ function formatHistoryTimestamp(iso: string): string {
   return d.toLocaleString();
 }
 
-function DesktopInstallerHistoryPanel() {
+function DesktopInstallerHistoryPanel({ repoUrl }: { repoUrl: string | null }) {
   const [open, setOpen] = useState(false);
+  const repoBase = repoUrl ? repoUrl.replace(/\/$/, "") : null;
   const query = useQuery({
     queryKey: ["admin", "desktop-installer", "history"],
     queryFn: () =>
@@ -2061,9 +2068,71 @@ function DesktopInstallerHistoryPanel() {
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}
+                        {e.source === "ci" && e.ciMetadata && (e.ciMetadata.runId || e.ciMetadata.commitSha || e.ciMetadata.releaseTag) && (
+                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                            {e.ciMetadata.releaseTag && (
+                              <span>
+                                Release:{" "}
+                                {repoBase ? (
+                                  <a
+                                    href={`${repoBase}/releases/tag/${e.ciMetadata.releaseTag}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:underline font-mono"
+                                  >
+                                    {e.ciMetadata.releaseTag}
+                                  </a>
+                                ) : (
+                                  <span className="font-mono">{e.ciMetadata.releaseTag}</span>
+                                )}
+                              </span>
+                            )}
+                            {e.ciMetadata.runId && (
+                              <span>
+                                Run:{" "}
+                                {repoBase ? (
+                                  <a
+                                    href={`${repoBase}/actions/runs/${e.ciMetadata.runId}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:underline font-mono"
+                                  >
+                                    {e.ciMetadata.runId}
+                                  </a>
+                                ) : (
+                                  <span className="font-mono">{e.ciMetadata.runId}</span>
+                                )}
+                              </span>
+                            )}
+                            {e.ciMetadata.commitSha && (
+                              <span>
+                                Commit:{" "}
+                                {repoBase ? (
+                                  <a
+                                    href={`${repoBase}/commit/${e.ciMetadata.commitSha}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:underline font-mono"
+                                  >
+                                    {e.ciMetadata.commitSha.slice(0, 7)}
+                                  </a>
+                                ) : (
+                                  <span className="font-mono">{e.ciMetadata.commitSha.slice(0, 7)}</span>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="py-2 whitespace-nowrap">
-                        {e.savedByUsername ?? (
+                        {e.source === "ci" ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[11px] font-medium text-foreground">
+                            <Github size={11} />
+                            GitHub Actions
+                          </span>
+                        ) : e.savedByUsername && e.savedByUsername !== "ci:platform-admin-secret" ? (
+                          e.savedByUsername
+                        ) : (
                           <span className="text-muted-foreground">unknown</span>
                         )}
                       </td>

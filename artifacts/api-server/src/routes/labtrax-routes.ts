@@ -3789,7 +3789,33 @@ Important rules:
         .from(installerChangelog)
         .orderBy(desc(installerChangelog.createdAt))
         .limit(limit);
-      return res.json({ entries: rows });
+      const entries = rows.map((r) => {
+        // CI publishes go through the X-Platform-Admin-Secret path which has no
+        // real user id (savedByUserId is NULL). Manual uploads always carry the
+        // admin's id. Username may be NULL on older rows or "ci:platform-admin-secret"
+        // on newer ones, so don't rely on it to classify the source.
+        const isCi =
+          r.savedByUserId === null &&
+          (r.savedByUsername === null ||
+            r.savedByUsername === "ci:platform-admin-secret" ||
+            (typeof r.releaseNotes === "string" &&
+              r.releaseNotes.startsWith("Auto-published")));
+        const source: "ci" | "manual" = isCi ? "ci" : "manual";
+        let ciMetadata: { runId: string | null; commitSha: string | null; releaseTag: string | null } | null = null;
+        if (isCi) {
+          const notes = r.releaseNotes ?? "";
+          const runMatch = notes.match(/run\s+(\d+)/i);
+          const commitMatch = notes.match(/commit\s+([0-9a-f]{7,40})/i);
+          const tagMatch = notes.match(/from release\s+(\S+?)\s/i);
+          ciMetadata = {
+            runId: runMatch ? runMatch[1] : null,
+            commitSha: commitMatch ? commitMatch[1] : null,
+            releaseTag: tagMatch ? tagMatch[1] : null,
+          };
+        }
+        return { ...r, source, ciMetadata };
+      });
+      return res.json({ entries });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to load installer history." });
     }
