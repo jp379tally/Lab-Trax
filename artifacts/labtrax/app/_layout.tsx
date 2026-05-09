@@ -197,10 +197,12 @@ export default function RootLayout() {
       .catch(() => {})
       .finally(() => {
         resetShareIntent();
-        // Jump to the scan tab so the focus effect drains the inbox into the
-        // case media intake area.
+        // Jump to the dashboard so the LabFileDropZone picks the shared
+        // file(s) up into the lab's case media intake area. We intentionally
+        // do NOT route to the new-case (scan) flow — shared screenshots
+        // should land in the intake/drop zone, not auto-start a new case.
         try {
-          router.replace("/(tabs)/scan");
+          router.replace("/(tabs)");
         } catch {}
       });
   }, [hasShareIntent, shareIntent, resetShareIntent]);

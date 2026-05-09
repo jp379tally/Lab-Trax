@@ -9,12 +9,32 @@ export interface InboxEntry {
   receivedAt: number;
 }
 
+// Lightweight pub/sub so consumers (e.g. the dashboard's LabFileDropZone) can
+// react to new inbox entries even when their focus state hasn't changed —
+// e.g. a share intent arriving while the user is already on the dashboard.
+type Listener = () => void;
+const listeners = new Set<Listener>();
+
+export function subscribeSharedFileInbox(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function notifyInboxChanged(): void {
+  for (const l of listeners) {
+    try { l(); } catch {}
+  }
+}
+
 export async function pushSharedFile(url: string): Promise<void> {
   try {
     const raw = await AsyncStorage.getItem(KEY);
     const list: InboxEntry[] = raw ? JSON.parse(raw) : [];
     list.push({ url, receivedAt: Date.now() });
     await AsyncStorage.setItem(KEY, JSON.stringify(list));
+    notifyInboxChanged();
   } catch {}
 }
 

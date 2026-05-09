@@ -21,7 +21,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Colors from "@/constants/colors";
 import { Client, LabCase } from "@/lib/data";
-import { popSharedFiles } from "@/lib/shared-file-inbox";
+import { popSharedFiles, subscribeSharedFileInbox } from "@/lib/shared-file-inbox";
 import { getApiUrl, resilientFetch } from "@/lib/query-client";
 import { useApp } from "@/lib/app-context";
 
@@ -222,7 +222,10 @@ export function LabFileDropZone({
     pendingFilesRef.current = pendingFiles;
   }, [pendingFiles]);
 
-  // Check for files shared to LabTrax via the iOS/Android share sheet
+  // Check for files shared to LabTrax via the iOS/Android share sheet.
+  // Drains on focus changes AND on inbox-write notifications so files
+  // that arrive while the dashboard is already focused still appear
+  // immediately.
   useEffect(() => {
     if (Platform.OS === "web") return;
     let cancelled = false;
@@ -263,7 +266,13 @@ export function LabFileDropZone({
     }
 
     processInbox().catch(() => {});
-    return () => { cancelled = true; };
+    const unsubscribe = subscribeSharedFileInbox(() => {
+      processInbox().catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFocused]);
 

@@ -688,18 +688,6 @@ function TechDashboard() {
               styles.headerQuickBtn,
               pressed && styles.quickBtnPressed,
             ]}
-            onPress={() => router.push("/(tabs)/cases")}
-          >
-            <View style={[styles.quickIcon, { backgroundColor: Colors.light.accentLight }]}>
-              <Feather name="search" size={22} color={Colors.light.accent} />
-            </View>
-            <Text style={[styles.quickLabel, { color: themeColors.text }]}>Search Cases</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [
-              styles.headerQuickBtn,
-              pressed && styles.quickBtnPressed,
-            ]}
             onPress={async () => {
               if (Platform.OS === "web") {
                 setBatchLocateOpen(true);
