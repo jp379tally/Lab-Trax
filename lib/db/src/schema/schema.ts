@@ -1141,6 +1141,7 @@ export const installerUploads = pgTable(
       .default(sql`gen_random_uuid()`),
     sizeBytes: integer("size_bytes").notNull(),
     version: text("version"),
+    checksumSha256: text("checksum_sha256"),
     uploadedByUserId: varchar("uploaded_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),

@@ -1,5 +1,5 @@
 import express, { Router, type IRouter } from "express";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -3604,9 +3604,11 @@ Important rules:
             activeVersion = process.env.DESKTOP_INSTALLER_VERSION || null;
           }
           const reqUser = (req as any).user as { id?: string; username?: string } | undefined;
+          const checksumSha256 = createHash("sha256").update(file.buffer).digest("hex");
           await db.insert(installerUploads).values({
             sizeBytes: meta.size,
             version: activeVersion,
+            checksumSha256,
             uploadedByUserId: reqUser?.id ?? null,
             uploadedByUsername: reqUser?.username ?? null,
           });
@@ -3743,6 +3745,7 @@ Important rules:
           id: installerUploads.id,
           sizeBytes: installerUploads.sizeBytes,
           version: installerUploads.version,
+          checksumSha256: installerUploads.checksumSha256,
           uploadedByUserId: installerUploads.uploadedByUserId,
           uploadedByUsername: installerUploads.uploadedByUsername,
           createdAt: installerUploads.createdAt,

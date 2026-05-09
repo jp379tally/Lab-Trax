@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, ChevronDown, ChevronRight, Clock, Download, ExternalLink, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1716,9 +1716,42 @@ interface InstallerUploadEntry {
   id: string;
   sizeBytes: number;
   version: string | null;
+  checksumSha256: string | null;
   uploadedByUserId: string | null;
   uploadedByUsername: string | null;
   createdAt: string;
+}
+
+function ChecksumCell({ checksum }: { checksum: string | null }) {
+  const [copied, setCopied] = useState(false);
+  if (!checksum) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(checksum);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore clipboard errors
+    }
+  };
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="font-mono" title={checksum}>
+        {checksum.slice(0, 12)}
+      </span>
+      <button
+        type="button"
+        onClick={onCopy}
+        className="text-muted-foreground hover:text-foreground transition-colors"
+        title={copied ? "Copied!" : "Copy full SHA-256"}
+        aria-label={copied ? "Checksum copied" : "Copy full SHA-256 checksum"}
+      >
+        {copied ? <Check size={12} /> : <Copy size={12} />}
+      </button>
+    </div>
+  );
 }
 
 function DesktopInstallerUploadsPanel() {
@@ -1781,6 +1814,7 @@ function DesktopInstallerUploadsPanel() {
                     <th className="font-medium py-2 pr-3">When</th>
                     <th className="font-medium py-2 pr-3">Version</th>
                     <th className="font-medium py-2 pr-3">Size</th>
+                    <th className="font-medium py-2 pr-3">SHA-256</th>
                     <th className="font-medium py-2">Uploaded by</th>
                   </tr>
                 </thead>
@@ -1795,6 +1829,9 @@ function DesktopInstallerUploadsPanel() {
                       </td>
                       <td className="py-2 pr-3 whitespace-nowrap">
                         {formatInstallerSize(u.sizeBytes)}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap">
+                        <ChecksumCell checksum={u.checksumSha256} />
                       </td>
                       <td className="py-2 whitespace-nowrap">
                         {u.uploadedByUsername ?? (
