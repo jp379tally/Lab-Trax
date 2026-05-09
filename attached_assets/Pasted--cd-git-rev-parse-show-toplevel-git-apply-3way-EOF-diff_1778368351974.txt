@@ -1,0 +1,70 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/README.md b/README.md
+index ac307e40184a709b4c6f3ae4209d37e5b282a226..b5407592fd1d282ed45aa7f4e8e476a78fd3b0f5 100644
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,61 @@
+ # Lab-Software
++
+ Lab Software
++
++## Expo Router startup troubleshooting
++
++If Metro fails with an error like:
++
++```text
++Error: Unable to resolve module ./node_modules/expo-router/entry
++```
++
++Metro is trying to start an Expo Router app, but the generated entry file cannot be found from the app root. This usually means dependencies were not installed in the directory being run, `expo-router` is missing from `package.json`, or Metro is being launched from the wrong folder.
++
++### Fix checklist
++
++1. Open a terminal in the actual Expo app directory; in the screenshot this appears to be `C:\Users\sdrsm\Downloads\Lab-Trax (1)\Lab-Trax\artifacts\labtrax\labtrax`.
++2. Install dependencies in that directory:
++
++   ```bash
++   npm install
++   ```
++
++3. Ensure the app declares Expo Router as a dependency and entry point:
++
++   ```json
++   {
++     "main": "expo-router/entry",
++     "dependencies": {
++       "expo-router": "latest"
++     }
++   }
++   ```
++
++4. If `expo-router` is not installed, add it with Expo so the version matches the installed SDK:
++
++   ```bash
++   npx expo install expo-router react-native-safe-area-context react-native-screens react-native-gesture-handler react-native-reanimated
++   ```
++
++5. Restart Metro with a clean cache:
++
++   ```bash
++   npx expo start --clear
++   ```
++
++6. If the error still references `./node_modules/expo-router/entry`, delete `node_modules` and the lockfile from the Expo app directory, reinstall, and start again:
++
++   ```bash
++   rm -rf node_modules package-lock.json
++   npm install
++   npx expo start --clear
++   ```
++
++On Windows PowerShell, use this equivalent cleanup command:
++
++```powershell
++Remove-Item -Recurse -Force node_modules, package-lock.json
++npm install
++npx expo start --clear
++```
+ 
+EOF
+)
