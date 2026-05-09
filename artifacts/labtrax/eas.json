@@ -33,7 +33,10 @@
   "submit": {
     "production": {
       "ios": {
-        "ascAppId": "6760672646"
+        "ascAppId": "6760672646",
+        "appleApiKey": "./AuthKey_DUR33VZHP7.p8",
+        "appleApiKeyId": "DUR33VZHP7",
+        "appleApiIssuerId": "1d2faabc-3d66-4e64-b514-c234043e143a"
       }
     }
   }
