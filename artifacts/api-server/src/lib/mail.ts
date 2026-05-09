@@ -275,6 +275,117 @@ export async function sendCleanupRecoveryAlertEmail(
   }
 }
 
+export interface InstallerPublishFailureAlertParams {
+  adminEmails: string[];
+  /** Workflow name (e.g. "Build Windows Installer (Test)" or "Release"). */
+  workflowName?: string | null;
+  /** GitHub Actions run URL — direct link to the failing run. */
+  runUrl?: string | null;
+  /** Numeric run ID for cross-referencing. */
+  runId?: string | null;
+  /** Commit SHA the run was built from. */
+  commitSha?: string | null;
+  /** Git ref / tag (e.g. "v1.2.3" or "refs/heads/main"). */
+  ref?: string | null;
+  /** Installer version that was being published (from package.json or git tag). */
+  version?: string | null;
+  /** Stage that failed: "upload" (multipart upload), "settings" (PUT live URL), or "unknown". */
+  stage?: string | null;
+  /** HTTP status code from the failing API call, if known. */
+  httpStatus?: number | null;
+  /** Short error message / response body excerpt. Will be truncated to ~2KB. */
+  errorMessage?: string | null;
+  /** ISO timestamp when the failure was reported. Defaults to now. */
+  reportedAt?: string;
+}
+
+const PUBLISH_FAILURE_ERROR_MAX = 2048;
+
+export async function sendInstallerPublishFailureAlertEmail(
+  params: InstallerPublishFailureAlertParams,
+): Promise<void> {
+  if (params.adminEmails.length === 0) return;
+
+  const reportedAt = params.reportedAt ?? new Date().toISOString();
+  const dateStr = reportedAt.slice(0, 10);
+  const versionLabel = params.version?.trim() || "unknown version";
+  const workflowLabel = params.workflowName?.trim() || "GitHub Actions";
+  const subject = `LabTrax desktop installer auto-publish FAILED (${versionLabel}) on ${dateStr}`;
+
+  const stageLabel = (() => {
+    switch ((params.stage || "").toLowerCase()) {
+      case "upload":
+        return "Uploading installer to App Storage (POST /api/admin/desktop-installer/upload)";
+      case "settings":
+        return "Updating live download URL (PUT /api/admin/settings/desktop-installer)";
+      case "":
+      case "unknown":
+        return "Auto-publish step";
+      default:
+        return params.stage!;
+    }
+  })();
+
+  const truncatedError = params.errorMessage
+    ? params.errorMessage.length > PUBLISH_FAILURE_ERROR_MAX
+      ? params.errorMessage.slice(0, PUBLISH_FAILURE_ERROR_MAX) + "\n…[truncated]"
+      : params.errorMessage
+    : "(no error message provided)";
+
+  const rows: Array<{ label: string; value: string }> = [
+    { label: "Workflow", value: workflowLabel },
+    { label: "Failed stage", value: stageLabel },
+    { label: "Version", value: versionLabel },
+  ];
+  if (params.ref) rows.push({ label: "Ref", value: params.ref });
+  if (params.commitSha) rows.push({ label: "Commit", value: params.commitSha });
+  if (params.runId) rows.push({ label: "Run ID", value: params.runId });
+  if (typeof params.httpStatus === "number")
+    rows.push({ label: "HTTP status", value: String(params.httpStatus) });
+  rows.push({ label: "Reported at", value: reportedAt });
+
+  const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
+  const runLinkHtml = params.runUrl
+    ? `<p style="margin: 16px 0;"><a href="${escapeHtml(params.runUrl)}" style="display:inline-block;background:#4A6CF7;color:white;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:bold;">View failing GitHub Actions run</a></p>`
+    : "";
+  const runLinkText = params.runUrl ? `View the failing run: ${params.runUrl}\n` : "";
+
+  const rowsHtml = rows
+    .map(
+      (r, i) =>
+        `<tr style="background:${i % 2 === 0 ? "#f5f5f5" : "transparent"};"><td style="padding:8px 12px;font-weight:bold;">${escapeHtml(r.label)}</td><td style="padding:8px 12px;word-break:break-all;">${escapeHtml(r.value)}</td></tr>`,
+    )
+    .join("");
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+    <div style="background:#c0392b;color:white;padding:20px;border-radius:8px 8px 0 0;">
+      <h2 style="margin:0;">LabTrax</h2>
+      <p style="margin:4px 0 0;opacity:0.9;">Desktop installer auto-publish failed</p>
+    </div>
+    <div style="padding:20px;border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;">
+      <p>The CI step that automatically publishes the freshly-built Windows installer to the live download page failed. The live download page is still serving the previous installer until this is resolved.</p>
+      ${runLinkHtml}
+      <table style="border-collapse:collapse;width:100%;font-size:14px;">${rowsHtml}</table>
+      <h3 style="margin-top:20px;">Error</h3>
+      <pre style="background:#1e1e1e;color:#f5f5f5;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;">${escapeHtml(truncatedError)}</pre>
+      <h3 style="margin-top:20px;">What to do</h3>
+      <ol style="font-size:14px;line-height:1.5;">
+        <li>Open the failing run above and inspect the "Publish installer to live download page" step.</li>
+        <li>If it was transient (network blip, API restart), re-run the workflow.</li>
+        <li>If the secret was rotated or the API URL changed, update <code>PLATFORM_ADMIN_SECRET</code> / <code>PUBLISH_API_BASE_URL</code> in GitHub Actions secrets.</li>
+        <li>As a fallback, upload the installer manually from <a href="${settingsUrl}" style="color:#4A6CF7;">Settings → Desktop App</a>.</li>
+      </ol>
+    </div>
+  </div>`;
+
+  const rowsText = rows.map((r) => `${r.label}: ${r.value}`).join("\n");
+  const text = `LabTrax desktop installer auto-publish FAILED\n\n${rowsText}\n\nError:\n${truncatedError}\n\n${runLinkText}Fallback: upload manually at ${settingsUrl}`;
+
+  for (const email of params.adminEmails) {
+    await sendMail({ to: email, subject, html, text });
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

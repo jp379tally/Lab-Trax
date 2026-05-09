@@ -13,6 +13,7 @@ import {
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
 import { runOneDriveBackup, getBackupHourUtc, SETTING_BACKUP_HOUR_UTC } from "../lib/backup";
+import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
 import OpenAI, { toFile } from "openai";
@@ -3687,6 +3688,90 @@ Important rules:
           .status(500)
           .json({ error: e?.message || "Failed to upload installer." });
       }
+    },
+  );
+
+  // CI calls this when the auto-publish step in build-windows.yml / release.yml
+  // fails (upload or settings PUT returned non-2xx). We email the platform
+  // admin recipient list (same recipients as the cleanup alert) with the
+  // workflow run URL, version, stage, and error so the lab can re-run or
+  // fall back to a manual upload quickly. Gated by the standard
+  // X-Platform-Admin-Secret header — disable by unsetting PLATFORM_ADMIN_SECRET.
+  router.post(
+    "/admin/desktop-installer/publish-failure",
+    platformAdminUserOrSecret,
+    async (req, res) => {
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const asStr = (v: unknown): string | null => {
+        if (typeof v !== "string") return null;
+        const t = v.trim();
+        return t.length > 0 ? t : null;
+      };
+      const stageRaw = asStr(body.stage);
+      const stage =
+        stageRaw && ["upload", "settings", "unknown"].includes(stageRaw.toLowerCase())
+          ? stageRaw.toLowerCase()
+          : "unknown";
+      const httpStatusRaw = body.httpStatus;
+      const httpStatus =
+        typeof httpStatusRaw === "number" && Number.isFinite(httpStatusRaw)
+          ? Math.trunc(httpStatusRaw)
+          : null;
+      const errorMessage = asStr(body.errorMessage);
+      const runUrl = asStr(body.runUrl);
+      const runId = asStr(body.runId);
+      const commitSha = asStr(body.commitSha);
+      const ref = asStr(body.ref);
+      const version = asStr(body.version);
+      const workflowName = asStr(body.workflowName);
+
+      let adminEmails: string[] = [];
+      try {
+        const admins = await db
+          .select({ email: users.email })
+          .from(users)
+          .where(eq(users.role, "admin"));
+        adminEmails = admins
+          .map((u) => u.email)
+          .filter((e): e is string => Boolean(e));
+      } catch (e: any) {
+        req.log?.error?.({ err: e }, "publish-failure: failed to load admin emails");
+        return res
+          .status(500)
+          .json({ error: "Failed to load admin recipient list." });
+      }
+
+      try {
+        await sendInstallerPublishFailureAlertEmail({
+          adminEmails,
+          workflowName,
+          runUrl,
+          runId,
+          commitSha,
+          ref,
+          version,
+          stage,
+          httpStatus,
+          errorMessage,
+        });
+      } catch (e: any) {
+        req.log?.error?.({ err: e }, "publish-failure: send alert email failed");
+        return res
+          .status(500)
+          .json({ error: e?.message || "Failed to send alert email." });
+      }
+
+      req.log?.warn?.(
+        { runUrl, runId, version, stage, httpStatus, recipients: adminEmails.length },
+        "Desktop installer auto-publish failure reported by CI; admin alert dispatched.",
+      );
+      return res.json({
+        success: true,
+        recipients: adminEmails.length,
+      });
     },
   );
 
