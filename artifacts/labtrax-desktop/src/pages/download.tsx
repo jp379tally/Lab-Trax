@@ -1,4 +1,4 @@
-import { Download, FileText, FolderOpen, Loader2, Monitor, Package, Rocket } from "lucide-react";
+import { AlertTriangle, Download, FileText, FolderOpen, Loader2, Monitor, Package, Rocket } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 
@@ -7,6 +7,7 @@ interface DesktopInstallerPublicInfo {
   downloadUrl: string;
   fileName: string;
   releaseNotes: string | null;
+  available?: boolean;
 }
 
 const FALLBACK_VERSION = "1.0.0";
@@ -26,6 +27,7 @@ export default function DownloadPage() {
   const releaseNotes = info?.releaseNotes ?? null;
   const isExe = downloadUrl.toLowerCase().endsWith(".exe");
   const isZip = downloadUrl.toLowerCase().endsWith(".zip");
+  const unavailable = info?.available === false;
 
   return (
     <div className="px-8 py-7 max-w-[760px] mx-auto">
@@ -55,14 +57,26 @@ export default function DownloadPage() {
                   ? "Portable ZIP — no installer required. Works on Windows 10 and 11 (64-bit)."
                   : "Windows download. Works on Windows 10 and 11 (64-bit)."}
             </p>
-            <a
-              href={downloadUrl}
-              download={fileName}
-              className="mt-4 inline-flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium px-5 py-2.5 rounded-md transition-colors"
-            >
-              <Download size={16} />
-              Download {fileName}
-            </a>
+            {unavailable ? (
+              <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-950/30 px-4 py-3 flex items-start gap-2.5 text-sm">
+                <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                <div className="text-amber-800 dark:text-amber-200">
+                  <div className="font-semibold">Download temporarily unavailable</div>
+                  <p className="text-xs mt-1 text-amber-700 dark:text-amber-300/90">
+                    The LabTrax Desktop installer is being refreshed. Please check back in a little while, or contact your lab admin.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <a
+                href={downloadUrl}
+                download={fileName}
+                className="mt-4 inline-flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium px-5 py-2.5 rounded-md transition-colors"
+              >
+                <Download size={16} />
+                Download {fileName}
+              </a>
+            )}
           </div>
         </div>
       </div>

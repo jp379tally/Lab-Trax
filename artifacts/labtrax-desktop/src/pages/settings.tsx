@@ -1289,6 +1289,9 @@ interface DesktopInstallerInfo {
   releaseNotes: string | null;
   dbReleaseNotes: string | null;
   installerObject: { size: number; uploadedAt: string } | null;
+  installerStatus: "ok" | "missing" | "stale" | "external" | "unknown";
+  installerStatusMessage: string | null;
+  settingsUpdatedAt: string | null;
 }
 
 function formatInstallerSize(bytes: number): string {
@@ -1308,6 +1311,22 @@ function formatInstallerTimestamp(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function InstallerStatusBadge({ status }: { status: DesktopInstallerInfo["installerStatus"] }) {
+  const map: Record<DesktopInstallerInfo["installerStatus"], { label: string; cls: string }> = {
+    ok: { label: "Ready", cls: "bg-success/15 text-success" },
+    missing: { label: "Missing", cls: "bg-destructive/15 text-destructive" },
+    stale: { label: "Stale", cls: "bg-amber-500/15 text-amber-700 dark:text-amber-400" },
+    external: { label: "External", cls: "bg-secondary text-muted-foreground" },
+    unknown: { label: "Unknown", cls: "bg-destructive/15 text-destructive" },
+  };
+  const { label, cls } = map[status] ?? map.unknown;
+  return (
+    <span className={`text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full ${cls}`}>
+      {label}
+    </span>
+  );
 }
 
 function DesktopInstallerPanel() {
@@ -1449,8 +1468,11 @@ function DesktopInstallerPanel() {
           ) : (
             <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
               <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="text-sm font-semibold">LabTrax Desktop for Windows</div>
+                    <InstallerStatusBadge status={info.installerStatus} />
+                  </div>
                   <div className="text-xs text-muted-foreground mt-0.5">
                     Version {info.version} · {info.fileName}
                   </div>
@@ -1464,12 +1486,27 @@ function DesktopInstallerPanel() {
                   {isZip ? "Download Portable ZIP" : "Download Installer"}
                 </a>
               </div>
+              {info.installerStatusMessage && info.installerStatus !== "ok" && (
+                <div
+                  className={`text-[12px] rounded-md px-3 py-2 ${
+                    info.installerStatus === "missing" || info.installerStatus === "unknown"
+                      ? "bg-destructive/10 text-destructive"
+                      : info.installerStatus === "stale"
+                        ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                        : "bg-secondary text-muted-foreground"
+                  }`}
+                >
+                  {info.installerStatusMessage}
+                </div>
+              )}
               <div className="text-[11px] text-muted-foreground">
                 {info.installerObject ? (
                   <>
                     Current installer: {formatInstallerSize(info.installerObject.size)} · uploaded{" "}
                     {formatInstallerTimestamp(info.installerObject.uploadedAt)}
                   </>
+                ) : info.installerStatus === "external" ? (
+                  <>External download — file is hosted outside App Storage.</>
                 ) : (
                   <span className="text-amber-600 dark:text-amber-400">
                     No {isExe ? "installer" : "portable zip"} has been uploaded to App Storage yet — the download link will return 404 until an admin uploads <code className="font-mono bg-secondary px-1 py-0.5 rounded">{isExe ? "LabTrax-Setup.exe" : "LabTrax-Windows-Portable.zip"}</code> below.

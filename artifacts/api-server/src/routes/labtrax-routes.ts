@@ -3381,18 +3381,24 @@ Important rules:
     }
     const fileName = rawUrl.split("/").pop() ?? "LabTrax-Windows-Portable.zip";
     const activeKind = installerKindFromUrl(rawUrl);
+    const isLocalDownload = rawUrl.startsWith("/downloads/");
     const installerObject = activeKind
       ? await getDesktopInstallerMetadata(activeKind).catch((err) => {
           req.log.error({ err }, "Failed to read desktop installer metadata from App Storage");
           return null;
         })
       : null;
+    // For locally-served downloads we know whether the file exists in App
+    // Storage; for external https:// URLs we can't check without a HEAD request,
+    // so report them as available and let the browser handle a 404.
+    const available = isLocalDownload ? installerObject !== null : true;
     return res.json({
       version,
       downloadUrl: rawUrl,
       fileName,
       releaseNotes,
       installerObject,
+      available,
     });
   });
 
@@ -3414,6 +3420,9 @@ Important rules:
         ]),
       );
     const byKey = Object.fromEntries(dbRows.map((r) => [r.key, r.value]));
+    const updatedAtByKey = Object.fromEntries(
+      dbRows.map((r) => [r.key, r.updatedAt as Date | null] as const),
+    );
     const dbUrl = byKey[SETTING_DESKTOP_INSTALLER_URL] ?? null;
     const dbVersion = byKey[SETTING_DESKTOP_INSTALLER_VERSION] ?? null;
     const dbReleaseNotes = byKey[SETTING_DESKTOP_INSTALLER_RELEASE_NOTES] ?? null;
@@ -3439,6 +3448,46 @@ Important rules:
           (err as Error)?.message || "Could not read installer metadata from storage.";
       }
     }
+    // Status badge: classify the active download URL so admins see at a glance
+    // whether the link will actually work.
+    //   - "external": URL is https://… so we can't introspect it; assume ok.
+    //   - "missing":  /downloads/ URL but no installer of that kind in App Storage.
+    //   - "stale":    file is uploaded but predates the latest version/URL change.
+    //   - "ok":       file is present and was uploaded at/after the last settings change.
+    //   - "unknown":  url is invalid (urlError set) or storage read failed.
+    const versionUpdatedAt = updatedAtByKey[SETTING_DESKTOP_INSTALLER_VERSION] ?? null;
+    const urlUpdatedAt = updatedAtByKey[SETTING_DESKTOP_INSTALLER_URL] ?? null;
+    const settingsUpdatedAt =
+      versionUpdatedAt && urlUpdatedAt
+        ? versionUpdatedAt > urlUpdatedAt
+          ? versionUpdatedAt
+          : urlUpdatedAt
+        : (versionUpdatedAt ?? urlUpdatedAt ?? null);
+    let installerStatus: "ok" | "missing" | "stale" | "external" | "unknown";
+    let installerStatusMessage: string | null = null;
+    if (urlError || installerObjectError) {
+      installerStatus = "unknown";
+      if (installerObjectError) {
+        installerStatusMessage = installerObjectError;
+      }
+    } else if (!rawUrl.startsWith("/downloads/")) {
+      installerStatus = "external";
+      installerStatusMessage =
+        "External URL — LabTrax can't verify whether this download still works.";
+    } else if (!installerObject) {
+      installerStatus = "missing";
+      installerStatusMessage = activeKind === "exe"
+        ? "No LabTrax-Setup.exe is uploaded — this download link will return 404."
+        : "No LabTrax-Windows-Portable.zip is uploaded — this download link will return 404.";
+    } else if (
+      settingsUpdatedAt &&
+      new Date(installerObject.uploadedAt).getTime() < settingsUpdatedAt.getTime() - 1000
+    ) {
+      installerStatus = "stale";
+      installerStatusMessage = `Installer was uploaded before the current v${version} settings were saved — upload a fresh build so the download matches.`;
+    } else {
+      installerStatus = "ok";
+    }
     return res.json({
       version,
       dbVersion,
@@ -3455,6 +3504,9 @@ Important rules:
       dbReleaseNotes,
       installerObject,
       activeKind,
+      installerStatus,
+      installerStatusMessage,
+      settingsUpdatedAt: settingsUpdatedAt ? settingsUpdatedAt.toISOString() : null,
     });
   });
 
