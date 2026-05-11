@@ -31,6 +31,13 @@ jobs:
       # CI_GOOGLE_CREDENTIALS_JSON and contains the full JSON of a service
       # account that has objectAdmin rights on the staging installer bucket.
       #
+      # To provision the staging bucket and populate all four secrets, run:
+      #   bash .github/scripts/setup-gcs-staging-bucket.sh --project YOUR_GCP_PROJECT_ID
+      # The script creates the bucket, service account (with objectAdmin rights
+      # on the bucket only — not project-wide), and a key file, then prints the
+      # exact values to paste into repository Settings → Secrets and variables.
+      # If the GitHub CLI (gh) is available it can set the secrets automatically.
+      #
       # If the secret is absent the write step is skipped, GOOGLE_APPLICATION_
       # CREDENTIALS stays unset, and the storage integration test auto-skips
       # via its own guard (SUITE_ENABLED check in installer-storage-e2e.test.ts).
