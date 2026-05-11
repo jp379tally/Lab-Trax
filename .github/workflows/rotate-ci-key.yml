@@ -1,0 +1,261 @@
+name: Rotate CI GCS Key
+
+# Automatically rotates the CI_GOOGLE_CREDENTIALS_JSON repository secret each
+# month so the service account key never silently expires or goes unnoticed.
+#
+# How it works
+# ------------
+# 1. Authenticates as a dedicated "rotation" service account whose only
+#    permission is roles/iam.serviceAccountKeyAdmin on the CI runner SA.
+# 2. Creates a fresh key for the CI runner SA.
+# 3. Overwrites CI_GOOGLE_CREDENTIALS_JSON via the GitHub CLI (requires a
+#    fine-grained PAT with "Secrets: Read and write" scope stored as
+#    ROTATION_GITHUB_PAT).
+# 4. Deletes the old key from GCP so it can never be used again.
+# 5. On any failure, opens a GitHub issue so the team is alerted before the
+#    stale key affects CI.
+#
+# Required repository secrets (in addition to the four storage test secrets)
+# --------------------------------------------------------------------------
+# CI_ROTATION_CREDENTIALS_JSON  — JSON key for the rotation SA; create with:
+#     bash .github/scripts/setup-gcs-staging-bucket.sh --project <PROJECT> --setup-rotation
+# ROTATION_GITHUB_PAT           — fine-grained PAT with "Secrets: Read/write"
+#                                  on this repository (no expiry, or renew yearly)
+#
+# When the required secrets are absent the job is skipped cleanly — existing
+# repos that haven't set up rotation yet are unaffected.
+#
+# Manual dispatch
+# ---------------
+# Go to Actions → "Rotate CI GCS Key" → "Run workflow".
+# Tick "Dry run" to see what would happen without making any changes.
+
+on:
+  schedule:
+    # 02:00 UTC on the 1st of every month
+    - cron: '0 2 1 * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — print what would happen without making changes'
+        type: boolean
+        default: false
+
+jobs:
+  rotate-key:
+    name: Rotate CI_GOOGLE_CREDENTIALS_JSON
+    runs-on: ubuntu-latest
+
+    # Skip entirely when the rotation secrets are not configured so this
+    # workflow does not fail for repos that haven't set up rotation yet.
+    if: |
+      secrets.CI_ROTATION_CREDENTIALS_JSON != '' &&
+      secrets.ROTATION_GITHUB_PAT != '' &&
+      secrets.CI_GOOGLE_CREDENTIALS_JSON != ''
+
+    permissions:
+      # Needed to open a failure issue via gh
+      issues: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install a pinned version of the Cloud SDK so runner-image updates
+      # cannot change gcloud behaviour under us.  jq and gh are already
+      # present on all GitHub-hosted ubuntu-latest runners.
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          version: '>= 500.0.0'
+
+      # -----------------------------------------------------------------------
+      # Authenticate the rotation service account
+      # -----------------------------------------------------------------------
+      - name: Authenticate rotation service account
+        id: auth
+        run: |
+          echo '${{ secrets.CI_ROTATION_CREDENTIALS_JSON }}' > /tmp/rotation-key.json
+          gcloud auth activate-service-account --key-file=/tmp/rotation-key.json
+          echo "Rotation SA authenticated."
+
+      # -----------------------------------------------------------------------
+      # Extract metadata from the current credential so we know which key to
+      # delete after the new one is in place.
+      # -----------------------------------------------------------------------
+      - name: Extract current key metadata
+        id: current
+        run: |
+          CREDS='${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}'
+          SA_EMAIL=$(echo "$CREDS" | jq -r '.client_email')
+          OLD_KEY_ID=$(echo "$CREDS" | jq -r '.private_key_id')
+          PROJECT=$(echo "$CREDS" | jq -r '.project_id')
+
+          if [[ -z "$SA_EMAIL" || "$SA_EMAIL" == "null" ]]; then
+            echo "::error::CI_GOOGLE_CREDENTIALS_JSON does not look like a valid service account key."
+            exit 1
+          fi
+
+          echo "sa_email=$SA_EMAIL"   >> "$GITHUB_OUTPUT"
+          echo "old_key_id=$OLD_KEY_ID" >> "$GITHUB_OUTPUT"
+          echo "project=$PROJECT"     >> "$GITHUB_OUTPUT"
+          echo "SA: $SA_EMAIL  |  old key: $OLD_KEY_ID  |  project: $PROJECT"
+
+      # -----------------------------------------------------------------------
+      # Warn (but do not fail) if the existing key is surprisingly old.
+      # The rotation should prevent this, but it catches keys that pre-date
+      # this workflow.
+      # -----------------------------------------------------------------------
+      - name: Check existing key age
+        env:
+          SA_EMAIL: ${{ steps.current.outputs.sa_email }}
+          OLD_KEY_ID: ${{ steps.current.outputs.old_key_id }}
+          PROJECT: ${{ steps.current.outputs.project }}
+        run: |
+          CREATED_AT=$(gcloud iam service-accounts keys describe "$OLD_KEY_ID" \
+            --iam-account="$SA_EMAIL" \
+            --project="$PROJECT" \
+            --format="value(validAfterTime)" 2>/dev/null || echo "")
+
+          if [[ -z "$CREATED_AT" ]]; then
+            echo "::warning::Could not retrieve creation time for key $OLD_KEY_ID — it may have already been deleted or the rotation SA lacks describe permission."
+          else
+            # GNU date for Linux runners
+            CREATED_TS=$(date -d "$CREATED_AT" +%s 2>/dev/null || echo "0")
+            NOW_TS=$(date +%s)
+            AGE_DAYS=$(( (NOW_TS - CREATED_TS) / 86400 ))
+            echo "Current key age: $AGE_DAYS day(s) (created $CREATED_AT)"
+            if [[ $AGE_DAYS -gt 40 ]]; then
+              echo "::warning::Key $OLD_KEY_ID is $AGE_DAYS days old — older than the expected ~31-day rotation cadence. Check that the monthly workflow has been running."
+            fi
+          fi
+
+      # -----------------------------------------------------------------------
+      # Create a new key for the CI runner SA
+      # -----------------------------------------------------------------------
+      - name: Create new GCS key
+        id: new-key
+        env:
+          SA_EMAIL: ${{ steps.current.outputs.sa_email }}
+          PROJECT: ${{ steps.current.outputs.project }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::[DRY RUN] Would create a new key for $SA_EMAIL in project $PROJECT"
+            echo "new_key_id=dry-run-placeholder" >> "$GITHUB_OUTPUT"
+            # Write a sentinel so subsequent steps can detect dry-run mode
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            NEW_KEY_FILE=/tmp/new-gcs-ci-key.json
+            gcloud iam service-accounts keys create "$NEW_KEY_FILE" \
+              --iam-account="$SA_EMAIL" \
+              --project="$PROJECT"
+
+            NEW_KEY_ID=$(jq -r '.private_key_id' "$NEW_KEY_FILE")
+            echo "new_key_id=$NEW_KEY_ID" >> "$GITHUB_OUTPUT"
+            echo "skipped=false"          >> "$GITHUB_OUTPUT"
+
+            # Store the JSON safely in GITHUB_OUTPUT using a heredoc delimiter
+            {
+              echo "new_key_json<<__KEYEOF__"
+              cat "$NEW_KEY_FILE"
+              echo "__KEYEOF__"
+            } >> "$GITHUB_OUTPUT"
+
+            # Wipe the file from disk immediately — the value lives in the
+            # step output (encrypted at rest by Actions) from here on.
+            rm -f "$NEW_KEY_FILE"
+            echo "::notice::Created new key $NEW_KEY_ID for $SA_EMAIL"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Push the new key to the repository secret
+      # -----------------------------------------------------------------------
+      - name: Update CI_GOOGLE_CREDENTIALS_JSON secret
+        if: steps.new-key.outputs.skipped != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ROTATION_GITHUB_PAT }}
+        run: |
+          printf '%s' '${{ steps.new-key.outputs.new_key_json }}' \
+            | gh secret set CI_GOOGLE_CREDENTIALS_JSON \
+                --repo "${{ github.repository }}"
+          echo "::notice::CI_GOOGLE_CREDENTIALS_JSON updated in repository secrets."
+
+      # -----------------------------------------------------------------------
+      # Delete the old key — only after the secret has been updated so there
+      # is no window where CI has no valid credentials.
+      # Deletion is idempotent: if the key was already removed (e.g. a
+      # previous partial run deleted it) we log a notice and move on rather
+      # than failing the workflow.
+      # -----------------------------------------------------------------------
+      - name: Delete old GCS key
+        if: steps.new-key.outputs.skipped != 'true'
+        env:
+          SA_EMAIL: ${{ steps.current.outputs.sa_email }}
+          OLD_KEY_ID: ${{ steps.current.outputs.old_key_id }}
+          PROJECT: ${{ steps.current.outputs.project }}
+        run: |
+          if gcloud iam service-accounts keys describe "$OLD_KEY_ID" \
+              --iam-account="$SA_EMAIL" \
+              --project="$PROJECT" \
+              --format="value(name)" &>/dev/null 2>&1; then
+            gcloud iam service-accounts keys delete "$OLD_KEY_ID" \
+              --iam-account="$SA_EMAIL" \
+              --project="$PROJECT" \
+              --quiet
+            echo "::notice::Deleted old key $OLD_KEY_ID — rotation complete."
+          else
+            echo "::notice::Key $OLD_KEY_ID was not found in GCP (already deleted or never existed) — treating as already removed. Rotation complete."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Dry-run summary
+      # -----------------------------------------------------------------------
+      - name: Dry-run summary
+        if: inputs.dry_run == true || inputs.dry_run == 'true'
+        env:
+          SA_EMAIL: ${{ steps.current.outputs.sa_email }}
+          OLD_KEY_ID: ${{ steps.current.outputs.old_key_id }}
+          PROJECT: ${{ steps.current.outputs.project }}
+        run: |
+          echo ""
+          echo "DRY RUN complete — no changes were made."
+          echo "On a real run this workflow would:"
+          echo "  1. Create a new key for $SA_EMAIL (project: $PROJECT)"
+          echo "  2. Update CI_GOOGLE_CREDENTIALS_JSON in ${{ github.repository }} secrets"
+          echo "  3. Delete old key $OLD_KEY_ID from GCP"
+
+      # -----------------------------------------------------------------------
+      # Always clean up any temp files
+      # -----------------------------------------------------------------------
+      - name: Clean up temp files
+        if: always()
+        run: rm -f /tmp/rotation-key.json /tmp/new-gcs-ci-key.json
+
+      # -----------------------------------------------------------------------
+      # On failure, open a GitHub issue so the team is notified
+      # -----------------------------------------------------------------------
+      - name: Open failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.ROTATION_GITHUB_PAT }}
+        run: |
+          TITLE="CI GCS key rotation failed ($(date -u '+%Y-%m-%d'))"
+          BODY="The monthly CI GCS key rotation workflow failed on $(date -u '+%Y-%m-%d at %H:%M UTC').
+
+          The CI service account key may be stale or have already been partially rotated. **CI storage integration tests may start failing if this is not resolved.**
+
+          **Failed run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          **Steps to fix:**
+          1. Check the failed run logs above for the specific error.
+          2. If the new key was created but the secret was not updated, manually set \`CI_GOOGLE_CREDENTIALS_JSON\` from the GCP console or using \`gcloud iam service-accounts keys create\` + \`gh secret set\`.
+          3. Delete any orphan keys from the GCP IAM console for the CI runner SA.
+          4. Re-run this workflow once the issue is resolved."
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --label "ci" \
+          || echo "::warning::Could not open a failure issue — check that ROTATION_GITHUB_PAT has the 'Issues: Read/write' permission."

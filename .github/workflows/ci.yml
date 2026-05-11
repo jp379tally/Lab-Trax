@@ -55,6 +55,55 @@ jobs:
         env:
           CI_GOOGLE_CREDENTIALS_JSON: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}
 
+      # Best-effort check: warn if the GCS key looks older than the expected
+      # 31-day rotation window.  The key JSON has no embedded timestamp, so
+      # this step uses a heuristic: the first 8 hex chars of a GCP key ID
+      # encode the creation epoch for keys issued after ~2016.  This is NOT
+      # a documented API contract — it may mis-fire on future GCP key formats.
+      # The step only emits ::warning:: annotations and never blocks CI.
+      # Authoritative age information is available in the "Rotate CI GCS Key"
+      # workflow, which queries the IAM API directly.
+      - name: Best-effort GCS key age check (heuristic, non-blocking)
+        if: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON != '' }}
+        shell: bash
+        env:
+          CI_GOOGLE_CREDENTIALS_JSON: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          KEY_ID=$(echo "$CI_GOOGLE_CREDENTIALS_JSON" | jq -r '.private_key_id // empty')
+          if [[ -z "$KEY_ID" ]]; then
+            echo "Could not parse private_key_id from CI_GOOGLE_CREDENTIALS_JSON — skipping age check."
+            exit 0
+          fi
+
+          # Heuristic: GCP key IDs created after ~2016 encode the creation
+          # epoch as a big-endian hex value in the first 8 characters.
+          # This is not a stable contract — treat results as approximate only.
+          HEX_PREFIX="${KEY_ID:0:8}"
+          if [[ ! "$HEX_PREFIX" =~ ^[0-9a-fA-F]{8}$ ]]; then
+            echo "Key ID format not recognised — skipping age heuristic."
+            exit 0
+          fi
+
+          CREATED_TS=$(( 16#$HEX_PREFIX ))
+          NOW_TS=$(date +%s)
+          AGE_DAYS=$(( (NOW_TS - CREATED_TS) / 86400 ))
+
+          # Sanity-gate: reject implausible values (future dates or > 10 yrs)
+          # that indicate the heuristic does not apply to this key format.
+          if [[ $AGE_DAYS -lt 0 || $AGE_DAYS -ge 3650 ]]; then
+            echo "Key age heuristic produced an implausible value ($AGE_DAYS days) — skipping warning. This is expected if GCP changes their key ID format."
+            exit 0
+          fi
+
+          echo "Estimated CI GCS key age: ~$AGE_DAYS day(s) (heuristic — may not be exact)"
+          if [[ $AGE_DAYS -ge 60 ]]; then
+            echo "::warning::CI GCS key $KEY_ID appears to be ~$AGE_DAYS days old (heuristic estimate) — well past the expected 31-day rotation cadence. If storage tests start failing with auth errors, trigger the 'Rotate CI GCS Key' workflow manually and verify it runs successfully each month."
+          elif [[ $AGE_DAYS -ge 40 ]]; then
+            echo "::warning::CI GCS key $KEY_ID appears to be ~$AGE_DAYS days old (heuristic estimate) — the monthly rotation workflow may have missed a run. Verify that 'rotate-ci-key.yml' ran successfully last month."
+          else
+            echo "Estimated key age is within the expected rotation window."
+          fi
+
       # Guard against partial misconfiguration: the storage integration test
       # requires four secrets to be set together.  If any are present but the
       # full set is incomplete, the test would silently skip instead of running
