@@ -11,11 +11,12 @@ import {
   cases,
   invoiceLineItems,
   invoices,
+  labCases,
   organizationMemberships,
   organizations,
   payments,
 } from "@workspace/db";
-import { inArray } from "drizzle-orm";
+import { inArray, isNull } from "drizzle-orm";
 import { ensureInvoiceDeposit } from "../lib/invoice-deposits";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
@@ -625,39 +626,127 @@ router.get(
       .filter((m: any) => m.status === "active")
       .map((m: any) => m.labId);
 
+    // Diagnostic guardrail: if the user has zero active memberships, the
+    // invoices list will be empty regardless of how much data exists in the
+    // database. Surface that in the server log so future "I see nothing"
+    // reports can be diagnosed from logs alone (response shape unchanged).
+    if (orgIds.length === 0) {
+      const totalMemberships = memberships.length;
+      const nonActiveStatuses = Array.from(
+        new Set(
+          memberships
+            .map((m: any) => m.status)
+            .filter((s: any) => s && s !== "active")
+        )
+      );
+      req.log.warn(
+        {
+          userId: (req as any).auth.userId,
+          totalMemberships,
+          nonActiveStatuses,
+        },
+        "GET /api/invoices returning [] because user has no active organization memberships"
+      );
+    }
+
     const caseIdFilter =
       typeof req.query.caseId === "string" && req.query.caseId
         ? req.query.caseId
         : null;
 
-    const rows = orgIds.length
-      ? await db.query.invoices.findMany({
-          where: and(
-            caseIdFilter ? eq(invoices.caseId, caseIdFilter) : undefined,
-            or(
-              ...orgIds.flatMap((orgId: string) => [
-                eq(invoices.labOrganizationId, orgId),
-                eq(invoices.providerOrganizationId, orgId),
-              ])
+    const [rows, mobileCaseRows] = await Promise.all([
+      orgIds.length
+        ? db.query.invoices.findMany({
+            where: and(
+              caseIdFilter ? eq(invoices.caseId, caseIdFilter) : undefined,
+              isNull(invoices.deletedAt),
+              or(
+                ...orgIds.flatMap((orgId: string) => [
+                  eq(invoices.labOrganizationId, orgId),
+                  eq(invoices.providerOrganizationId, orgId),
+                ])
+              )
+            ),
+            orderBy: [desc(invoices.createdAt)],
+          })
+        : Promise.resolve([] as any[]),
+      orgIds.length
+        ? db
+            .select()
+            .from(labCases)
+            .where(
+              and(
+                isNull(labCases.deletedAt),
+                inArray(labCases.organizationId, orgIds)
+              )
             )
-          ),
-          orderBy: [desc(invoices.createdAt)],
-        })
-      : [];
+        : Promise.resolve([] as any[]),
+    ]);
 
-    if (!rows.length) return ok(res, []);
+    // Bridge mobile-origin invoices into the desktop list. Mobile cases store
+    // an `invoiceId` reference inside `lab_cases.case_data` JSON but the
+    // device-local invoice payload itself is only weakly synced to the server's
+    // relational `invoices` table (see `generateServerInvoiceForCase` in the
+    // mobile app-context). Until that sync is fully reliable, synthesize a
+    // read-only invoice row per case-with-invoiceId so the desktop Invoices
+    // page reflects what the mobile user actually sees. Server-real invoices
+    // (matched by caseId) take precedence.
+    const realCaseIds = new Set(
+      rows.map((r: any) => r.caseId).filter((id: any): id is string => !!id)
+    );
+    type SynthesizedInvoice = ReturnType<typeof toMobileInvoice>;
+    const mobileInvoices: SynthesizedInvoice[] = [];
+    for (const lc of mobileCaseRows as any[]) {
+      if (caseIdFilter && lc.id !== caseIdFilter) continue;
+      if (realCaseIds.has(lc.id)) continue;
+      try {
+        const parsed =
+          typeof lc.caseData === "string"
+            ? JSON.parse(lc.caseData)
+            : lc.caseData;
+        if (!parsed || typeof parsed !== "object") continue;
+        const localInvoiceId =
+          typeof parsed.invoiceId === "string" && parsed.invoiceId
+            ? parsed.invoiceId
+            : null;
+        if (!localInvoiceId) continue;
+        if (!lc.organizationId) continue;
+        if (!orgIds.includes(lc.organizationId)) continue;
+        mobileInvoices.push(toMobileInvoice(lc, parsed, localInvoiceId));
+      } catch {
+        // skip malformed rows
+      }
+    }
+
+    // Diagnostic guardrail (Step 5b): the user has active memberships but the
+    // database has zero matching invoices AND no mobile-origin invoices either.
+    // That points at a data-source problem (mobile sync not running, lab is
+    // brand new, etc.) rather than a scoping bug — surface it in the log so
+    // future "I see nothing" reports can be triaged from logs alone.
+    if (orgIds.length > 0 && rows.length === 0 && mobileInvoices.length === 0) {
+      req.log.warn(
+        {
+          userId: (req as any).auth.userId,
+          activeOrgIds: orgIds,
+          mobileCaseRowsScanned: mobileCaseRows.length,
+        },
+        "GET /api/invoices returning [] despite active memberships: no rows in invoices table and no mobile-origin invoiceIds in lab_cases"
+      );
+    }
+
     const orgIdsToFetch = Array.from(
-      new Set(
-        rows.flatMap((r: any) => [r.providerOrganizationId, r.labOrganizationId])
-      )
+      new Set([
+        ...rows.flatMap((r: any) => [r.providerOrganizationId, r.labOrganizationId]),
+        ...mobileInvoices.flatMap((r) => [r.providerOrganizationId, r.labOrganizationId]),
+      ].filter((id): id is string => !!id))
     );
     const orgRows = orgIdsToFetch.length
       ? await db.select().from(organizations).where(inArray(organizations.id, orgIdsToFetch))
       : [];
     const orgsById = new Map(orgRows.map((o: any) => [o.id, o]));
-    const enriched = rows.map((r: any) => ({
+    const enrich = (r: any) => ({
       ...r,
-      providerOrganization: orgsById.get(r.providerOrganizationId)
+      providerOrganization: r.providerOrganizationId && orgsById.get(r.providerOrganizationId)
         ? {
             id: r.providerOrganizationId,
             name:
@@ -665,7 +754,7 @@ router.get(
               orgsById.get(r.providerOrganizationId)!.name,
           }
         : null,
-      labOrganization: orgsById.get(r.labOrganizationId)
+      labOrganization: r.labOrganizationId && orgsById.get(r.labOrganizationId)
         ? {
             id: r.labOrganizationId,
             name:
@@ -673,10 +762,82 @@ router.get(
               orgsById.get(r.labOrganizationId)!.name,
           }
         : null,
-    }));
+    });
+    const enriched = [...rows.map(enrich), ...mobileInvoices.map(enrich)].sort(
+      (a: any, b: any) =>
+        String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? ""))
+    );
     return ok(res, enriched);
   })
 );
+
+function toMobileInvoice(lc: any, parsed: any, localInvoiceId: string) {
+  // Mobile timestamps are usually epoch numbers (Date.now()), but older /
+  // imported rows may carry ISO strings. Accept both, fall back to lab_cases
+  // updated_at, then to "now" so a malformed timestamp never silently drops
+  // the row (caught by the outer try/catch).
+  const parseTs = (v: unknown): string | null => {
+    if (v == null || v === "") return null;
+    if (typeof v === "number" && Number.isFinite(v)) {
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+    if (typeof v === "string") {
+      const asNum = Number(v);
+      if (Number.isFinite(asNum) && /^\d+$/.test(v.trim())) {
+        const d = new Date(asNum);
+        return Number.isNaN(d.getTime()) ? null : d.toISOString();
+      }
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+    return null;
+  };
+  const lcUpdatedAt =
+    lc.updatedAt instanceof Date ? lc.updatedAt.toISOString() : null;
+  const createdAt =
+    parseTs(parsed.updatedAt) ??
+    parseTs(parsed.createdAt) ??
+    lcUpdatedAt ??
+    new Date().toISOString();
+  const price = Number(parsed.price ?? 0);
+  const total = Number.isFinite(price) ? price.toFixed(2) : "0.00";
+  const caseNumber = String(parsed.caseNumber ?? "");
+  const invoiceNumber = caseNumber
+    ? `M-${caseNumber}`
+    : `M-${localInvoiceId.slice(-8)}`;
+  return {
+    id: `mobile:${localInvoiceId}`,
+    invoiceNumber,
+    caseId: lc.id,
+    labOrganizationId: lc.organizationId as string,
+    providerOrganizationId: null as string | null,
+    status: "open" as const,
+    subtotal: total,
+    tax: "0.00",
+    discount: "0.00",
+    total,
+    balanceDue: total,
+    issuedAt: createdAt,
+    dueAt: parsed.dueDate ?? null,
+    notes: parsed.notes ?? null,
+    displayMetadataJson: {
+      patientName: parsed.patientName ?? null,
+      caseType: parsed.caseType ?? null,
+      teeth: parsed.toothIndices ?? null,
+      shade: parsed.shade ?? null,
+      doctorName: parsed.doctorName ?? null,
+      source: "mobile",
+    },
+    createdByUserId: lc.ownerId as string,
+    updatedByUserId: null,
+    createdAt,
+    updatedAt: createdAt,
+    deletedAt: null,
+    deletedByUserId: null,
+    _source: "mobile" as const,
+  };
+}
 
 router.get(
   "/:invoiceId",
