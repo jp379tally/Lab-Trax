@@ -226,6 +226,20 @@ export async function uploadDesktopInstaller(
 }
 
 /**
+ * Deletes the stored installer of the given kind from App Storage.
+ * No-ops when App Storage is not configured or the object does not exist.
+ */
+export async function deleteDesktopInstaller(
+  kind: DesktopInstallerKind = "zip",
+): Promise<void> {
+  if (!process.env.PRIVATE_OBJECT_DIR) return;
+  const file = getInstallerFile(kind);
+  const [exists] = await file.exists();
+  if (!exists) return;
+  await file.delete();
+}
+
+/**
  * Maps a download URL or filename to the corresponding installer kind.
  * Returns null when the URL doesn't reference a locally-stored installer.
  */

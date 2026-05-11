@@ -25,15 +25,26 @@
  *  (isPlatformAdmin() always returns false when the secret is unset, so the
  *  upload endpoint blocks all callers — by design).
  *
- * Side-effect note:
- *  Running this test overwrites the live "exe" installer slot in App Storage
- *  with a small dummy file.  Re-upload the real installer afterwards if the
- *  test runs against a production bucket.
+ * Storage cleanup:
+ *  The test snapshots the existing "exe" installer (if any) in beforeAll, then
+ *  restores it in afterAll.  If no installer existed before the test ran, the
+ *  dummy file is deleted so the slot is left clean.
+ *
+ *  Cleanup is safe to repeat: uploadDesktopInstaller and deleteDesktopInstaller
+ *  are idempotent.  If afterAll fails mid-way (e.g. network outage), re-run
+ *  the suite — it will snapshot the dummy file and delete/replace it again —
+ *  or manually re-upload the real installer via Settings → Desktop App or with:
+ *    pnpm --filter @workspace/scripts run upload-desktop-installer
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import type { Server } from "node:http";
 import request from "supertest";
+import {
+  openDesktopInstallerStream,
+  uploadDesktopInstaller,
+  deleteDesktopInstaller,
+} from "./lib/desktop-installer-storage.js";
 
 // ---------------------------------------------------------------------------
 // Guards — skip when credentials needed by the test are absent.
@@ -256,7 +267,33 @@ describe.skipIf(!SUITE_ENABLED)(
   () => {
     let server: Server;
 
+    /**
+     * Snapshot of the "exe" installer that existed in App Storage before the
+     * test ran.  null means no installer was present (slot was empty).
+     *
+     * afterAll uses this to restore the bucket to its pre-test state:
+     *  - snapshot !== null → re-upload the original bytes.
+     *  - snapshot === null → delete the dummy file the test wrote.
+     *
+     * This makes the suite safe to run repeatedly against a shared or
+     * production-backed bucket without permanently replacing the real installer.
+     */
+    let preTestExeSnapshot: Buffer | null = null;
+
     beforeAll(async () => {
+      // --- Snapshot the existing EXE installer before the test overwrites it ---
+      // openDesktopInstallerStream is the real (un-mocked) storage client, so
+      // this reads whatever is currently in App Storage for the "exe" slot.
+      const existing = await openDesktopInstallerStream("exe");
+      if (existing) {
+        preTestExeSnapshot = await new Promise<Buffer>((resolve, reject) => {
+          const chunks: Buffer[] = [];
+          existing.stream.on("data", (d: Buffer) => chunks.push(d));
+          existing.stream.on("end", () => resolve(Buffer.concat(chunks)));
+          existing.stream.on("error", reject);
+        });
+      }
+
       server = app.listen(0);
       // Wait deterministically for the upload route to become available.
       // routes/index.ts calls registerRoutes() asynchronously; once the route
@@ -277,8 +314,27 @@ describe.skipIf(!SUITE_ENABLED)(
       }
     });
 
-    afterAll(() => {
+    afterAll(async () => {
       server.close();
+
+      // --- Restore App Storage to its pre-test state ---
+      //
+      // If a real installer was in the slot before the test, re-upload it so
+      // the production download URL continues to serve the correct file.
+      //
+      // If the slot was empty before the test, delete the dummy file the test
+      // wrote so no garbage is left behind.
+      //
+      // Both uploadDesktopInstaller and deleteDesktopInstaller are idempotent,
+      // so re-running the suite after a partial failure is safe.  If cleanup
+      // fails entirely (e.g. network outage during afterAll), re-upload the
+      // real installer manually via Settings → Desktop App or:
+      //   pnpm --filter @workspace/scripts run upload-desktop-installer
+      if (preTestExeSnapshot !== null) {
+        await uploadDesktopInstaller(preTestExeSnapshot, "exe");
+      } else {
+        await deleteDesktopInstaller("exe");
+      }
     });
 
     it("uploads a dummy .exe via POST /api/admin/desktop-installer/upload and downloads it back via GET /downloads/LabTrax-Setup.exe with correct headers and body", async () => {
