@@ -87,6 +87,48 @@ After running a fresh electron build, refresh the hosted installer in one of two
 
 The Settings → Desktop App panel shows the current installer's size and uploaded-at timestamp so admins can verify freshness. If no zip has been uploaded yet, `/downloads/LabTrax-Windows-Portable.zip` returns a 404 JSON body explaining that an admin must upload one.
 
+## iTero Lab-Review auto-import
+
+LabTrax Desktop (Electron) can auto-create cases from the iTero "Lab Review"
+queue using a single shared lab iTero account.
+
+**Flow:**
+1. Admin opens Settings → "iTero auto-import" in the desktop app and saves the
+   shared iTero username + password. Credentials are encrypted via Electron
+   `safeStorage` (OS keychain) and stored at `userData/itero-creds.bin`.
+2. Admin picks the destination Lab + default Provider organization and turns
+   on auto-poll (default: every 5 min, minimum 5, maximum 240).
+3. The poller (`artifacts/labtrax-desktop/electron/itero-poller.cjs`) runs in
+   the Electron main process: a hidden `BrowserWindow` with the
+   `persist:itero` partition logs into `us-labs.bff.cloud.myitero.com`,
+   fetches the Lab-Review order list, downloads each Rx PDF/image, and
+   POSTs it to LabTrax at `POST /api/cases/import-from-itero-rx` (multipart:
+   `file` (the Rx PDF/image), `iteroOrderId`, `labOrganizationId`,
+   `providerOrganizationId`, `source=itero`). The renderer's session cookies are reused via
+   `net.fetch({ useSessionCookies: true })` so the import call carries the
+   admin's existing LabTrax auth.
+4. The API uses OpenAI (`AI_INTEGRATIONS_OPENAI_API_KEY`) to extract patient,
+   doctor, restorations, and notes from the Rx, creates an Active case with
+   the Rx attached, sets `cases.needsAiReview=true` and `aiImportSource='itero'`,
+   and records the iTero order id in `itero_imported_orders` (uniqueIndex
+   on `lab_organization_id + itero_order_id`) so re-polls are idempotent.
+5. Desktop case list shows a Sparkles badge next to the case number; the case
+   drawer shows an amber "AI-imported — needs review" banner with a "Mark as
+   reviewed" button that calls `PATCH /api/cases/:id/ai-review`. Mobile
+   `app/case/[id].tsx` shows a matching banner when those fields are present.
+
+**iTero portal selectors are tenant-specific.** The login form selectors and
+list/Rx-download endpoints in `itero-poller.cjs` are written defensively
+against common patterns but may need tweaking once an admin can DevTools the
+real portal — failures surface as `lastError` in the Settings panel rather
+than crashing the app. The three URL candidates probed for the order list
+(`/api/orders`, `/api/lab/orders`, `/api/cases` with `?status=labReview`) and
+the login `<input>` selectors are the place to adjust.
+
+**De-dup is enforced server-side**, not just locally — even if the local
+`userData/itero-seen.json` ledger is wiped, the unique index on
+`itero_imported_orders` prevents duplicate cases.
+
 ## Lab data protection (regression watch list)
 
 Customer lab data has been lost in the past to overly-eager `db.delete(...)`

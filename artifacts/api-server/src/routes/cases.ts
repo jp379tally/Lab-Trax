@@ -12,11 +12,15 @@ import {
   caseRestorations,
   caseSubmissionQueue,
   cases,
+  iteroImportedOrders,
   labCases,
   organizationConnections,
   organizationMemberships,
   users,
 } from "@workspace/db";
+import multer from "multer";
+import { randomBytes } from "node:crypto";
+import OpenAI, { toFile } from "openai";
 import { writeAuditLog } from "../lib/audit";
 import { softDeleteById } from "../lib/soft-delete";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
@@ -1348,6 +1352,549 @@ router.post(
     });
 
     return ok(res, rejected);
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// iTero Lab-Review auto-import
+// ─────────────────────────────────────────────────────────────────────────────
+
+const iteroImportUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      try {
+        fs.mkdirSync(caseMediaDir, { recursive: true });
+      } catch {
+        /* ignore */
+      }
+      cb(null, caseMediaDir);
+    },
+    filename: (_req, file, cb) => {
+      const ext = (path.extname(file.originalname || "") || "").toLowerCase();
+      const safe =
+        path
+          .basename(file.originalname || "rx", ext)
+          .replace(/[^a-zA-Z0-9\-_]+/g, "-")
+          .slice(0, 60) || "rx";
+      cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`);
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+let cachedIteroOpenAIClient: OpenAI | null | undefined;
+function getIteroOpenAIClient(): OpenAI | null {
+  if (cachedIteroOpenAIClient !== undefined) return cachedIteroOpenAIClient;
+  const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
+  if (!apiKey) {
+    cachedIteroOpenAIClient = null;
+    return null;
+  }
+  const baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
+  cachedIteroOpenAIClient = new OpenAI({
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+  });
+  return cachedIteroOpenAIClient;
+}
+
+const ITERO_RX_SYSTEM_PROMPT = `You are a dental laboratory prescription reader. Analyze the iTero Lab-Review prescription and extract every available field. Return ONLY valid JSON with this exact shape (use null for any field you cannot determine — never guess):
+
+{
+  "doctorName": "Dr. Full Name",
+  "patientFirstName": "First",
+  "patientLastName": "Last",
+  "caseType": "one of: Crown, Bridge, Veneer, Implant Crown, Inlay, Onlay, Full Denture, Partial Denture, Night Guard, Retainer, Other",
+  "material": "one of: Zirconia, PFM, E.max, Full Cast, Composite, Acrylic, Metal, PMMA, Other",
+  "shade": "shade value like A2 or BL2",
+  "teeth": "comma-separated Universal-system tooth numbers like 3,5,14",
+  "dueDate": "YYYY-MM-DD or null",
+  "isRush": false,
+  "notes": "free-text special instructions",
+  "practiceName": "dental practice or office name"
+}
+
+Important rules:
+- Tooth numbers must use Universal Numbering System (1–32). Convert FDI to Universal if needed.
+- If a name appears in "Last, First" form, swap to "First Last" and remove the comma.
+- Only set isRush=true when the Rx is explicitly marked rush/urgent/STAT.
+- Return ONLY the JSON object — no commentary, no markdown fences.`;
+
+function buildIteroAttachmentUrl(
+  req: Request,
+  filename: string
+): string {
+  const forwardedHost = req.header("x-forwarded-host");
+  const host = forwardedHost || req.get("host") || "localhost";
+  const forwardedProto = req.header("x-forwarded-proto");
+  const protocol = forwardedProto
+    ? forwardedProto.split(",")[0]!.trim()
+    : (req.protocol || "https");
+  return `${protocol}://${host}/api/cases/attachment-file/${filename}`;
+}
+
+async function generateIteroCaseNumber(
+  labOrganizationId: string
+): Promise<string> {
+  const year = String(new Date().getFullYear()).slice(2);
+  const [row] = await db
+    .select({
+      maxCaseNumber: sql<string | null>`max(
+        case
+          when ${cases.caseNumber} ~ ${`^${year}-(\\d+)$`}
+          then regexp_replace(${cases.caseNumber}, ${`^${year}-(\\d+)$`}, '\\1')::int
+          else null
+        end
+      )`,
+    })
+    .from(cases)
+    .where(eq(cases.labOrganizationId, labOrganizationId));
+  const next = (Number(row?.maxCaseNumber ?? 0) || 0) + 1;
+  return `${year}-${next}`;
+}
+
+interface ExtractedRxFields {
+  doctorName?: string | null;
+  patientFirstName?: string | null;
+  patientLastName?: string | null;
+  caseType?: string | null;
+  material?: string | null;
+  shade?: string | null;
+  teeth?: string | null;
+  dueDate?: string | null;
+  isRush?: boolean | null;
+  notes?: string | null;
+  practiceName?: string | null;
+}
+
+async function extractRxFieldsFromBuffer(
+  openai: OpenAI,
+  buf: Buffer,
+  mimeType: string,
+  originalName: string
+): Promise<ExtractedRxFields> {
+  const isPdf =
+    mimeType.toLowerCase().includes("pdf") ||
+    originalName.toLowerCase().endsWith(".pdf");
+
+  if (isPdf) {
+    // Use the Responses API with file input for native PDF understanding.
+    const uploaded = await openai.files.create({
+      file: await toFile(buf, originalName || "rx.pdf", {
+        type: "application/pdf",
+      }),
+      purpose: "user_data",
+    });
+    try {
+      const r = await openai.responses.create({
+        model: "gpt-5.1",
+        input: [
+          {
+            role: "user",
+            content: [
+              { type: "input_file", file_id: uploaded.id },
+              { type: "input_text", text: ITERO_RX_SYSTEM_PROMPT },
+            ],
+          },
+        ],
+      });
+      const text = r.output_text || "";
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) return {};
+      try {
+        return JSON.parse(m[0]) as ExtractedRxFields;
+      } catch {
+        return {};
+      }
+    } finally {
+      try {
+        await openai.files.delete(uploaded.id);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  // Image path — use chat.completions vision (matches existing pattern).
+  const dataUrl = `data:${mimeType || "image/jpeg"};base64,${buf.toString("base64")}`;
+  const resp = await openai.chat.completions.create({
+    model: "gpt-5.1",
+    messages: [
+      { role: "system", content: ITERO_RX_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Analyze this iTero Lab-Review prescription." },
+          {
+            type: "image_url",
+            image_url: { url: dataUrl, detail: "auto" },
+          },
+        ],
+      },
+    ],
+    max_completion_tokens: 1200,
+    temperature: 0.1,
+  });
+  const text = resp.choices?.[0]?.message?.content || "";
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return {};
+  try {
+    return JSON.parse(m[0]) as ExtractedRxFields;
+  } catch {
+    return {};
+  }
+}
+
+const iteroImportBodySchema = z.object({
+  iteroOrderId: z.string().min(1, "iteroOrderId is required"),
+  labOrganizationId: z.string().min(1, "labOrganizationId is required"),
+  providerOrganizationId: z
+    .string()
+    .min(1, "providerOrganizationId is required"),
+  // Optional client hints — used as fallbacks when AI fails to extract them.
+  doctorNameHint: z.string().optional(),
+  patientFirstNameHint: z.string().optional(),
+  patientLastNameHint: z.string().optional(),
+});
+
+router.post(
+  "/import-from-itero-rx",
+  iteroImportUpload.single("file"),
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const body = iteroImportBodySchema.parse(req.body ?? {});
+
+    if (!req.file) {
+      throw new HttpError(400, "Rx file is required (field name 'file').");
+    }
+
+    // Lab membership is required to create cases for this organization.
+    await requireMembership(userId, body.labOrganizationId);
+
+    // Cheap optimistic dedup check so we skip OpenAI calls for already-imported
+    // orders. The authoritative dedup is the unique-index claim INSIDE the
+    // transaction below; this check is purely an optimization.
+    const preExisting = await db.query.iteroImportedOrders.findFirst({
+      where: and(
+        eq(iteroImportedOrders.labOrganizationId, body.labOrganizationId),
+        eq(iteroImportedOrders.iteroOrderId, body.iteroOrderId)
+      ),
+    });
+    if (preExisting && preExisting.createdCaseId) {
+      try {
+        if (req.file?.path) fs.unlinkSync(req.file.path);
+      } catch {
+        /* ignore */
+      }
+      await db
+        .update(iteroImportedOrders)
+        .set({ lastSeenAt: new Date() })
+        .where(eq(iteroImportedOrders.id, preExisting.id));
+      return ok(res, {
+        deduped: true,
+        caseId: preExisting.createdCaseId,
+        iteroOrderId: preExisting.iteroOrderId,
+      });
+    }
+
+    // AI extraction (best-effort — if AI is unconfigured or fails, we still
+    // create a stub case marked needsAiReview=true so the user can fix it).
+    let extracted: ExtractedRxFields = {};
+    const openai = getIteroOpenAIClient();
+    if (openai) {
+      try {
+        const buf = await fs.promises.readFile(req.file.path);
+        extracted = await extractRxFieldsFromBuffer(
+          openai,
+          buf,
+          req.file.mimetype || "application/octet-stream",
+          req.file.originalname || "rx"
+        );
+      } catch (err) {
+        req.log?.warn?.(
+          { err: (err as Error)?.message },
+          "iTero Rx AI extraction failed; creating case with hints only"
+        );
+      }
+    }
+
+    const patientFirstName =
+      (extracted.patientFirstName?.trim() || body.patientFirstNameHint?.trim() ||
+        "Unknown");
+    const patientLastName =
+      (extracted.patientLastName?.trim() || body.patientLastNameHint?.trim() ||
+        "Patient");
+    const doctorName =
+      (extracted.doctorName?.trim() || body.doctorNameHint?.trim() ||
+        "Unknown Doctor");
+
+    let dueDate: Date | null = null;
+    if (extracted.dueDate) {
+      const parsed = new Date(extracted.dueDate);
+      if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
+    }
+
+    const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
+
+    // Resolve any AI-derived restoration rows BEFORE the transaction so the
+    // pricing lookups don't hold open the dedup-claim transaction.
+    const teethList = (extracted.teeth || "")
+      .split(/[,\s]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    let prebuiltRestorations: Array<{
+      toothNumber: string;
+      restorationType: string;
+      material: string | null;
+      shade: string | null;
+      unitPrice: string;
+      priceSource: string | null;
+      priceSourceId: string | null;
+      priceSourceName: string | null;
+      priceKey: string | null;
+    }> = [];
+    if (teethList.length > 0 && extracted.caseType) {
+      prebuiltRestorations = await Promise.all(
+        teethList.map(async (toothNumber) => {
+          const fallback = await resolveServerPriceWithSource(
+            {
+              labOrganizationId: body.labOrganizationId,
+              doctorName,
+              providerOrganizationId: body.providerOrganizationId,
+            },
+            extracted.material ?? null,
+            extracted.caseType ?? ""
+          );
+          return {
+            toothNumber,
+            restorationType: extracted.caseType ?? "Other",
+            material: extracted.material ?? null,
+            shade: extracted.shade ?? null,
+            unitPrice: (fallback?.amount ?? 0).toFixed(2),
+            priceSource: fallback?.source ?? null,
+            priceSourceId: fallback?.sourceId ?? null,
+            priceSourceName: fallback?.sourceName ?? null,
+            priceKey: fallback?.key ?? null,
+          };
+        })
+      );
+    }
+
+    const user = (req as any).user;
+    const storageKey = buildIteroAttachmentUrl(req, req.file.filename);
+
+    // Atomic write: dedup claim + case + restorations + notes + attachment +
+    // back-fill + event all happen in one transaction. If ANY step fails,
+    // Postgres rolls back the dedup-claim row too, freeing the iTero order
+    // for retry on the next poll cycle. The only success path commits the
+    // claim with createdCaseId set, so future requests see the existing case.
+    const txResult = await db.transaction(async (tx) => {
+      const [claim] = await tx
+        .insert(iteroImportedOrders)
+        .values({
+          labOrganizationId: body.labOrganizationId,
+          iteroOrderId: body.iteroOrderId,
+          createdCaseId: null,
+        })
+        .onConflictDoNothing({
+          target: [
+            iteroImportedOrders.labOrganizationId,
+            iteroImportedOrders.iteroOrderId,
+          ],
+        })
+        .returning();
+
+      if (!claim) {
+        const existing = await tx.query.iteroImportedOrders.findFirst({
+          where: and(
+            eq(iteroImportedOrders.labOrganizationId, body.labOrganizationId),
+            eq(iteroImportedOrders.iteroOrderId, body.iteroOrderId)
+          ),
+        });
+        if (existing) {
+          await tx
+            .update(iteroImportedOrders)
+            .set({ lastSeenAt: new Date() })
+            .where(eq(iteroImportedOrders.id, existing.id));
+        }
+        return { kind: "deduped" as const, existing };
+      }
+
+      const [createdCase] = await tx
+        .insert(cases)
+        .values({
+          caseNumber,
+          labOrganizationId: body.labOrganizationId,
+          providerOrganizationId: body.providerOrganizationId,
+          patientFirstName,
+          patientLastName,
+          doctorName,
+          status: "received",
+          priority: extracted.isRush ? "rush" : "normal",
+          dueDate,
+          createdByUserId: userId,
+          needsAiReview: true,
+          aiImportSource: "itero",
+          externalPatientId: body.iteroOrderId,
+        })
+        .returning();
+
+      if (prebuiltRestorations.length > 0) {
+        await tx.insert(caseRestorations).values(
+          prebuiltRestorations.map((r) => ({
+            caseId: createdCase.id,
+            toothNumber: r.toothNumber,
+            restorationType: r.restorationType,
+            material: r.material,
+            shade: r.shade,
+            notes: null,
+            quantity: 1,
+            unitPrice: r.unitPrice,
+            priceSource: r.priceSource,
+            priceSourceId: r.priceSourceId,
+            priceSourceName: r.priceSourceName,
+            priceKey: r.priceKey,
+          }))
+        );
+      }
+
+      if (extracted.notes && extracted.notes.trim()) {
+        await tx.insert(caseNotes).values({
+          caseId: createdCase.id,
+          authorUserId: userId,
+          authorOrganizationId: body.labOrganizationId,
+          noteText: `[iTero AI import] ${extracted.notes.trim()}`,
+          visibility: "internal_lab_only",
+        });
+      }
+
+      const [attachment] = await tx
+        .insert(caseAttachments)
+        .values({
+          caseId: createdCase.id,
+          uploadedByUserId: userId,
+          uploadedByOrganizationId: body.labOrganizationId,
+          fileName: req.file!.originalname || "iTero-Rx",
+          storageKey,
+          fileType: req.file!.mimetype || "application/octet-stream",
+          visibility: "shared_with_provider",
+        })
+        .returning();
+
+      await tx
+        .update(iteroImportedOrders)
+        .set({ createdCaseId: createdCase.id, lastSeenAt: new Date() })
+        .where(eq(iteroImportedOrders.id, claim.id));
+
+      await tx.insert(caseEvents).values({
+        caseId: createdCase.id,
+        eventType: "case_created_from_itero",
+        actorUserId: userId,
+        actorOrganizationId: body.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          iteroOrderId: body.iteroOrderId,
+          aiExtracted: Object.keys(extracted ?? {}),
+          attachmentId: attachment?.id,
+        },
+      });
+
+      return { kind: "created" as const, createdCase, attachment };
+    });
+
+    if (txResult.kind === "deduped") {
+      try {
+        if (req.file?.path) fs.unlinkSync(req.file.path);
+      } catch {
+        /* ignore */
+      }
+      const existing = txResult.existing;
+      if (existing && existing.createdCaseId) {
+        return ok(res, {
+          deduped: true,
+          caseId: existing.createdCaseId,
+          iteroOrderId: existing.iteroOrderId,
+        });
+      }
+      // The order is being concurrently imported by another request that
+      // hasn't committed yet — surface a 409 so the poller retries on the
+      // next cycle. We never return deduped:true with a null caseId.
+      throw new HttpError(409, "iTero order is already being imported; retry shortly.");
+    }
+
+    const { createdCase, attachment } = txResult;
+
+    await writeAuditLog({
+      req,
+      organizationId: body.labOrganizationId,
+      action: "case_created_from_itero",
+      entityType: "case",
+      entityId: createdCase.id,
+      afterJson: {
+        case: createdCase,
+        iteroOrderId: body.iteroOrderId,
+        attachmentId: attachment?.id,
+      },
+    });
+
+    return ok(
+      res,
+      {
+        deduped: false,
+        caseId: createdCase.id,
+        caseNumber: createdCase.caseNumber,
+        needsAiReview: true,
+        attachmentId: attachment?.id,
+        extracted,
+      },
+      201
+    );
+  })
+);
+
+// Clear the "needs AI review" flag once a human has verified the imported case.
+router.patch(
+  "/:caseId/ai-review",
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const found = await assertCaseAccess(userId, String(req.params.caseId ?? ""));
+    await requireMembership(userId, found.labOrganizationId);
+
+    const input = z
+      .object({ acknowledged: z.boolean().default(true) })
+      .parse(req.body ?? {});
+
+    if (!input.acknowledged) {
+      return ok(res, { caseId: found.id, needsAiReview: found.needsAiReview ?? false });
+    }
+
+    const [updated] = await db
+      .update(cases)
+      .set({ needsAiReview: false })
+      .where(eq(cases.id, found.id))
+      .returning();
+
+    const user = (req as any).user;
+    await db.insert(caseEvents).values({
+      caseId: found.id,
+      eventType: "ai_review_acknowledged",
+      actorUserId: userId,
+      actorOrganizationId: found.labOrganizationId,
+      actorInitials: user?.initials || "SYS",
+      metadataJson: { aiImportSource: found.aiImportSource ?? null },
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: found.labOrganizationId,
+      action: "ai_review_acknowledged",
+      entityType: "case",
+      entityId: found.id,
+      beforeJson: { needsAiReview: found.needsAiReview },
+      afterJson: { needsAiReview: false },
+    });
+
+    return ok(res, { caseId: updated.id, needsAiReview: updated.needsAiReview ?? false });
   })
 );
 

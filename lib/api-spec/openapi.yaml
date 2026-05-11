@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: cases
+    description: Case operations (LabTrax)
 paths:
   /healthz:
     get:
@@ -24,6 +26,91 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /cases/import-from-itero-rx:
+    post:
+      operationId: importCaseFromIteroRx
+      tags: [cases]
+      summary: Import a case from an iTero Lab-Review Rx
+      description: |
+        Auto-create a LabTrax case from an iTero Lab-Review prescription. The
+        Rx file (PDF or image) is uploaded as multipart/form-data with the
+        field name `file`. The server uses OpenAI to extract patient, doctor,
+        restoration, and notes fields from the Rx, creates an Active case
+        with the Rx attached and `needsAiReview=true`, and records the iTero
+        order id in `itero_imported_orders` so re-polls are idempotent.
+      requestBody:
+        required: true
+        description: |
+          multipart/form-data with the Rx PDF or image attached as the
+          `file` field. The `file` field is a binary upload — represented
+          here as `type: string` (rather than `format: binary`) so the
+          generated TypeScript client does not depend on the DOM `File`
+          global and can be called from non-DOM contexts (Electron main
+          process, Node poller scripts, server-to-server calls).
+          Pass a Blob/File at runtime; the generated client appends every
+          field to a FormData and posts as multipart.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - iteroOrderId
+                - labOrganizationId
+                - providerOrganizationId
+              properties:
+                file:
+                  type: string
+                  description: Rx PDF or image (binary upload)
+                iteroOrderId:
+                  type: string
+                labOrganizationId:
+                  type: string
+                providerOrganizationId:
+                  type: string
+                doctorNameHint:
+                  type: string
+                patientFirstNameHint:
+                  type: string
+                patientLastNameHint:
+                  type: string
+      responses:
+        "201":
+          description: Case created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IteroImportResult"
+        "200":
+          description: Already imported (deduped)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IteroImportResult"
+  /cases/{caseId}/ai-review:
+    patch:
+      operationId: acknowledgeAiReview
+      tags: [cases]
+      summary: Acknowledge an AI-imported case as reviewed
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      caseId: { type: string }
+                      needsAiReview: { type: boolean }
 components:
   schemas:
     HealthStatus:
@@ -33,4 +120,17 @@ components:
           type: string
       required:
         - status
+    IteroImportResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            deduped: { type: boolean }
+            caseId: { type: string, nullable: true }
+            caseNumber: { type: string, nullable: true }
+            needsAiReview: { type: boolean }
+            attachmentId: { type: string, nullable: true }
+            iteroOrderId: { type: string }
 

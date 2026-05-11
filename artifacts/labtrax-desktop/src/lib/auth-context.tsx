@@ -40,6 +40,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Tell the Electron iTero poller whether a LabTrax user is signed in.
+  // The poller refuses to run when no user is active, so credentials and
+  // CSRF tokens are never used outside of an authenticated session.
+  useEffect(() => {
+    const itero = (typeof window !== "undefined"
+      ? (window as { electronAPI?: { itero?: { setAuthState?: (p: { active: boolean }) => unknown } } }).electronAPI
+      : null)?.itero;
+    if (!itero?.setAuthState) return;
+    if (status === "loading") return;
+    void itero.setAuthState({ active: status === "authed" });
+  }, [status]);
+
   useEffect(() => {
     void verify();
   }, [verify]);

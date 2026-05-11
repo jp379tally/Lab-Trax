@@ -91,7 +91,15 @@ export default function CaseDetailScreen() {
     });
   }, []);
   const [refreshing, setRefreshing] = useState(false);
-  const [fullCaseData, setFullCaseData] = useState<any>(null);
+  type FullCaseData = {
+    photos?: string[];
+    videos?: string[];
+    activityLog?: ActivityEntry[];
+    needsAiReview?: boolean;
+    aiImportSource?: string | null;
+    [key: string]: unknown;
+  };
+  const [fullCaseData, setFullCaseData] = useState<FullCaseData | null>(null);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [showAddSomethingModal, setShowAddSomethingModal] = useState(false);
@@ -1314,6 +1322,47 @@ export default function CaseDetailScreen() {
           ) : undefined
         }
       >
+        {fullCaseData?.needsAiReview && (
+          <View style={{
+            marginHorizontal: 16,
+            marginTop: 12,
+            padding: 12,
+            borderRadius: 10,
+            backgroundColor: "#FEF3C7",
+            borderLeftWidth: 4,
+            borderLeftColor: "#D97706",
+            flexDirection: "row",
+            alignItems: "flex-start",
+            gap: 10,
+          }}>
+            <MaterialCommunityIcons name="auto-fix" size={18} color="#92400E" style={{ marginTop: 1 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>
+                AI-imported — needs review
+              </Text>
+              <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#92400E", marginTop: 2 }}>
+                This case was auto-created from {fullCaseData?.aiImportSource || "an external source"}. Verify patient, doctor, and Rx attachment before routing.
+              </Text>
+            </View>
+            <Pressable
+              onPress={async () => {
+                try {
+                  await resilientFetch(`/api/cases/${encodeURIComponent(String(id))}/ai-review`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ acknowledged: true }),
+                  });
+                  setFullCaseData((prev) => (prev ? { ...prev, needsAiReview: false } : prev));
+                } catch (err: any) {
+                  Alert.alert("Could not dismiss", err?.message || "Try again later.");
+                }
+              }}
+              style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: "#92400E", borderRadius: 6 }}
+            >
+              <Text style={{ color: "white", fontSize: 11, fontFamily: "Inter_600SemiBold" }}>Dismiss</Text>
+            </Pressable>
+          </View>
+        )}
         {isAdmin && (
         <Pressable
           style={[styles.statusCard, (caseItem.status === "COMPLETE" || caseItem.status === "SHIP") && styles.statusCardTappable]}

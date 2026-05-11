@@ -5,18 +5,26 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  MutationFunction,
   QueryFunction,
   QueryKey,
+  UseMutationOptions,
+  UseMutationResult,
   UseQueryOptions,
   UseQueryResult,
 } from "@tanstack/react-query";
 
-import type { HealthStatus } from "./api.schemas";
+import type {
+  AcknowledgeAiReview200,
+  HealthStatus,
+  ImportCaseFromIteroRxBody,
+  IteroImportResult,
+} from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
-import type { ErrorType } from "../custom-fetch";
+import type { ErrorType, BodyType } from "../custom-fetch";
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -99,3 +107,210 @@ export function useHealthCheck<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Auto-create a LabTrax case from an iTero Lab-Review prescription. The
+Rx file (PDF or image) is uploaded as multipart/form-data with the
+field name `file`. The server uses OpenAI to extract patient, doctor,
+restoration, and notes fields from the Rx, creates an Active case
+with the Rx attached and `needsAiReview=true`, and records the iTero
+order id in `itero_imported_orders` so re-polls are idempotent.
+
+ * @summary Import a case from an iTero Lab-Review Rx
+ */
+export const getImportCaseFromIteroRxUrl = () => {
+  return `/api/cases/import-from-itero-rx`;
+};
+
+export const importCaseFromIteroRx = async (
+  importCaseFromIteroRxBody: ImportCaseFromIteroRxBody,
+  options?: RequestInit,
+): Promise<IteroImportResult> => {
+  const formData = new FormData();
+  formData.append(`file`, importCaseFromIteroRxBody.file);
+  formData.append(`iteroOrderId`, importCaseFromIteroRxBody.iteroOrderId);
+  formData.append(
+    `labOrganizationId`,
+    importCaseFromIteroRxBody.labOrganizationId,
+  );
+  formData.append(
+    `providerOrganizationId`,
+    importCaseFromIteroRxBody.providerOrganizationId,
+  );
+  if (importCaseFromIteroRxBody.doctorNameHint !== undefined) {
+    formData.append(`doctorNameHint`, importCaseFromIteroRxBody.doctorNameHint);
+  }
+  if (importCaseFromIteroRxBody.patientFirstNameHint !== undefined) {
+    formData.append(
+      `patientFirstNameHint`,
+      importCaseFromIteroRxBody.patientFirstNameHint,
+    );
+  }
+  if (importCaseFromIteroRxBody.patientLastNameHint !== undefined) {
+    formData.append(
+      `patientLastNameHint`,
+      importCaseFromIteroRxBody.patientLastNameHint,
+    );
+  }
+
+  return customFetch<IteroImportResult>(getImportCaseFromIteroRxUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getImportCaseFromIteroRxMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importCaseFromIteroRx>>,
+    TError,
+    { data: BodyType<ImportCaseFromIteroRxBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof importCaseFromIteroRx>>,
+  TError,
+  { data: BodyType<ImportCaseFromIteroRxBody> },
+  TContext
+> => {
+  const mutationKey = ["importCaseFromIteroRx"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof importCaseFromIteroRx>>,
+    { data: BodyType<ImportCaseFromIteroRxBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return importCaseFromIteroRx(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ImportCaseFromIteroRxMutationResult = NonNullable<
+  Awaited<ReturnType<typeof importCaseFromIteroRx>>
+>;
+export type ImportCaseFromIteroRxMutationBody =
+  BodyType<ImportCaseFromIteroRxBody>;
+export type ImportCaseFromIteroRxMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Import a case from an iTero Lab-Review Rx
+ */
+export const useImportCaseFromIteroRx = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importCaseFromIteroRx>>,
+    TError,
+    { data: BodyType<ImportCaseFromIteroRxBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof importCaseFromIteroRx>>,
+  TError,
+  { data: BodyType<ImportCaseFromIteroRxBody> },
+  TContext
+> => {
+  return useMutation(getImportCaseFromIteroRxMutationOptions(options));
+};
+
+/**
+ * @summary Acknowledge an AI-imported case as reviewed
+ */
+export const getAcknowledgeAiReviewUrl = (caseId: string) => {
+  return `/api/cases/${caseId}/ai-review`;
+};
+
+export const acknowledgeAiReview = async (
+  caseId: string,
+  options?: RequestInit,
+): Promise<AcknowledgeAiReview200> => {
+  return customFetch<AcknowledgeAiReview200>(
+    getAcknowledgeAiReviewUrl(caseId),
+    {
+      ...options,
+      method: "PATCH",
+    },
+  );
+};
+
+export const getAcknowledgeAiReviewMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof acknowledgeAiReview>>,
+    TError,
+    { caseId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof acknowledgeAiReview>>,
+  TError,
+  { caseId: string },
+  TContext
+> => {
+  const mutationKey = ["acknowledgeAiReview"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof acknowledgeAiReview>>,
+    { caseId: string }
+  > = (props) => {
+    const { caseId } = props ?? {};
+
+    return acknowledgeAiReview(caseId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AcknowledgeAiReviewMutationResult = NonNullable<
+  Awaited<ReturnType<typeof acknowledgeAiReview>>
+>;
+
+export type AcknowledgeAiReviewMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Acknowledge an AI-imported case as reviewed
+ */
+export const useAcknowledgeAiReview = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof acknowledgeAiReview>>,
+    TError,
+    { caseId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof acknowledgeAiReview>>,
+  TError,
+  { caseId: string },
+  TContext
+> => {
+  return useMutation(getAcknowledgeAiReviewMutationOptions(options));
+};

@@ -1,8 +1,47 @@
 const { app, BrowserWindow, protocol, net, dialog, ipcMain, Notification } = require("electron");
 const path = require("path");
 const { pathToFileURL } = require("url");
+const iteroPoller = require("./itero-poller.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
+
+function broadcast(channel, payload) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
+
+function registerIteroIpc() {
+  iteroPoller.init({
+    onStatus: (status) => broadcast("itero:status", status),
+  });
+
+  ipcMain.handle("itero:get-status", () => iteroPoller.getStatus());
+  ipcMain.handle("itero:set-credentials", (_e, payload) => {
+    iteroPoller.setCredentials(payload || {});
+    return iteroPoller.getStatus();
+  });
+  ipcMain.handle("itero:clear-credentials", () => {
+    iteroPoller.clearCredentials();
+    return iteroPoller.getStatus();
+  });
+  ipcMain.handle("itero:set-api-config", (_e, payload) => {
+    iteroPoller.setApiConfig(payload || {});
+    return iteroPoller.getStatus();
+  });
+  ipcMain.handle("itero:set-enabled", (_e, payload) => {
+    const enabled = !!(payload && payload.enabled);
+    const interval = payload && payload.intervalMin;
+    iteroPoller.setEnabled(enabled, interval);
+    return iteroPoller.getStatus();
+  });
+  ipcMain.handle("itero:test-login", () => iteroPoller.testLogin());
+  ipcMain.handle("itero:poll-now", () => iteroPoller.pollNow());
+  ipcMain.handle("itero:set-auth-state", (_e, payload) => {
+    iteroPoller.setAuthState(!!(payload && payload.active));
+    return iteroPoller.getStatus();
+  });
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -117,6 +156,7 @@ app.whenReady().then(() => {
     });
   }
 
+  registerIteroIpc();
   createWindow();
 
   if (!isDev) {

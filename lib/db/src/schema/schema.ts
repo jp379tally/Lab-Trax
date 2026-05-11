@@ -323,6 +323,8 @@ export const cases = pgTable(
     deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
+    needsAiReview: boolean("needs_ai_review").default(false).notNull(),
+    aiImportSource: text("ai_import_source"),
   },
   (table) => ({
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(
@@ -332,6 +334,41 @@ export const cases = pgTable(
     caseLabIdx: index("cases_lab_idx").on(table.labOrganizationId),
     caseProviderIdx: index("cases_provider_idx").on(
       table.providerOrganizationId
+    ),
+  })
+);
+
+/**
+ * Per-organization dedup table for cases imported automatically from iTero
+ * "Lab Review". Each row marks one upstream iTero order as already-imported
+ * for a given lab organization, so background pollers don't re-create the
+ * same case on every cycle. This table is dedup-only — no protected lab data
+ * lives here, so it is intentionally NOT part of PROTECTED_TABLES.
+ */
+export const iteroImportedOrders = pgTable(
+  "itero_imported_orders",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    iteroOrderId: text("itero_order_id").notNull(),
+    createdCaseId: varchar("created_case_id").references(() => cases.id, {
+      onDelete: "set null",
+    }),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    iteroOrderUnique: uniqueIndex("itero_imported_orders_unique").on(
+      table.labOrganizationId,
+      table.iteroOrderId
     ),
   })
 );

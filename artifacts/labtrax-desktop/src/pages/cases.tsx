@@ -18,6 +18,7 @@ import {
   Plus,
   ReceiptText,
   Search,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -728,7 +729,20 @@ export default function CasesPage() {
                   onClick={() => setSelected(c)}
                   className="border-t border-border cursor-pointer hover:bg-secondary/40"
                 >
-                  <td className="px-5 py-3 font-mono text-xs">{c.caseNumber}</td>
+                  <td className="px-5 py-3 font-mono text-xs">
+                    <div className="flex items-center gap-1.5">
+                      {c.needsAiReview && (
+                        <span
+                          title={`Auto-imported from ${c.aiImportSource ?? "AI"} — needs review`}
+                          className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                          aria-label="Needs AI review"
+                        >
+                          <Sparkles size={11} />
+                        </span>
+                      )}
+                      <span>{c.caseNumber}</span>
+                    </div>
+                  </td>
                   <td className="py-3">
                     {c.patientFirstName} {c.patientLastName}
                   </td>
@@ -995,6 +1009,18 @@ export function CaseDrawer({
     onError: (e: Error) => setRouteError(e.message),
   });
 
+  const ackAiReviewMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/cases/${labCase.id}/ai-review`, {
+        method: "PATCH",
+        body: JSON.stringify({ acknowledged: true }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+    },
+  });
+
   const addNoteMutation = useMutation({
     mutationFn: ({ text, visibility }: { text: string; visibility: string }) =>
       apiFetch(`/cases/${labCase.id}/notes`, {
@@ -1177,6 +1203,30 @@ export function CaseDrawer({
             </button>
           </div>
         </header>
+
+        {/* AI-import review banner */}
+        {data?.needsAiReview && (
+          <div className="px-5 py-3 border-b border-border bg-amber-500/10 flex items-start gap-3 shrink-0">
+            <Sparkles size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                AI-imported — needs review
+              </div>
+              <div className="text-xs text-amber-700/80 dark:text-amber-200/80 mt-0.5">
+                This case was auto-created from {data.aiImportSource ?? "an external source"}. Please verify patient, doctor, restorations, and the attached Rx before routing.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => ackAiReviewMutation.mutate()}
+              disabled={ackAiReviewMutation.isPending}
+              className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium disabled:opacity-60"
+            >
+              {ackAiReviewMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+              Mark as reviewed
+            </button>
+          </div>
+        )}
 
         {/* Tab navigation */}
         <nav className="flex border-b border-border px-2 shrink-0 overflow-x-auto">

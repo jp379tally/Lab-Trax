@@ -8,3 +8,38 @@
 export interface HealthStatus {
   status: string;
 }
+
+export type IteroImportResultData = {
+  deduped?: boolean;
+  caseId?: string | null;
+  caseNumber?: string | null;
+  needsAiReview?: boolean;
+  attachmentId?: string | null;
+  iteroOrderId?: string;
+};
+
+export interface IteroImportResult {
+  ok?: boolean;
+  data?: IteroImportResultData;
+}
+
+export type ImportCaseFromIteroRxBody = {
+  /** Rx PDF or image (binary upload) */
+  file: string;
+  iteroOrderId: string;
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  doctorNameHint?: string;
+  patientFirstNameHint?: string;
+  patientLastNameHint?: string;
+};
+
+export type AcknowledgeAiReview200Data = {
+  caseId?: string;
+  needsAiReview?: boolean;
+};
+
+export type AcknowledgeAiReview200 = {
+  ok?: boolean;
+  data?: AcknowledgeAiReview200Data;
+};

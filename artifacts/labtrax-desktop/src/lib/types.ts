@@ -34,6 +34,14 @@ export interface LabCase {
   restorations?: CaseRestoration[];
   /** "mobile" when this case originated from the mobile app's lab_cases table */
   _source?: "mobile";
+  /**
+   * True when the case was auto-created by an AI import (e.g. from iTero
+   * Lab-Review) and a human still needs to verify the extracted fields.
+   * Cleared via PATCH /cases/:id/ai-review.
+   */
+  needsAiReview?: boolean;
+  /** Identifier of the upstream import source, e.g. "itero". */
+  aiImportSource?: string | null;
 }
 
 export type RestorationPriceSource = "default" | "tier" | "override" | "manual";

@@ -14,3 +14,54 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Auto-create a LabTrax case from an iTero Lab-Review prescription. The
+Rx file (PDF or image) is uploaded as multipart/form-data with the
+field name `file`. The server uses OpenAI to extract patient, doctor,
+restoration, and notes fields from the Rx, creates an Active case
+with the Rx attached and `needsAiReview=true`, and records the iTero
+order id in `itero_imported_orders` so re-polls are idempotent.
+
+ * @summary Import a case from an iTero Lab-Review Rx
+ */
+export const ImportCaseFromIteroRxBody = zod.object({
+  file: zod.string().describe("Rx PDF or image (binary upload)"),
+  iteroOrderId: zod.string(),
+  labOrganizationId: zod.string(),
+  providerOrganizationId: zod.string(),
+  doctorNameHint: zod.string().optional(),
+  patientFirstNameHint: zod.string().optional(),
+  patientLastNameHint: zod.string().optional(),
+});
+
+export const ImportCaseFromIteroRxResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      deduped: zod.boolean().optional(),
+      caseId: zod.string().nullish(),
+      caseNumber: zod.string().nullish(),
+      needsAiReview: zod.boolean().optional(),
+      attachmentId: zod.string().nullish(),
+      iteroOrderId: zod.string().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Acknowledge an AI-imported case as reviewed
+ */
+export const AcknowledgeAiReviewParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const AcknowledgeAiReviewResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      caseId: zod.string().optional(),
+      needsAiReview: zod.boolean().optional(),
+    })
+    .optional(),
+});

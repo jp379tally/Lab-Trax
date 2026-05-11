@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Github, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Github, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,7 +29,7 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage" | "desktop";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage" | "desktop" | "itero";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -42,6 +42,7 @@ export default function SettingsPage() {
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
     { key: "storage", label: "Storage", icon: HardDrive, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
+    { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
   ];
   const [tab, setTab] = useState<TabKey>("profile");
 
@@ -85,6 +86,7 @@ export default function SettingsPage() {
           {tab === "users" && isAdmin && <UsersPanel />}
           {tab === "storage" && isAdmin && <StoragePanel />}
           {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
+          {tab === "itero" && isAdmin && <IteroPanel />}
         </div>
       </div>
     </div>
@@ -2459,6 +2461,346 @@ function SessionsPanel() {
 }
 
 const inputCls = "w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm";
+
+type IteroRecentImport = {
+  iteroOrderId: string;
+  caseId: string | null;
+  caseNumber: string | null;
+  importedAt: string;
+};
+
+type IteroStatus = {
+  available: boolean;
+  configured: boolean;
+  enabled: boolean;
+  intervalMin: number;
+  apiBaseUrl: string;
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  lastPollAt: string | null;
+  lastError: string | null;
+  importedCount: number;
+  importedToday: number;
+  recentImports: IteroRecentImport[];
+  polling: boolean;
+  authActive: boolean;
+};
+
+type IteroSetCredentialsPayload = { username: string; password: string };
+type IteroSetApiConfigPayload = { apiBaseUrl?: string; labOrganizationId?: string; providerOrganizationId?: string; intervalMin?: number };
+type IteroSetEnabledPayload = { enabled: boolean; intervalMin?: number };
+type IteroPollResult = { ok: boolean; imported?: number; skipped?: number; total?: number; error?: string };
+type IteroAPI = {
+  getStatus: () => Promise<IteroStatus>;
+  setCredentials: (payload: IteroSetCredentialsPayload) => Promise<IteroStatus>;
+  clearCredentials: () => Promise<IteroStatus>;
+  setApiConfig: (payload: IteroSetApiConfigPayload) => Promise<IteroStatus>;
+  setEnabled: (payload: IteroSetEnabledPayload) => Promise<IteroStatus>;
+  testLogin: () => Promise<{ ok: boolean; error?: string }>;
+  pollNow: () => Promise<IteroPollResult>;
+  onStatus: (cb: (s: IteroStatus) => void) => () => void;
+};
+type ElectronWindow = Window & { electronAPI?: { itero?: IteroAPI } };
+
+function IteroPanel() {
+  const electron = (typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null);
+  const itero = electron?.itero;
+  const { user } = useAuth();
+  const meQuery = useQuery({
+    queryKey: ["me-for-itero"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+  });
+
+  const [status, setStatus] = useState<IteroStatus | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [labOrgId, setLabOrgId] = useState("");
+  const [providerOrgId, setProviderOrgId] = useState("");
+  const [intervalMin, setIntervalMin] = useState(5);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!itero) return;
+    let cancelled = false;
+    itero.getStatus().then((s) => {
+      if (cancelled) return;
+      setStatus(s);
+      setLabOrgId(s.labOrganizationId || "");
+      setProviderOrgId(s.providerOrganizationId || "");
+      setIntervalMin(s.intervalMin || 5);
+    });
+    const off = itero.onStatus((s) => setStatus(s));
+    return () => { cancelled = true; off?.(); };
+  }, [itero]);
+
+  // Auto-set the API base URL to the same origin the renderer uses
+  useEffect(() => {
+    if (!itero || !status) return;
+    const apiBase = (import.meta.env?.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "")
+      || `${window.location.origin}/api`;
+    if (!status.apiBaseUrl || status.apiBaseUrl !== apiBase) {
+      itero.setApiConfig({ apiBaseUrl: apiBase });
+    }
+  }, [itero, status?.apiBaseUrl]);
+
+  const labMemberships = useMemo(
+    () => (meQuery.data?.memberships ?? []).filter((m) => m.organization?.type === "lab"),
+    [meQuery.data],
+  );
+  const providerMemberships = useMemo(
+    () => (meQuery.data?.memberships ?? []).filter((m) => m.organization?.type === "provider"),
+    [meQuery.data],
+  );
+
+  if (!itero) {
+    return (
+      <PanelShell title="iTero auto-import" subtitle="Available in the desktop app only.">
+        <div className="px-6 py-4 text-sm text-muted-foreground">
+          The iTero "Lab Review" auto-import runs inside the LabTrax Desktop app. Open this panel from the desktop client to configure it.
+        </div>
+      </PanelShell>
+    );
+  }
+
+  async function run<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
+    setBusy(label);
+    setMessage(null);
+    try {
+      const r = await fn();
+      return r;
+    } catch (err: any) {
+      setMessage({ tone: "err", text: err?.message || String(err) });
+      return undefined;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : "Never");
+
+  return (
+    <PanelShell
+      title="iTero auto-import"
+      subtitle="Auto-create LabTrax cases from iTero Lab-Review orders. Credentials are encrypted on this machine via the OS keychain."
+    >
+      <div className="px-6 py-5 space-y-6">
+        {!status?.available && (
+          <div className="text-sm rounded-md px-3 py-2 bg-destructive/10 text-destructive">
+            OS keychain is unavailable on this machine — credentials cannot be stored securely. On Linux this requires gnome-keyring or kwallet.
+          </div>
+        )}
+
+        {message && (
+          <div className={`text-sm rounded-md px-3 py-2 ${message.tone === "ok" ? "bg-success/15 text-success" : "bg-destructive/10 text-destructive"}`}>
+            {message.text}
+          </div>
+        )}
+
+        <section className="space-y-3">
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">Shared iTero account</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-sm">
+              <div className="text-muted-foreground mb-1">Username / email</div>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder={status?.configured ? "(saved — type to replace)" : "lab@example.com"}
+                className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm"
+              />
+            </label>
+            <label className="text-sm">
+              <div className="text-muted-foreground mb-1">Password</div>
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={status?.configured ? "(saved — type to replace)" : ""}
+                  className="w-full h-9 px-3 pr-9 rounded-md border border-border bg-background text-sm"
+                />
+                <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                  {showPassword ? "Hide" : "Show"}
+                </button>
+              </div>
+            </label>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={!username || !password || !!busy}
+              onClick={() => run("save-creds", async () => {
+                const s = await itero.setCredentials({ username, password });
+                setStatus(s);
+                setUsername("");
+                setPassword("");
+                setMessage({ tone: "ok", text: "iTero credentials saved." });
+              })}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60"
+            >
+              {busy === "save-creds" ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Save credentials
+            </button>
+            {status?.configured && (
+              <button
+                type="button"
+                disabled={!!busy}
+                onClick={() => run("clear-creds", async () => {
+                  const s = await itero.clearCredentials();
+                  setStatus(s);
+                  setMessage({ tone: "ok", text: "iTero credentials removed." });
+                })}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-foreground text-xs"
+              >
+                <Trash2 size={12} /> Forget
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={!status?.configured || !!busy}
+              onClick={() => run("test-login", async () => {
+                const r = await itero.testLogin();
+                setMessage(r?.ok
+                  ? { tone: "ok", text: "Logged into iTero successfully." }
+                  : { tone: "err", text: r?.error || "Login failed." });
+              })}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-foreground text-xs disabled:opacity-60"
+            >
+              {busy === "test-login" ? <Loader2 size={12} className="animate-spin" /> : <KeyRound size={12} />} Test login
+            </button>
+          </div>
+        </section>
+
+        <section className="space-y-3">
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">Imported case routing</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-sm">
+              <div className="text-muted-foreground mb-1">Lab organization</div>
+              <select
+                value={labOrgId}
+                onChange={(e) => { setLabOrgId(e.target.value); itero.setApiConfig({ labOrganizationId: e.target.value }); }}
+                className="w-full h-9 px-2 rounded-md border border-border bg-background text-sm"
+              >
+                <option value="">Select a lab…</option>
+                {labMemberships.map((m) => (
+                  <option key={m.organizationId} value={m.organizationId}>
+                    {m.organization?.name || m.organizationId}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm">
+              <div className="text-muted-foreground mb-1">Default provider (practice)</div>
+              <select
+                value={providerOrgId}
+                onChange={(e) => { setProviderOrgId(e.target.value); itero.setApiConfig({ providerOrganizationId: e.target.value }); }}
+                className="w-full h-9 px-2 rounded-md border border-border bg-background text-sm"
+              >
+                <option value="">Select a provider…</option>
+                {providerMemberships.map((m) => (
+                  <option key={m.organizationId} value={m.organizationId}>
+                    {m.organization?.name || m.organizationId}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Imported cases are created under this lab and assigned to the chosen provider. You can re-route any case after it&rsquo;s reviewed.
+          </p>
+        </section>
+
+        <section className="space-y-3">
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">Polling</h3>
+          <div className="flex items-end gap-3 flex-wrap">
+            <label className="text-sm">
+              <div className="text-muted-foreground mb-1">Interval (minutes)</div>
+              <input
+                type="number"
+                min={5}
+                max={240}
+                value={intervalMin}
+                onChange={(e) => setIntervalMin(Number(e.target.value) || 5)}
+                className="w-28 h-9 px-3 rounded-md border border-border bg-background text-sm"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={!status?.configured || !labOrgId || !providerOrgId || !!busy}
+              onClick={() => run("toggle", async () => {
+                const s = await itero.setEnabled({ enabled: !status?.enabled, intervalMin });
+                setStatus(s);
+              })}
+              className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-xs font-medium ${status?.enabled ? "bg-destructive/10 text-destructive" : "bg-primary text-primary-foreground"} disabled:opacity-60`}
+            >
+              {status?.enabled ? "Pause auto-import" : "Enable auto-import"}
+            </button>
+            <button
+              type="button"
+              disabled={!status?.configured || !labOrgId || !providerOrgId || !!busy}
+              onClick={() => run("poll", async () => {
+                const r = await itero.pollNow();
+                setMessage(r?.ok
+                  ? { tone: "ok", text: `Poll complete — imported ${r.imported}, skipped ${r.skipped} of ${r.total}.` }
+                  : { tone: "err", text: r?.error || "Poll failed." });
+              })}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-secondary text-foreground text-xs disabled:opacity-60"
+            >
+              {busy === "poll" || status?.polling ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />} Poll now
+            </button>
+          </div>
+        </section>
+
+        <section className="space-y-2 border-t border-border pt-4">
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">Status</h3>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+            <div className="text-muted-foreground">Credentials</div>
+            <div>{status?.configured ? "Saved (encrypted)" : "Not set"}</div>
+            <div className="text-muted-foreground">Auto-poll</div>
+            <div>{status?.enabled ? `On — every ${status.intervalMin} min` : "Off"}</div>
+            <div className="text-muted-foreground">Last poll</div>
+            <div>{fmt(status?.lastPollAt)}</div>
+            <div className="text-muted-foreground">Imported today</div>
+            <div>{status?.importedToday ?? 0}</div>
+            <div className="text-muted-foreground">Imported total</div>
+            <div>{status?.importedCount ?? 0}</div>
+            <div className="text-muted-foreground">Last error</div>
+            <div className={status?.lastError ? "text-destructive" : ""}>{status?.lastError || "None"}</div>
+            <div className="text-muted-foreground">Signed in as</div>
+            <div className="truncate">{user?.username}{status?.authActive === false && <span className="text-destructive ml-2">(poller paused — sign in required)</span>}</div>
+          </div>
+
+          {status?.recentImports && status.recentImports.length > 0 && (
+            <div className="pt-3">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">Recent imports (last 10)</div>
+              <ul className="text-sm divide-y divide-border rounded-md border border-border">
+                {status.recentImports.map((imp) => (
+                  <li key={imp.iteroOrderId + imp.importedAt} className="flex items-center justify-between gap-3 px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="font-mono text-xs text-muted-foreground truncate">iTero #{imp.iteroOrderId}</div>
+                      <div className="text-xs text-muted-foreground">{fmt(imp.importedAt)}</div>
+                    </div>
+                    {imp.caseId ? (
+                      <a
+                        href={`#/cases/${imp.caseId}`}
+                        className="text-xs font-medium text-primary hover:underline whitespace-nowrap"
+                      >
+                        {imp.caseNumber ? `Case ${imp.caseNumber}` : "Open case"}
+                      </a>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">No case link</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      </div>
+    </PanelShell>
+  );
+}
 
 function PanelShell({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (

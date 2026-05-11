@@ -257,7 +257,6 @@ vi.mock("pino-http", () => ({
 // ---------------------------------------------------------------------------
 
 import app from "./app.js";
-import { deleteDesktopInstaller } from "./lib/desktop-installer-storage.js";
 
 // ---------------------------------------------------------------------------
 // Tests
