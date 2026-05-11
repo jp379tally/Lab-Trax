@@ -165,3 +165,31 @@ jobs:
           PRIVATE_OBJECT_DIR: ${{ secrets.CI_PRIVATE_OBJECT_DIR }}
           DEFAULT_OBJECT_STORAGE_BUCKET_ID: ${{ secrets.CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID }}
           PLATFORM_ADMIN_SECRET: ${{ secrets.CI_PLATFORM_ADMIN_SECRET }}
+
+      # If the test job fails (e.g. the runner was killed mid-test), any dummy
+      # objects written by installer-storage-e2e.test.ts may be stranded in the
+      # staging bucket because afterAll never ran.  This step cleans them up
+      # automatically so objects don't accumulate across failed runs.
+      #
+      # The step is skipped gracefully when the GCS credentials are absent:
+      # GOOGLE_APPLICATION_CREDENTIALS is only written to $GITHUB_ENV by the
+      # "Write GCS credentials file" step above when CI_GOOGLE_CREDENTIALS_JSON
+      # is set, so an empty variable here means no storage secrets are configured
+      # and there is nothing to clean up.
+      #
+      # The GCP project ID is extracted from the credentials JSON (project_id
+      # field) so no additional secret is required.
+      - name: Clean up CI staging bucket (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          if [[ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+            echo "::notice::Skipping bucket cleanup — GCS credentials not configured."
+            exit 0
+          fi
+          PROJECT=$(jq -r '.project_id' "$GOOGLE_APPLICATION_CREDENTIALS")
+          if [[ -z "$PROJECT" || "$PROJECT" == "null" ]]; then
+            echo "::warning::Could not extract project_id from GCS credentials — skipping bucket cleanup."
+            exit 0
+          fi
+          bash .github/scripts/cleanup-ci-staging-bucket.sh --project "$PROJECT"
