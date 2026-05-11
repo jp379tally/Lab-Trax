@@ -38,6 +38,12 @@ jobs:
       # exact values to paste into repository Settings → Secrets and variables.
       # If the GitHub CLI (gh) is available it can set the secrets automatically.
       #
+      # If a CI runner is killed mid-test (OOM, timeout, network outage), dummy
+      # objects can be stranded in the staging bucket.  To remove them, run:
+      #   bash .github/scripts/cleanup-ci-staging-bucket.sh --project YOUR_GCP_PROJECT_ID
+      # The script lists and deletes all objects under the CI prefix and is safe
+      # to run repeatedly (prints "Nothing to clean up" when the prefix is empty).
+      #
       # If the secret is absent the write step is skipped, GOOGLE_APPLICATION_
       # CREDENTIALS stays unset, and the storage integration test auto-skips
       # via its own guard (SUITE_ENABLED check in installer-storage-e2e.test.ts).
