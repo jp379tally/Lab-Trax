@@ -91,12 +91,24 @@ function makeStream(buf: Buffer): NodeJS.ReadableStream {
   return Readable.from([buf]);
 }
 
+interface InstallerFixture {
+  fileName: string;
+  contentType: string;
+}
+
 /**
- * Set up the storage mocks to serve `FAKE_CONTENT`.
+ * Set up the storage mocks to serve `FAKE_CONTENT` for a given installer fixture.
  * `openDesktopInstallerStream` respects `range` like the real implementation.
  */
-function setupInstallerMocks() {
-  vi.mocked(getDesktopInstallerHandle).mockResolvedValue(FAKE_HANDLE);
+function setupInstallerMocks(fixture: InstallerFixture = {
+  fileName: "LabTrax-Windows-Portable.zip",
+  contentType: "application/zip",
+}) {
+  vi.mocked(getDesktopInstallerHandle).mockResolvedValue({
+    ...FAKE_HANDLE,
+    fileName: fixture.fileName,
+    contentType: fixture.contentType,
+  });
   vi.mocked(openDesktopInstallerStream).mockImplementation(
     async (_kind, range?: { start?: number; end?: number }) => {
       const start = range?.start ?? 0;
@@ -105,8 +117,8 @@ function setupInstallerMocks() {
       return {
         size: FAKE_CONTENT.length,
         stream: makeStream(slice),
-        contentType: "application/zip",
-        fileName: "LabTrax-Windows-Portable.zip",
+        contentType: fixture.contentType,
+        fileName: fixture.fileName,
       };
     },
   );
@@ -347,5 +359,95 @@ describe("GET /downloads/LabTrax-Windows-Portable.zip", () => {
     expect(res.headers["etag"]).toBe(FAKE_ETAG);
     // HEAD responses have no body — supertest gives an empty object
     expect(Object.keys(res.body as object)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parameterized smoke tests for the .exe and .dmg installer endpoints.
+// The serveInstaller handler is shared, so these tests guard against future
+// route-registration bugs rather than re-testing all edge cases.
+// ---------------------------------------------------------------------------
+
+const OTHER_INSTALLERS: Array<{ url: string; fixture: InstallerFixture }> = [
+  {
+    url: "/downloads/LabTrax-Setup.exe",
+    fixture: {
+      fileName: "LabTrax-Setup.exe",
+      contentType: "application/vnd.microsoft.portable-executable",
+    },
+  },
+  {
+    url: "/downloads/LabTrax.dmg",
+    fixture: {
+      fileName: "LabTrax.dmg",
+      contentType: "application/x-apple-diskimage",
+    },
+  },
+];
+
+describe.each(OTHER_INSTALLERS)("GET $url", ({ url, fixture }) => {
+  let server: Server;
+
+  beforeAll(() => {
+    setupInstallerMocks(fixture);
+    server = app.listen(0);
+  });
+
+  afterAll(() => {
+    server.close();
+  });
+
+  it("returns 200 with full content and correct headers for a plain GET", async () => {
+    const res = await request(server)
+      .get(url)
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (d: Buffer) => chunks.push(d));
+        res.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+    expect(res.headers["content-type"]).toMatch(fixture.contentType);
+    expect(res.headers["etag"]).toBe(FAKE_ETAG);
+    expect(res.headers["content-disposition"]).toContain(fixture.fileName);
+    expect(res.headers["content-length"]).toBe(String(FAKE_CONTENT.length));
+    expect(res.body as Buffer).toEqual(FAKE_CONTENT);
+  });
+
+  it("returns 206 with correct Content-Range and bytes for a single-range GET", async () => {
+    const res = await request(server)
+      .get(url)
+      .set("Range", "bytes=0-9")
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (d: Buffer) => chunks.push(d));
+        res.on("end", () => cb(null, Buffer.concat(chunks)));
+      });
+
+    expect(res.status).toBe(206);
+    expect(res.headers["content-range"]).toBe(`bytes 0-9/${FAKE_CONTENT.length}`);
+    expect(res.headers["content-length"]).toBe("10");
+    const body = res.body as Buffer;
+    expect(body).toEqual(FAKE_CONTENT.slice(0, 10));
+  });
+
+  it("returns 304 when If-None-Match matches the ETag", async () => {
+    const res = await request(server)
+      .get(url)
+      .set("If-None-Match", FAKE_ETAG);
+
+    expect(res.status).toBe(304);
+  });
+
+  it("returns 404 when no installer has been uploaded", async () => {
+    vi.mocked(getDesktopInstallerHandle).mockResolvedValueOnce(null);
+
+    const res = await request(server).get(url);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ ok: false });
   });
 });
