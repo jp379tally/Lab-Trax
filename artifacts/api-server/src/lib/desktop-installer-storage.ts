@@ -18,10 +18,16 @@ const replitSidecarCredentials: ExternalAccountClientOptions = {
   universe_domain: "googleapis.com",
 };
 
-const storageClient = new Storage({
-  credentials: replitSidecarCredentials,
-  projectId: "",
-});
+// When GOOGLE_APPLICATION_CREDENTIALS is set (e.g. in CI with a service
+// account key file), let the Google Cloud library pick up Application Default
+// Credentials automatically — do NOT override with the Replit sidecar, which
+// is only available inside the Replit runtime.
+const storageClient = process.env.GOOGLE_APPLICATION_CREDENTIALS
+  ? new Storage()
+  : new Storage({
+      credentials: replitSidecarCredentials,
+      projectId: "",
+    });
 
 export type DesktopInstallerKind = "zip" | "exe" | "dmg";
 
@@ -227,16 +233,23 @@ export async function uploadDesktopInstaller(
 
 /**
  * Deletes the stored installer of the given kind from App Storage.
- * No-ops when App Storage is not configured or the object does not exist.
+ * Returns true if the object was deleted, false if it did not exist.
+ *
+ * Intended for use in test teardown so CI runs don't accumulate dummy
+ * files in the staging bucket.  Safe to call even when the object is
+ * already absent (GCS delete is idempotent for non-versioned buckets).
  */
 export async function deleteDesktopInstaller(
   kind: DesktopInstallerKind = "zip",
-): Promise<void> {
-  if (!process.env.PRIVATE_OBJECT_DIR) return;
+): Promise<boolean> {
+  if (!process.env.PRIVATE_OBJECT_DIR) {
+    return false;
+  }
   const file = getInstallerFile(kind);
   const [exists] = await file.exists();
-  if (!exists) return;
+  if (!exists) return false;
   await file.delete();
+  return true;
 }
 
 /**

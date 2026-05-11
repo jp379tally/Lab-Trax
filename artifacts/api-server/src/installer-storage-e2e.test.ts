@@ -257,6 +257,7 @@ vi.mock("pino-http", () => ({
 // ---------------------------------------------------------------------------
 
 import app from "./app.js";
+import { deleteDesktopInstaller } from "./lib/desktop-installer-storage.js";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -330,10 +331,16 @@ describe.skipIf(!SUITE_ENABLED)(
       // fails entirely (e.g. network outage during afterAll), re-upload the
       // real installer manually via Settings → Desktop App or:
       //   pnpm --filter @workspace/scripts run upload-desktop-installer
-      if (preTestExeSnapshot !== null) {
-        await uploadDesktopInstaller(preTestExeSnapshot, "exe");
-      } else {
-        await deleteDesktopInstaller("exe");
+      try {
+        if (preTestExeSnapshot !== null) {
+          await uploadDesktopInstaller(preTestExeSnapshot, "exe");
+        } else {
+          await deleteDesktopInstaller("exe");
+        }
+      } catch (err) {
+        process.stderr.write(
+          `[storage-e2e] afterAll: failed to restore pre-test installer state: ${err}\n`,
+        );
       }
     });
 

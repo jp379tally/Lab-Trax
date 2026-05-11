@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  test-api-server:
+    name: API Server tests (+ storage integration)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Write the GCS service account key to a temp file so that the Google
+      # Cloud Storage client can authenticate via Application Default
+      # Credentials (ADC).  The key is stored as a repository secret named
+      # CI_GOOGLE_CREDENTIALS_JSON and contains the full JSON of a service
+      # account that has objectAdmin rights on the staging installer bucket.
+      #
+      # If the secret is absent the write step is skipped, GOOGLE_APPLICATION_
+      # CREDENTIALS stays unset, and the storage integration test auto-skips
+      # via its own guard (SUITE_ENABLED check in installer-storage-e2e.test.ts).
+      - name: Write GCS credentials file
+        if: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON != '' }}
+        run: |
+          echo '${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}' > /tmp/gcs-ci-key.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcs-ci-key.json" >> "$GITHUB_ENV"
+        env:
+          CI_GOOGLE_CREDENTIALS_JSON: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}
+
+      # Guard against partial misconfiguration: the storage integration test
+      # requires four secrets to be set together.  If any are present but the
+      # full set is incomplete, the test would silently skip instead of running
+      # — which defeats the purpose of wiring it into CI.  Fail early with an
+      # actionable message so misconfiguration is caught before the test step.
+      #
+      # All four absent → green (test auto-skips; expected for repos that
+      #   haven't provisioned a staging bucket yet).
+      # All four present → green (test runs against the staging bucket).
+      # Partial set → fail with the list of missing secrets.
+      - name: Check storage test secret consistency
+        shell: bash
+        env:
+          PRIVATE_OBJECT_DIR: ${{ secrets.CI_PRIVATE_OBJECT_DIR }}
+          DEFAULT_OBJECT_STORAGE_BUCKET_ID: ${{ secrets.CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID }}
+          PLATFORM_ADMIN_SECRET: ${{ secrets.CI_PLATFORM_ADMIN_SECRET }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.CI_GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          set_secrets=()
+          missing_secrets=()
+
+          [[ -n "$PRIVATE_OBJECT_DIR"              ]] && set_secrets+=("CI_PRIVATE_OBJECT_DIR")              || missing_secrets+=("CI_PRIVATE_OBJECT_DIR")
+          [[ -n "$DEFAULT_OBJECT_STORAGE_BUCKET_ID" ]] && set_secrets+=("CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID") || missing_secrets+=("CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID")
+          [[ -n "$PLATFORM_ADMIN_SECRET"           ]] && set_secrets+=("CI_PLATFORM_ADMIN_SECRET")           || missing_secrets+=("CI_PLATFORM_ADMIN_SECRET")
+          [[ -n "$GOOGLE_CREDENTIALS_JSON"         ]] && set_secrets+=("CI_GOOGLE_CREDENTIALS_JSON")         || missing_secrets+=("CI_GOOGLE_CREDENTIALS_JSON")
+
+          if [[ ${#set_secrets[@]} -eq 0 ]]; then
+            echo "::notice::No storage credentials configured — the installer storage integration test will be skipped."
+            echo "::notice::To enable it, set all four secrets in repository Settings → Secrets and variables → Actions:"
+            echo "::notice::  CI_PRIVATE_OBJECT_DIR, CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID, CI_GOOGLE_CREDENTIALS_JSON, CI_PLATFORM_ADMIN_SECRET"
+          elif [[ ${#missing_secrets[@]} -eq 0 ]]; then
+            echo "::notice::All storage integration test credentials are configured — the test will run against the staging bucket."
+          else
+            echo "::error::Partial storage secret configuration detected."
+            echo "::error::These secrets are set:   ${set_secrets[*]}"
+            echo "::error::These secrets are missing: ${missing_secrets[*]}"
+            echo "::error::The installer storage integration test will be silently skipped instead of running."
+            echo "::error::Either set all four secrets together or remove the partial set to acknowledge that the storage test is disabled."
+            exit 1
+          fi
+
+      - name: Run API server tests
+        # PRIVATE_OBJECT_DIR and DEFAULT_OBJECT_STORAGE_BUCKET_ID point to a
+        # dedicated CI/staging bucket — NOT the production bucket — so the
+        # dummy EXE written by the storage round-trip test never touches live
+        # installer downloads.  The afterAll in installer-storage-e2e.test.ts
+        # deletes the dummy EXE after each run so the bucket stays clean.
+        #
+        # CI_PLATFORM_ADMIN_SECRET is a repository secret scoped to the
+        # staging environment so the production PLATFORM_ADMIN_SECRET is
+        # never stored in CI.
+        #
+        # The installer-storage-e2e suite auto-skips when either
+        # PRIVATE_OBJECT_DIR or PLATFORM_ADMIN_SECRET is unset (and the
+        # consistency check above already fails on partial configurations).
+        run: pnpm --filter @workspace/api-server run test
+        env:
+          NODE_ENV: test
+          PRIVATE_OBJECT_DIR: ${{ secrets.CI_PRIVATE_OBJECT_DIR }}
+          DEFAULT_OBJECT_STORAGE_BUCKET_ID: ${{ secrets.CI_DEFAULT_OBJECT_STORAGE_BUCKET_ID }}
+          PLATFORM_ADMIN_SECRET: ${{ secrets.CI_PLATFORM_ADMIN_SECRET }}
