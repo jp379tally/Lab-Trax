@@ -45,6 +45,15 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `pnpm --filter @workspace/api-server run dev` — run API server locally
 - `pnpm --filter @workspace/api-server run test` — run API server unit/integration tests (range parser, installer download)
 
+### Installer storage integration test (opt-in)
+
+`installer-storage-e2e.test.ts` exercises the full upload → download round-trip against **real App Storage**. It is automatically skipped unless both of these env vars are present:
+
+- `PRIVATE_OBJECT_DIR` — App Storage bucket directory (auto-set when Object Storage is provisioned)
+- `PLATFORM_ADMIN_SECRET` — admin secret passed via `X-Platform-Admin-Secret` header
+
+**Warning:** running this test writes a small dummy `.exe` object to the live `desktop-installer/` prefix in App Storage, overwriting the `LabTrax-Setup.exe` slot. Run it against a dedicated test bucket, not a production-backed one.
+
 ## Environment Variables
 
 - `JWT_SECRET` — required in production; defaults to an insecure value in dev
