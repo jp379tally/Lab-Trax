@@ -43,6 +43,7 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - `pnpm --filter @workspace/api-server run dev` — run API server locally
+- `pnpm --filter @workspace/api-server run test` — run API server unit/integration tests (range parser, installer download)
 
 ## Environment Variables
 
