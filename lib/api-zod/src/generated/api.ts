@@ -50,6 +50,37 @@ export const ImportCaseFromIteroRxResponse = zod.object({
 });
 
 /**
+ * Reassign every non-soft-deleted case from the source doctor
+(identified by `(sourceDoctorName, sourceProviderOrganizationId)`)
+to the target doctor (identified by
+`(targetDoctorName, targetProviderOrganizationId)`). Both provider
+practices must belong to the same parent lab and the caller must be
+an admin of that lab. Idempotent: if the source group is already
+empty the call still succeeds with `casesMoved: 0`.
+
+ * @summary Merge two doctor entries into one
+ */
+export const MergeDoctorsBody = zod.object({
+  sourceDoctorName: zod.string(),
+  sourceProviderOrganizationId: zod.string(),
+  targetDoctorName: zod.string(),
+  targetProviderOrganizationId: zod.string(),
+});
+
+export const MergeDoctorsResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      casesMoved: zod.number().optional(),
+      sourceDoctorName: zod.string().optional(),
+      sourceProviderOrganizationId: zod.string().optional(),
+      targetDoctorName: zod.string().optional(),
+      targetProviderOrganizationId: zod.string().optional(),
+    })
+    .optional(),
+});
+
+/**
  * @summary Acknowledge an AI-imported case as reviewed
  */
 export const AcknowledgeAiReviewParams = zod.object({

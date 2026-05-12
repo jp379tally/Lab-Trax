@@ -9,6 +9,19 @@ export interface HealthStatus {
   status: string;
 }
 
+export type DoctorMergeResultData = {
+  casesMoved?: number;
+  sourceDoctorName?: string;
+  sourceProviderOrganizationId?: string;
+  targetDoctorName?: string;
+  targetProviderOrganizationId?: string;
+};
+
+export interface DoctorMergeResult {
+  ok?: boolean;
+  data?: DoctorMergeResultData;
+}
+
 export type IteroImportResultData = {
   deduped?: boolean;
   caseId?: string | null;
@@ -32,6 +45,13 @@ export type ImportCaseFromIteroRxBody = {
   doctorNameHint?: string;
   patientFirstNameHint?: string;
   patientLastNameHint?: string;
+};
+
+export type MergeDoctorsBody = {
+  sourceDoctorName: string;
+  sourceProviderOrganizationId: string;
+  targetDoctorName: string;
+  targetProviderOrganizationId: string;
 };
 
 export type AcknowledgeAiReview200Data = {

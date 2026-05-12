@@ -87,6 +87,42 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IteroImportResult"
+  /doctors/merge:
+    post:
+      operationId: mergeDoctors
+      tags: [cases]
+      summary: Merge two doctor entries into one
+      description: |
+        Reassign every non-soft-deleted case from the source doctor
+        (identified by `(sourceDoctorName, sourceProviderOrganizationId)`)
+        to the target doctor (identified by
+        `(targetDoctorName, targetProviderOrganizationId)`). Both provider
+        practices must belong to the same parent lab and the caller must be
+        an admin of that lab. Idempotent: if the source group is already
+        empty the call still succeeds with `casesMoved: 0`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sourceDoctorName
+                - sourceProviderOrganizationId
+                - targetDoctorName
+                - targetProviderOrganizationId
+              properties:
+                sourceDoctorName: { type: string }
+                sourceProviderOrganizationId: { type: string }
+                targetDoctorName: { type: string }
+                targetProviderOrganizationId: { type: string }
+      responses:
+        "200":
+          description: Merge complete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorMergeResult"
   /cases/{caseId}/ai-review:
     patch:
       operationId: acknowledgeAiReview
@@ -120,6 +156,18 @@ components:
           type: string
       required:
         - status
+    DoctorMergeResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            casesMoved: { type: integer }
+            sourceDoctorName: { type: string }
+            sourceProviderOrganizationId: { type: string }
+            targetDoctorName: { type: string }
+            targetProviderOrganizationId: { type: string }
     IteroImportResult:
       type: object
       properties:

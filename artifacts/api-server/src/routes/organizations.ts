@@ -19,7 +19,13 @@ import {
   assertCustomAccountNumberAvailable,
   generateProviderAccountNumber,
 } from "../lib/provider-account-number";
-import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import {
+  ADMIN_ROLES,
+  getActiveMembership,
+  requireAnyRole,
+  requireMembership,
+  type MembershipRole,
+} from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 
@@ -55,6 +61,59 @@ const createOrgSchema = z.object({
 const updateOrgSchema = createOrgSchema
   .omit({ type: true, parentLabOrganizationId: true, doctorName: true })
   .partial();
+
+// Resolve read access for an organization. Direct active membership grants
+// access; for provider orgs, an active membership of the parent lab also
+// grants read access (lab admins/staff manage their providers from the
+// Doctors page, etc.).
+async function resolveOrgReadAccess(userId: string, organizationId: string) {
+  const direct = await getActiveMembership(userId, organizationId);
+  if (direct) return { membership: direct, organization: null };
+  const org = await db.query.organizations.findFirst({
+    where: eq(organizations.id, organizationId),
+  });
+  if (!org) throw new HttpError(404, "Organization not found.");
+  if (org.parentLabOrganizationId) {
+    const parentMembership = await getActiveMembership(
+      userId,
+      org.parentLabOrganizationId
+    );
+    if (parentMembership) return { membership: parentMembership, organization: org };
+  }
+  throw new HttpError(403, "You do not belong to this organization.");
+}
+
+// Resolve admin-write access for an organization. Direct admin membership of
+// the org always works; for provider orgs, admin of the parent lab also
+// suffices (so lab admins can edit a linked practice's contact details from
+// the doctor / practices view).
+async function resolveOrgAdminAccess(
+  userId: string,
+  organizationId: string,
+  roles: MembershipRole[] = ADMIN_ROLES
+) {
+  const direct = await getActiveMembership(userId, organizationId);
+  if (direct && roles.includes(direct.role as MembershipRole)) {
+    return { membership: direct, organization: null };
+  }
+  const org = await db.query.organizations.findFirst({
+    where: eq(organizations.id, organizationId),
+  });
+  if (!org) throw new HttpError(404, "Organization not found.");
+  if (org.parentLabOrganizationId) {
+    const parentMembership = await getActiveMembership(
+      userId,
+      org.parentLabOrganizationId
+    );
+    if (
+      parentMembership &&
+      roles.includes(parentMembership.role as MembershipRole)
+    ) {
+      return { membership: parentMembership, organization: org };
+    }
+  }
+  throw new HttpError(403, "You do not have permission for this action.");
+}
 
 async function findCallerPrimaryLabId(userId: string): Promise<string | null> {
   const memberships = await db.query.organizationMemberships.findMany({
@@ -479,13 +538,15 @@ router.get(
 router.get(
   "/:organizationId",
   asyncHandler(async (req, res) => {
-    await requireMembership(
+    const access = await resolveOrgReadAccess(
       (req as any).auth.userId,
       req.params.organizationId
     );
-    const organization = await db.query.organizations.findFirst({
-      where: eq(organizations.id, req.params.organizationId),
-    });
+    const organization =
+      access.organization ??
+      (await db.query.organizations.findFirst({
+        where: eq(organizations.id, req.params.organizationId),
+      }));
     if (!organization) throw new HttpError(404, "Organization not found.");
     return ok(res, organization);
   })
@@ -495,16 +556,17 @@ router.patch(
   "/:organizationId",
   asyncHandler(async (req, res) => {
     const organizationId = req.params.organizationId;
-    await requireAnyRole(
+    const access = await resolveOrgAdminAccess(
       (req as any).auth.userId,
-      organizationId,
-      ADMIN_ROLES
+      organizationId
     );
     const input = updateOrgSchema.parse(req.body);
 
-    const existing = await db.query.organizations.findFirst({
-      where: eq(organizations.id, organizationId),
-    });
+    const existing =
+      access.organization ??
+      (await db.query.organizations.findFirst({
+        where: eq(organizations.id, organizationId),
+      }));
     if (!existing) throw new HttpError(404, "Organization not found.");
 
     // If the caller is changing the account number, validate format and

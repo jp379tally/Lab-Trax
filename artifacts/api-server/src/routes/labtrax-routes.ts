@@ -52,6 +52,7 @@ async function fetchUserActiveLabIds(userId: string): Promise<string[]> {
 import authRoutes from "./auth";
 import organizationRoutes from "./organizations";
 import caseRoutes from "./cases";
+import doctorRoutes from "./doctors";
 import invoiceRoutes from "./invoices";
 import financeRoutes, { generateForOrganization } from "./finance";
 import pricingRoutes from "./pricing";
@@ -832,6 +833,7 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/auth", authRoutes);
   router.use("/organizations", organizationRoutes);
   router.use("/cases", caseRoutes);
+  router.use("/doctors", doctorRoutes);
   router.use("/invoices", invoiceRoutes);
   // Internal cron endpoint: token-protected; iterates active lab orgs and
   // generates due projected entries from each org's recurring rules. Mounted

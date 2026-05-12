@@ -18,9 +18,11 @@ import type {
 
 import type {
   AcknowledgeAiReview200,
+  DoctorMergeResult,
   HealthStatus,
   ImportCaseFromIteroRxBody,
   IteroImportResult,
+  MergeDoctorsBody,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -226,6 +228,100 @@ export const useImportCaseFromIteroRx = <
   TContext
 > => {
   return useMutation(getImportCaseFromIteroRxMutationOptions(options));
+};
+
+/**
+ * Reassign every non-soft-deleted case from the source doctor
+(identified by `(sourceDoctorName, sourceProviderOrganizationId)`)
+to the target doctor (identified by
+`(targetDoctorName, targetProviderOrganizationId)`). Both provider
+practices must belong to the same parent lab and the caller must be
+an admin of that lab. Idempotent: if the source group is already
+empty the call still succeeds with `casesMoved: 0`.
+
+ * @summary Merge two doctor entries into one
+ */
+export const getMergeDoctorsUrl = () => {
+  return `/api/doctors/merge`;
+};
+
+export const mergeDoctors = async (
+  mergeDoctorsBody: MergeDoctorsBody,
+  options?: RequestInit,
+): Promise<DoctorMergeResult> => {
+  return customFetch<DoctorMergeResult>(getMergeDoctorsUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(mergeDoctorsBody),
+  });
+};
+
+export const getMergeDoctorsMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof mergeDoctors>>,
+    TError,
+    { data: BodyType<MergeDoctorsBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof mergeDoctors>>,
+  TError,
+  { data: BodyType<MergeDoctorsBody> },
+  TContext
+> => {
+  const mutationKey = ["mergeDoctors"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof mergeDoctors>>,
+    { data: BodyType<MergeDoctorsBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return mergeDoctors(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type MergeDoctorsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof mergeDoctors>>
+>;
+export type MergeDoctorsMutationBody = BodyType<MergeDoctorsBody>;
+export type MergeDoctorsMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Merge two doctor entries into one
+ */
+export const useMergeDoctors = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof mergeDoctors>>,
+    TError,
+    { data: BodyType<MergeDoctorsBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof mergeDoctors>>,
+  TError,
+  { data: BodyType<MergeDoctorsBody> },
+  TContext
+> => {
+  return useMutation(getMergeDoctorsMutationOptions(options));
 };
 
 /**

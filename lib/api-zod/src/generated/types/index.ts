@@ -8,7 +8,10 @@
 
 export * from "./acknowledgeAiReview200";
 export * from "./acknowledgeAiReview200Data";
+export * from "./doctorMergeResult";
+export * from "./doctorMergeResultData";
 export * from "./healthStatus";
 export * from "./importCaseFromIteroRxBody";
 export * from "./iteroImportResult";
 export * from "./iteroImportResultData";
+export * from "./mergeDoctorsBody";
