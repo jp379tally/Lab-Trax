@@ -912,7 +912,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                   : Date.now(),
               };
             })
-            .filter((request) => request.status === "pending");
+            .filter((request: GroupJoinRequest) => request.status === "pending");
 
           setGroupJoinRequests(mappedRequests);
         }
@@ -947,7 +947,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             status: mapInviteStatus(invite.status),
             createdAt: invite.createdAt ? new Date(invite.createdAt).getTime() : Date.now(),
           }))
-          .filter((invite) => invite.status === "pending");
+          .filter((invite: LabInvitation) => invite.status === "pending");
 
         setLabInvitations(mappedInvites);
       } catch {
