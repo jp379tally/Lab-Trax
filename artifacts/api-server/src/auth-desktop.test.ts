@@ -152,8 +152,8 @@ vi.mock("@workspace/db", () => {
       returning() {
         return Promise.resolve([lastValues]);
       },
-      then(resolve, reject) {
-        return Promise.resolve().then(resolve as () => void, reject);
+      then(onfulfilled, onrejected) {
+        return Promise.resolve().then(onfulfilled, onrejected);
       },
     };
     return obj;
@@ -312,6 +312,7 @@ describe("desktop sign-in against the API", () => {
       .update(data.refreshToken!)
       .digest("hex");
     const lastSession = state.sessions[state.sessions.length - 1] as
+      | unknown as
       | FakeSession
       | undefined;
     expect(lastSession?.tokenHash).toBe(presented);
