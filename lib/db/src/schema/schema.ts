@@ -20,34 +20,48 @@ const createdAt = () =>
 const updatedAt = () =>
   timestamp("updated_at", { withTimezone: true }).defaultNow().notNull();
 
-export const users = pgTable("users", {
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
-  email: text("email"),
-  phone: text("phone"),
-  firstName: text("first_name"),
-  lastName: text("last_name"),
-  initials: text("initials"),
-  userType: text("user_type").default("lab"),
-  role: text("role").default("user"),
-  isActive: boolean("is_active").default(true).notNull(),
-  licenseNumber: text("license_number"),
-  practiceName: text("practice_name"),
-  doctorName: text("doctor_name"),
-  practiceAddress: text("practice_address"),
-  practicePhone: text("practice_phone"),
-  phoneContactName: text("phone_contact_name"),
-  accountNumber: text("account_number"),
-  wantsUpdates: boolean("wants_updates").default(false),
-  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-  workStatus: text("work_status").default("available"),
-  createdAt: timestamp("created_at").defaultNow(),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }),
-  deletedByUserId: varchar("deleted_by_user_id"),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    username: text("username").notNull().unique(),
+    password: text("password").notNull(),
+    email: text("email"),
+    phone: text("phone"),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+    initials: text("initials"),
+    userType: text("user_type").default("lab"),
+    role: text("role").default("user"),
+    isActive: boolean("is_active").default(true).notNull(),
+    licenseNumber: text("license_number"),
+    practiceName: text("practice_name"),
+    doctorName: text("doctor_name"),
+    practiceAddress: text("practice_address"),
+    practicePhone: text("practice_phone"),
+    phoneContactName: text("phone_contact_name"),
+    accountNumber: text("account_number"),
+    // Platform-wide account number (Task #320). Format: <seq><YY><F><L>
+    // (e.g. "2926JW"). Unique across the entire platform. Allocated for
+    // every provider user; allocated lazily/never for non-providers.
+    platformAccountNumber: text("platform_account_number"),
+    wantsUpdates: boolean("wants_updates").default(false),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    workStatus: text("work_status").default("available"),
+    createdAt: timestamp("created_at").defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id"),
+  },
+  (table) => ({
+    platformAccountNumberUnique: uniqueIndex(
+      "users_platform_account_number_unique"
+    )
+      .on(table.platformAccountNumber)
+      .where(sql`platform_account_number IS NOT NULL`),
+  })
+);
 
 export const labCases = pgTable("lab_cases", {
   id: varchar("id").primaryKey(),
@@ -136,6 +150,11 @@ export const organizations = pgTable(
     // server-derived from the practice address + doctor initials, or a custom
     // value supplied by a lab admin. Unique within (parentLabOrganizationId).
     accountNumber: text("account_number"),
+    // Platform-wide account number (Task #320). Format: <seq><YY><F><L>
+    // (e.g. "2926JW"). Unique across the entire platform. Allocated for
+    // every provider organization at creation time; null for lab orgs and
+    // legacy rows pending backfill.
+    platformAccountNumber: text("platform_account_number"),
     createdByUserId: varchar("created_by_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -152,6 +171,113 @@ export const organizations = pgTable(
       .where(
         sql`${table.parentLabOrganizationId} is not null and ${table.accountNumber} is not null`
       ),
+    organizationsPlatformAccountNumberUnique: uniqueIndex(
+      "organizations_platform_account_number_unique"
+    )
+      .on(table.platformAccountNumber)
+      .where(sql`platform_account_number IS NOT NULL`),
+  })
+);
+
+/**
+ * Per-(year, entity_type) monotonic sequence used by the platform-account-
+ * number allocator (Task #320). Locked with `SELECT ... FOR UPDATE` inside a
+ * transaction so concurrent allocations get strictly increasing values.
+ * `entity_type` is one of "user" | "org".
+ */
+export const platformAccountSequences = pgTable(
+  "platform_account_sequences",
+  {
+    year: integer("year").notNull(),
+    entityType: text("entity_type").notNull(),
+    nextSeq: integer("next_seq").default(1).notNull(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    pk: uniqueIndex("platform_account_sequences_pk").on(
+      table.year,
+      table.entityType
+    ),
+  })
+);
+
+/**
+ * Cross-lab doctor identity links (Task #320). Each row links two provider
+ * user ids that have been confirmed as the same human doctor (e.g. the same
+ * doctor working with two different labs). `userIdLow` is always the
+ * lexicographically smaller user id so the unique index covers the unordered
+ * pair. `linkedVia` records how the link was confirmed: "sms_yes" (Twilio
+ * YES reply), "manual" (provider clicked Link in the mobile portal), or
+ * "admin_backfill".
+ */
+export const doctorAccountLinks = pgTable(
+  "doctor_account_links",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    userIdLow: varchar("user_id_low")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    userIdHigh: varchar("user_id_high")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    linkedVia: text("linked_via").notNull(),
+    linkedAt: timestamp("linked_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    pairUnique: uniqueIndex("doctor_account_links_pair_unique").on(
+      table.userIdLow,
+      table.userIdHigh
+    ),
+    lowIdx: index("doctor_account_links_low_idx").on(table.userIdLow),
+    highIdx: index("doctor_account_links_high_idx").on(table.userIdHigh),
+  })
+);
+
+/**
+ * Outbound Twilio SMS invites sent to existing platform doctors when a new
+ * lab adds a matching email/phone doctor (Task #320). Used for both
+ * idempotency (don't re-SMS the same pair) and for routing inbound YES
+ * replies back to the originating link request.
+ */
+export const accountLinkInvites = pgTable(
+  "account_link_invites",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    // Newly-created provider user (the "second lab" copy).
+    newUserId: varchar("new_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // Existing platform doctor we matched to.
+    existingUserId: varchar("existing_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    matchedOn: text("matched_on").notNull(),
+    sentToPhone: text("sent_to_phone"),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    status: text("status").default("pending").notNull(),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+    twilioMessageSid: text("twilio_message_sid"),
+    twilioErrorCode: text("twilio_error_code"),
+    twilioErrorMessage: text("twilio_error_message"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    pairUnique: uniqueIndex("account_link_invites_pair_unique").on(
+      table.newUserId,
+      table.existingUserId
+    ),
+    pendingByPhoneIdx: index("account_link_invites_pending_phone_idx").on(
+      table.sentToPhone,
+      table.status
+    ),
   })
 );
 

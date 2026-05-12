@@ -15,7 +15,9 @@ import {
   organizationMemberships,
   organizations,
   payments,
+  users,
 } from "@workspace/db";
+import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 import { inArray, isNull } from "drizzle-orm";
 import { ensureInvoiceDeposit } from "../lib/invoice-deposits";
 import { writeAuditLog } from "../lib/audit";
@@ -617,16 +619,28 @@ router.post(
 router.get(
   "/",
   asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
     const memberships =
       await db.query.organizationMemberships.findMany({
-        where: eq(
-          organizationMemberships.userId,
-          (req as any).auth.userId
-        ),
+        where: eq(organizationMemberships.userId, callerId),
       });
-    const orgIds = memberships
+    const baseOrgIds = memberships
       .filter((m: any) => m.status === "active")
       .map((m: any) => m.labId);
+
+    // Cross-lab doctor expansion (Task #320). Provider users see invoices
+    // for every linked-doctor copy of themselves; lab users see only
+    // their own lab.
+    let orgIds = baseOrgIds;
+    const callerUser = await db.query.users.findFirst({
+      where: eq(users.id, callerId),
+    });
+    if (callerUser?.userType === "provider") {
+      const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(
+        callerId
+      );
+      orgIds = Array.from(new Set([...baseOrgIds, ...providerOrgIds]));
+    }
 
     // Diagnostic guardrail: if the user has zero active memberships, the
     // invoices list will be empty regardless of how much data exists in the

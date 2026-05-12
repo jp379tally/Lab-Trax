@@ -29,6 +29,14 @@ import { requireAuth } from "../middlewares/auth";
 import { writeAuditLog } from "../lib/audit";
 import { softDeleteById } from "../lib/soft-delete";
 import { notifications } from "@workspace/db";
+import {
+  allocatePlatformAccountNumber,
+  deriveAccountNameParts,
+} from "../lib/platform-account-number";
+import {
+  matchAndInviteCrossLabDoctors,
+  resolveLabNameForUser,
+} from "../lib/match-and-invite";
 
 const router = Router();
 
@@ -310,6 +318,28 @@ router.post(
 
     const hashed = await hashPassword(input.password);
 
+    // Allocate platform-wide account number for provider users (Task #320).
+    // Allocation is best-effort here; a failure does not block registration.
+    let userPlatformAccountNumber: string | null = null;
+    if ((input.userType || "lab") === "provider") {
+      try {
+        userPlatformAccountNumber = await allocatePlatformAccountNumber(
+          "user",
+          deriveAccountNameParts({
+            firstName: input.firstName,
+            lastName: input.lastName,
+            doctorName: input.doctorName,
+            practiceName: input.practiceName,
+          })
+        );
+      } catch (err: any) {
+        req.log?.warn?.(
+          { err: err?.message ?? String(err) },
+          "Failed to allocate platform account number for user (non-fatal)"
+        );
+      }
+    }
+
     const [user] = await db
       .insert(users)
       .values({
@@ -330,6 +360,7 @@ router.post(
         wantsUpdates: input.wantsUpdates || false,
         role: normalizedUserRole,
         practiceName: normalizedPracticeName,
+        platformAccountNumber: userPlatformAccountNumber,
       })
       .returning();
 
@@ -375,6 +406,27 @@ router.post(
       responseMessage = `Your request to join ${targetName} has been sent to the lab admin.`;
     } else if (shouldCreateOrganization) {
       const orgType = input.userType === "provider" ? "provider" : "lab";
+      // Allocate platform-wide account number for provider organizations
+      // (Task #320). Lab organizations don't get one.
+      let orgPlatformAccountNumber: string | null = null;
+      if (orgType === "provider") {
+        try {
+          orgPlatformAccountNumber = await allocatePlatformAccountNumber(
+            "org",
+            deriveAccountNameParts({
+              practiceName: input.practiceName,
+              doctorName: input.doctorName,
+              firstName: input.firstName,
+              lastName: input.lastName,
+            })
+          );
+        } catch (err: any) {
+          req.log?.warn?.(
+            { err: err?.message ?? String(err) },
+            "Failed to allocate platform account number for org (non-fatal)"
+          );
+        }
+      }
       const [org] = await db
         .insert(organizations)
         .values({
@@ -385,6 +437,7 @@ router.post(
           phone: input.practicePhone || null,
           billingEmail: input.email || null,
           createdByUserId: user.id,
+          platformAccountNumber: orgPlatformAccountNumber,
         })
         .returning();
       await db.insert(organizationMemberships).values({
@@ -397,6 +450,28 @@ router.post(
       });
       organizationInfo = { id: org.id, name: org.displayName || org.name };
       responseMessage = `${org.displayName || org.name} created and linked to your account.`;
+    }
+
+    // Cross-lab account-link: if the new provider user matches an existing
+    // platform doctor by email/phone, fire a Twilio SMS invite to YES-link
+    // the two accounts. Best-effort; never blocks registration (Task #320).
+    if (
+      (input.userType || "lab") === "provider" &&
+      userPlatformAccountNumber
+    ) {
+      const labName =
+        (organizationInfo as any)?.name ||
+        (await resolveLabNameForUser(user.id));
+      await matchAndInviteCrossLabDoctors({
+        newUser: {
+          id: user.id,
+          email: user.email,
+          phone: user.phone,
+          platformAccountNumber: userPlatformAccountNumber,
+        },
+        newLabName: labName,
+        log: req.log,
+      });
     }
 
     const [hydratedUser] = await hydrateUsersWithActiveMemberships([user]);
@@ -415,21 +490,37 @@ router.post(
   })
 );
 
-const loginSchema = z.object({
-  username: z.string().min(1),
-  password: z.string().min(1),
-  deviceName: z.string().max(180).optional(),
-  clientType: z.enum(["web", "mobile", "desktop"]).optional(),
-});
+const loginSchema = z
+  .object({
+    // Either `username` (legacy) or `identifier` (new). `identifier` accepts
+    // either a username or a platform-wide account number (Task #320). Login
+    // by account number is case-insensitive and ignores leading/trailing
+    // whitespace.
+    username: z.string().min(1).optional(),
+    identifier: z.string().min(1).optional(),
+    password: z.string().min(1),
+    deviceName: z.string().max(180).optional(),
+    clientType: z.enum(["web", "mobile", "desktop"]).optional(),
+  })
+  .refine((v) => v.username || v.identifier, {
+    message: "username or identifier is required",
+    path: ["identifier"],
+  });
 
 router.post(
   "/login",
   asyncHandler(async (req, res) => {
     const input = loginSchema.parse(req.body);
+    const rawIdentifier = (input.identifier ?? input.username ?? "").trim();
+    const lowered = rawIdentifier.toLowerCase();
+    const upperedAcct = rawIdentifier.toUpperCase();
 
     const allUsers = await db.select().from(users);
     const user = allUsers.find(
-      (u) => u.username.toLowerCase() === input.username.trim().toLowerCase()
+      (u) =>
+        u.username.toLowerCase() === lowered ||
+        (u.platformAccountNumber &&
+          u.platformAccountNumber.toUpperCase() === upperedAcct)
     );
     if (!user)
       throw new HttpError(401, "Invalid username or password.");

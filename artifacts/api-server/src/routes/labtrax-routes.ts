@@ -54,6 +54,7 @@ import organizationRoutes from "./organizations";
 import caseRoutes from "./cases";
 import doctorRoutes from "./doctors";
 import invoiceRoutes from "./invoices";
+import accountLinksRoutes, { smsInboundRouter } from "./account-links";
 import financeRoutes, { generateForOrganization } from "./finance";
 import pricingRoutes from "./pricing";
 import statementRoutes from "./statements";
@@ -835,6 +836,10 @@ export async function registerRoutes(): Promise<IRouter> {
   router.use("/cases", caseRoutes);
   router.use("/doctors", doctorRoutes);
   router.use("/invoices", invoiceRoutes);
+  router.use("/account-links", accountLinksRoutes);
+  // Twilio inbound webhook — must be reachable without auth/CSRF since
+  // Twilio cannot send our session cookies. Verified by phone match.
+  router.use("/sms", smsInboundRouter);
   // Internal cron endpoint: token-protected; iterates active lab orgs and
   // generates due projected entries from each org's recurring rules. Mounted
   // BEFORE the auth-wrapped finance router so it does not require a user JWT.

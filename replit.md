@@ -59,6 +59,38 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 - `pnpm --filter @workspace/api-server run dev` — run API server locally
 - `pnpm --filter @workspace/api-server run test` — run API server unit/integration tests (range parser, installer download)
 
+### Cross-lab provider account numbers (Task #320)
+
+Every provider user and provider organization gets a platform-wide account
+number on creation, format `<seq><YY><F><L>` (e.g. `2926JW`). Sequence is
+allocated atomically per `(year, entityType)` via
+`platform_account_sequences` with `SELECT ... FOR UPDATE` (see
+`artifacts/api-server/src/lib/platform-account-number.ts`).
+
+- **Login**: `/api/auth/login` accepts either `username` or `identifier`;
+  `identifier` matches case-insensitively against username OR
+  `platform_account_number`.
+- **Cross-lab linking**: when a 2nd lab adds a doctor whose email/phone
+  matches an existing platform doctor, an SMS invite is sent via Twilio
+  (uses existing `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` /
+  `TWILIO_PHONE_NUMBER`). Pairs are tracked in `account_link_invites`
+  (idempotent per `(newUserId, existingUserId)`).
+- **YES-reply linking**: Twilio inbound webhook
+  `POST /api/sms/twilio-inbound` (form-encoded, no auth) — replying YES to
+  the SMS creates a `doctor_account_links` row.
+- **Manual linking**: provider mobile portal → Profile → "Link Labs"
+  (`artifacts/labtrax/app/link-labs.tsx`). Calls
+  `/api/account-links/manual` with the other party's platform account
+  number.
+- **Provider-portal aggregation**: cases (`GET /api/cases`) and invoices
+  (`GET /api/invoices`) expand the caller's `membershipOrgIds` via
+  `getProviderOrgIdsForUserAndLinks` so a doctor sees a unified worklist
+  across all linked labs. Lab-side endpoints are unchanged — labs only
+  ever see their own data.
+- **Backfill**: `pnpm --filter @workspace/scripts run
+  backfill-platform-account-numbers` deterministically assigns numbers
+  to existing rows ordered by `(created_at, id)`. Re-runs are safe.
+
 ### Installer storage integration test (opt-in)
 
 `installer-storage-e2e.test.ts` exercises the full upload → download round-trip against **real App Storage**. It is automatically skipped unless both of these env vars are present:

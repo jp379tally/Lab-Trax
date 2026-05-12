@@ -10,10 +10,13 @@
     "upload-desktop-installer": "tsx ./src/upload-desktop-installer.ts",
     "test-publish-failure-alert": "tsx ./src/test-publish-failure-alert.ts",
     "lint-protected-tables": "tsx ./src/lint-protected-tables.ts",
+    "backfill-platform-account-numbers": "tsx ./src/backfill-platform-account-numbers.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@google-cloud/storage": "^7.19.0"
+    "@google-cloud/storage": "^7.19.0",
+    "@workspace/db": "workspace:*",
+    "drizzle-orm": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

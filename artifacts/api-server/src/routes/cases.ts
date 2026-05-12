@@ -33,6 +33,7 @@ import { resolveServerPriceWithSource } from "../lib/pricing";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
+import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 
 const router = Router();
 router.use(requireAuth);
@@ -451,16 +452,38 @@ router.get(
       .map((s) => s.trim())
       .filter(Boolean);
     const includeRestorations = include.includes("restorations");
-    const membershipOrgIds = organizationId
-      ? [organizationId]
-      : (
-          await db.query.organizationMemberships.findMany({
-            where: and(
-              eq(organizationMemberships.userId, (req as any).auth.userId),
-              eq(organizationMemberships.status, "active")
-            ),
-          })
-        ).map((m: any) => m.labId);
+    const callerId = (req as any).auth.userId as string;
+
+    // Resolve the caller's userType so we can decide whether to expand
+    // cross-lab linked-doctor memberships (Task #320). Lab users always see
+    // only their own lab; provider users see every linked-doctor copy.
+    let baseOrgIds: string[];
+    if (organizationId) {
+      baseOrgIds = [organizationId];
+    } else {
+      baseOrgIds = (
+        await db.query.organizationMemberships.findMany({
+          where: and(
+            eq(organizationMemberships.userId, callerId),
+            eq(organizationMemberships.status, "active")
+          ),
+        })
+      ).map((m: any) => m.labId);
+    }
+    let membershipOrgIds = baseOrgIds;
+    if (!organizationId) {
+      const callerUser = await db.query.users.findFirst({
+        where: eq(users.id, callerId),
+      });
+      if (callerUser?.userType === "provider") {
+        const { providerOrgIds } = await getProviderOrgIdsForUserAndLinks(
+          callerId
+        );
+        membershipOrgIds = Array.from(
+          new Set([...baseOrgIds, ...providerOrgIds])
+        );
+      }
+    }
 
     // Status map: mobile legacy → desktop format
     const MOBILE_TO_DESKTOP_STATUS: Record<string, string> = {

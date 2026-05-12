@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { useRouter } from "expo-router";
 import {
   StyleSheet,
   View,
@@ -22,6 +23,7 @@ import { ChatButton } from "@/components/ChatButton";
 type WorkStatus = "available" | "break" | "out_of_office";
 
 export default function ProfileScreen() {
+  const router = useRouter();
   const { role, setRole, adminUnlocked, setAdminUnlocked, updateWorkStatus, hardRefresh } = useApp();
   const { logout, currentUser, profilePicUri, changePassword, registeredUsers } = useAuth();
   const insets = useSafeAreaInsets();
@@ -187,6 +189,23 @@ export default function ProfileScreen() {
               <Text style={styles.menuSub}>Face ID Enabled</Text>
             </View>
           </View>
+          <View style={styles.menuDivider} />
+          <Pressable
+            style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+            onPress={() => router.push("/link-labs" as any)}
+            testID="link-labs-button"
+          >
+            <View style={[styles.menuIcon, { backgroundColor: "#E0F2FE" }]}>
+              <Ionicons name="link" size={18} color="#0284C7" />
+            </View>
+            <View style={styles.menuInfo}>
+              <Text style={styles.menuTitle}>Link Labs</Text>
+              <Text style={styles.menuSub}>
+                Combine cases & invoices across multiple labs
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+          </Pressable>
           <View style={styles.menuDivider} />
           <Pressable
             style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}

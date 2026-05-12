@@ -28,6 +28,10 @@ import {
 } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
+import {
+  allocatePlatformAccountNumber,
+  deriveAccountNameParts,
+} from "../lib/platform-account-number";
 
 const router = Router();
 router.use(requireAuth);
@@ -357,12 +361,33 @@ router.post(
       ...persistableInput
     } = input;
 
+    // Platform-wide account number for provider organizations (Task #320).
+    // Best-effort; never blocks creation.
+    let platformAccountNumber: string | null = null;
+    if (input.type === "provider") {
+      try {
+        platformAccountNumber = await allocatePlatformAccountNumber(
+          "org",
+          deriveAccountNameParts({
+            practiceName: input.displayName || input.name,
+            doctorName: input.doctorName ?? null,
+          })
+        );
+      } catch (err: any) {
+        req.log?.warn?.(
+          { err: err?.message ?? String(err) },
+          "Failed to allocate platform account number for org (non-fatal)"
+        );
+      }
+    }
+
     const [organization] = await db
       .insert(organizations)
       .values({
         ...persistableInput,
         parentLabOrganizationId,
         accountNumber,
+        platformAccountNumber,
         createdByUserId: callerId,
       })
       .returning();
