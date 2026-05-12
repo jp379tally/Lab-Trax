@@ -246,11 +246,15 @@ router.post(
       .object({
         labOrganizationId: z.string().optional(),
         doctorName: z.string().min(1).max(120),
-        practiceName: z.string().max(160).optional(),
-        providerOrganizationId: z.string().optional(),
-        tierName: z.string().max(80).optional(),
+        // The desktop client sends `null` (not `undefined`) for these
+        // fields when the user picks "— Use practice default —" or the
+        // practice has no display name. Accept both so the POST shape
+        // matches the PATCH shape below.
+        practiceName: z.string().max(160).nullable().optional(),
+        providerOrganizationId: z.string().nullable().optional(),
+        tierName: z.string().max(80).nullable().optional(),
         prices: pricesSchema.optional(),
-        notes: z.string().max(500).optional(),
+        notes: z.string().max(500).nullable().optional(),
       })
       .parse(req.body);
 
