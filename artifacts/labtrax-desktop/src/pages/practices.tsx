@@ -1,10 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Building2, Loader2, Mail, Plus, Search, Send, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, Link2, Loader2, Mail, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney, relativeTime } from "@/lib/format";
+
+const PRICE_KEY_LABELS: Record<string, string> = {
+  zirconia_crown: "Zirconia Crown",
+  emax_crown: "E.max Crown",
+  pfm_crown: "PFM Crown",
+  denture: "Denture",
+  partial: "Partial",
+  implant: "Implant",
+  night_guard_hard: "Night Guard - Hard",
+  night_guard_soft: "Night Guard - Soft",
+  night_guard_hard_soft: "Night Guard - Hard/Soft",
+  retainer_hawley: "Retainer - Hawley",
+  retainer_hard: "Retainer - Hard",
+  retainer_lingual: "Retainer - Lingual",
+  snore_guard: "Snore Guard",
+  sports_guard: "Sports Guard",
+};
+const DEFAULT_PRICE_KEYS = Object.keys(PRICE_KEY_LABELS);
+function priceKeyLabel(key: string): string {
+  return (
+    PRICE_KEY_LABELS[key] ||
+    key.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase())
+  );
+}
 
 interface PracticeMember {
   id: string;
@@ -997,10 +1021,16 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
           </section>
 
           {org.type === "provider" && (
-            <ConnectionTierSection
-              providerOrg={org}
-              currentUserId={currentUser?.id}
-            />
+            <>
+              <ConnectionTierSection
+                providerOrg={org}
+                currentUserId={currentUser?.id}
+              />
+              <PracticePricingSection
+                providerOrg={org}
+                currentUserId={currentUser?.id}
+              />
+            </>
           )}
 
           <MembershipSection
@@ -1449,9 +1479,14 @@ function ConnectionTierSection({
       )}
 
       {!connectionsQuery.isLoading && connections.length === 0 && (
-        <div className="text-sm text-muted-foreground border border-border rounded-md px-3 py-3">
-          No connection between this practice and one of your labs yet.
-        </div>
+        <ConnectPracticeToLab
+          providerOrg={providerOrg}
+          onConnected={() => {
+            queryClient.invalidateQueries({
+              queryKey: ["organization-connections", providerOrg.id],
+            });
+          }}
+        />
       )}
 
       <div className="border border-border rounded-md divide-y divide-border">
@@ -1504,5 +1539,516 @@ function ConnectionTierSection({
         })}
       </div>
     </section>
+  );
+}
+
+// ── Connect practice to lab (creates + auto-approves an organization
+// connection so the lab admin can immediately assign a default tier).
+function ConnectPracticeToLab({
+  providerOrg,
+  onConnected,
+}: {
+  providerOrg: Organization;
+  onConnected: () => void;
+}) {
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+  });
+
+  // Labs the current user can administer. We surface either:
+  //   * the practice's parent lab if the user is an admin there, or
+  //   * a picker over their admin labs if multiple
+  const adminLabOrgs = useMemo(() => {
+    const out: { id: string; name: string }[] = [];
+    for (const m of meQuery.data?.memberships ?? []) {
+      if (
+        m.status === "active" &&
+        (m.role === "owner" || m.role === "admin") &&
+        m.organization?.type === "lab"
+      ) {
+        out.push({
+          id: m.organizationId,
+          name:
+            (m.organization?.displayName as string | null) ||
+            m.organization?.name ||
+            "Lab",
+        });
+      }
+    }
+    return out;
+  }, [meQuery.data]);
+
+  const initialLabId = useMemo(() => {
+    const parentId = providerOrg.parentLabOrganizationId ?? "";
+    if (parentId && adminLabOrgs.some((l) => l.id === parentId))
+      return parentId;
+    return adminLabOrgs[0]?.id ?? "";
+  }, [providerOrg.parentLabOrganizationId, adminLabOrgs]);
+
+  const [labId, setLabId] = useState<string>(initialLabId);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLabId(initialLabId);
+  }, [initialLabId]);
+
+  const connectMutation = useMutation({
+    mutationFn: async () => {
+      if (!labId) throw new Error("Pick a lab to connect this practice to.");
+      const created = await apiFetch<{
+        id?: string;
+        alreadyExists?: boolean;
+      }>(`/organizations/connections`, {
+        method: "POST",
+        body: JSON.stringify({
+          labOrganizationId: labId,
+          providerOrganizationId: providerOrg.id,
+        }),
+      });
+      // Auto-approve if newly created (lab admin is on the lab side).
+      if (created?.id) {
+        try {
+          await apiFetch(
+            `/organizations/connections/${created.id}/approve`,
+            { method: "POST" },
+          );
+        } catch {
+          /* If approval fails (e.g. already approved on the other side),
+             the connection is still usable and the dropdown will show
+             the current status. */
+        }
+      }
+      return created;
+    },
+    onSuccess: () => {
+      setError(null);
+      onConnected();
+    },
+    onError: (e: Error) =>
+      setError(e.message || "Could not connect this practice to a lab."),
+  });
+
+  if (meQuery.isLoading) {
+    return (
+      <div className="text-sm text-muted-foreground border border-border rounded-md px-3 py-3">
+        Loading…
+      </div>
+    );
+  }
+
+  if (adminLabOrgs.length === 0) {
+    return (
+      <div className="text-sm text-muted-foreground border border-border rounded-md px-3 py-3">
+        No connection between this practice and one of your labs yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-border rounded-md px-3 py-3 space-y-2">
+      <p className="text-xs text-muted-foreground">
+        This practice isn't linked to any of your labs yet. Connect it to
+        start assigning a pricing tier.
+      </p>
+      {error && (
+        <div className="text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
+          {error}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {adminLabOrgs.length > 1 ? (
+          <select
+            value={labId}
+            onChange={(e) => setLabId(e.target.value)}
+            className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[180px]"
+            disabled={connectMutation.isPending}
+          >
+            {adminLabOrgs.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-xs text-muted-foreground">
+            Lab: <span className="font-medium text-foreground">{adminLabOrgs[0].name}</span>
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => connectMutation.mutate()}
+          disabled={connectMutation.isPending || !labId}
+          className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+        >
+          {connectMutation.isPending ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Link2 size={12} />
+          )}
+          Connect to lab
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Per-doctor pricing for a practice ──
+//
+// Lists every doctor known at this practice (sourced from the lab's case
+// history) and lets a lab admin assign a tier override and/or per-item
+// custom prices to each doctor inline. Backed by /api/pricing/overrides.
+interface PracticePricingTier {
+  id: string;
+  labOrganizationId: string;
+  name: string;
+  prices: Record<string, number>;
+}
+
+interface PracticePricingOverride {
+  id: string;
+  labOrganizationId: string;
+  doctorName: string;
+  practiceName: string | null;
+  providerOrganizationId: string | null;
+  tierName: string | null;
+  prices: Record<string, number>;
+  notes: string | null;
+}
+
+interface PracticeOverridesResponse {
+  labOrganizationId: string;
+  keys: string[];
+  overrides: PracticePricingOverride[];
+}
+
+interface PracticeTiersResponse {
+  labOrganizationId: string;
+  keys: string[];
+  tiers: PracticePricingTier[];
+}
+
+function PracticePricingSection({
+  providerOrg,
+  currentUserId,
+}: {
+  providerOrg: Organization;
+  currentUserId?: string;
+}) {
+  const queryClient = useQueryClient();
+
+  const connectionsQuery = useQuery({
+    queryKey: ["organization-connections", providerOrg.id, currentUserId],
+    queryFn: () =>
+      apiFetch<ConnectionRecord[]>(
+        `/organizations/connections?providerOrganizationId=${encodeURIComponent(providerOrg.id)}`,
+      ),
+    enabled: !!currentUserId,
+  });
+  const labOrganizationId =
+    connectionsQuery.data?.[0]?.labOrganizationId ?? null;
+
+  const casesQuery = useQuery({
+    queryKey: ["cases"],
+    queryFn: () => apiFetch<LabCase[]>("/cases"),
+    enabled: !!currentUserId,
+  });
+
+  const tiersQuery = useQuery({
+    queryKey: ["pricing-tiers-for-labs", labOrganizationId ?? ""],
+    enabled: !!labOrganizationId,
+    queryFn: () =>
+      apiFetch<PracticeTiersResponse>(
+        `/pricing/tiers?labOrganizationId=${encodeURIComponent(labOrganizationId!)}`,
+      ),
+  });
+  const tiers = tiersQuery.data?.tiers ?? [];
+
+  const overridesQuery = useQuery({
+    queryKey: ["pricing-overrides", labOrganizationId ?? ""],
+    enabled: !!labOrganizationId,
+    queryFn: () =>
+      apiFetch<PracticeOverridesResponse>(
+        `/pricing/overrides?labOrganizationId=${encodeURIComponent(labOrganizationId!)}`,
+      ),
+  });
+  const allOverrides = overridesQuery.data?.overrides ?? [];
+
+  // Distinct doctors at this practice (from cases).
+  const doctorsAtPractice = useMemo(() => {
+    const set = new Map<string, string>(); // lower → display
+    for (const c of casesQuery.data ?? []) {
+      if (c.providerOrganizationId !== providerOrg.id) continue;
+      const name = (c.doctorName || "").trim();
+      if (!name) continue;
+      const k = name.toLowerCase();
+      if (!set.has(k)) set.set(k, name);
+    }
+    // Also merge in any existing overrides linked by providerOrganizationId
+    // even if they have no cases yet, so admins can edit them here.
+    for (const o of allOverrides) {
+      if (o.providerOrganizationId !== providerOrg.id) continue;
+      const name = (o.doctorName || "").trim();
+      if (!name) continue;
+      const k = name.toLowerCase();
+      if (!set.has(k)) set.set(k, name);
+    }
+    return Array.from(set.values()).sort((a, b) => a.localeCompare(b));
+  }, [casesQuery.data, allOverrides, providerOrg.id]);
+
+  if (!currentUserId) return null;
+
+  return (
+    <section className="space-y-3">
+      <h3 className="text-sm font-semibold flex items-center gap-2">
+        <Stethoscope size={14} /> Per-doctor pricing
+      </h3>
+      <p className="text-xs text-muted-foreground">
+        Override the practice's default tier for a specific doctor, or set
+        custom item prices that beat any tier. Leave a price blank to fall
+        back to the doctor's tier (or the practice's default tier).
+      </p>
+
+      {!labOrganizationId && (
+        <div className="text-xs text-muted-foreground border border-border rounded-md px-3 py-3">
+          Connect this practice to one of your labs above to start
+          assigning per-doctor pricing.
+        </div>
+      )}
+
+      {labOrganizationId && (overridesQuery.isLoading || casesQuery.isLoading) && (
+        <div className="text-sm text-muted-foreground">Loading doctors…</div>
+      )}
+
+      {labOrganizationId &&
+        !overridesQuery.isLoading &&
+        !casesQuery.isLoading &&
+        doctorsAtPractice.length === 0 && (
+          <div className="text-xs text-muted-foreground border border-border rounded-md px-3 py-3">
+            No doctors on file for this practice yet. They'll appear here
+            after their first case is created.
+          </div>
+        )}
+
+      {labOrganizationId && doctorsAtPractice.length > 0 && (
+        <div className="border border-border rounded-md divide-y divide-border">
+          {doctorsAtPractice.map((doctorName) => {
+            const existing =
+              allOverrides.find(
+                (o) =>
+                  o.doctorName.trim().toLowerCase() ===
+                  doctorName.toLowerCase(),
+              ) ?? null;
+            return (
+              <DoctorPricingRow
+                key={doctorName}
+                doctorName={doctorName}
+                providerOrg={providerOrg}
+                labOrganizationId={labOrganizationId}
+                tiers={tiers}
+                existing={existing}
+                onSaved={() => {
+                  queryClient.invalidateQueries({
+                    queryKey: ["pricing-overrides", labOrganizationId],
+                  });
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DoctorPricingRow({
+  doctorName,
+  providerOrg,
+  labOrganizationId,
+  tiers,
+  existing,
+  onSaved,
+}: {
+  doctorName: string;
+  providerOrg: Organization;
+  labOrganizationId: string;
+  tiers: PracticePricingTier[];
+  existing: PracticePricingOverride | null;
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [tierName, setTierName] = useState<string>(existing?.tierName ?? "");
+  const [prices, setPrices] = useState<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const k of DEFAULT_PRICE_KEYS) {
+      const v = Number(existing?.prices?.[k] ?? 0);
+      out[k] = v > 0 ? v.toFixed(2) : "";
+    }
+    return out;
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  // If the cached override changes (e.g. after another save), reset state.
+  useEffect(() => {
+    setTierName(existing?.tierName ?? "");
+    const out: Record<string, string> = {};
+    for (const k of DEFAULT_PRICE_KEYS) {
+      const v = Number(existing?.prices?.[k] ?? 0);
+      out[k] = v > 0 ? v.toFixed(2) : "";
+    }
+    setPrices(out);
+  }, [existing?.id, existing?.tierName, existing?.prices]);
+
+  const nextPrices = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(prices)) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) out[k] = n;
+    }
+    return out;
+  }, [prices]);
+
+  const customPriceCount = Object.keys(nextPrices).length;
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const payload: Record<string, unknown> = {
+        labOrganizationId,
+        doctorName: doctorName.trim(),
+        practiceName: providerOrg.displayName || providerOrg.name || null,
+        providerOrganizationId: providerOrg.id,
+        tierName: tierName.trim() ? tierName.trim() : null,
+        prices: nextPrices,
+      };
+      if (existing) {
+        return apiFetch<PracticePricingOverride>(
+          `/pricing/overrides/${existing.id}`,
+          { method: "PATCH", body: JSON.stringify(payload) },
+        );
+      }
+      return apiFetch<PracticePricingOverride>(`/pricing/overrides`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      setError(null);
+      onSaved();
+    },
+    onError: (e: Error) =>
+      setError(e.message || "Could not save pricing for this doctor."),
+  });
+
+  const tierMissing =
+    !!existing?.tierName &&
+    !tiers.some(
+      (t) => t.name.toLowerCase() === existing.tierName!.toLowerCase(),
+    );
+
+  return (
+    <div className="px-3 py-2 text-sm space-y-2">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="h-6 w-6 rounded hover:bg-secondary flex items-center justify-center"
+          aria-label={open ? "Collapse" : "Expand"}
+        >
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="font-medium truncate">{doctorName}</div>
+          <div className="text-[11px] text-muted-foreground truncate">
+            {existing?.tierName ? `Tier: ${existing.tierName}` : "Tier: practice default"}
+            {customPriceCount > 0
+              ? ` · ${customPriceCount} custom price${customPriceCount === 1 ? "" : "s"}`
+              : ""}
+          </div>
+        </div>
+        <select
+          value={tierName}
+          onChange={(e) => setTierName(e.target.value)}
+          className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
+          disabled={saveMutation.isPending}
+        >
+          <option value="">— Use practice default —</option>
+          {tiers.map((t) => (
+            <option key={t.id} value={t.name}>
+              {t.name}
+            </option>
+          ))}
+          {tierMissing && (
+            <option value={existing!.tierName!}>
+              {existing!.tierName} (missing)
+            </option>
+          )}
+        </select>
+      </div>
+
+      {open && (
+        <div className="pl-8 space-y-2">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            {DEFAULT_PRICE_KEYS.map((k) => {
+              const tierPrice = (() => {
+                const t = tiers.find(
+                  (tt) => tt.name.toLowerCase() === tierName.toLowerCase(),
+                );
+                const n = Number(t?.prices?.[k] ?? 0);
+                return Number.isFinite(n) && n > 0 ? n : 0;
+              })();
+              return (
+                <label
+                  key={k}
+                  className="flex items-center justify-between gap-2 text-xs"
+                >
+                  <span className="text-muted-foreground truncate">
+                    {priceKeyLabel(k)}
+                  </span>
+                  <div className="relative">
+                    <DollarSign
+                      size={11}
+                      className="absolute left-1.5 top-1.5 text-muted-foreground pointer-events-none"
+                    />
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="0.01"
+                      min="0"
+                      placeholder={
+                        tierPrice > 0 ? formatMoney(tierPrice) : "—"
+                      }
+                      value={prices[k] ?? ""}
+                      onChange={(e) =>
+                        setPrices((p) => ({ ...p, [k]: e.target.value }))
+                      }
+                      className="h-7 pl-5 pr-2 w-24 rounded-md bg-background border border-input text-xs text-right"
+                      disabled={saveMutation.isPending}
+                    />
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+          {error && (
+            <div className="text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
+              {error}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending}
+              className="h-7 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+            >
+              {saveMutation.isPending && (
+                <Loader2 size={12} className="animate-spin" />
+              )}
+              Save pricing
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
