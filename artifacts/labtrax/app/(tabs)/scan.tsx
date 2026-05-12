@@ -36,6 +36,12 @@ import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { ManualCropOverlay } from "@/components/ManualCropOverlay";
+import {
+  decideManualEntry,
+  shouldAutoAnalyze,
+  resolveCloseAction,
+  pickRawCaptureUri,
+} from "@/lib/scan-helpers";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -503,10 +509,16 @@ export default function ScanScreen() {
     useCallback(() => {
       setCameraPaused(false);
       isPickingFilesRef.current = false;
-      if (manualModeRequested && lastAppliedManualNonceRef.current !== manualModeNonce) {
-        lastAppliedManualNonceRef.current = manualModeNonce;
+      const decision = decideManualEntry({
+        manualModeRequested,
+        currentNonce: manualModeNonce,
+        lastAppliedNonce: lastAppliedManualNonceRef.current,
+        phase,
+      });
+      if (decision.kind === "fire") {
+        lastAppliedManualNonceRef.current = decision.nextLastNonce;
         handleManualEntry();
-      } else if (phase !== "form") {
+      } else if (decision.kind === "reset") {
         setPhase("camera");
         setCapturedUri(null);
         autoAnalyzedRef.current = false;
@@ -556,7 +568,7 @@ export default function ScanScreen() {
         // Auto-fire AI analysis on the captured page(s) so the user doesn't
         // have to discover the "Finished" button. handleFinishedReview will
         // advance to the form on success and surface a clear error otherwise.
-        if (!cancelled && !autoAnalyzedRef.current) {
+        if (shouldAutoAnalyze({ cancelled, alreadyFired: autoAnalyzedRef.current })) {
           autoAnalyzedRef.current = true;
           try { await handleFinishedReview(); } catch (err: any) {
             console.log("Auto AI analyze failed:", err?.message || err);
@@ -595,6 +607,10 @@ export default function ScanScreen() {
   async function handleTakePhoto() {
     let rawUri: string | null = null;
 
+    let cameraUri: string | null = null;
+    let webCanvasUri: string | null = null;
+    let imagePickerUri: string | null = null;
+
     if (cameraRef.current) {
       try {
         if (!cameraReady) {
@@ -602,14 +618,14 @@ export default function ScanScreen() {
         }
         const photo = await cameraRef.current.takePictureAsync({ quality: 0.8, base64: true });
         if (photo?.uri) {
-          rawUri = photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri;
+          cameraUri = photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri;
         }
       } catch (e: any) {
         console.log("Camera takePictureAsync failed:", e?.message || e);
       }
     }
 
-    if (!rawUri && (Platform.OS as string) === "web") {
+    if (!cameraUri && (Platform.OS as string) === "web") {
       try {
         const videoEl = document.querySelector("video");
         if (videoEl) {
@@ -619,7 +635,7 @@ export default function ScanScreen() {
           const ctx = canvas.getContext("2d");
           if (ctx) {
             ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-            rawUri = canvas.toDataURL("image/jpeg", 0.8);
+            webCanvasUri = canvas.toDataURL("image/jpeg", 0.8);
           }
         }
       } catch (e: any) {
@@ -627,7 +643,7 @@ export default function ScanScreen() {
       }
     }
 
-    if (!rawUri) {
+    if (!cameraUri && !webCanvasUri) {
       try {
         const result = await ImagePicker.launchCameraAsync({
           mediaTypes: ["images"],
@@ -638,20 +654,22 @@ export default function ScanScreen() {
         if (!result.canceled && result.assets[0]) {
           const asset = result.assets[0];
           const normalized = await normalizePrescriptionImage(asset.uri);
-          rawUri = normalized.uri;
+          imagePickerUri = normalized.uri;
         }
       } catch (e: any) {
         console.log("ImagePicker.launchCameraAsync failed:", e?.message || e);
       }
     }
 
-    if (!rawUri) {
+    const captured = pickRawCaptureUri({ cameraUri, webCanvasUri, imagePickerUri });
+    if (!captured.ok) {
       Alert.alert(
         "Couldn't capture photo",
         "The camera didn't return an image. Please try again, or tap Manual Entry to fill the case in by hand.",
       );
       return;
     }
+    rawUri = captured.uri;
 
     autoAnalyzedRef.current = false;
     cropDoneRef.current = false;
@@ -4743,7 +4761,11 @@ export default function ScanScreen() {
         {(phase === "camera" || phase === "review") && !isAnalyzing && (
           <Pressable
             onPress={() => {
-              if (phase === "review") {
+              const action = resolveCloseAction({
+                phase,
+                canGoBack: !!(router.canGoBack && router.canGoBack()),
+              });
+              if (action.kind === "discard-review") {
                 setCasePhotos([]);
                 setCaseAttachments([]);
                 setCapturedUri(null);
@@ -4752,10 +4774,10 @@ export default function ScanScreen() {
                 setPhase("camera");
                 return;
               }
-              if (router.canGoBack && router.canGoBack()) {
+              if (action.kind === "router-back") {
                 router.back();
               } else {
-                router.replace("/(tabs)");
+                router.replace(action.path);
               }
             }}
             hitSlop={12}
