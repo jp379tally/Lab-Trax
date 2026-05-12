@@ -36,6 +36,12 @@ import { resolvePriceForCase } from "@/lib/pricing";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
 import { logAudit } from "@/lib/audit";
+import {
+  caseToRxSummary,
+  formatRxTeethLabel,
+  buildHighlightedToothSet,
+} from "@/lib/rx-summary";
+import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
 
 function deriveDisplayInitials(input?: {
   firstName?: string | null;
@@ -1456,6 +1462,103 @@ export default function CaseDetailScreen() {
           )}
         </Pressable>
 
+        {(() => {
+          const summary = caseToRxSummary(caseItem);
+          const hasAny =
+            summary.restorativeType !== null ||
+            summary.materials.length > 0 ||
+            summary.teeth.length > 0 ||
+            summary.isFullArch !== null;
+          const noteEntries = (caseItem.activityLog || [])
+            .filter((e) => e.type === "note")
+            .sort((a, b) => b.timestamp - a.timestamp);
+          const hasNotes =
+            noteEntries.length > 0 || (caseItem.notes || "").trim().length > 0;
+          return (
+            <View style={styles.rxSummaryCard}>
+              <Text style={styles.rxSummaryHeading}>Rx Summary</Text>
+              {!hasAny ? (
+                <View style={styles.rxSummaryEmpty}>
+                  <Text style={styles.rxSummaryEmptyText}>
+                    No restorations on this case yet. Add one in the
+                    Restorations tab to populate this summary.
+                  </Text>
+                </View>
+              ) : (
+                <View style={{ gap: 12 }}>
+                  <View style={styles.rxSummaryGrid}>
+                    <View style={styles.rxSummaryField}>
+                      <Text style={styles.rxSummaryLabel}>Restorative type</Text>
+                      <Text style={styles.rxSummaryValue}>
+                        {summary.restorativeType ?? "Other"}
+                      </Text>
+                    </View>
+                    <View style={styles.rxSummaryField}>
+                      <Text style={styles.rxSummaryLabel}>
+                        {summary.materials.length > 1 ? "Materials" : "Material"}
+                      </Text>
+                      <Text style={styles.rxSummaryValue}>
+                        {summary.materials.length > 0
+                          ? summary.materials.join(", ")
+                          : "—"}
+                      </Text>
+                    </View>
+                    <View style={[styles.rxSummaryField, { width: "100%" }]}>
+                      <Text style={styles.rxSummaryLabel}>
+                        {summary.isFullArch
+                          ? "Tooth coverage"
+                          : "Tooth number(s)"}
+                      </Text>
+                      <Text style={styles.rxSummaryValue}>
+                        {formatRxTeethLabel(summary)}
+                      </Text>
+                    </View>
+                  </View>
+                  <ReadOnlyToothChart
+                    highlighted={buildHighlightedToothSet(summary)}
+                  />
+                  <View>
+                    <Text style={styles.rxSummaryLabel}>Notes</Text>
+                    {!hasNotes ? (
+                      <View style={styles.rxSummaryNotesEmpty}>
+                        <Text style={styles.rxSummaryNotesEmptyText}>
+                          No notes yet.
+                        </Text>
+                      </View>
+                    ) : (
+                      <View style={{ gap: 6 }}>
+                        {noteEntries.length > 0 ? (
+                          noteEntries.map((entry) => (
+                            <View
+                              key={entry.id}
+                              style={styles.rxSummaryNoteRow}
+                            >
+                              <Text style={styles.rxSummaryNoteText}>
+                                {entry.description || "—"}
+                              </Text>
+                              <Text style={styles.rxSummaryNoteMeta}>
+                                {new Date(entry.timestamp).toLocaleDateString(
+                                  undefined,
+                                  { month: "short", day: "numeric" },
+                                )}
+                              </Text>
+                            </View>
+                          ))
+                        ) : (
+                          <View style={styles.rxSummaryNoteRow}>
+                            <Text style={styles.rxSummaryNoteText}>
+                              {caseItem.notes}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </View>
+                </View>
+              )}
+            </View>
+          );
+        })()}
 
         {isAdmin && (
           <View style={{ flexDirection: "row", gap: 8, marginHorizontal: 16, marginBottom: 16 }}>
@@ -4406,6 +4509,92 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 16,
     marginBottom: 24,
+  },
+  rxSummaryCard: {
+    backgroundColor: Colors.light.background,
+    borderRadius: 14,
+    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  rxSummaryHeading: {
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    color: Colors.light.textSecondary,
+    letterSpacing: 0.6,
+    textTransform: "uppercase" as const,
+    marginBottom: 12,
+  },
+  rxSummaryEmpty: {
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: Colors.light.border,
+    borderRadius: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+  },
+  rxSummaryEmptyText: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+    textAlign: "center" as const,
+  },
+  rxSummaryGrid: {
+    flexDirection: "row" as const,
+    flexWrap: "wrap" as const,
+    gap: 12,
+  },
+  rxSummaryField: {
+    width: "48%",
+  },
+  rxSummaryLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.textSecondary,
+    letterSpacing: 0.5,
+    textTransform: "uppercase" as const,
+    marginBottom: 4,
+  },
+  rxSummaryValue: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.text,
+  },
+  rxSummaryNotesEmpty: {
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: Colors.light.border,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginTop: 4,
+  },
+  rxSummaryNotesEmptyText: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.textSecondary,
+  },
+  rxSummaryNoteRow: {
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginTop: 4,
+  },
+  rxSummaryNoteText: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    color: Colors.light.text,
+    lineHeight: 18,
+  },
+  rxSummaryNoteMeta: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textTertiary,
+    marginTop: 4,
   },
   notesLabel: {
     fontSize: 10,
