@@ -14,6 +14,7 @@ import {
 import { generateInviteToken } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
 import { HttpError, ok } from "../lib/http";
+import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
 import { sendInviteEmail } from "../lib/mail";
 import {
   assertCustomAccountNumberAvailable,
@@ -423,6 +424,7 @@ router.post(
 router.get(
   "/",
   asyncHandler(async (req, res) => {
+    const includeArchived = req.query.includeArchived === "true";
     const memberships =
       await db.query.organizationMemberships.findMany({
         where: eq(
@@ -437,7 +439,14 @@ router.get(
       ? await db
           .select()
           .from(organizations)
-          .where(inArray(organizations.id, orgIds))
+          .where(
+            includeArchived
+              ? inArray(organizations.id, orgIds)
+              : and(
+                  inArray(organizations.id, orgIds),
+                  notDeleted(organizations)
+                )
+          )
       : [];
     return ok(res, orgs);
   })
@@ -643,6 +652,96 @@ router.patch(
       beforeJson: existing,
       afterJson: updated,
     });
+    return ok(res, updated);
+  })
+);
+
+router.post(
+  "/:organizationId/archive",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    const access = await resolveOrgAdminAccess(
+      (req as any).auth.userId,
+      organizationId
+    );
+    const existing =
+      access.organization ??
+      (await db.query.organizations.findFirst({
+        where: eq(organizations.id, organizationId),
+      }));
+    if (!existing) throw new HttpError(404, "Organization not found.");
+    if (existing.type !== "provider") {
+      throw new HttpError(
+        400,
+        "Only provider practices can be archived from this endpoint."
+      );
+    }
+    if (existing.deletedAt) {
+      return ok(res, existing);
+    }
+
+    await softDeleteById({
+      table: organizations,
+      id: organizationId,
+      actorUserId: (req as any).auth.userId,
+      req,
+      organizationId,
+      entityType: "organization",
+      beforeJson: existing,
+    });
+
+    const [updated] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, organizationId));
+    return ok(res, updated);
+  })
+);
+
+router.post(
+  "/:organizationId/restore",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    // Look up the org without filtering deleted rows so we can restore it.
+    const existing = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!existing) throw new HttpError(404, "Organization not found.");
+
+    // Authorize via the parent lab for provider practices, or direct admin
+    // membership otherwise. resolveOrgAdminAccess already handles both, but
+    // we call it on the parent for archived provider rows so the caller
+    // can still authorize even if the org row is hidden by future filters.
+    if (existing.parentLabOrganizationId) {
+      await resolveOrgAdminAccess(
+        (req as any).auth.userId,
+        existing.parentLabOrganizationId
+      );
+    } else {
+      await resolveOrgAdminAccess(
+        (req as any).auth.userId,
+        organizationId
+      );
+    }
+
+    if (!existing.deletedAt) {
+      return ok(res, existing);
+    }
+
+    await restoreDeleted({
+      table: organizations,
+      where: eq(organizations.id, organizationId),
+      actorUserId: (req as any).auth.userId,
+      req,
+      organizationId,
+      entityType: "organization",
+      entityId: organizationId,
+    });
+
+    const [updated] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, organizationId));
     return ok(res, updated);
   })
 );

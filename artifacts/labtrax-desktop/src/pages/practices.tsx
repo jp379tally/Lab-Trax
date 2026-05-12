@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Loader2, Mail, Plus, Search, Send, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Archive, ArchiveRestore, Building2, Loader2, Mail, Plus, Search, Send, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
@@ -52,8 +52,9 @@ function roleLabel(role: string): string {
 
 export default function PracticesPage() {
   const orgsQuery = useQuery({
-    queryKey: ["organizations"],
-    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    queryKey: ["organizations", { includeArchived: true }],
+    queryFn: () =>
+      apiFetch<Organization[]>("/organizations?includeArchived=true"),
   });
   const casesQuery = useQuery({
     queryKey: ["cases"],
@@ -66,6 +67,7 @@ export default function PracticesPage() {
 
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState<Organization | null>(null);
   const [adding, setAdding] = useState(false);
 
@@ -111,10 +113,16 @@ export default function PracticesPage() {
     return map;
   }, [cases, invoices]);
 
+  const archivedCount = useMemo(
+    () => orgs.filter((o) => !!o.deletedAt).length,
+    [orgs]
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return orgs
       .filter((o) => {
+        if (!showArchived && o.deletedAt) return false;
         if (typeFilter !== "all" && o.type !== typeFilter) return false;
         if (!q) return true;
         return (
@@ -124,7 +132,7 @@ export default function PracticesPage() {
         );
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [orgs, search, typeFilter]);
+  }, [orgs, search, typeFilter, showArchived]);
 
   const isLoading = orgsQuery.isLoading;
   const error = orgsQuery.error as Error | null;
@@ -175,6 +183,15 @@ export default function PracticesPage() {
             <option value="lab">Lab</option>
             <option value="provider">Provider</option>
           </select>
+          <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground select-none cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            Show archived{archivedCount > 0 ? ` (${archivedCount})` : ""}
+          </label>
         </div>
 
         <div className="overflow-x-auto">
@@ -225,7 +242,16 @@ export default function PracticesPage() {
                           <Building2 size={13} />
                         </div>
                         <div>
-                          <div className="font-medium">{o.displayName || o.name}</div>
+                          <div className="font-medium flex items-center gap-2">
+                            <span className={o.deletedAt ? "text-muted-foreground" : ""}>
+                              {o.displayName || o.name}
+                            </span>
+                            {o.deletedAt && (
+                              <span className="text-[10px] uppercase tracking-wide bg-secondary text-muted-foreground rounded px-1.5 py-0.5">
+                                Archived
+                              </span>
+                            )}
+                          </div>
                           {o.displayName && (
                             <div className="text-xs text-muted-foreground">{o.name}</div>
                           )}
@@ -583,6 +609,54 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
     onError: (err: Error) => setError(err.message || "Save failed."),
   });
 
+  const liveOrg = detailQuery.data ?? org;
+  const isArchived = !!liveOrg.deletedAt;
+  const canArchive = org.type === "provider";
+
+  const archiveMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<Organization>(`/organizations/${org.id}/archive`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      queryClient.invalidateQueries({ queryKey: ["organization", org.id] });
+      onClose();
+    },
+    onError: (err: Error) =>
+      setError(err.message || "Could not archive practice."),
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<Organization>(`/organizations/${org.id}/restore`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      queryClient.invalidateQueries({ queryKey: ["organization", org.id] });
+    },
+    onError: (err: Error) =>
+      setError(err.message || "Could not restore practice."),
+  });
+
+  function handleArchive() {
+    if (
+      !confirm(
+        `Archive ${org.displayName || org.name}? It will be hidden from the practices list. Existing cases and invoices are preserved and you can restore it from the archived view.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    archiveMutation.mutate();
+  }
+
+  function handleRestore() {
+    setError(null);
+    restoreMutation.mutate();
+  }
+
   function update<K extends keyof PracticeFields>(key: K, value: PracticeFields[K]) {
     setFields((p) => ({ ...p, [key]: value }));
   }
@@ -596,13 +670,44 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
             <div className="text-sm font-semibold">{org.displayName || org.name}</div>
           </div>
           <div className="flex items-center gap-2">
+            {canArchive && isArchived && (
+              <button
+                type="button"
+                onClick={handleRestore}
+                disabled={restoreMutation.isPending}
+                className="h-9 px-3 rounded-md text-sm font-medium border border-border hover:bg-secondary inline-flex items-center gap-1.5 disabled:opacity-60"
+              >
+                {restoreMutation.isPending ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <ArchiveRestore size={14} />
+                )}
+                Restore
+              </button>
+            )}
+            {canArchive && !isArchived && (
+              <button
+                type="button"
+                onClick={handleArchive}
+                disabled={archiveMutation.isPending}
+                className="h-9 px-3 rounded-md text-sm font-medium text-destructive hover:bg-destructive/10 inline-flex items-center gap-1.5 disabled:opacity-60"
+              >
+                {archiveMutation.isPending ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Archive size={14} />
+                )}
+                Archive
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
                 setError(null);
                 saveMutation.mutate();
               }}
-              disabled={saveMutation.isPending}
+              disabled={saveMutation.isPending || isArchived}
+              title={isArchived ? "Restore this practice before editing." : undefined}
               className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
             >
               {saveMutation.isPending ? "Saving…" : "Save changes"}
@@ -614,6 +719,13 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
         </header>
 
         <div className="px-6 py-6 space-y-6">
+          {isArchived && (
+            <div className="text-sm bg-secondary border border-border text-muted-foreground px-3 py-2 rounded-md flex items-center gap-2">
+              <Archive size={14} />
+              This practice is archived. Existing cases and invoices are
+              preserved. Restore it to start booking new work again.
+            </div>
+          )}
           {error && (
             <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</div>
           )}

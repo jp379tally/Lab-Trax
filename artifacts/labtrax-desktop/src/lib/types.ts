@@ -251,6 +251,7 @@ export interface Organization {
   createdByUserId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  deletedAt?: string | null;
 }
 
 export interface BankAccount {
