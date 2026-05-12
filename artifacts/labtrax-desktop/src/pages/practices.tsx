@@ -779,6 +779,7 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
   const queryClient = useQueryClient();
   const { user: currentUser } = useAuth();
   const [error, setError] = useState<string | null>(null);
+  const [addDoctorOpen, setAddDoctorOpen] = useState(false);
   const [fields, setFields] = useState<PracticeFields>({
     name: org.name || "",
     displayName: org.displayName || "",
@@ -905,6 +906,16 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
             <div className="text-sm font-semibold">{org.displayName || org.name}</div>
           </div>
           <div className="flex items-center gap-2">
+            {canArchive && !isArchived && (
+              <button
+                type="button"
+                onClick={() => setAddDoctorOpen(true)}
+                className="h-9 px-3 rounded-md text-sm font-medium border border-border hover:bg-secondary inline-flex items-center gap-1.5"
+              >
+                <UserPlus size={14} />
+                Add doctor to practice
+              </button>
+            )}
             {canArchive && isArchived && (
               <button
                 type="button"
@@ -1045,6 +1056,376 @@ function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => vo
           </section>
         </div>
       </div>
+      {addDoctorOpen && (
+        <AddDoctorToPracticeDialog
+          org={org}
+          onClose={() => setAddDoctorOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+interface EligibleDoctor {
+  id: string;
+  username: string;
+  email?: string | null;
+  phone?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  platformAccountNumber?: string | null;
+  currentPractices: string[];
+}
+
+function AddDoctorToPracticeDialog({
+  org,
+  onClose,
+}: {
+  org: Organization;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [mode, setMode] = useState<"new" | "existing">("new");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [search, setSearch] = useState("");
+
+  const eligibleQuery = useQuery({
+    queryKey: ["organization", org.id, "eligible-doctors"],
+    queryFn: () =>
+      apiFetch<EligibleDoctor[]>(
+        `/organizations/${org.id}/eligible-doctors`,
+      ),
+    enabled: mode === "existing",
+  });
+
+  function invalidateAll() {
+    queryClient.invalidateQueries({ queryKey: ["organization", org.id, "members"] });
+    queryClient.invalidateQueries({ queryKey: ["organization", org.id, "eligible-doctors"] });
+    queryClient.invalidateQueries({ queryKey: ["organizations"] });
+  }
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{
+        created: Array<{ firstName?: string | null; lastName?: string | null; email?: string | null }>;
+        skipped: Array<{ index: number; reason: string }>;
+      }>(`/organizations/${org.id}/doctors`, {
+        method: "POST",
+        body: JSON.stringify({
+          doctors: [
+            {
+              firstName: firstName.trim(),
+              lastName: lastName.trim(),
+              email: email.trim() || undefined,
+              phone: phone.trim() || undefined,
+            },
+          ],
+        }),
+      }),
+    onSuccess: (res) => {
+      const skipped = res.skipped?.[0];
+      if (skipped) {
+        setError(skipped.reason || "Could not add doctor.");
+        return;
+      }
+      const d = res.created?.[0];
+      const name = [d?.firstName, d?.lastName].filter(Boolean).join(" ") || "Doctor";
+      setSuccess(`${name} added to ${org.displayName || org.name}.`);
+      setError(null);
+      setFirstName("");
+      setLastName("");
+      setEmail("");
+      setPhone("");
+      invalidateAll();
+    },
+    onError: (err: Error) => setError(err.message || "Could not add doctor."),
+  });
+
+  const linkMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ firstName?: string | null; lastName?: string | null }>(
+        `/organizations/${org.id}/doctors/link`,
+        {
+          method: "POST",
+          body: JSON.stringify({ userId: selectedUserId }),
+        },
+      ),
+    onSuccess: (res) => {
+      const name = [res.firstName, res.lastName].filter(Boolean).join(" ") || "Doctor";
+      setSuccess(`${name} linked to ${org.displayName || org.name}.`);
+      setError(null);
+      setSelectedUserId("");
+      invalidateAll();
+    },
+    onError: (err: Error) => setError(err.message || "Could not link doctor."),
+  });
+
+  const eligible = eligibleQuery.data ?? [];
+  const filteredEligible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return eligible;
+    return eligible.filter((u) => {
+      const name = `${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase();
+      return (
+        name.includes(q) ||
+        (u.email ?? "").toLowerCase().includes(q) ||
+        (u.username ?? "").toLowerCase().includes(q) ||
+        (u.platformAccountNumber ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [eligible, search]);
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+    if (mode === "new") {
+      if (!firstName.trim()) {
+        setError("First name is required.");
+        return;
+      }
+      createMutation.mutate();
+    } else {
+      if (!selectedUserId) {
+        setError("Pick a doctor from the list first.");
+        return;
+      }
+      linkMutation.mutate();
+    }
+  }
+
+  const submitting = createMutation.isPending || linkMutation.isPending;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40"
+      onClick={onClose}
+    >
+      <form
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
+        className="w-full max-w-lg bg-card border border-border rounded-xl shadow-2xl overflow-hidden"
+      >
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <div>
+            <div className="text-xs text-muted-foreground">Practice</div>
+            <div className="text-sm font-semibold">
+              {org.displayName || org.name}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="px-5 pt-4">
+          <div className="inline-flex rounded-md border border-border overflow-hidden text-sm">
+            <button
+              type="button"
+              onClick={() => {
+                setMode("new");
+                setError(null);
+                setSuccess(null);
+              }}
+              className={`px-3 h-8 inline-flex items-center gap-1.5 ${
+                mode === "new"
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-secondary"
+              }`}
+            >
+              <UserPlus size={13} /> Add new doctor
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMode("existing");
+                setError(null);
+                setSuccess(null);
+              }}
+              className={`px-3 h-8 inline-flex items-center gap-1.5 border-l border-border ${
+                mode === "existing"
+                  ? "bg-primary text-primary-foreground"
+                  : "hover:bg-secondary"
+              }`}
+            >
+              <Users size={13} /> Pick existing doctor
+            </button>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {error && (
+            <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+              {error}
+            </div>
+          )}
+          {success && (
+            <div className="text-sm text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-3 py-2 rounded-md">
+              {success}
+            </div>
+          )}
+
+          {mode === "new" ? (
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="First name">
+                <input
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  className={inputCls}
+                  placeholder="Jane"
+                  autoFocus
+                />
+              </FormField>
+              <FormField label="Last name">
+                <input
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className={inputCls}
+                  placeholder="Smith"
+                />
+              </FormField>
+              <FormField label="Email" full>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className={inputCls}
+                  placeholder="optional"
+                />
+              </FormField>
+              <FormField label="Phone" full>
+                <input
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className={inputCls}
+                  placeholder="optional"
+                />
+              </FormField>
+              <div className="col-span-2 text-[11px] text-muted-foreground">
+                Creates a new doctor account at this practice. They'll receive
+                their own platform account number.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="relative">
+                <Search
+                  size={14}
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+                />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search doctors at your other practices…"
+                  className="w-full h-9 pl-8 pr-3 rounded-md bg-background border border-input text-sm"
+                />
+              </div>
+              <div className="max-h-72 overflow-y-auto rounded-md border border-border divide-y divide-border bg-background">
+                {eligibleQuery.isLoading && (
+                  <div className="px-3 py-6 text-sm text-muted-foreground text-center">
+                    <Loader2 size={14} className="inline animate-spin mr-2" />
+                    Loading doctors…
+                  </div>
+                )}
+                {eligibleQuery.error && (
+                  <div className="px-3 py-6 text-sm text-destructive text-center">
+                    {(eligibleQuery.error as Error).message}
+                  </div>
+                )}
+                {!eligibleQuery.isLoading &&
+                  !eligibleQuery.error &&
+                  filteredEligible.length === 0 && (
+                    <div className="px-3 py-6 text-sm text-muted-foreground text-center">
+                      {eligible.length === 0
+                        ? "No other doctors in your lab to link yet."
+                        : "No matches."}
+                    </div>
+                  )}
+                {filteredEligible.map((u) => {
+                  const checked = selectedUserId === u.id;
+                  const name =
+                    [u.firstName, u.lastName].filter(Boolean).join(" ") ||
+                    u.username;
+                  return (
+                    <label
+                      key={u.id}
+                      className={`flex items-start gap-2.5 px-3 py-2.5 cursor-pointer hover:bg-secondary/60 ${
+                        checked ? "bg-primary/10" : ""
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="eligible-doctor"
+                        className="mt-1"
+                        checked={checked}
+                        onChange={() => setSelectedUserId(u.id)}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate">
+                          {name}
+                          {u.platformAccountNumber && (
+                            <span className="ml-2 text-[10px] font-mono bg-primary/10 text-primary rounded px-1.5 py-0.5">
+                              {u.platformAccountNumber}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {u.email || u.phone || u.username}
+                        </div>
+                        {u.currentPractices.length > 0 && (
+                          <div className="text-[11px] text-muted-foreground mt-0.5">
+                            Currently at: {u.currentPractices.join(", ")}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                Links an existing doctor (already at one of your other
+                practices) to this practice without creating a duplicate
+                account.
+              </div>
+            </div>
+          )}
+        </div>
+
+        <footer className="px-5 py-4 border-t border-border flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-4 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            Close
+          </button>
+          <button
+            type="submit"
+            disabled={
+              submitting ||
+              (mode === "new" ? !firstName.trim() : !selectedUserId)
+            }
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+          >
+            {submitting && <Loader2 size={14} className="animate-spin" />}
+            {mode === "new" ? "Add doctor" : "Link doctor"}
+          </button>
+        </footer>
+      </form>
     </div>
   );
 }

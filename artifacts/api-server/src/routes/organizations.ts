@@ -613,6 +613,286 @@ router.post(
   })
 );
 
+// List provider users who could be added to this practice as a doctor —
+// i.e. they're not already an active member of *this* practice. Scoped to
+// the same parent lab so a lab admin only sees their own labs' doctors.
+// Lab-admin only.
+router.get(
+  "/:organizationId/eligible-doctors",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    const callerId = (req as any).auth.userId as string;
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!practice || practice.deletedAt) {
+      throw new HttpError(404, "Practice not found.");
+    }
+    if (practice.type !== "provider") {
+      throw new HttpError(400, "Doctors only attach to provider practices.");
+    }
+    if (!practice.parentLabOrganizationId) {
+      throw new HttpError(400, "Practice has no parent lab.");
+    }
+    await requireAnyRole(callerId, practice.parentLabOrganizationId, ADMIN_ROLES);
+
+    // All provider practices belonging to the same parent lab. Eligible
+    // doctors are users who currently sit on one of those practices but
+    // not on THIS one.
+    const siblingPractices = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(
+        and(
+          eq(
+            organizations.parentLabOrganizationId,
+            practice.parentLabOrganizationId
+          ),
+          eq(organizations.type, "provider"),
+          notDeleted(organizations)
+        )
+      );
+    const siblingIds = siblingPractices.map((p) => p.id);
+    if (siblingIds.length === 0) return ok(res, []);
+
+    const memberships = await db
+      .select({
+        labId: organizationMemberships.labId,
+        userId: organizationMemberships.userId,
+        status: organizationMemberships.status,
+      })
+      .from(organizationMemberships)
+      .where(
+        and(
+          inArray(organizationMemberships.labId, siblingIds),
+          notDeleted(organizationMemberships)
+        )
+      );
+
+    const currentMemberIds = new Set(
+      memberships
+        .filter((m) => m.labId === organizationId && m.status === "active")
+        .map((m) => m.userId)
+    );
+    const otherProviderUserIds = Array.from(
+      new Set(
+        memberships
+          .filter(
+            (m) => m.labId !== organizationId && m.status === "active"
+          )
+          .map((m) => m.userId)
+      )
+    ).filter((id) => !currentMemberIds.has(id));
+
+    if (otherProviderUserIds.length === 0) return ok(res, []);
+
+    const eligibleUsers = await db
+      .select({
+        id: users.id,
+        username: users.username,
+        email: users.email,
+        phone: users.phone,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        userType: users.userType,
+        platformAccountNumber: users.platformAccountNumber,
+      })
+      .from(users)
+      .where(
+        and(
+          inArray(users.id, otherProviderUserIds),
+          eq(users.userType, "provider")
+        )
+      );
+
+    // Annotate each candidate with the practice(s) they currently belong
+    // to so the picker can show "Dr. Jane Smith — at Smile Dental" etc.
+    const practiceById = await db
+      .select({
+        id: organizations.id,
+        name: organizations.name,
+        displayName: organizations.displayName,
+      })
+      .from(organizations)
+      .where(inArray(organizations.id, siblingIds));
+    const practiceMap = new Map(practiceById.map((p) => [p.id, p]));
+    const userToPractices = new Map<string, string[]>();
+    for (const m of memberships) {
+      if (m.labId === organizationId) continue;
+      if (m.status !== "active") continue;
+      const pr = practiceMap.get(m.labId);
+      if (!pr) continue;
+      const label = pr.displayName || pr.name;
+      const arr = userToPractices.get(m.userId) ?? [];
+      if (!arr.includes(label)) arr.push(label);
+      userToPractices.set(m.userId, arr);
+    }
+
+    return ok(
+      res,
+      eligibleUsers
+        .map((u) => ({
+          ...u,
+          currentPractices: userToPractices.get(u.id) ?? [],
+        }))
+        .sort((a, b) => {
+          const an = `${a.lastName ?? ""} ${a.firstName ?? ""}`.trim().toLowerCase();
+          const bn = `${b.lastName ?? ""} ${b.firstName ?? ""}`.trim().toLowerCase();
+          return an.localeCompare(bn);
+        })
+    );
+  })
+);
+
+// Link an existing provider user as an active member of this practice.
+// Used by the "Add doctor → pick existing" flow so a doctor who already
+// has a LabTrax account at one of the lab's other practices can be
+// attached without spawning a duplicate user account. Lab-admin only.
+const linkExistingDoctorSchema = z.object({
+  userId: z.string().min(1),
+});
+
+router.post(
+  "/:organizationId/doctors/link",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    const callerId = (req as any).auth.userId as string;
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!practice || practice.deletedAt) {
+      throw new HttpError(404, "Practice not found.");
+    }
+    if (practice.type !== "provider") {
+      throw new HttpError(400, "Doctors only attach to provider practices.");
+    }
+    if (!practice.parentLabOrganizationId) {
+      throw new HttpError(400, "Practice has no parent lab.");
+    }
+    await requireAnyRole(callerId, practice.parentLabOrganizationId, ADMIN_ROLES);
+
+    const { userId } = linkExistingDoctorSchema.parse(req.body);
+
+    const targetUser = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+    });
+    if (!targetUser) throw new HttpError(404, "User not found.");
+    if (targetUser.userType !== "provider") {
+      throw new HttpError(
+        400,
+        "Only provider-type users can be linked as doctors."
+      );
+    }
+
+    // Confirm target user already belongs to a sibling practice under the
+    // same parent lab. Prevents cross-lab leakage.
+    const siblings = await db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(
+        and(
+          eq(
+            organizations.parentLabOrganizationId,
+            practice.parentLabOrganizationId
+          ),
+          eq(organizations.type, "provider"),
+          notDeleted(organizations)
+        )
+      );
+    const siblingIds = siblings.map((s) => s.id);
+    const targetMemberships = await db
+      .select({ labId: organizationMemberships.labId })
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.status, "active"),
+          inArray(organizationMemberships.labId, siblingIds),
+          notDeleted(organizationMemberships)
+        )
+      );
+    if (targetMemberships.length === 0) {
+      throw new HttpError(
+        400,
+        "That doctor doesn't belong to one of your lab's practices."
+      );
+    }
+
+    // Look up any pre-existing row (including soft-deleted) so we can
+    // either 409 on a live duplicate or restore a soft-deleted row in
+    // place rather than spawning a parallel one.
+    const existing = await db.query.organizationMemberships.findFirst({
+      where: and(
+        eq(organizationMemberships.labId, organizationId),
+        eq(organizationMemberships.userId, userId)
+      ),
+    });
+    if (existing && existing.status === "active" && !existing.deletedAt) {
+      throw new HttpError(
+        409,
+        "Doctor is already a member of this practice."
+      );
+    }
+
+    let membership;
+    if (existing) {
+      [membership] = await db
+        .update(organizationMemberships)
+        .set({
+          status: "active",
+          role: existing.role || "user",
+          approvedByUserId: callerId,
+          joinedAt: new Date(),
+          deletedAt: null,
+          deletedByUserId: null,
+        })
+        .where(eq(organizationMemberships.id, existing.id))
+        .returning();
+    } else {
+      [membership] = await db
+        .insert(organizationMemberships)
+        .values({
+          labId: organizationId,
+          userId,
+          role: "user",
+          status: "active",
+          approvedByUserId: callerId,
+          joinedAt: new Date(),
+        })
+        .returning();
+    }
+
+    await writeAuditLog({
+      req,
+      organizationId,
+      action: "practice_doctor_linked",
+      entityType: "user",
+      entityId: userId,
+      afterJson: {
+        userId,
+        username: targetUser.username,
+        email: targetUser.email,
+        membershipId: membership.id,
+      },
+    });
+
+    return ok(
+      res,
+      {
+        userId,
+        membershipId: membership.id,
+        firstName: targetUser.firstName,
+        lastName: targetUser.lastName,
+        email: targetUser.email,
+        platformAccountNumber: targetUser.platformAccountNumber,
+      },
+      201
+    );
+  })
+);
+
 router.get(
   "/",
   asyncHandler(async (req, res) => {
