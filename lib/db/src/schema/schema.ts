@@ -508,6 +508,7 @@ export const caseRestorations = pgTable("case_restorations", {
     .references(() => cases.id, { onDelete: "cascade" }),
   toothNumber: text("tooth_number").notNull(),
   restorationType: text("restoration_type").notNull(),
+  restorationSubtype: text("restoration_subtype"),
   material: text("material"),
   shade: text("shade"),
   notes: text("notes"),
