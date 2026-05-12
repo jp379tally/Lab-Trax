@@ -878,11 +878,17 @@ router.post(
       afterJson: createdCase,
     });
 
-    // Auto-generate a draft invoice for every new case so the
+    // Auto-generate an invoice for every new case so the
     // History tab shows the invoice and the Invoice tab is
-    // immediately editable. Empty drafts are intentionally allowed:
-    // AI-imported / drag-and-dropped cases often have no priced
-    // restorations yet but still need an invoice skeleton.
+    // immediately editable. The invoice is created in "open" status
+    // (not "draft") so it shows up as an active, open balance from
+    // day one — even for AI-imported / drag-and-dropped cases that
+    // may not have priced restorations yet.
+    //
+    // We also pre-populate displayMetadataJson with the patient name,
+    // tooth list, shade, and case notes pulled from the case + its
+    // restorations so the Invoice tab doesn't show empty fields the
+    // user has to copy over by hand.
     //
     // No-charge remake exception: when the user explicitly marked the
     // remake as "no charge" we still create the invoice so it's visible
@@ -901,6 +907,57 @@ router.post(
       const noChargeNote = noChargeRemake
         ? `No-charge remake of case ${remakeOriginal!.caseNumber}${input.remakeReason ? ` — reason: ${input.remakeReason}` : ""}`
         : null;
+
+      // Build the display metadata so the Invoice tab shows patient,
+      // teeth, shade, and case notes without the user having to retype
+      // anything. Sources:
+      //   • patientName  — case.patientFirstName + patientLastName
+      //   • teeth        — distinct tooth numbers across restorations
+      //   • shade        — distinct shades across restorations
+      //   • caseNotes    — restoration-level notes joined; the case-
+      //                    level notes table is populated separately
+      //                    (e.g. iTero AI import) and we read those too
+      const providerOrgRow = await db.query.organizations.findFirst({
+        where: eq(organizations.id, createdCase.providerOrganizationId),
+      });
+      const billToName =
+        providerOrgRow?.displayName || providerOrgRow?.name || "";
+      const teethList = Array.from(
+        new Set(
+          restorationsForInvoice
+            .map((r) => (r.toothNumber || "").trim())
+            .filter(Boolean),
+        ),
+      ).join(", ");
+      const shadeList = Array.from(
+        new Set(
+          restorationsForInvoice
+            .map((r) => (r.shade || "").trim())
+            .filter(Boolean),
+        ),
+      ).join(", ");
+      const caseLevelNotes = await db.query.caseNotes.findMany({
+        where: eq(caseNotes.caseId, createdCase.id),
+      });
+      const caseNotesText = [
+        ...caseLevelNotes.map((n) => (n.noteText || "").trim()),
+        ...restorationsForInvoice.map((r) => (r.notes || "").trim()),
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const displayMetadata: Record<string, unknown> = {
+        patientName: `${input.patientFirstName} ${input.patientLastName}`.trim(),
+        billTo: billToName,
+        teeth: teethList,
+        shade: shadeList,
+        caseNotes: caseNotesText,
+        credits: 0,
+        lineItems: restorationsForInvoice.map((r) => ({
+          item: r.restorationType,
+          description: `${r.restorationType} - Tooth ${r.toothNumber}`,
+        })),
+      };
+
       const [newInvoice] = await db
         .insert(invoices)
         .values({
@@ -908,7 +965,13 @@ router.post(
           caseId: createdCase.id,
           labOrganizationId: createdCase.labOrganizationId,
           providerOrganizationId: createdCase.providerOrganizationId,
-          status: "draft",
+          // Always create the invoice as "open" (active, awaiting
+          // payment) — never "draft". Even an empty / unpriced auto-
+          // invoice should appear on the open-balance worklist so the
+          // lab knows it needs to be filled in and sent.
+          status: "open",
+          issuedAt: new Date(),
+          displayMetadataJson: displayMetadata,
           createdByUserId: (req as any).auth.userId,
           updatedByUserId: (req as any).auth.userId,
           ...(noChargeNote ? { notes: noChargeNote } : {}),
@@ -944,9 +1007,6 @@ router.post(
             total: subtotal,
             balanceDue: subtotal,
             updatedByUserId: (req as any).auth.userId,
-            ...(hasLines
-              ? { issuedAt: new Date(), status: "open" as const }
-              : {}),
           })
           .where(eq(invoices.id, newInvoice.id))
           .returning();
