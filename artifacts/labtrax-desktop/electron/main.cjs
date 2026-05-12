@@ -2,6 +2,7 @@ const { app, BrowserWindow, protocol, net, dialog, ipcMain, Notification } = req
 const path = require("path");
 const { pathToFileURL } = require("url");
 const iteroPoller = require("./itero-poller.cjs");
+const platformAdmin = require("./platform-admin.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
@@ -40,6 +41,28 @@ function registerIteroIpc() {
   ipcMain.handle("itero:set-auth-state", (_e, payload) => {
     iteroPoller.setAuthState(!!(payload && payload.active));
     return iteroPoller.getStatus();
+  });
+}
+
+function registerPlatformAdminIpc() {
+  platformAdmin.init({
+    onStatus: (status) => broadcast("platformAdmin:changed", status),
+  });
+
+  ipcMain.handle("platformAdmin:get-status", () => platformAdmin.getStatus());
+  ipcMain.handle("platformAdmin:get-secret", () => platformAdmin.getSecret());
+  ipcMain.handle("platformAdmin:set-secret", (_e, payload) => {
+    const value = typeof payload === "string" ? payload : payload?.secret;
+    platformAdmin.setSecret(value);
+    return platformAdmin.getStatus();
+  });
+  ipcMain.handle("platformAdmin:clear-secret", () => {
+    platformAdmin.clearSecret();
+    return platformAdmin.getStatus();
+  });
+  ipcMain.handle("platformAdmin:test-secret", (_e, payload) => {
+    const apiBaseUrl = typeof payload === "string" ? payload : payload?.apiBaseUrl;
+    return platformAdmin.testSecret(apiBaseUrl);
   });
 }
 
@@ -157,6 +180,7 @@ app.whenReady().then(() => {
   }
 
   registerIteroIpc();
+  registerPlatformAdminIpc();
   createWindow();
 
   if (!isDev) {

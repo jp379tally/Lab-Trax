@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { apiFetch, ApiError, notifySessionCleared } from "@/lib/api";
+import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { useAuth } from "@/lib/auth-context";
@@ -29,11 +30,27 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage" | "desktop" | "itero";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage" | "desktop" | "itero" | "platform-admin";
+
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "storage", "desktop", "itero", "platform-admin"];
+
+function readInitialTab(): TabKey {
+  if (typeof window === "undefined") return "profile";
+  try {
+    const search = new URLSearchParams(window.location.search);
+    const requested = search.get("tab") as TabKey | null;
+    if (requested && VALID_TAB_KEYS.includes(requested)) return requested;
+  } catch {
+    /* ignore */
+  }
+  return "profile";
+}
 
 export default function SettingsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const hasPlatformAdminBridge = typeof window !== "undefined" &&
+    !!(window as { electronAPI?: { platformAdmin?: unknown } }).electronAPI?.platformAdmin;
   const tabs: Array<{ key: TabKey; label: string; icon: typeof UserIcon; show: boolean }> = [
     { key: "profile", label: "Profile", icon: UserIcon, show: true },
     { key: "password", label: "Password", icon: KeyRound, show: true },
@@ -43,8 +60,9 @@ export default function SettingsPage() {
     { key: "storage", label: "Storage", icon: HardDrive, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
+    { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin && hasPlatformAdminBridge },
   ];
-  const [tab, setTab] = useState<TabKey>("profile");
+  const [tab, setTab] = useState<TabKey>(readInitialTab);
 
   return (
     <div className="px-8 py-7 max-w-[1100px] mx-auto">
@@ -87,6 +105,7 @@ export default function SettingsPage() {
           {tab === "storage" && isAdmin && <StoragePanel />}
           {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
           {tab === "itero" && isAdmin && <IteroPanel />}
+          {tab === "platform-admin" && isAdmin && hasPlatformAdminBridge && <PlatformAdminPanel />}
         </div>
       </div>
     </div>
@@ -645,6 +664,13 @@ function CleanupScheduleSettingsPanel() {
   });
 
   const data = settingsQuery.data;
+  const gate = usePlatformAdminGate([
+    settingsQuery.error,
+    saveMutation.error,
+    resetHourMutation.error,
+    resetRetentionMutation.error,
+    resetStuckTimeoutMutation.error,
+  ]);
 
   return (
     <div className="border border-border rounded-lg p-4 space-y-4">
@@ -655,7 +681,8 @@ function CleanupScheduleSettingsPanel() {
       <p className="text-xs text-muted-foreground">
         Controls when the nightly cleanup runs and how long its history is kept. The cleanup hour takes effect on the next server restart; history retention applies immediately on each run.
       </p>
-      {error && <Alert tone="danger">{error}</Alert>}
+      {gate.blocked && <PlatformAdminSetupNotice />}
+      {error && !gate.blocked && <Alert tone="danger">{error}</Alert>}
       {success && <Alert tone="success">Schedule saved.</Alert>}
       {settingsQuery.isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -855,6 +882,12 @@ function CleanupAlertSettingsPanel() {
   });
 
   const data = settingsQuery.data;
+  const gate = usePlatformAdminGate([
+    settingsQuery.error,
+    saveMutation.error,
+    resetMinRemovedMutation.error,
+    resetMinFreedMbMutation.error,
+  ]);
 
   return (
     <div className="border border-border rounded-lg p-4 space-y-4">
@@ -865,7 +898,8 @@ function CleanupAlertSettingsPanel() {
       <p className="text-xs text-muted-foreground">
         The nightly cleanup job emails admins when it removes files or frees storage above these limits. Set "Min freed (MB)" to 0 to disable the freed-bytes threshold.
       </p>
-      {error && <Alert tone="danger">{error}</Alert>}
+      {gate.blocked && <PlatformAdminSetupNotice />}
+      {error && !gate.blocked && <Alert tone="danger">{error}</Alert>}
       {success && <Alert tone="success">Thresholds saved.</Alert>}
       {settingsQuery.isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1010,6 +1044,11 @@ function BackupSchedulePanel() {
   });
 
   const data = scheduleQuery.data;
+  const gate = usePlatformAdminGate([
+    scheduleQuery.error,
+    saveMutation.error,
+    resetMutation.error,
+  ]);
 
   const parsed = parseInt(hourUtc, 10);
   const previewLabel =
@@ -1026,7 +1065,8 @@ function BackupSchedulePanel() {
       <p className="text-xs text-muted-foreground">
         Controls when the nightly OneDrive backup runs. The backup hour takes effect on the next server restart.
       </p>
-      {error && <Alert tone="danger">{error}</Alert>}
+      {gate.blocked && <PlatformAdminSetupNotice />}
+      {error && !gate.blocked && <Alert tone="danger">{error}</Alert>}
       {success && <Alert tone="success">Schedule saved.</Alert>}
       {scheduleQuery.isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -2500,7 +2540,180 @@ type IteroAPI = {
   pollNow: () => Promise<IteroPollResult>;
   onStatus: (cb: (s: IteroStatus) => void) => () => void;
 };
-type ElectronWindow = Window & { electronAPI?: { itero?: IteroAPI } };
+type PlatformAdminStatus = {
+  available: boolean;
+  configured: boolean;
+  savedAt: number | null;
+};
+type PlatformAdminTestResult = { ok: boolean; status: number; message?: string };
+type PlatformAdminAPI = {
+  getStatus: () => Promise<PlatformAdminStatus>;
+  getSecret: () => Promise<string | null>;
+  setSecret: (payload: string | { secret: string }) => Promise<PlatformAdminStatus>;
+  clearSecret: () => Promise<PlatformAdminStatus>;
+  testSecret: (payload: string | { apiBaseUrl: string }) => Promise<PlatformAdminTestResult>;
+  onChanged: (cb: (s: PlatformAdminStatus) => void) => () => void;
+};
+type ElectronWindow = Window & { electronAPI?: { itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
+
+function PlatformAdminPanel() {
+  const electron = typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null;
+  const platformAdmin = electron?.platformAdmin;
+
+  const [status, setStatus] = useState<PlatformAdminStatus | null>(null);
+  const [secret, setSecret] = useState("");
+  const [showSecret, setShowSecret] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!platformAdmin) return;
+    let cancelled = false;
+    platformAdmin.getStatus().then((s) => {
+      if (!cancelled) setStatus(s);
+    });
+    const off = platformAdmin.onChanged((s) => setStatus(s));
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [platformAdmin]);
+
+  if (!platformAdmin) {
+    return (
+      <PanelShell title="Platform admin" subtitle="Available in the desktop app only.">
+        <div className="px-6 py-4 text-sm text-muted-foreground">
+          The platform admin secret is stored on this machine via the OS keychain. Open this panel from the LabTrax Desktop app to configure it.
+        </div>
+      </PanelShell>
+    );
+  }
+
+  async function run<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
+    setBusy(label);
+    setMessage(null);
+    try {
+      return await fn();
+    } catch (err: any) {
+      setMessage({ tone: "err", text: err?.message || String(err) });
+      return undefined;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const fmt = (n: number | null | undefined) => (n ? new Date(n).toLocaleString() : "Never");
+
+  return (
+    <PanelShell
+      title="Platform admin secret"
+      subtitle="Required to call platform-wide maintenance endpoints (Media Cleanup, Backup schedule, Cleanup alerts). The secret is encrypted on this machine via the OS keychain and attached as the X-Platform-Admin-Secret header on /admin/* requests."
+    >
+      <div className="px-6 py-5 space-y-6">
+        {!status?.available && (
+          <Alert tone="danger">
+            OS keychain is unavailable on this machine — the secret cannot be stored securely. On Linux this requires gnome-keyring or kwallet.
+          </Alert>
+        )}
+
+        {message && (
+          <Alert tone={message.tone === "ok" ? "success" : "danger"}>{message.text}</Alert>
+        )}
+
+        <section className="space-y-3">
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">Secret</h3>
+          <label className="block text-sm">
+            <div className="text-muted-foreground mb-1">PLATFORM_ADMIN_SECRET</div>
+            <div className="relative">
+              <input
+                type={showSecret ? "text" : "password"}
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder={status?.configured ? "(saved — type to replace)" : "Paste the value of PLATFORM_ADMIN_SECRET from the API server"}
+                className={`${inputCls} pr-14`}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                onClick={() => setShowSecret((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-foreground"
+              >
+                {showSecret ? "Hide" : "Show"}
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              Must exactly match the API server's <code className="font-mono">PLATFORM_ADMIN_SECRET</code> environment variable. Without it, admin maintenance panels return 403.
+            </p>
+          </label>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={!secret.trim() || !!busy || !status?.available}
+              onClick={() => run("save", async () => {
+                const s = await platformAdmin.setSecret(secret.trim());
+                setStatus(s);
+                setSecret("");
+                setShowSecret(false);
+                setMessage({ tone: "ok", text: "Secret saved on this machine." });
+              })}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-60"
+            >
+              {busy === "save" ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Save secret
+            </button>
+            <button
+              type="button"
+              disabled={!status?.configured || !!busy}
+              onClick={() => run("test", async () => {
+                const apiBase = (import.meta.env?.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "")
+                  || `${window.location.origin}/api`;
+                const r = await platformAdmin.testSecret({ apiBaseUrl: apiBase });
+                if (r?.ok) {
+                  setMessage({ tone: "ok", text: "Server accepted the secret." });
+                } else {
+                  setMessage({ tone: "err", text: r?.message || `Test failed (HTTP ${r?.status ?? 0}).` });
+                }
+              })}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-foreground text-xs disabled:opacity-60"
+            >
+              {busy === "test" ? <Loader2 size={12} className="animate-spin" /> : <KeyRound size={12} />} Test against server
+            </button>
+            {status?.configured && (
+              <button
+                type="button"
+                disabled={!!busy}
+                onClick={() => run("clear", async () => {
+                  const s = await platformAdmin.clearSecret();
+                  setStatus(s);
+                  setMessage({ tone: "ok", text: "Secret removed from this machine." });
+                })}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary text-foreground text-xs"
+              >
+                <Trash2 size={12} /> Forget secret
+              </button>
+            )}
+          </div>
+        </section>
+
+        <section className="space-y-2 border-t border-border pt-4">
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">Status</h3>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+            <div className="text-muted-foreground">Stored on this machine</div>
+            <div>{status?.configured ? "Yes (encrypted)" : "No"}</div>
+            <div className="text-muted-foreground">Saved at</div>
+            <div>{fmt(status?.savedAt)}</div>
+            <div className="text-muted-foreground">OS keychain</div>
+            <div>{status?.available ? "Available" : "Unavailable"}</div>
+          </div>
+          <p className="text-xs text-muted-foreground pt-2">
+            The encrypted blob lives next to the app's other settings (under <code className="font-mono">userData/platform-admin-secret.bin</code>). Signing out clears the in-memory copy but keeps the on-disk blob, so the next sign-in still works.
+          </p>
+        </section>
+      </div>
+    </PanelShell>
+  );
+}
 
 function IteroPanel() {
   const electron = (typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null);

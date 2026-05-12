@@ -38,7 +38,18 @@ function emit(user: SessionUser | null) {
 }
 
 export function notifySessionCleared() {
+  // The encrypted blob on disk is preserved so the next sign-in still sees it.
+  clearPlatformAdminSecretCacheSafe();
   emit(null);
+}
+
+// Indirection for ordering: clearPlatformAdminSecretCache is declared below.
+function clearPlatformAdminSecretCacheSafe() {
+  try {
+    clearPlatformAdminSecretCache();
+  } catch {
+    /* ignore */
+  }
 }
 
 export class ApiError extends Error {
@@ -53,6 +64,77 @@ export class ApiError extends Error {
 
 const CSRF_COOKIE_NAME = "lt_csrf";
 const CSRF_HEADER_NAME = "X-CSRF-Token";
+const PLATFORM_ADMIN_HEADER = "X-Platform-Admin-Secret";
+
+type PlatformAdminBridge = {
+  getSecret: () => Promise<string | null>;
+  onChanged?: (cb: (status: unknown) => void) => () => void;
+};
+
+function getPlatformAdminBridge(): PlatformAdminBridge | null {
+  if (typeof window === "undefined") return null;
+  const electronAPI = (window as { electronAPI?: { platformAdmin?: PlatformAdminBridge } })
+    .electronAPI;
+  return electronAPI?.platformAdmin ?? null;
+}
+
+let platformAdminSecretCache: string | null = null;
+let platformAdminCacheLoaded = false;
+let platformAdminInflight: Promise<string | null> | null = null;
+
+function isAdminApiPath(path: string): boolean {
+  if (!path) return false;
+  // Match the post-`/api` path exposed to apiFetch callers, e.g. "/admin/...".
+  // Tolerate query strings and missing leading slash.
+  const trimmed = path.startsWith("/") ? path : `/${path}`;
+  return trimmed.startsWith("/admin/");
+}
+
+async function loadPlatformAdminSecret(): Promise<string | null> {
+  const bridge = getPlatformAdminBridge();
+  if (!bridge) return null;
+  if (platformAdminInflight) return platformAdminInflight;
+  platformAdminInflight = (async () => {
+    try {
+      const value = await bridge.getSecret();
+      platformAdminSecretCache = typeof value === "string" && value ? value : null;
+    } catch {
+      platformAdminSecretCache = null;
+    } finally {
+      platformAdminCacheLoaded = true;
+      platformAdminInflight = null;
+    }
+    return platformAdminSecretCache;
+  })();
+  return platformAdminInflight;
+}
+
+async function getPlatformAdminSecretForRequest(): Promise<string | null> {
+  if (!getPlatformAdminBridge()) return null;
+  if (platformAdminCacheLoaded) return platformAdminSecretCache;
+  return loadPlatformAdminSecret();
+}
+
+export function clearPlatformAdminSecretCache(): void {
+  platformAdminSecretCache = null;
+  platformAdminCacheLoaded = false;
+  platformAdminInflight = null;
+}
+
+// Refresh the cache whenever the main process tells us the secret was
+// added, replaced, or cleared on this machine.
+(() => {
+  const bridge = getPlatformAdminBridge();
+  if (!bridge?.onChanged) return;
+  try {
+    bridge.onChanged(() => {
+      clearPlatformAdminSecretCache();
+      void loadPlatformAdminSecret();
+    });
+  } catch {
+    /* ignore */
+  }
+})();
 
 function readCsrfCookie(): string | null {
   if (typeof document === "undefined" || !document.cookie) return null;
@@ -123,6 +205,10 @@ export async function apiFetch<T = unknown>(
     }
     if (csrf) headers[CSRF_HEADER_NAME] = csrf;
   }
+  if (isAdminApiPath(path) && !headers[PLATFORM_ADMIN_HEADER]) {
+    const secret = await getPlatformAdminSecretForRequest();
+    if (secret) headers[PLATFORM_ADMIN_HEADER] = secret;
+  }
   const url = apiUrl(path);
   const res = await fetch(url, { ...options, headers, credentials: "include" });
 
@@ -181,6 +267,7 @@ async function performXhrUpload<T>(
   formData: FormData,
   csrf: string | null,
   opts: UploadWithProgressOptions,
+  platformAdminSecret: string | null = null,
 ): Promise<{ ok: true; data: T } | { ok: false; status: number; message: string }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
@@ -188,6 +275,7 @@ async function performXhrUpload<T>(
     xhr.withCredentials = true;
     xhr.setRequestHeader("Accept", "application/json");
     if (csrf) xhr.setRequestHeader(CSRF_HEADER_NAME, csrf);
+    if (platformAdminSecret) xhr.setRequestHeader(PLATFORM_ADMIN_HEADER, platformAdminSecret);
 
     if (xhr.upload) {
       xhr.upload.onprogress = (event) => {
@@ -268,12 +356,16 @@ export async function apiUploadWithProgress<T = unknown>(
     if (seeded) csrf = readCsrfCookie();
   }
 
-  let result = await performXhrUpload<T>(url, formData, csrf, opts);
+  const platformAdminSecret = isAdminApiPath(path)
+    ? await getPlatformAdminSecretForRequest()
+    : null;
+
+  let result = await performXhrUpload<T>(url, formData, csrf, opts, platformAdminSecret);
   if (!result.ok && result.status === 401) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
       csrf = readCsrfCookie();
-      result = await performXhrUpload<T>(url, formData, csrf, opts);
+      result = await performXhrUpload<T>(url, formData, csrf, opts, platformAdminSecret);
     } else {
       throw new ApiError("Your session has expired. Please sign in again.", 401);
     }
@@ -307,6 +399,7 @@ function sendChunkXhr(
   offset: number,
   csrf: string | null,
   opts: SendChunkOptions,
+  platformAdminSecret: string | null = null,
 ): Promise<{ ok: true; data: ChunkUploadResult } | { ok: false; status: number; message: string; uploadedBytes?: number }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
@@ -316,6 +409,7 @@ function sendChunkXhr(
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.setRequestHeader("Upload-Offset", String(offset));
     if (csrf) xhr.setRequestHeader(CSRF_HEADER_NAME, csrf);
+    if (platformAdminSecret) xhr.setRequestHeader(PLATFORM_ADMIN_HEADER, platformAdminSecret);
 
     if (xhr.upload && opts.onChunkProgress) {
       xhr.upload.onprogress = (event) => {
@@ -397,19 +491,26 @@ export async function sendUploadChunk(
   offset: number,
   opts: SendChunkOptions = {},
 ): Promise<ChunkUploadResult> {
-  const url = apiUrl(`/media/upload-session/${encodeURIComponent(sessionId)}`);
+  const path = `/media/upload-session/${encodeURIComponent(sessionId)}`;
+  const url = apiUrl(path);
   let csrf = readCsrfCookie();
   if (!csrf) {
     const seeded = await refreshAccessToken();
     if (seeded) csrf = readCsrfCookie();
   }
 
-  let result = await sendChunkXhr(url, blob, offset, csrf, opts);
+  // Today this path is non-admin (/media/...), but parity with the other
+  // upload helpers keeps us safe if a future admin chunked endpoint reuses it.
+  const platformAdminSecret = isAdminApiPath(path)
+    ? await getPlatformAdminSecretForRequest()
+    : null;
+
+  let result = await sendChunkXhr(url, blob, offset, csrf, opts, platformAdminSecret);
   if (!result.ok && result.status === 401) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
       csrf = readCsrfCookie();
-      result = await sendChunkXhr(url, blob, offset, csrf, opts);
+      result = await sendChunkXhr(url, blob, offset, csrf, opts, platformAdminSecret);
     } else {
       throw new ApiError("Your session has expired. Please sign in again.", 401);
     }
@@ -451,6 +552,10 @@ export async function logout(): Promise<void> {
   } catch {
     /* swallow */
   }
+  // Drop the in-memory platform-admin secret on logout so a follow-up sign-in
+  // by a different user doesn't carry the previous user's elevated header.
+  // The encrypted blob on disk is preserved.
+  clearPlatformAdminSecretCache();
   emit(null);
 }
 

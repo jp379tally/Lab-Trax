@@ -13,6 +13,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("update-downloaded", listener);
   },
   installUpdate: () => ipcRenderer.invoke("install-update"),
+  platformAdmin: {
+    getStatus: () => ipcRenderer.invoke("platformAdmin:get-status"),
+    getSecret: () => ipcRenderer.invoke("platformAdmin:get-secret"),
+    setSecret: (payload) => ipcRenderer.invoke("platformAdmin:set-secret", payload),
+    clearSecret: () => ipcRenderer.invoke("platformAdmin:clear-secret"),
+    testSecret: (payload) => ipcRenderer.invoke("platformAdmin:test-secret", payload),
+    onChanged: (callback) => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on("platformAdmin:changed", listener);
+      return () => ipcRenderer.removeListener("platformAdmin:changed", listener);
+    },
+  },
   itero: {
     getStatus: () => ipcRenderer.invoke("itero:get-status"),
     setCredentials: (payload) => ipcRenderer.invoke("itero:set-credentials", payload),

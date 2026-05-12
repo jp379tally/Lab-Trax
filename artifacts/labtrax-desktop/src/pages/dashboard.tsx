@@ -18,6 +18,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
+import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
@@ -426,6 +427,14 @@ function MediaCleanupCard() {
   const nextBackupLabel =
     backupScheduleQuery.data != null ? formatNextBackupTime(backupScheduleQuery.data.hourUtc) : null;
 
+  const gate = usePlatformAdminGate([
+    runsQuery.error,
+    scheduleQuery.error,
+    backupScheduleQuery.error,
+    cleanupStatusQuery.error,
+    runNowMutation.error,
+  ]);
+
   return (
     <section className="bg-card border border-border rounded-xl">
       <header className="flex items-center gap-2 px-5 py-3.5 border-b border-border">
@@ -558,11 +567,13 @@ function MediaCleanupCard() {
           </div>
         )}
 
-        {runsQuery.isLoading && (
+        {gate.blocked && <PlatformAdminSetupNotice />}
+
+        {runsQuery.isLoading && !gate.blocked && (
           <p className="text-muted-foreground text-xs">Loading…</p>
         )}
 
-        {runsQuery.isError && (
+        {runsQuery.isError && !gate.blocked && (
           <div className="flex items-center gap-2 text-destructive text-xs">
             <AlertCircle size={13} className="shrink-0" />
             Failed to load cleanup history.
@@ -576,7 +587,7 @@ function MediaCleanupCard() {
           </div>
         )}
 
-        {runNowMutation.isError && !isAlreadyRunning && (
+        {runNowMutation.isError && !isAlreadyRunning && !gate.blocked && (
           <div className="flex items-center gap-2 text-destructive text-xs">
             <AlertCircle size={13} className="shrink-0" />
             {runNowMutation.error instanceof Error

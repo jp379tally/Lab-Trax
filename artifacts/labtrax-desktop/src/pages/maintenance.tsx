@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, AlertTriangle, CheckCircle2, Clock, Info, Loader2, Play, RefreshCw, Search, XCircle } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
 import { TriggeredByBadge } from "@/components/TriggeredByBadge";
 
 interface CleanupRun {
@@ -67,7 +68,7 @@ type RunState =
   | { kind: "idle" }
   | { kind: "running"; dryRun: boolean }
   | { kind: "done"; result: CleanupResult }
-  | { kind: "error"; message: string; dryRun: boolean };
+  | { kind: "error"; message: string; status: number; dryRun: boolean };
 
 export default function MaintenancePage() {
   const { user } = useAuth();
@@ -117,7 +118,8 @@ export default function MaintenancePage() {
         err instanceof ApiError
           ? err.message
           : "An unexpected error occurred.";
-      setRunState({ kind: "error", message, dryRun });
+      const status = err instanceof ApiError ? err.status : 0;
+      setRunState({ kind: "error", message, status, dryRun });
     }
   }
 
@@ -135,6 +137,16 @@ export default function MaintenancePage() {
   });
 
   const isRunning = runState.kind === "running";
+
+  const runStateError =
+    runState.kind === "error"
+      ? new ApiError(runState.message, runState.status)
+      : null;
+  const gate = usePlatformAdminGate([
+    runsQuery.error,
+    cancelMutation.error,
+    runStateError,
+  ]);
 
   if (!isAdmin) {
     return (
@@ -322,7 +334,13 @@ export default function MaintenancePage() {
         </div>
       )}
 
-      {runState.kind === "error" && (
+      {gate.blocked && (
+        <div className="mb-4">
+          <PlatformAdminSetupNotice />
+        </div>
+      )}
+
+      {runState.kind === "error" && !gate.blocked && (
         <div className="mb-4 flex items-start gap-2 px-4 py-3 rounded-lg border border-destructive/30 bg-destructive/5 text-sm">
           <AlertCircle size={15} className="flex-shrink-0 mt-0.5 text-destructive" />
           <div className="flex-1 min-w-0">
@@ -347,12 +365,12 @@ export default function MaintenancePage() {
           <Loader2 size={18} className="animate-spin" />
           <span className="text-sm">Loading cleanup history…</span>
         </div>
-      ) : runsQuery.isError ? (
+      ) : runsQuery.isError && !gate.blocked ? (
         <div className="flex items-center gap-2 text-destructive text-sm py-10">
           <AlertCircle size={16} />
           Failed to load cleanup history.
         </div>
-      ) : runs.length === 0 ? (
+      ) : runsQuery.isError && gate.blocked ? null : runs.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
           <Clock size={32} className="mb-3 opacity-30" />
           <p className="text-sm font-medium">No cleanup runs recorded yet.</p>
