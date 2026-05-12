@@ -1003,7 +1003,10 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
       <View style={styles.caseList}>
         {recentCases.map((c) => {
           const stationInfo = getStationInfo(c.status, customStationLabels);
-          const userInit = currentUser ? currentUser.split(" ").map((w: string) => w.charAt(0).toUpperCase()).join("").slice(0, 2) : "??";
+          const ownerUser = registeredUsers.find(u => u.id === c.ownerId);
+          const userInit = ownerUser?.initials
+            || (ownerUser?.username ? ownerUser.username.slice(0, 2).toUpperCase() : null)
+            || (currentUser ? currentUser.slice(0, 2).toUpperCase() : "??");
           const caseInvoice = invoices.find(inv => inv.caseIds.includes(c.id));
           return (
             <Pressable

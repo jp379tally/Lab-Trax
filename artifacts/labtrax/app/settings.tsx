@@ -20,6 +20,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useTheme } from "@/lib/theme-context";
+import Colors from "@/constants/colors";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { resilientFetch } from "@/lib/query-client";

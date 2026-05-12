@@ -556,11 +556,57 @@ async function main() {
   console.log("Updating manifests and creating landing page...");
   updateManifests(manifests, timestamp, baseUrl, assetsByHash);
 
-  console.log("Build complete! Deploy to:", baseUrl);
+  console.log("Mobile build complete! Now building web export...");
 
   if (metroProcess) {
     metroProcess.kill();
+    metroProcess = null;
   }
+
+  try {
+    const webTmpDir = "static-build-web-tmp";
+    if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true });
+    const webBuild = spawn("npx", ["expo", "export", "--platform", "web", "--output-dir", webTmpDir], {
+      stdio: "inherit",
+      env: { ...process.env, EXPO_PUBLIC_DOMAIN: domain },
+    });
+    await new Promise((resolve, reject) => {
+      webBuild.on("close", (code) => {
+        if (code === 0) {
+          const copyRecursive = (src, dest) => {
+            if (!fs.existsSync(src)) return;
+            const entries = fs.readdirSync(src, { withFileTypes: true });
+            fs.mkdirSync(dest, { recursive: true });
+            for (const entry of entries) {
+              const srcPath = path.join(src, entry.name);
+              const destPath = path.join(dest, entry.name);
+              if (entry.isDirectory()) {
+                copyRecursive(srcPath, destPath);
+              } else {
+                fs.copyFileSync(srcPath, destPath);
+              }
+            }
+          };
+          copyRecursive(webTmpDir, "static-build");
+          fs.rmSync(webTmpDir, { recursive: true, force: true });
+          console.log("Web export merged into static-build!");
+        } else {
+          console.warn("Web export failed (code " + code + "), skipping web app");
+          if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true, force: true });
+        }
+        resolve();
+      });
+      webBuild.on("error", (err) => {
+        console.warn("Web export error:", err.message);
+        if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true, force: true });
+        resolve();
+      });
+    });
+  } catch (webErr) {
+    console.warn("Web export failed:", webErr.message);
+  }
+
+  console.log("Build complete! Deploy to:", baseUrl);
   process.exit(0);
 }
 
