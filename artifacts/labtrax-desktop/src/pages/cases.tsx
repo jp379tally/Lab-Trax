@@ -550,18 +550,35 @@ export default function CasesPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [yearFilter, setYearFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("createdAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<LabCase | null>(null);
   const [showNewCase, setShowNewCase] = useState(false);
 
+  const availableYears = useMemo(() => {
+    const years = new Set<number>();
+    for (const c of data ?? []) {
+      if (!c.createdAt) continue;
+      const d = new Date(c.createdAt);
+      if (!Number.isNaN(d.getTime())) years.add(d.getFullYear());
+    }
+    return Array.from(years).sort((a, b) => b - a);
+  }, [data]);
+
   const filtered = useMemo(() => {
     const rows = data ?? [];
     const q = search.trim().toLowerCase();
+    const yearNum = yearFilter === "all" ? null : Number(yearFilter);
     return rows
       .filter((c) => {
         if (statusFilter !== "all" && c.status !== statusFilter) return false;
         if (priorityFilter !== "all" && c.priority !== priorityFilter) return false;
+        if (yearNum !== null) {
+          if (!c.createdAt) return false;
+          const d = new Date(c.createdAt);
+          if (Number.isNaN(d.getTime()) || d.getFullYear() !== yearNum) return false;
+        }
         if (!q) return true;
         return (
           c.caseNumber.toLowerCase().includes(q) ||
@@ -579,7 +596,7 @@ export default function CasesPage() {
         const vb = (b[sortKey] || "") as string;
         return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
       });
-  }, [data, search, statusFilter, priorityFilter, sortKey, sortDir]);
+  }, [data, search, statusFilter, priorityFilter, yearFilter, sortKey, sortDir]);
 
   const distinctDoctorNames = useMemo(() => {
     const names = new Set<string>();
@@ -681,6 +698,18 @@ export default function CasesPage() {
             <option value="all">All priorities</option>
             <option value="normal">Normal</option>
             <option value="rush">Rush</option>
+          </select>
+          <select
+            value={yearFilter}
+            onChange={(e) => setYearFilter(e.target.value)}
+            className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+          >
+            <option value="all">All years</option>
+            {availableYears.map((y) => (
+              <option key={y} value={String(y)}>
+                {y}
+              </option>
+            ))}
           </select>
         </div>
         <div className="overflow-x-auto">
