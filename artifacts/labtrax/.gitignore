@@ -9,6 +9,24 @@ dist/
 web-build/
 expo-env.d.ts
 
+# Expo native build outputs
+ios/build/
+android/build/
+android/.gradle/
+
+# Static web export
+static-build/
+
+# Attached assets archives — large source-zip uploads, never commit
+attached_assets/*.zip
+attached_assets/*.tar.gz
+attached_assets/*.tgz
+
+# Bundled source archives served as downloads
+public/downloads/*.tar.gz
+public/downloads/*.zip
+public/labtrax-source.tar.gz
+
 # Native
 ios/
 android/

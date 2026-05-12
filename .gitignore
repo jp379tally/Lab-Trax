@@ -2,7 +2,8 @@
 
 # compiled output
 dist
-tmp
+tmp/
+/tmp/
 out-tsc
 *.tsbuildinfo
 .expo
@@ -48,3 +49,31 @@ Thumbs.db
 .cache/
 .local/
 AuthKey_*.p8
+
+# Build / output directories — never commit build artifacts
+static-build/
+**/static-build/
+**/electron-dist/
+**/build/
+**/out/
+**/.turbo/
+**/.next/
+
+# Server runtime data — uploaded case media is per-deployment, not source
+artifacts/api-server/uploads/
+
+# Migration / backup snapshots — these are throwaway working copies
+.migration-backup/
+
+# Archives, installers, and other large binaries
+*.tar.gz
+*.tgz
+*.zip
+*.dmg
+*.exe
+*.msi
+*.pkg
+*.AppImage
+
+# Logs
+*.log

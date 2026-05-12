@@ -1,0 +1,9 @@
+# Server runtime data — user-uploaded case media, never commit
+uploads/
+
+# Build output
+dist/
+build/
+
+# Logs
+*.log
