@@ -1330,7 +1330,7 @@ function AddDoctorToPracticeDialog({
                   type="search"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search doctors at your other practices…"
+                  placeholder="Search all existing doctors…"
                   className="w-full h-9 pl-8 pr-3 rounded-md bg-background border border-input text-sm"
                 />
               </div>
@@ -1351,7 +1351,7 @@ function AddDoctorToPracticeDialog({
                   filteredEligible.length === 0 && (
                     <div className="px-3 py-6 text-sm text-muted-foreground text-center">
                       {eligible.length === 0
-                        ? "No other doctors in your lab to link yet."
+                        ? "No existing doctors on the platform to link yet."
                         : "No matches."}
                     </div>
                   )}
@@ -1397,9 +1397,8 @@ function AddDoctorToPracticeDialog({
                 })}
               </div>
               <div className="text-[11px] text-muted-foreground">
-                Links an existing doctor (already at one of your other
-                practices) to this practice without creating a duplicate
-                account.
+                Links any existing doctor on the platform to this practice
+                without creating a duplicate account.
               </div>
             </div>
           )}

@@ -614,9 +614,10 @@ router.post(
 );
 
 // List provider users who could be added to this practice as a doctor —
-// i.e. they're not already an active member of *this* practice. Scoped to
-// the same parent lab so a lab admin only sees their own labs' doctors.
-// Lab-admin only.
+// every provider-type user platform-wide except those already active at
+// *this* practice. (Per JP's request the picker should let a lab admin
+// link a doctor regardless of whether the doctor is currently attached
+// to one of the lab's sibling practices.) Lab-admin only.
 router.get(
   "/:organizationId/eligible-doctors",
   asyncHandler(async (req, res) => {
@@ -637,57 +638,22 @@ router.get(
     }
     await requireAnyRole(callerId, practice.parentLabOrganizationId, ADMIN_ROLES);
 
-    // All provider practices belonging to the same parent lab. Eligible
-    // doctors are users who currently sit on one of those practices but
-    // not on THIS one.
-    const siblingPractices = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(
-            organizations.parentLabOrganizationId,
-            practice.parentLabOrganizationId
-          ),
-          eq(organizations.type, "provider"),
-          notDeleted(organizations)
-        )
-      );
-    const siblingIds = siblingPractices.map((p) => p.id);
-    if (siblingIds.length === 0) return ok(res, []);
-
-    const memberships = await db
-      .select({
-        labId: organizationMemberships.labId,
-        userId: organizationMemberships.userId,
-        status: organizationMemberships.status,
-      })
+    // Doctors already active at THIS practice — those are the only users
+    // we hide from the picker.
+    const currentMembersRows = await db
+      .select({ userId: organizationMemberships.userId })
       .from(organizationMemberships)
       .where(
         and(
-          inArray(organizationMemberships.labId, siblingIds),
+          eq(organizationMemberships.labId, organizationId),
+          eq(organizationMemberships.status, "active"),
           notDeleted(organizationMemberships)
         )
       );
+    const currentMemberIds = new Set(currentMembersRows.map((m) => m.userId));
 
-    const currentMemberIds = new Set(
-      memberships
-        .filter((m) => m.labId === organizationId && m.status === "active")
-        .map((m) => m.userId)
-    );
-    const otherProviderUserIds = Array.from(
-      new Set(
-        memberships
-          .filter(
-            (m) => m.labId !== organizationId && m.status === "active"
-          )
-          .map((m) => m.userId)
-      )
-    ).filter((id) => !currentMemberIds.has(id));
-
-    if (otherProviderUserIds.length === 0) return ok(res, []);
-
-    const eligibleUsers = await db
+    // Every provider-type user on the platform, minus current members.
+    const allProviderUsers = await db
       .select({
         id: users.id,
         username: users.username,
@@ -699,31 +665,58 @@ router.get(
         platformAccountNumber: users.platformAccountNumber,
       })
       .from(users)
+      .where(eq(users.userType, "provider"));
+    const eligibleUsers = allProviderUsers.filter(
+      (u) => !currentMemberIds.has(u.id)
+    );
+    if (eligibleUsers.length === 0) return ok(res, []);
+
+    // Annotate each candidate with the practice(s) they're currently at
+    // so the picker can show "Dr. Jane Smith — at Smile Dental" etc.
+    // We only label sibling practices (under this lab's parent) by name;
+    // memberships at other labs are surfaced as a generic
+    // "another lab" badge so we don't leak unrelated practice names.
+    const eligibleIds = eligibleUsers.map((u) => u.id);
+    const allMemberships = await db
+      .select({
+        labId: organizationMemberships.labId,
+        userId: organizationMemberships.userId,
+      })
+      .from(organizationMemberships)
       .where(
         and(
-          inArray(users.id, otherProviderUserIds),
-          eq(users.userType, "provider")
+          inArray(organizationMemberships.userId, eligibleIds),
+          eq(organizationMemberships.status, "active"),
+          notDeleted(organizationMemberships)
         )
       );
-
-    // Annotate each candidate with the practice(s) they currently belong
-    // to so the picker can show "Dr. Jane Smith — at Smile Dental" etc.
-    const practiceById = await db
-      .select({
-        id: organizations.id,
-        name: organizations.name,
-        displayName: organizations.displayName,
-      })
-      .from(organizations)
-      .where(inArray(organizations.id, siblingIds));
-    const practiceMap = new Map(practiceById.map((p) => [p.id, p]));
+    const referencedLabIds = Array.from(
+      new Set(allMemberships.map((m) => m.labId))
+    );
+    const referencedOrgs = referencedLabIds.length
+      ? await db
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+            displayName: organizations.displayName,
+            parentLabOrganizationId: organizations.parentLabOrganizationId,
+            type: organizations.type,
+          })
+          .from(organizations)
+          .where(inArray(organizations.id, referencedLabIds))
+      : [];
+    const orgMap = new Map(referencedOrgs.map((o) => [o.id, o]));
     const userToPractices = new Map<string, string[]>();
-    for (const m of memberships) {
+    for (const m of allMemberships) {
       if (m.labId === organizationId) continue;
-      if (m.status !== "active") continue;
-      const pr = practiceMap.get(m.labId);
+      const pr = orgMap.get(m.labId);
       if (!pr) continue;
-      const label = pr.displayName || pr.name;
+      const isSibling =
+        pr.type === "provider" &&
+        pr.parentLabOrganizationId === practice.parentLabOrganizationId;
+      const label = isSibling
+        ? pr.displayName || pr.name
+        : "another lab";
       const arr = userToPractices.get(m.userId) ?? [];
       if (!arr.includes(label)) arr.push(label);
       userToPractices.set(m.userId, arr);
@@ -786,39 +779,11 @@ router.post(
       );
     }
 
-    // Confirm target user already belongs to a sibling practice under the
-    // same parent lab. Prevents cross-lab leakage.
-    const siblings = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(
-        and(
-          eq(
-            organizations.parentLabOrganizationId,
-            practice.parentLabOrganizationId
-          ),
-          eq(organizations.type, "provider"),
-          notDeleted(organizations)
-        )
-      );
-    const siblingIds = siblings.map((s) => s.id);
-    const targetMemberships = await db
-      .select({ labId: organizationMemberships.labId })
-      .from(organizationMemberships)
-      .where(
-        and(
-          eq(organizationMemberships.userId, userId),
-          eq(organizationMemberships.status, "active"),
-          inArray(organizationMemberships.labId, siblingIds),
-          notDeleted(organizationMemberships)
-        )
-      );
-    if (targetMemberships.length === 0) {
-      throw new HttpError(
-        400,
-        "That doctor doesn't belong to one of your lab's practices."
-      );
-    }
+    // No sibling-practice gate — the picker (eligible-doctors) lists all
+    // provider users on the platform, so a lab admin can attach any
+    // existing doctor to one of their practices without first having to
+    // re-create the account. The `requireAnyRole` check above already
+    // ensures the caller actually administers this practice's parent lab.
 
     // Look up any pre-existing row (including soft-deleted) so we can
     // either 409 on a live duplicate or restore a soft-deleted row in
