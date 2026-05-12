@@ -723,39 +723,53 @@ export function DashboardDropZone() {
                 </span>
               ) : null}
             </span>
-            <select
-              className={inputCls + " w-full"}
-              value={rxProviderOrgId}
-              onChange={(e) => {
-                if (e.target.value === "__add_new__") {
-                  openAddPracticeForm();
-                  return;
+            <div className="flex items-stretch gap-2">
+              <select
+                className={inputCls + " flex-1 min-w-0"}
+                value={rxProviderOrgId}
+                onChange={(e) => {
+                  if (e.target.value === "__add_new__") {
+                    openAddPracticeForm();
+                    return;
+                  }
+                  setRxProviderOrgId(e.target.value);
+                }}
+              >
+                <option value="">Select a practice…</option>
+                <option value="__add_new__">
+                  + Add new practice
+                  {r.practiceName ? ` ("${r.practiceName}")` : "…"}
+                </option>
+                {providerOrgs
+                  .slice()
+                  .sort((a, b) =>
+                    (a.displayName || a.name || "").localeCompare(
+                      b.displayName || b.name || "",
+                    ),
+                  )
+                  .map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.displayName || o.name}
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                onClick={openAddPracticeForm}
+                className="shrink-0 h-8 px-2.5 rounded-md bg-primary text-primary-foreground text-[11px] font-medium hover:bg-primary/90 transition-colors inline-flex items-center gap-1"
+                title={
+                  r.practiceName
+                    ? `Add "${r.practiceName}" as a new practice`
+                    : "Add a new practice"
                 }
-                setRxProviderOrgId(e.target.value);
-              }}
-            >
-              <option value="">Select a practice…</option>
-              <option value="__add_new__">
-                + Add new practice
-                {r.practiceName ? ` ("${r.practiceName}")` : "…"}
-              </option>
-              {providerOrgs
-                .slice()
-                .sort((a, b) =>
-                  (a.displayName || a.name || "").localeCompare(
-                    b.displayName || b.name || "",
-                  ),
-                )
-                .map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.displayName || o.name}
-                  </option>
-                ))}
-            </select>
+              >
+                + Add practice
+              </button>
+            </div>
             {rxProviderSearch && !rxProviderOrgId && (
               <span className="block text-[10px] text-muted-foreground">
                 No exact match for "{rxProviderSearch}". Pick the closest
-                practice or use "+ Add new practice" above.
+                practice or tap "+ Add practice" to create it.
               </span>
             )}
           </label>
