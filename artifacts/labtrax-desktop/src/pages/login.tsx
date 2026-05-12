@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError } from "@/lib/api";
+import { ApiError, getApiOrigin } from "@/lib/api";
 import { Logo } from "@/components/Logo";
 
 export default function LoginPage() {
@@ -34,15 +34,26 @@ export default function LoginPage() {
         /failed to fetch|network request failed|load failed|networkerror/i.test(
           message,
         );
+      // For network errors, prefer the detailed message produced by
+      // `login()` (which already includes the URL it tried to reach or a
+      // missing-API-base-URL hint). Only fall back to the generic line if
+      // the underlying error has no useful text of its own.
       setError(
         isNetworkError
-          ? "Can't reach the LabTrax server. Check your internet connection and try again."
+          ? message && /tried |without an API server URL/i.test(message)
+            ? message
+            : "Can't reach the LabTrax server. Check your internet connection and try again."
           : message,
       );
     } finally {
       setSubmitting(false);
     }
   }
+
+  // Surface the API origin baked into this build so support reports always
+  // reveal which server the desktop app is talking to (and make it obvious
+  // when no URL was baked in at all — that build is broken).
+  const apiOrigin = getApiOrigin();
 
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-background px-6">
@@ -101,6 +112,11 @@ export default function LoginPage() {
         </div>
         <p className="text-center text-xs text-muted-foreground mt-5">
           The same account works on the LabTrax mobile app.
+        </p>
+        <p className="text-center text-[10px] text-muted-foreground/70 mt-2 break-all">
+          {apiOrigin
+            ? `Server: ${apiOrigin}`
+            : "Server: not configured — please reinstall LabTrax Desktop"}
         </p>
       </div>
     </div>

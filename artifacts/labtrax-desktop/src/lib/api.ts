@@ -7,6 +7,16 @@ function apiUrl(path: string): string {
   return `${_API_ORIGIN}/api${normalized}`;
 }
 
+/** Origin of the API server this build was compiled against (empty if the
+ * installer was built without VITE_API_BASE_URL). Exposed so the login
+ * screen can surface it in network-error messages — past "Failed to
+ * fetch" reports turned out to be installers built without the env var,
+ * which is impossible to diagnose without seeing the URL the renderer
+ * actually tried to reach. */
+export function getApiOrigin(): string {
+  return _API_ORIGIN;
+}
+
 export type SessionUser = {
   id: string;
   username: string;
@@ -667,8 +677,17 @@ export async function login(username: string, password: string): Promise<Session
       }),
     });
   } catch {
+    // Surface the URL the renderer tried to reach so a tech-support
+    // screenshot is enough to diagnose the problem. An empty origin means
+    // the installer was built without VITE_API_BASE_URL and the request
+    // resolved against the `app://labtrax` renderer origin (which can't
+    // serve /api/...) — that needs a fresh build, not a network retry.
+    const origin = getApiOrigin();
+    const detail = origin
+      ? ` (tried ${origin}/api/auth/login)`
+      : " (this installer was built without an API server URL — please reinstall the latest LabTrax Desktop)";
     throw new ApiError(
-      "Can't reach the LabTrax server. Check your internet connection and try again.",
+      `Can't reach the LabTrax server. Check your internet connection and try again.${detail}`,
       0,
     );
   }
