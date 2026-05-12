@@ -127,12 +127,32 @@ function splitPatientName(full: string | null | undefined): {
   };
 }
 
+interface DuplicateHit {
+  id: string;
+  caseNumber: string;
+  matchKind: string;
+  source: "canonical" | "legacy";
+  patientFirstName: string;
+  patientLastName: string;
+  status?: string;
+  createdAt?: string | null;
+  toothNumbers?: string;
+  restorationTypes?: string;
+}
+
 type Phase =
   | { kind: "idle" }
   | { kind: "draggingFile" }
   | { kind: "picking"; files: File[] }
   | { kind: "analyzing"; fileName: string }
   | { kind: "rxConfirm"; file: File; caseNumber: string }
+  | {
+      kind: "duplicatePrompt";
+      file: File;
+      caseNumber: string;
+      matches: DuplicateHit[];
+      patientName: string;
+    }
   | { kind: "uploading"; message?: string }
   | { kind: "done"; message: string }
   | { kind: "error"; message: string };
@@ -560,9 +580,34 @@ export function DashboardDropZone() {
     }
   }
 
+  async function fetchPatientSimilarity(
+    first: string,
+    last: string,
+  ): Promise<DuplicateHit[]> {
+    if (!first || !last || !rxLabOrgId) return [];
+    const qs = new URLSearchParams({
+      patientFirstName: first,
+      patientLastName: last,
+      labOrganizationId: rxLabOrgId,
+    });
+    if (rxProviderOrgId) qs.set("providerOrganizationId", rxProviderOrgId);
+    const doctor = (rxDraft.doctorName || "").trim();
+    if (doctor) qs.set("doctorName", doctor);
+    try {
+      const body = await apiFetch<{ matches?: DuplicateHit[] } | DuplicateHit[]>(
+        `/cases/patient-similarity?${qs.toString()}`,
+      );
+      const matches = Array.isArray(body)
+        ? body
+        : (body?.matches ?? []);
+      return Array.isArray(matches) ? matches : [];
+    } catch {
+      return [];
+    }
+  }
+
   async function createCaseFromRx() {
     if (phase.kind !== "rxConfirm") return;
-    const { file } = phase;
     const r = rxDraft;
     if (!user?.id) {
       setPhase({ kind: "error", message: "You must be signed in." });
@@ -579,11 +624,39 @@ export function DashboardDropZone() {
       });
       return;
     }
+
+    // Duplicate-patient check (mirrors mobile scan flow). If the same
+    // patient already has a case under this provider/doctor in this lab,
+    // pause and let the user confirm before creating a second one.
+    const { first: pf, last: pl } = splitPatientName(r.patientName);
+    const cleanFirst = (pf || "").trim();
+    const cleanLast = (pl || "").trim();
+    if (cleanFirst && cleanLast) {
+      setPhase({ kind: "uploading", message: "Checking for duplicates…" });
+      const matches = await fetchPatientSimilarity(cleanFirst, cleanLast);
+      if (matches.length > 0) {
+        setPhase({
+          kind: "duplicatePrompt",
+          file: phase.file,
+          caseNumber: phase.caseNumber,
+          matches,
+          patientName: r.patientName?.trim() || `${cleanFirst} ${cleanLast}`,
+        });
+        return;
+      }
+    }
+
+    await proceedCreateCase(phase.file, phase.caseNumber);
+  }
+
+  async function proceedCreateCase(file: File, requestedCaseNumber: string) {
+    const r = rxDraft;
+    if (!user?.id || !rxLabOrgId || !rxProviderOrgId) return;
     setPhase({ kind: "uploading", message: "Creating case…" });
     try {
       // 1. Reserve a fresh case number from the modern endpoint so we
       //    don't collide with cases created elsewhere on the same lab.
-      let caseNumber = phase.caseNumber;
+      let caseNumber = requestedCaseNumber;
       try {
         const next = await apiFetch<{ caseNumber: string }>(
           `/cases/next-case-number?labOrganizationId=${encodeURIComponent(
@@ -670,6 +743,93 @@ export function DashboardDropZone() {
       });
       window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
     }
+  }
+
+  // ── Duplicate-patient prompt ──
+  if (phase.kind === "duplicatePrompt") {
+    const { matches, patientName, file, caseNumber } = phase;
+    return (
+      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={15} className="text-amber-600" />
+            <p className="text-sm font-medium text-amber-900">
+              Possible duplicate / remake?
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setPhase({ kind: "rxConfirm", file, caseNumber })
+            }
+            className="text-amber-700 hover:text-amber-900"
+            aria-label="Back to review"
+          >
+            <X size={15} />
+          </button>
+        </div>
+        <p className="text-xs text-amber-900">
+          Found {matches.length} prior case{matches.length === 1 ? "" : "s"} for{" "}
+          <span className="font-semibold">{patientName}</span> in this lab.
+          Review before creating a second case.
+        </p>
+        <div className="max-h-48 overflow-y-auto rounded-md border border-amber-200 bg-white divide-y divide-amber-100">
+          {matches.map((m) => (
+            <div
+              key={`${m.source}:${m.id}`}
+              className="px-3 py-2 text-xs flex items-center justify-between gap-2"
+            >
+              <div className="min-w-0">
+                <div className="font-medium text-foreground truncate">
+                  {m.caseNumber || "—"} · {m.patientFirstName}{" "}
+                  {m.patientLastName}
+                </div>
+                <div className="text-[11px] text-muted-foreground truncate">
+                  {[
+                    m.status,
+                    m.toothNumbers ? `teeth ${m.toothNumbers}` : null,
+                    m.restorationTypes,
+                    m.createdAt
+                      ? new Date(m.createdAt).toLocaleDateString()
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+              </div>
+              <span className="shrink-0 inline-flex items-center rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+                {m.matchKind}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() =>
+              setPhase({ kind: "rxConfirm", file, caseNumber })
+            }
+            className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Back to review
+          </button>
+          <button
+            type="button"
+            onClick={() => setPhase({ kind: "idle" })}
+            className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => proceedCreateCase(file, caseNumber)}
+            className="flex-1 min-w-0 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+          >
+            Create as new case anyway
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // ── RxConfirm view ──
