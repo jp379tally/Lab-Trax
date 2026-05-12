@@ -25,7 +25,7 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import * as FileSystem from "expo-file-system";
 import { Share } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useRouter, useLocalSearchParams } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
@@ -150,6 +150,10 @@ export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const isFocused = useIsFocused();
+  const params = useLocalSearchParams<{ mode?: string; n?: string }>();
+  const manualModeRequested = params?.mode === "manual";
+  const manualModeNonce = typeof params?.n === "string" ? params.n : null;
+  const lastAppliedManualNonceRef = useRef<string | null>(null);
   const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
@@ -499,9 +503,13 @@ export default function ScanScreen() {
     useCallback(() => {
       setCameraPaused(false);
       isPickingFilesRef.current = false;
-      if (phase !== "form") {
+      if (manualModeRequested && lastAppliedManualNonceRef.current !== manualModeNonce) {
+        lastAppliedManualNonceRef.current = manualModeNonce;
+        handleManualEntry();
+      } else if (phase !== "form") {
         setPhase("camera");
         setCapturedUri(null);
+        autoAnalyzedRef.current = false;
       }
       // NOTE: We intentionally do NOT drain shared files here anymore.
       // Files shared from the iOS/Android share sheet should land in the
@@ -509,10 +517,11 @@ export default function ScanScreen() {
       // auto-start a new case. The dashboard's drop zone handles the
       // drain on its own focus effect.
       return () => {};
-    }, [phase])
+    }, [phase, manualModeRequested, manualModeNonce])
   );
 
   const cropDoneRef = useRef(false);
+  const autoAnalyzedRef = useRef(false);
 
   useEffect(() => {
     if (phase === "scanning") {
@@ -538,11 +547,20 @@ export default function ScanScreen() {
           await new Promise(r => setTimeout(r, 300));
           if (cancelled) return;
         }
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 400));
         if (cancelled) return;
         setPhase("review");
         if ((Platform.OS as string) !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+        // Auto-fire AI analysis on the captured page(s) so the user doesn't
+        // have to discover the "Finished" button. handleFinishedReview will
+        // advance to the form on success and surface a clear error otherwise.
+        if (!cancelled && !autoAnalyzedRef.current) {
+          autoAnalyzedRef.current = true;
+          try { await handleFinishedReview(); } catch (err: any) {
+            console.log("Auto AI analyze failed:", err?.message || err);
+          }
         }
       };
       waitAndTransition();
@@ -586,7 +604,9 @@ export default function ScanScreen() {
         if (photo?.uri) {
           rawUri = photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri;
         }
-      } catch {}
+      } catch (e: any) {
+        console.log("Camera takePictureAsync failed:", e?.message || e);
+      }
     }
 
     if (!rawUri && (Platform.OS as string) === "web") {
@@ -602,25 +622,38 @@ export default function ScanScreen() {
             rawUri = canvas.toDataURL("image/jpeg", 0.8);
           }
         }
-      } catch {}
-    }
-
-    if (!rawUri) {
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        allowsEditing: false,
-        quality: 1,
-        base64: false,
-      });
-      if (!result.canceled && result.assets[0]) {
-        const asset = result.assets[0];
-        const normalized = await normalizePrescriptionImage(asset.uri);
-        rawUri = normalized.uri;
+      } catch (e: any) {
+        console.log("Web canvas capture failed:", e?.message || e);
       }
     }
 
-    if (!rawUri) return;
+    if (!rawUri) {
+      try {
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          allowsEditing: false,
+          quality: 1,
+          base64: false,
+        });
+        if (!result.canceled && result.assets[0]) {
+          const asset = result.assets[0];
+          const normalized = await normalizePrescriptionImage(asset.uri);
+          rawUri = normalized.uri;
+        }
+      } catch (e: any) {
+        console.log("ImagePicker.launchCameraAsync failed:", e?.message || e);
+      }
+    }
 
+    if (!rawUri) {
+      Alert.alert(
+        "Couldn't capture photo",
+        "The camera didn't return an image. Please try again, or tap Manual Entry to fill the case in by hand.",
+      );
+      return;
+    }
+
+    autoAnalyzedRef.current = false;
     cropDoneRef.current = false;
     setCapturedUri(rawUri);
     setPhase("scanning");
@@ -640,18 +673,9 @@ export default function ScanScreen() {
       }
     }
 
-    if (dataUri.startsWith("data:")) {
-      setCapturedUri(dataUri);
-      setCasePhotos((prev) => {
-        if (prev.includes(dataUri)) return prev;
-        return [...prev, dataUri];
-      });
-    } else {
-      setCasePhotos((prev) => {
-        if (prev.includes(rawUri)) return prev;
-        return [...prev, rawUri];
-      });
-    }
+    const finalUri = dataUri.startsWith("data:") ? dataUri : rawUri;
+    setCapturedUri(finalUri);
+    setCasePhotos((prev) => (prev.includes(finalUri) ? prev : [...prev, finalUri]));
     cropDoneRef.current = true;
   }
 
@@ -1037,6 +1061,7 @@ export default function ScanScreen() {
   function handleAddMoreFromReview() {
     setCapturedUri(null);
     setSelectedReviewPhotos([]);
+    autoAnalyzedRef.current = false;
     setPhase("camera");
     scanAnim.setValue(0);
   }
@@ -1721,7 +1746,18 @@ export default function ScanScreen() {
         Alert.alert(
           "AI Analysis",
           "Could not read the prescription automatically. Please fill in the fields manually." +
-          (failReason ? `\n\n(${failReason})` : "")
+          (failReason ? `\n\n(${failReason})` : ""),
+          [
+            { text: "Fill manually", style: "cancel" },
+            {
+              text: "Retry AI",
+              onPress: () => {
+                if (casePhotos.length === 0) return;
+                autoAnalyzedRef.current = false;
+                handleFinishedReview();
+              },
+            },
+          ],
         );
       }
     }
@@ -1746,6 +1782,7 @@ export default function ScanScreen() {
     setCasePhotos([]);
     setCaseAttachments([]);
     setIsSubmittingCase(false);
+    autoAnalyzedRef.current = false;
     setActivityEntries([{
       id: generateId(),
       type: "scan",
@@ -2546,6 +2583,7 @@ export default function ScanScreen() {
   function resetForm() {
     setPhase("camera");
     setCapturedUri(null);
+    autoAnalyzedRef.current = false;
     setShowBarcodeScanner(false);
     setBarcodeScanned(false);
     setBarcodeAttachScanned(false);
@@ -4701,6 +4739,45 @@ export default function ScanScreen() {
             {phase === "camera" ? "Point camera at prescription" : phase === "scanning" ? "Analyzing RX..." : phase === "review" ? "Add more pages or continue" : "RX recognized"}
           </Text>
         </View>
+
+        {(phase === "camera" || phase === "review") && !isAnalyzing && (
+          <Pressable
+            onPress={() => {
+              if (phase === "review") {
+                setCasePhotos([]);
+                setCaseAttachments([]);
+                setCapturedUri(null);
+                setSelectedReviewPhotos([]);
+                autoAnalyzedRef.current = false;
+                setPhase("camera");
+                return;
+              }
+              if (router.canGoBack && router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace("/(tabs)");
+              }
+            }}
+            hitSlop={12}
+            style={{
+              position: "absolute",
+              top: (Platform.OS as string) === "web" ? 67 + 12 : insets.top + 12,
+              left: 16,
+              width: 40,
+              height: 40,
+              borderRadius: 20,
+              backgroundColor: "rgba(15,23,42,0.55)",
+              justifyContent: "center",
+              alignItems: "center",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.15)",
+              zIndex: 50,
+            }}
+            accessibilityLabel={phase === "review" ? "Discard scan" : "Close camera"}
+          >
+            <Ionicons name="close" size={22} color="#FFF" />
+          </Pressable>
+        )}
 
         {phase !== "review" && (
           <View style={styles.viewfinderFrame} pointerEvents="none">

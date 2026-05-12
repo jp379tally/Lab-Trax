@@ -309,7 +309,7 @@ const drawerStyles = StyleSheet.create({
   },
 });
 
-function TechDashboard() {
+function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void } = {}) {
   const { cases, activeCaseCount, rushCaseCount, setRole, shippingAccounts, addTrackingNumber, role, batchLocateCases, findCaseByBarcode, updateCaseStatus, groupJoinRequests, respondToGroupJoinRequest, customStationLabels, userIsAffiliated, invoices, refreshCases, hardRefresh, clients, addCasePhoto } = useApp();
   const [refreshing, setRefreshing] = useState(false);
   const { logout, profilePicUri, setProfilePicUri, currentUser, registeredUsers } = useAuth();
@@ -676,7 +676,7 @@ function TechDashboard() {
               styles.headerQuickBtn,
               pressed && styles.quickBtnPressed,
             ]}
-            onPress={() => router.push("/(tabs)/scan")}
+            onPress={() => router.push({ pathname: "/(tabs)/scan", params: { mode: "manual", n: String(Date.now()) } })}
           >
             <View style={[styles.quickIcon, { backgroundColor: Colors.light.tintLight }]}>
               <Ionicons name="add" size={24} color={Colors.light.tint} />
@@ -792,6 +792,24 @@ function TechDashboard() {
           <Text style={[styles.greeting, { color: themeColors.textSecondary }]}>Lab Floor</Text>
           <Text style={[styles.headerTitle, { color: themeColors.text }]}>Production Dashboard</Text>
         </View>
+        {onReopenMasterHub ? (
+          <Pressable
+            onPress={onReopenMasterHub}
+            style={({ pressed }) => [{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderRadius: 999,
+              backgroundColor: pressed ? "#0f3460" : "#16213e",
+            }]}
+            accessibilityLabel="Open Master Hub"
+          >
+            <Ionicons name="shield-checkmark" size={16} color="#FFF" />
+            <Text style={{ color: "#FFF", fontSize: 13, fontWeight: "600" }}>Master Hub</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       <LabFileDropZone
@@ -10093,7 +10111,7 @@ const provStyles = StyleSheet.create({
 
 type MasterView = "hub" | "all-users" | "lab-portal" | "provider-portal";
 
-function MasterAdminDashboard() {
+function MasterAdminDashboard({ onExitHub }: { onExitHub: () => void }) {
   const { cases, clients, users, invoices, hardRefresh } = useApp();
   const { currentUser, registeredUsers, logout } = useAuth();
   const insets = useSafeAreaInsets();
@@ -10152,7 +10170,10 @@ function MasterAdminDashboard() {
                 )}
               </Pressable>
             )}
-            <Pressable onPress={logout} style={adm.exitBtn}>
+            <Pressable onPress={onExitHub} style={adm.exitBtn} accessibilityLabel="Close Master Hub">
+              <Ionicons name="close" size={20} color={Colors.light.textSecondary} />
+            </Pressable>
+            <Pressable onPress={logout} style={adm.exitBtn} accessibilityLabel="Sign out">
               <Ionicons name="log-out-outline" size={20} color={Colors.light.textSecondary} />
             </Pressable>
           </View>
@@ -10350,6 +10371,7 @@ function MasterAdminDashboard() {
 export default function DashboardScreen() {
   const { role, adminUnlocked, isLoading } = useApp();
   const { userType } = useAuth();
+  const [masterHubExited, setMasterHubExited] = useState(false);
 
   if (isLoading) {
     return (
@@ -10359,8 +10381,12 @@ export default function DashboardScreen() {
     );
   }
 
-  if (userType === "master_admin") {
-    return <MasterAdminDashboard />;
+  if (userType === "master_admin" && !masterHubExited) {
+    return <MasterAdminDashboard onExitHub={() => setMasterHubExited(true)} />;
+  }
+
+  if (userType === "master_admin" && masterHubExited) {
+    return <TechDashboard onReopenMasterHub={() => setMasterHubExited(false)} />;
   }
 
   if (userType === "provider") {
