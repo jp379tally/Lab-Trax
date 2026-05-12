@@ -25,6 +25,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
       return () => ipcRenderer.removeListener("platformAdmin:changed", listener);
     },
   },
+  auth: {
+    getTokens: () => ipcRenderer.invoke("auth:get-tokens"),
+    setTokens: (payload) => ipcRenderer.invoke("auth:set-tokens", payload),
+    clearTokens: () => ipcRenderer.invoke("auth:clear-tokens"),
+    isAvailable: () => ipcRenderer.invoke("auth:is-available"),
+  },
   itero: {
     getStatus: () => ipcRenderer.invoke("itero:get-status"),
     setCredentials: (payload) => ipcRenderer.invoke("itero:set-credentials", payload),

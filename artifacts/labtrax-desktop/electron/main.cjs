@@ -3,6 +3,7 @@ const path = require("path");
 const { pathToFileURL } = require("url");
 const iteroPoller = require("./itero-poller.cjs");
 const platformAdmin = require("./platform-admin.cjs");
+const authStore = require("./auth-store.cjs");
 
 const isDev = process.env.ELECTRON_DEV === "1";
 
@@ -64,6 +65,19 @@ function registerPlatformAdminIpc() {
     const apiBaseUrl = typeof payload === "string" ? payload : payload?.apiBaseUrl;
     return platformAdmin.testSecret(apiBaseUrl);
   });
+}
+
+function registerAuthIpc() {
+  ipcMain.handle("auth:get-tokens", () => authStore.getTokens());
+  ipcMain.handle("auth:set-tokens", (_e, payload) => {
+    authStore.setTokens(payload || {});
+    return true;
+  });
+  ipcMain.handle("auth:clear-tokens", () => {
+    authStore.clearTokens();
+    return true;
+  });
+  ipcMain.handle("auth:is-available", () => authStore.isAvailable());
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -181,6 +195,7 @@ app.whenReady().then(() => {
 
   registerIteroIpc();
   registerPlatformAdminIpc();
+  registerAuthIpc();
   createWindow();
 
   if (!isDev) {

@@ -151,9 +151,22 @@ const TOKEN_STORAGE_KEY = "labtrax_desktop_tokens_v1";
 
 type TokenPair = { accessToken: string; refreshToken: string };
 
+type AuthBridge = {
+  getTokens: () => Promise<TokenPair | null>;
+  setTokens: (payload: TokenPair) => Promise<unknown>;
+  clearTokens: () => Promise<unknown>;
+  isAvailable?: () => Promise<boolean>;
+};
+
+function getAuthBridge(): AuthBridge | null {
+  if (typeof window === "undefined") return null;
+  const electronAPI = (window as { electronAPI?: { auth?: AuthBridge } }).electronAPI;
+  return electronAPI?.auth ?? null;
+}
+
 let _tokens: TokenPair | null = null;
 
-function readTokensFromStorage(): TokenPair | null {
+function readTokensFromLocalStorage(): TokenPair | null {
   try {
     if (typeof localStorage === "undefined") return null;
     const raw = localStorage.getItem(TOKEN_STORAGE_KEY);
@@ -172,8 +185,17 @@ function readTokensFromStorage(): TokenPair | null {
   return null;
 }
 
-function persistTokens(next: TokenPair | null) {
-  _tokens = next;
+function clearLocalStorageTokens() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function writeLocalStorageTokens(next: TokenPair | null) {
   try {
     if (typeof localStorage === "undefined") return;
     if (next) {
@@ -186,9 +208,73 @@ function persistTokens(next: TokenPair | null) {
   }
 }
 
-// Hydrate on module load so apiFetch calls before any explicit login (e.g.
-// the initial /auth/me on app start) include the persisted token.
-_tokens = readTokensFromStorage();
+function persistTokens(next: TokenPair | null) {
+  _tokens = next;
+  const bridge = getAuthBridge();
+  if (bridge) {
+    // Always keep localStorage cleared in the Electron renderer — the
+    // encrypted blob managed by the main process is the source of truth.
+    clearLocalStorageTokens();
+    if (next) {
+      void bridge.setTokens(next).catch(() => {
+        /* ignore — best effort persistence */
+      });
+    } else {
+      void bridge.clearTokens().catch(() => {
+        /* ignore */
+      });
+    }
+    return;
+  }
+  // Browser/dev fallback (no Electron bridge): use localStorage.
+  writeLocalStorageTokens(next);
+}
+
+// Hydrate on module load. In the Electron renderer this asynchronously pulls
+// the encrypted tokens out of the OS keychain via IPC, and migrates any
+// legacy plain-text localStorage blob into the keychain on first run. In a
+// plain browser context (dev server preview) we fall back to localStorage so
+// the app still works for local development.
+const hydrationPromise: Promise<void> = (async () => {
+  const bridge = getAuthBridge();
+  if (bridge) {
+    try {
+      const fromKeychain = await bridge.getTokens();
+      if (fromKeychain) {
+        _tokens = fromKeychain;
+        // Drop any leftover plain-text copy in localStorage from older builds.
+        clearLocalStorageTokens();
+        return;
+      }
+      // One-time migration: an older desktop build stored the tokens in
+      // plain-text localStorage. Move them into the encrypted store and wipe
+      // the plaintext copy so the user stays signed in across this upgrade.
+      const legacy = readTokensFromLocalStorage();
+      if (legacy) {
+        try {
+          await bridge.setTokens(legacy);
+          _tokens = legacy;
+        } catch {
+          // Encryption unavailable (e.g. headless Linux without a keyring).
+          // Keep the legacy tokens in memory so the user isn't kicked out,
+          // but do not re-write them anywhere on disk.
+          _tokens = legacy;
+        } finally {
+          clearLocalStorageTokens();
+        }
+      }
+    } catch {
+      /* ignore — treated as no saved session */
+    }
+    return;
+  }
+  // No Electron bridge: dev browser. Read from localStorage as before.
+  _tokens = readTokensFromLocalStorage();
+})();
+
+export function waitForTokenHydration(): Promise<void> {
+  return hydrationPromise;
+}
 
 export function getAccessToken(): string | null {
   return _tokens?.accessToken ?? null;
@@ -622,6 +708,11 @@ export async function logout(): Promise<void> {
 }
 
 export async function fetchMe(): Promise<SessionUser> {
+  // Wait for the encrypted token store to finish hydrating from the OS
+  // keychain before deciding whether the user has a saved session, otherwise
+  // the very first /auth/me call after launch would race the IPC round-trip
+  // and incorrectly send the user to the login screen.
+  await hydrationPromise;
   // No token = no session; skip the network call so we don't trigger an
   // immediate 401 on a fresh install.
   if (!_tokens?.accessToken) {
