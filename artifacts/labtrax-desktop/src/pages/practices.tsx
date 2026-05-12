@@ -2128,6 +2128,14 @@ function PracticePricingSection({
   });
   const labOrganizationId =
     connectionsQuery.data?.[0]?.labOrganizationId ?? null;
+  // The practice's "default tier" (set in the section above) lives on the
+  // organization_connections row. Surface it here so the per-doctor dropdown
+  // can show "— Use practice default (Standard) —" instead of a bare label —
+  // otherwise admins see two seemingly-conflicting selections (the practice
+  // default tier picker AND a per-doctor "Use practice default") with no
+  // hint that the second one resolves to the first.
+  const practiceDefaultTierName: string | null =
+    (connectionsQuery.data?.[0]?.tierName as string | null | undefined) ?? null;
 
   const casesQuery = useQuery({
     queryKey: ["cases"],
@@ -2228,6 +2236,7 @@ function PracticePricingSection({
                 labOrganizationId={labOrganizationId}
                 tiers={tiers}
                 existing={existing}
+                practiceDefaultTierName={practiceDefaultTierName}
                 onSaved={() => {
                   queryClient.invalidateQueries({
                     queryKey: ["pricing-overrides", labOrganizationId],
@@ -2248,6 +2257,7 @@ function DoctorPricingRow({
   labOrganizationId,
   tiers,
   existing,
+  practiceDefaultTierName,
   onSaved,
 }: {
   doctorName: string;
@@ -2255,8 +2265,21 @@ function DoctorPricingRow({
   labOrganizationId: string;
   tiers: PracticePricingTier[];
   existing: PracticePricingOverride | null;
+  practiceDefaultTierName: string | null;
   onSaved: () => void;
 }) {
+  // The "use practice default" option in the per-doctor dropdown resolves to
+  // whatever tier the practice has set in the section above. Surface that
+  // resolved name in both the dropdown label and the row subtitle so admins
+  // aren't left guessing which tier wins.
+  const practiceDefaultLabel = practiceDefaultTierName
+    ? `— Use practice default (${practiceDefaultTierName}) —`
+    : "— Use practice default (no tier set) —";
+  const subtitleTier = existing?.tierName
+    ? `Tier: ${existing.tierName}`
+    : practiceDefaultTierName
+      ? `Tier: practice default (${practiceDefaultTierName})`
+      : "Tier: practice default (no tier set)";
   const [open, setOpen] = useState(false);
   const [tierName, setTierName] = useState<string>(existing?.tierName ?? "");
   const [prices, setPrices] = useState<Record<string, string>>(() => {
@@ -2340,7 +2363,7 @@ function DoctorPricingRow({
         <div className="min-w-0 flex-1">
           <div className="font-medium truncate">{doctorName}</div>
           <div className="text-[11px] text-muted-foreground truncate">
-            {existing?.tierName ? `Tier: ${existing.tierName}` : "Tier: practice default"}
+            {subtitleTier}
             {customPriceCount > 0
               ? ` · ${customPriceCount} custom price${customPriceCount === 1 ? "" : "s"}`
               : ""}
@@ -2352,7 +2375,7 @@ function DoctorPricingRow({
           className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
           disabled={saveMutation.isPending}
         >
-          <option value="">— Use practice default —</option>
+          <option value="">{practiceDefaultLabel}</option>
           {tiers.map((t) => (
             <option key={t.id} value={t.name}>
               {t.name}
@@ -2371,8 +2394,15 @@ function DoctorPricingRow({
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
             {DEFAULT_PRICE_KEYS.map((k) => {
               const tierPrice = (() => {
+                // Doctor's selected tier wins; otherwise fall back to the
+                // practice's default tier so placeholders show the price the
+                // case will actually use when the field is left blank.
+                const effectiveTierName =
+                  tierName.trim() || practiceDefaultTierName || "";
+                if (!effectiveTierName) return 0;
                 const t = tiers.find(
-                  (tt) => tt.name.toLowerCase() === tierName.toLowerCase(),
+                  (tt) =>
+                    tt.name.toLowerCase() === effectiveTierName.toLowerCase(),
                 );
                 const n = Number(t?.prices?.[k] ?? 0);
                 return Number.isFinite(n) && n > 0 ? n : 0;
