@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { ApiError } from "@/lib/api";
 import { Logo } from "@/components/Logo";
 
 export default function LoginPage() {
@@ -20,7 +21,24 @@ export default function LoginPage() {
     try {
       await login(username.trim(), password);
     } catch (err) {
-      setError((err as Error)?.message || "Sign in failed.");
+      const fallback = "Sign in failed.";
+      const message = (err as Error)?.message || fallback;
+      // A bare browser-level "Failed to fetch" / "Network request failed"
+      // / "Load failed" means the request never reached the server. Replace
+      // those with a clearer message so users don't think their password is
+      // wrong. Server-returned errors (invalid credentials, locked account,
+      // etc.) come through ApiError with a non-zero status and flow through
+      // unchanged.
+      const isNetworkError =
+        (err instanceof ApiError && err.status === 0) ||
+        /failed to fetch|network request failed|load failed|networkerror/i.test(
+          message,
+        );
+      setError(
+        isNetworkError
+          ? "Can't reach the LabTrax server. Check your internet connection and try again."
+          : message,
+      );
     } finally {
       setSubmitting(false);
     }

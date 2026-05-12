@@ -18,6 +18,20 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 
 ## Artifacts
 
+### LabTrax Desktop — `artifacts/labtrax-desktop`
+Electron + React desktop client. Renderer is loaded from a custom `app://labtrax`
+protocol in production, which makes every API call cross-origin. Two
+implications follow:
+- The API's CORS allowlist (`artifacts/api-server/src/lib/cors.ts`) must
+  contain `app://labtrax` so the browser doesn't block desktop requests.
+- Cross-site SameSite=Lax cookies cannot be sent from `app://labtrax`, so the
+  desktop authenticates with **bearer tokens** (`clientType: "desktop"` in
+  the login payload) — same pattern as the mobile app. Tokens are persisted
+  in renderer `localStorage` under `labtrax_desktop_tokens_v1` and sent as
+  `Authorization: Bearer …` on every API call. Bearer-authenticated requests
+  are exempt from CSRF on the server (see `middlewares/csrf.ts`), so no
+  cookie-derived CSRF token is needed.
+
 ### LabTrax (Mobile App) — `artifacts/labtrax`
 Dental laboratory case-tracking app. Expo (React Native) with expo-router.
 - Port: 19134 (Expo dev server)

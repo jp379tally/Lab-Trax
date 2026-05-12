@@ -62,8 +62,19 @@ export class ApiError extends Error {
   }
 }
 
-const CSRF_COOKIE_NAME = "lt_csrf";
-const CSRF_HEADER_NAME = "X-CSRF-Token";
+// ---------------------------------------------------------------------------
+// Bearer-token auth
+//
+// The packaged desktop app loads its renderer from a custom `app://labtrax`
+// protocol, which makes every request to the hosted API cross-site. Browsers
+// will not attach SameSite=Lax cookies on those requests, so cookie-based
+// auth cannot work from the desktop. We mirror the mobile app's approach:
+// the login response returns access + refresh tokens, we store them locally,
+// and we send the access token as `Authorization: Bearer …` on every API
+// call. Bearer-authenticated requests are exempt from CSRF on the server, so
+// we don't need the lt_csrf cookie either.
+// ---------------------------------------------------------------------------
+
 const PLATFORM_ADMIN_HEADER = "X-Platform-Admin-Secret";
 
 type PlatformAdminBridge = {
@@ -136,47 +147,107 @@ export function clearPlatformAdminSecretCache(): void {
   }
 })();
 
-function readCsrfCookie(): string | null {
-  if (typeof document === "undefined" || !document.cookie) return null;
-  for (const part of document.cookie.split(";")) {
-    const [rawName, ...rest] = part.split("=");
-    if (rawName?.trim() === CSRF_COOKIE_NAME) {
-      return decodeURIComponent(rest.join("=").trim());
+const TOKEN_STORAGE_KEY = "labtrax_desktop_tokens_v1";
+
+type TokenPair = { accessToken: string; refreshToken: string };
+
+let _tokens: TokenPair | null = null;
+
+function readTokensFromStorage(): TokenPair | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed.accessToken === "string" &&
+      typeof parsed.refreshToken === "string"
+    ) {
+      return { accessToken: parsed.accessToken, refreshToken: parsed.refreshToken };
     }
+  } catch {
+    /* ignore */
   }
   return null;
+}
+
+function persistTokens(next: TokenPair | null) {
+  _tokens = next;
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (next) {
+      localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(next));
+    } else {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+// Hydrate on module load so apiFetch calls before any explicit login (e.g.
+// the initial /auth/me on app start) include the persisted token.
+_tokens = readTokensFromStorage();
+
+export function getAccessToken(): string | null {
+  return _tokens?.accessToken ?? null;
 }
 
 let refreshInFlight: Promise<boolean> | null = null;
 
 async function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
+  const current = _tokens;
+  if (!current?.refreshToken) {
+    emit(null);
+    return false;
+  }
   refreshInFlight = (async () => {
     try {
-      const refreshHeaders: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      const csrf = readCsrfCookie();
-      if (csrf) refreshHeaders[CSRF_HEADER_NAME] = csrf;
       const r = await fetch(apiUrl("/auth/refresh"), {
         method: "POST",
-        credentials: "include",
-        headers: refreshHeaders,
-        body: "{}",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: current.refreshToken }),
       });
       if (!r.ok) {
+        persistTokens(null);
         emit(null);
         return false;
       }
+      let body: any = null;
+      try {
+        body = await r.json();
+      } catch {
+        /* ignore */
+      }
+      const data = body?.data ?? body;
+      const accessToken: string | undefined = data?.accessToken;
+      const refreshToken: string | undefined = data?.refreshToken;
+      if (!accessToken) {
+        persistTokens(null);
+        emit(null);
+        return false;
+      }
+      persistTokens({
+        accessToken,
+        refreshToken: refreshToken || current.refreshToken,
+      });
       return true;
     } catch {
-      emit(null);
+      // Network blip — keep tokens so a subsequent retry can succeed, but
+      // signal that this attempt did not refresh.
       return false;
     } finally {
       refreshInFlight = null;
     }
   })();
   return refreshInFlight;
+}
+
+function authHeader(): Record<string, string> {
+  const token = _tokens?.accessToken;
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export async function apiFetch<T = unknown>(
@@ -186,33 +257,20 @@ export async function apiFetch<T = unknown>(
 ): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/json",
+    ...authHeader(),
     ...(options.headers as Record<string, string> | undefined),
   };
   if (options.body && !(options.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
-  }
-  const method = (options.method ?? "GET").toUpperCase();
-  const isUnsafe = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
-  if (isUnsafe && !headers[CSRF_HEADER_NAME]) {
-    let csrf = readCsrfCookie();
-    // Existing sessions from before CSRF was introduced won't have an
-    // lt_csrf cookie yet. Seed one by refreshing — the server mints a fresh
-    // CSRF token whenever auth cookies are reissued. Only do this once per
-    // call to avoid loops if refresh itself fails.
-    if (!csrf && !retried) {
-      const seeded = await refreshAccessToken();
-      if (seeded) csrf = readCsrfCookie();
-    }
-    if (csrf) headers[CSRF_HEADER_NAME] = csrf;
   }
   if (isAdminApiPath(path) && !headers[PLATFORM_ADMIN_HEADER]) {
     const secret = await getPlatformAdminSecretForRequest();
     if (secret) headers[PLATFORM_ADMIN_HEADER] = secret;
   }
   const url = apiUrl(path);
-  const res = await fetch(url, { ...options, headers, credentials: "include" });
+  const res = await fetch(url, { ...options, headers });
 
-  if (res.status === 401 && !retried) {
+  if (res.status === 401 && !retried && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
     if (refreshed) return apiFetch<T>(path, options, true);
     throw new ApiError("Your session has expired. Please sign in again.", 401);
@@ -265,16 +323,15 @@ export interface UploadWithProgressOptions {
 async function performXhrUpload<T>(
   url: string,
   formData: FormData,
-  csrf: string | null,
   opts: UploadWithProgressOptions,
   platformAdminSecret: string | null = null,
 ): Promise<{ ok: true; data: T } | { ok: false; status: number; message: string }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url, true);
-    xhr.withCredentials = true;
     xhr.setRequestHeader("Accept", "application/json");
-    if (csrf) xhr.setRequestHeader(CSRF_HEADER_NAME, csrf);
+    const token = _tokens?.accessToken;
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     if (platformAdminSecret) xhr.setRequestHeader(PLATFORM_ADMIN_HEADER, platformAdminSecret);
 
     if (xhr.upload) {
@@ -350,22 +407,15 @@ export async function apiUploadWithProgress<T = unknown>(
 ): Promise<T> {
   const url = apiUrl(path);
 
-  let csrf = readCsrfCookie();
-  if (!csrf) {
-    const seeded = await refreshAccessToken();
-    if (seeded) csrf = readCsrfCookie();
-  }
-
   const platformAdminSecret = isAdminApiPath(path)
     ? await getPlatformAdminSecretForRequest()
     : null;
 
-  let result = await performXhrUpload<T>(url, formData, csrf, opts, platformAdminSecret);
-  if (!result.ok && result.status === 401) {
+  let result = await performXhrUpload<T>(url, formData, opts, platformAdminSecret);
+  if (!result.ok && result.status === 401 && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
-      csrf = readCsrfCookie();
-      result = await performXhrUpload<T>(url, formData, csrf, opts, platformAdminSecret);
+      result = await performXhrUpload<T>(url, formData, opts, platformAdminSecret);
     } else {
       throw new ApiError("Your session has expired. Please sign in again.", 401);
     }
@@ -397,18 +447,17 @@ function sendChunkXhr(
   url: string,
   blob: Blob,
   offset: number,
-  csrf: string | null,
   opts: SendChunkOptions,
   platformAdminSecret: string | null = null,
 ): Promise<{ ok: true; data: ChunkUploadResult } | { ok: false; status: number; message: string; uploadedBytes?: number }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PATCH", url, true);
-    xhr.withCredentials = true;
     xhr.setRequestHeader("Accept", "application/json");
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.setRequestHeader("Upload-Offset", String(offset));
-    if (csrf) xhr.setRequestHeader(CSRF_HEADER_NAME, csrf);
+    const token = _tokens?.accessToken;
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     if (platformAdminSecret) xhr.setRequestHeader(PLATFORM_ADMIN_HEADER, platformAdminSecret);
 
     if (xhr.upload && opts.onChunkProgress) {
@@ -493,11 +542,6 @@ export async function sendUploadChunk(
 ): Promise<ChunkUploadResult> {
   const path = `/media/upload-session/${encodeURIComponent(sessionId)}`;
   const url = apiUrl(path);
-  let csrf = readCsrfCookie();
-  if (!csrf) {
-    const seeded = await refreshAccessToken();
-    if (seeded) csrf = readCsrfCookie();
-  }
 
   // Today this path is non-admin (/media/...), but parity with the other
   // upload helpers keeps us safe if a future admin chunked endpoint reuses it.
@@ -505,12 +549,11 @@ export async function sendUploadChunk(
     ? await getPlatformAdminSecretForRequest()
     : null;
 
-  let result = await sendChunkXhr(url, blob, offset, csrf, opts, platformAdminSecret);
-  if (!result.ok && result.status === 401) {
+  let result = await sendChunkXhr(url, blob, offset, opts, platformAdminSecret);
+  if (!result.ok && result.status === 401 && _tokens?.refreshToken) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
-      csrf = readCsrfCookie();
-      result = await sendChunkXhr(url, blob, offset, csrf, opts, platformAdminSecret);
+      result = await sendChunkXhr(url, blob, offset, opts, platformAdminSecret);
     } else {
       throw new ApiError("Your session has expired. Please sign in again.", 401);
     }
@@ -525,20 +568,38 @@ export async function sendUploadChunk(
 }
 
 export async function login(username: string, password: string): Promise<SessionUser> {
-  const r = await fetch(apiUrl("/auth/login"), {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username,
-      password,
-      deviceName: "LabTrax Desktop Web",
-      clientType: "web",
-    }),
-  });
+  let r: Response;
+  try {
+    r = await fetch(apiUrl("/auth/login"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        password,
+        deviceName: "LabTrax Desktop",
+        clientType: "desktop",
+      }),
+    });
+  } catch {
+    throw new ApiError(
+      "Can't reach the LabTrax server. Check your internet connection and try again.",
+      0,
+    );
+  }
   const body = await r.json().catch(() => ({}));
   if (!r.ok || !body?.success) {
     throw new ApiError(body?.message || "Invalid username or password.", r.status);
+  }
+  if (typeof body.accessToken === "string" && typeof body.refreshToken === "string") {
+    persistTokens({ accessToken: body.accessToken, refreshToken: body.refreshToken });
+  } else {
+    // Server didn't return tokens (e.g. an older deployment). Without a token
+    // the desktop client can't authenticate any subsequent request, so treat
+    // this as a hard failure rather than silently ending up unauthenticated.
+    throw new ApiError(
+      "The server didn't return a sign-in token. Please contact your administrator.",
+      r.status,
+    );
   }
   emit(body.user);
   return body.user as SessionUser;
@@ -552,6 +613,7 @@ export async function logout(): Promise<void> {
   } catch {
     /* swallow */
   }
+  persistTokens(null);
   // Drop the in-memory platform-admin secret on logout so a follow-up sign-in
   // by a different user doesn't carry the previous user's elevated header.
   // The encrypted blob on disk is preserved.
@@ -560,6 +622,11 @@ export async function logout(): Promise<void> {
 }
 
 export async function fetchMe(): Promise<SessionUser> {
+  // No token = no session; skip the network call so we don't trigger an
+  // immediate 401 on a fresh install.
+  if (!_tokens?.accessToken) {
+    throw new ApiError("Not signed in.", 401);
+  }
   const body = await apiFetch<{ success?: boolean; user?: SessionUser } | SessionUser>(
     "/auth/me",
   );
@@ -569,8 +636,7 @@ export async function fetchMe(): Promise<SessionUser> {
   return body as SessionUser;
 }
 
-// Legacy migration: clear any tokens that may have been written by a previous
-// version of the desktop app so they cannot be exfiltrated by XSS.
+// Legacy migration: clear any cookie-era marker so old keys don't linger.
 try {
   if (typeof localStorage !== "undefined") {
     localStorage.removeItem("labtrax_desktop_session_v1");

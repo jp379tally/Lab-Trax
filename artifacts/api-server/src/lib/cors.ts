@@ -9,6 +9,12 @@ function buildAllowedOrigins(): Set<string> {
   for (const d of fromList) allowed.add(`https://${d}`);
   const dev = process.env.REPLIT_DEV_DOMAIN?.trim();
   if (dev) allowed.add(`https://${dev}`);
+  // LabTrax Desktop (Electron) renderer is served from a custom protocol
+  // (`app://labtrax`). All requests it makes to the API are cross-origin, so
+  // the origin must be on the allowlist for the browser to accept the
+  // response. Desktop auth uses bearer tokens — not cookies — so SameSite
+  // restrictions don't apply, but CORS still does.
+  allowed.add("app://labtrax");
   if (process.env.NODE_ENV !== "production") {
     // Common local origins used during development.
     allowed.add("http://localhost");

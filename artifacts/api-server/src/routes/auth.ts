@@ -210,7 +210,7 @@ const registerSchema = z.object({
       accountNumber: z.string().min(1),
     })
     .optional(),
-  clientType: z.enum(["web", "mobile"]).optional(),
+  clientType: z.enum(["web", "mobile", "desktop"]).optional(),
 });
 
 router.post(
@@ -419,7 +419,7 @@ const loginSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
   deviceName: z.string().max(180).optional(),
-  clientType: z.enum(["web", "mobile"]).optional(),
+  clientType: z.enum(["web", "mobile", "desktop"]).optional(),
 });
 
 router.post(
