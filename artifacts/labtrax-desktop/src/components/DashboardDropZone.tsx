@@ -243,6 +243,235 @@ function initialsFromName(name: string): string {
 const inputCls =
   "h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary";
 
+interface DuplicatePromptPhase {
+  kind: "duplicatePrompt";
+  file: File;
+  caseNumber: string;
+  matches: DuplicateHit[];
+  patientName: string;
+}
+
+function DuplicatePromptPanel({
+  phase,
+  onBack,
+  onCancel,
+  onCreateAsNew,
+  onCreateAsRemake,
+}: {
+  phase: DuplicatePromptPhase;
+  onBack: () => void;
+  onCancel: () => void;
+  onCreateAsNew: () => void;
+  onCreateAsRemake: (remake: {
+    remakeOfCaseId: string;
+    remakeReason: string;
+    remakeCharged: boolean;
+  }) => void;
+}) {
+  const { matches, patientName } = phase;
+  const [selectedId, setSelectedId] = useState<string>(
+    matches.find((m) => m.source === "canonical")?.id ?? matches[0]?.id ?? "",
+  );
+  const [reason, setReason] = useState("");
+  const [charge, setCharge] = useState<"yes" | "no" | "">("");
+  const [err, setErr] = useState<string | null>(null);
+
+  // Legacy/mobile cases can't be linked as a remake (the modern
+  // remakeOfCaseId column references the canonical cases table).
+  const selectedMatch = matches.find((m) => m.id === selectedId);
+  const canLinkSelection = selectedMatch?.source === "canonical";
+
+  function submitRemake() {
+    if (!selectedId) {
+      setErr("Pick the prior case being remade.");
+      return;
+    }
+    if (!canLinkSelection) {
+      setErr(
+        "That case was created on the mobile app and can't be linked here. Pick a website-created case, or use 'Create as new case anyway'.",
+      );
+      return;
+    }
+    if (!reason.trim()) {
+      setErr("Reason is required to link as a remake.");
+      return;
+    }
+    if (charge === "") {
+      setErr("Choose whether to charge for this remake.");
+      return;
+    }
+    onCreateAsRemake({
+      remakeOfCaseId: selectedId,
+      remakeReason: reason.trim(),
+      remakeCharged: charge === "yes",
+    });
+  }
+
+  return (
+    <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={15} className="text-amber-600" />
+          <p className="text-sm font-medium text-amber-900">
+            Possible duplicate / remake?
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-amber-700 hover:text-amber-900"
+          aria-label="Back to review"
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <p className="text-xs text-amber-900">
+        Found {matches.length} prior case{matches.length === 1 ? "" : "s"} for{" "}
+        <span className="font-semibold">{patientName}</span> in this lab. If this
+        is a remake of one of them, link it below so you can flag whether to
+        charge.
+      </p>
+
+      <div className="max-h-48 overflow-y-auto rounded-md border border-amber-200 bg-white divide-y divide-amber-100">
+        {matches.map((m) => {
+          const isSelected = selectedId === m.id;
+          const isLegacy = m.source === "legacy";
+          return (
+            <label
+              key={`${m.source}:${m.id}`}
+              className={`px-3 py-2 text-xs flex items-center gap-2 cursor-pointer ${
+                isSelected ? "bg-amber-100" : "hover:bg-amber-50"
+              }`}
+            >
+              <input
+                type="radio"
+                name="dropzone-dup"
+                checked={isSelected}
+                onChange={() => {
+                  setSelectedId(m.id);
+                  setErr(null);
+                }}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-foreground truncate">
+                  {m.caseNumber || "—"} · {m.patientFirstName}{" "}
+                  {m.patientLastName}
+                </div>
+                <div className="text-[11px] text-muted-foreground truncate">
+                  {[
+                    m.status,
+                    m.toothNumbers ? `teeth ${m.toothNumbers}` : null,
+                    m.restorationTypes,
+                    m.createdAt
+                      ? new Date(m.createdAt).toLocaleDateString()
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+              </div>
+              {isLegacy && (
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  mobile
+                </span>
+              )}
+              <span className="shrink-0 inline-flex items-center rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+                {m.matchKind}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+
+      <div>
+        <label className="block text-[11px] font-medium text-amber-900 mb-1">
+          Remake reason (required to link)
+        </label>
+        <textarea
+          rows={2}
+          className="w-full px-2 py-1.5 rounded bg-white text-xs border border-amber-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
+          value={reason}
+          onChange={(e) => {
+            setReason(e.target.value);
+            setErr(null);
+          }}
+          placeholder="e.g. Shade B1 came back too dark; doctor requested A2"
+        />
+      </div>
+
+      <div>
+        <label className="block text-[11px] font-medium text-amber-900 mb-1">
+          Charge for this remake?
+        </label>
+        <div className="flex gap-2">
+          {(
+            [
+              { v: "yes" as const, label: "Yes — invoice as usual" },
+              { v: "no" as const, label: "No — no-charge remake" },
+            ]
+          ).map((opt) => (
+            <button
+              key={opt.v}
+              type="button"
+              onClick={() => {
+                setCharge(opt.v);
+                setErr(null);
+              }}
+              className={`flex-1 h-8 rounded text-xs font-medium transition-colors ${
+                charge === opt.v
+                  ? opt.v === "no"
+                    ? "bg-amber-200 text-amber-900 border border-amber-400"
+                    : "bg-primary/10 text-primary border border-primary/30"
+                  : "bg-white text-muted-foreground border border-amber-200 hover:bg-amber-50"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {err && (
+        <p className="text-xs text-destructive bg-destructive/10 px-2 py-1.5 rounded">
+          {err}
+        </p>
+      )}
+
+      <div className="flex flex-wrap gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onBack}
+          className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Back to review
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onCreateAsNew}
+          className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+          title="Create a brand-new case unrelated to any of the matches above"
+        >
+          Not a remake — create new
+        </button>
+        <button
+          type="button"
+          onClick={submitRemake}
+          className="flex-1 min-w-0 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
+        >
+          Link as remake
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function DashboardDropZone() {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -649,7 +878,15 @@ export function DashboardDropZone() {
     await proceedCreateCase(phase.file, phase.caseNumber);
   }
 
-  async function proceedCreateCase(file: File, requestedCaseNumber: string) {
+  async function proceedCreateCase(
+    file: File,
+    requestedCaseNumber: string,
+    remake?: {
+      remakeOfCaseId: string;
+      remakeReason: string;
+      remakeCharged: boolean;
+    },
+  ) {
     const r = rxDraft;
     if (!user?.id || !rxLabOrgId || !rxProviderOrgId) return;
     setPhase({ kind: "uploading", message: "Creating case…" });
@@ -687,6 +924,7 @@ export function DashboardDropZone() {
               (r.doctorName || "").trim() || "Unknown Provider",
             priority: r.isRush ? "rush" : "normal",
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
+            ...(remake ?? {}),
           }),
         },
       );
@@ -747,88 +985,18 @@ export function DashboardDropZone() {
 
   // ── Duplicate-patient prompt ──
   if (phase.kind === "duplicatePrompt") {
-    const { matches, patientName, file, caseNumber } = phase;
     return (
-      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <AlertTriangle size={15} className="text-amber-600" />
-            <p className="text-sm font-medium text-amber-900">
-              Possible duplicate / remake?
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              setPhase({ kind: "rxConfirm", file, caseNumber })
-            }
-            className="text-amber-700 hover:text-amber-900"
-            aria-label="Back to review"
-          >
-            <X size={15} />
-          </button>
-        </div>
-        <p className="text-xs text-amber-900">
-          Found {matches.length} prior case{matches.length === 1 ? "" : "s"} for{" "}
-          <span className="font-semibold">{patientName}</span> in this lab.
-          Review before creating a second case.
-        </p>
-        <div className="max-h-48 overflow-y-auto rounded-md border border-amber-200 bg-white divide-y divide-amber-100">
-          {matches.map((m) => (
-            <div
-              key={`${m.source}:${m.id}`}
-              className="px-3 py-2 text-xs flex items-center justify-between gap-2"
-            >
-              <div className="min-w-0">
-                <div className="font-medium text-foreground truncate">
-                  {m.caseNumber || "—"} · {m.patientFirstName}{" "}
-                  {m.patientLastName}
-                </div>
-                <div className="text-[11px] text-muted-foreground truncate">
-                  {[
-                    m.status,
-                    m.toothNumbers ? `teeth ${m.toothNumbers}` : null,
-                    m.restorationTypes,
-                    m.createdAt
-                      ? new Date(m.createdAt).toLocaleDateString()
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </div>
-              </div>
-              <span className="shrink-0 inline-flex items-center rounded-full bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
-                {m.matchKind}
-              </span>
-            </div>
-          ))}
-        </div>
-        <div className="flex flex-wrap gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() =>
-              setPhase({ kind: "rxConfirm", file, caseNumber })
-            }
-            className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Back to review
-          </button>
-          <button
-            type="button"
-            onClick={() => setPhase({ kind: "idle" })}
-            className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => proceedCreateCase(file, caseNumber)}
-            className="flex-1 min-w-0 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors"
-          >
-            Create as new case anyway
-          </button>
-        </div>
-      </div>
+      <DuplicatePromptPanel
+        phase={phase}
+        onBack={() =>
+          setPhase({ kind: "rxConfirm", file: phase.file, caseNumber: phase.caseNumber })
+        }
+        onCancel={() => setPhase({ kind: "idle" })}
+        onCreateAsNew={() => proceedCreateCase(phase.file, phase.caseNumber)}
+        onCreateAsRemake={(remake) =>
+          proceedCreateCase(phase.file, phase.caseNumber, remake)
+        }
+      />
     );
   }
 
