@@ -36,9 +36,16 @@ const ITERO_BASE_URL = "https://us-labs.bff.cloud.myitero.com";
 const ITERO_LOGIN_URL = `${ITERO_BASE_URL}/login`;
 const ITERO_PARTITION = "persist:itero";
 
-const DEFAULT_POLL_INTERVAL_MIN = 5;
-const MIN_POLL_INTERVAL_MIN = 5;
-const MAX_POLL_INTERVAL_MIN = 240;
+const {
+  DEFAULT_POLL_INTERVAL_MIN,
+  MIN_POLL_INTERVAL_MIN,
+  MAX_POLL_INTERVAL_MIN,
+  LAB_REVIEW_STATUS_TOKENS,
+  clampInterval,
+  looksLikeLoginPage,
+  normalizeStatusToken,
+  isLabReviewOrder,
+} = require("./itero-helpers.cjs");
 const RECENT_IMPORTS_KEEP = 10;
 
 let credsPath = null;
@@ -93,12 +100,6 @@ function loadConfig() {
   } catch {
     seenIds = new Set();
   }
-}
-
-function clampInterval(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return DEFAULT_POLL_INTERVAL_MIN;
-  return Math.max(MIN_POLL_INTERVAL_MIN, Math.min(MAX_POLL_INTERVAL_MIN, Math.round(n)));
 }
 
 function saveConfig() {
@@ -364,12 +365,6 @@ async function ensureLoggedIn() {
   return { window: win, session: sess };
 }
 
-function looksLikeLoginPage(text) {
-  if (!text) return false;
-  return /login|sign[\s-]?in|password/i.test(text.slice(0, 4000)) &&
-    /<html/i.test(text.slice(0, 500));
-}
-
 async function peekText(response) {
   try {
     const clone = response.clone();
@@ -377,38 +372,6 @@ async function peekText(response) {
   } catch {
     return "";
   }
-}
-
-// Accepted normalizations of an iTero order's status that mean "Lab Review".
-// We compare a case-folded, non-alphanumeric-stripped form so spellings like
-// "Lab Review", "labReview", "LAB_REVIEW", "lab-review" all match, while
-// anything else (e.g. "Sent to Doctor", "Completed", "Cancelled") is rejected.
-const LAB_REVIEW_STATUS_TOKENS = new Set(["labreview"]);
-
-function normalizeStatusToken(value) {
-  if (value == null) return "";
-  return String(value).toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function isLabReviewOrder(raw) {
-  if (!raw || typeof raw !== "object") return false;
-  // Probe every field name iTero is known/likely to use for status.
-  const candidates = [
-    raw.status,
-    raw.orderStatus,
-    raw.caseStatus,
-    raw.statusName,
-    raw.workflowStatus,
-    raw.state,
-    raw.stage,
-    raw.status?.name,
-    raw.status?.code,
-  ];
-  for (const c of candidates) {
-    const tok = normalizeStatusToken(c);
-    if (tok && LAB_REVIEW_STATUS_TOKENS.has(tok)) return true;
-  }
-  return false;
 }
 
 async function listLabReviewOrders(sess) {

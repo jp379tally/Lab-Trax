@@ -215,3 +215,59 @@ jobs:
             exit 0
           fi
           bash .github/scripts/cleanup-ci-staging-bucket.sh --project "$PROJECT"
+
+  test-labtrax-desktop:
+    name: Desktop client tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Runs the vitest suite for the Electron desktop client. Currently
+      # exercises the pure helpers extracted from the iTero Lab-Review poller
+      # (electron/itero-helpers.cjs) — interval clamping, login-page sniffing,
+      # status-token normalisation, and Lab-Review status detection across all
+      # tenant-specific field-name spellings. Add new tests under
+      # artifacts/labtrax-desktop/electron/__tests__/ as more main-process
+      # logic is extracted into pure helpers.
+      - name: Run desktop client tests
+        run: pnpm --filter @workspace/labtrax-desktop run test
+
+  test-labtrax-mobile:
+    name: Mobile client tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Runs the vitest suite for the Expo mobile client. Currently exercises
+      # the pure helpers under artifacts/labtrax/lib/ (scan-helpers,
+      # case-reconciliation). Add new tests under
+      # artifacts/labtrax/lib/__tests__/ as more pure logic is extracted from
+      # screens/components.
+      - name: Run mobile client tests
+        run: pnpm --filter @workspace/labtrax run test
