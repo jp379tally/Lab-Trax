@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
@@ -13,6 +14,7 @@ import {
 } from "@workspace/db";
 import { generateInviteToken } from "../lib/auth";
 import { writeAuditLog } from "../lib/audit";
+import { hashPassword } from "../lib/crypto";
 import { HttpError, ok } from "../lib/http";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
 import { sendInviteEmail } from "../lib/mail";
@@ -418,6 +420,196 @@ router.post(
     });
 
     return ok(res, organization, 201);
+  })
+);
+
+const addDoctorsSchema = z.object({
+  doctors: z
+    .array(
+      z.object({
+        firstName: z.string().trim().min(1),
+        lastName: z.string().trim().optional().default(""),
+        email: z.string().trim().email().optional().or(z.literal("")),
+        phone: z.string().trim().optional(),
+      })
+    )
+    .min(1)
+    .max(50),
+});
+
+function slugifyForUsername(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 30) || "doctor";
+}
+
+async function generateUniqueDoctorUsername(
+  firstName: string,
+  lastName: string
+): Promise<string> {
+  const base = slugifyForUsername(`${firstName}-${lastName}`);
+  for (let i = 0; i < 8; i++) {
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const candidate = `${base}-${suffix}`;
+    const existing = await db.query.users.findFirst({
+      where: eq(users.username, candidate),
+    });
+    if (!existing) return candidate;
+  }
+  throw new HttpError(500, "Could not allocate a unique username for doctor.");
+}
+
+// Bulk-create doctor users for a provider practice. Lab admin only. Each
+// created user gets its own platform account number (Task #320) and is added
+// to the practice as an active member with role "user". A random password is
+// stored — the doctor must claim/reset it later via the standard flows.
+router.post(
+  "/:organizationId/doctors",
+  asyncHandler(async (req, res) => {
+    const organizationId = req.params.organizationId;
+    const callerId = (req as any).auth.userId as string;
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!practice || practice.deletedAt) {
+      throw new HttpError(404, "Practice not found.");
+    }
+    if (practice.type !== "provider") {
+      throw new HttpError(400, "Doctors can only be added to provider practices.");
+    }
+    if (!practice.parentLabOrganizationId) {
+      throw new HttpError(400, "Practice has no parent lab.");
+    }
+
+    // Caller must be an admin of the parent lab.
+    await requireAnyRole(callerId, practice.parentLabOrganizationId, ADMIN_ROLES);
+
+    const input = addDoctorsSchema.parse(req.body);
+
+    const created: Array<{
+      id: string;
+      username: string;
+      firstName: string | null;
+      lastName: string | null;
+      email: string | null;
+      phone: string | null;
+      platformAccountNumber: string | null;
+    }> = [];
+    const skipped: Array<{ index: number; reason: string }> = [];
+
+    for (let i = 0; i < input.doctors.length; i++) {
+      const d = input.doctors[i];
+      try {
+        const email = d.email && d.email.length > 0 ? d.email.toLowerCase() : null;
+        const phone = d.phone && d.phone.length > 0 ? d.phone : null;
+
+        // Skip duplicates (by email) instead of failing the whole batch.
+        if (email) {
+          const allUsers = await db.select({ id: users.id, email: users.email }).from(users);
+          const dup = allUsers.find((u) => u.email?.toLowerCase() === email);
+          if (dup) {
+            skipped.push({ index: i, reason: "An account with this email already exists." });
+            continue;
+          }
+        }
+
+        const username = await generateUniqueDoctorUsername(d.firstName, d.lastName);
+        const randomPassword = crypto.randomUUID() + crypto.randomUUID();
+        const hashed = await hashPassword(randomPassword);
+
+        const initials =
+          ((d.firstName.trim()[0] ?? "") + (d.lastName.trim()[0] ?? "")).toUpperCase() || "DR";
+
+        let platformAccountNumber: string | null = null;
+        try {
+          platformAccountNumber = await allocatePlatformAccountNumber(
+            "user",
+            deriveAccountNameParts({
+              firstName: d.firstName,
+              lastName: d.lastName,
+              doctorName: `${d.firstName} ${d.lastName}`.trim(),
+              practiceName: practice.displayName || practice.name,
+            })
+          );
+        } catch (err: any) {
+          req.log?.warn?.(
+            { err: err?.message ?? String(err) },
+            "Failed to allocate platform account number for doctor (non-fatal)"
+          );
+        }
+
+        // Wrap the user + membership inserts in a transaction so a failure
+        // partway through doesn't leave a dangling user without membership.
+        const user = await db.transaction(async (tx) => {
+          const [u] = await tx
+            .insert(users)
+            .values({
+              username,
+              password: hashed,
+              email,
+              phone,
+              firstName: d.firstName,
+              lastName: d.lastName || null,
+              initials,
+              userType: "provider",
+              doctorName: `${d.firstName} ${d.lastName}`.trim(),
+              role: "user",
+              platformAccountNumber,
+            })
+            .returning();
+          await tx.insert(organizationMemberships).values({
+            labId: organizationId,
+            userId: u.id,
+            role: "user",
+            status: "active",
+            approvedByUserId: callerId,
+            joinedAt: new Date(),
+          });
+          return u;
+        });
+
+        await writeAuditLog({
+          req,
+          organizationId,
+          action: "practice_doctor_added",
+          entityType: "user",
+          entityId: user.id,
+          afterJson: {
+            username: user.username,
+            email: user.email,
+            phone: user.phone,
+            platformAccountNumber: user.platformAccountNumber,
+          },
+        });
+
+        created.push({
+          id: user.id,
+          username: user.username,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone,
+          platformAccountNumber: user.platformAccountNumber,
+        });
+      } catch (err: any) {
+        // Per-row failure must not abort the whole batch — surface the row
+        // as skipped so the caller can see exactly which doctors landed.
+        req.log?.warn?.(
+          { err: err?.message ?? String(err), index: i },
+          "Failed to create doctor in bulk endpoint"
+        );
+        skipped.push({
+          index: i,
+          reason: err?.message || "Unexpected error while creating doctor.",
+        });
+      }
+    }
+
+    return ok(res, { created, skipped }, 201);
   })
 );
 

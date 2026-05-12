@@ -314,6 +314,21 @@ interface AddPracticeFields {
   parentLabOrganizationId: string;
 }
 
+interface NewDoctorRow {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+}
+
+interface CreatedDoctor {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+  platformAccountNumber: string | null;
+}
+
 function AddPracticeDialog({
   adminLabOrgIds,
   onClose,
@@ -338,6 +353,26 @@ function AddPracticeDialog({
     accountNumber: "",
     parentLabOrganizationId: adminLabOrgIds[0] ?? "",
   });
+  const [doctors, setDoctors] = useState<NewDoctorRow[]>([]);
+  const [doctorResults, setDoctorResults] = useState<{
+    created: CreatedDoctor[];
+    skipped: { index: number; reason: string }[];
+  } | null>(null);
+  const [creatingDoctors, setCreatingDoctors] = useState(false);
+  // Once the practice itself is created, lock the practice form and switch
+  // the CTA to "retry doctors" so a second submit can't create a duplicate
+  // practice.
+  const [createdOrgId, setCreatedOrgId] = useState<string | null>(null);
+
+  function addDoctorRow() {
+    setDoctors((rows) => [...rows, { firstName: "", lastName: "", email: "", phone: "" }]);
+  }
+  function updateDoctorRow(idx: number, key: keyof NewDoctorRow, value: string) {
+    setDoctors((rows) => rows.map((r, i) => (i === idx ? { ...r, [key]: value } : r)));
+  }
+  function removeDoctorRow(idx: number) {
+    setDoctors((rows) => rows.filter((_, i) => i !== idx));
+  }
 
   const orgsQuery = useQuery({
     queryKey: ["organizations"],
@@ -380,12 +415,47 @@ function AddPracticeDialog({
         body: JSON.stringify(payload),
       });
     },
-    onSuccess: () => {
+    onSuccess: async (org) => {
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
-      onClose();
+      setCreatedOrgId(org.id);
+      await submitDoctors(org.id);
     },
     onError: (err: Error) => setError(err.message || "Could not create practice."),
   });
+
+  async function submitDoctors(orgId: string) {
+    const validDoctors = doctors
+      .map((d) => ({
+        firstName: d.firstName.trim(),
+        lastName: d.lastName.trim(),
+        email: d.email.trim(),
+        phone: d.phone.trim(),
+      }))
+      .filter((d) => d.firstName.length > 0);
+    if (validDoctors.length === 0) {
+      onClose();
+      return;
+    }
+    setCreatingDoctors(true);
+    setError(null);
+    try {
+      const result = await apiFetch<{
+        created: CreatedDoctor[];
+        skipped: { index: number; reason: string }[];
+      }>(`/organizations/${orgId}/doctors`, {
+        method: "POST",
+        body: JSON.stringify({ doctors: validDoctors }),
+      });
+      setDoctorResults(result);
+    } catch (err: any) {
+      setError(
+        (err?.message || "Practice was created, but adding doctors failed.") +
+          " The practice was saved — click \"Retry adding doctors\" to try again.",
+      );
+    } finally {
+      setCreatingDoctors(false);
+    }
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -396,6 +466,12 @@ function AddPracticeDialog({
     }
     if (adminLabOrgIds.length > 1 && !fields.parentLabOrganizationId) {
       setError("Choose which lab this practice belongs to.");
+      return;
+    }
+    // Practice is already created — only retry the doctor batch instead of
+    // creating a duplicate practice on resubmit.
+    if (createdOrgId) {
+      void submitDoctors(createdOrgId);
       return;
     }
     createMutation.mutate();
@@ -502,23 +578,158 @@ function AddPracticeDialog({
               </div>
             </FormField>
           </section>
+
+          <section className="border-t border-border pt-5">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <div className="text-sm font-semibold">Doctors at this practice</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Optional. Each doctor gets their own platform account number on creation.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={addDoctorRow}
+                className="h-8 px-3 rounded-md text-xs font-medium border border-border hover:bg-secondary inline-flex items-center gap-1"
+              >
+                <Plus size={14} /> Add doctor
+              </button>
+            </div>
+            {doctors.length === 0 ? (
+              <div className="text-xs text-muted-foreground italic">
+                No additional doctors. Click "Add doctor" to add one.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {doctors.map((d, idx) => (
+                  <div
+                    key={idx}
+                    className="grid grid-cols-12 gap-2 items-start bg-muted/30 rounded-md p-3"
+                  >
+                    <div className="col-span-3">
+                      <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                        First name
+                      </label>
+                      <input
+                        value={d.firstName}
+                        onChange={(e) => updateDoctorRow(idx, "firstName", e.target.value)}
+                        className={inputCls}
+                        placeholder="Jane"
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                        Last name
+                      </label>
+                      <input
+                        value={d.lastName}
+                        onChange={(e) => updateDoctorRow(idx, "lastName", e.target.value)}
+                        className={inputCls}
+                        placeholder="Smith"
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                        Email
+                      </label>
+                      <input
+                        type="email"
+                        value={d.email}
+                        onChange={(e) => updateDoctorRow(idx, "email", e.target.value)}
+                        className={inputCls}
+                        placeholder="optional"
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                        Phone
+                      </label>
+                      <input
+                        value={d.phone}
+                        onChange={(e) => updateDoctorRow(idx, "phone", e.target.value)}
+                        className={inputCls}
+                        placeholder="optional"
+                      />
+                    </div>
+                    <div className="col-span-1 flex items-end justify-end h-full pt-4">
+                      <button
+                        type="button"
+                        onClick={() => removeDoctorRow(idx)}
+                        className="h-9 w-9 rounded-md hover:bg-destructive/10 text-destructive flex items-center justify-center"
+                        aria-label="Remove doctor"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {doctorResults && (
+            <section className="border-t border-border pt-5">
+              <div className="text-sm font-semibold mb-2">Doctors created</div>
+              <ul className="space-y-1 text-sm">
+                {doctorResults.created.map((d) => (
+                  <li key={d.id} className="flex items-center justify-between bg-muted/40 rounded px-3 py-2">
+                    <span>
+                      {[d.firstName, d.lastName].filter(Boolean).join(" ") || "Doctor"}
+                      {d.email ? <span className="text-muted-foreground"> · {d.email}</span> : null}
+                    </span>
+                    <span className="font-mono text-xs bg-primary/10 text-primary rounded px-2 py-0.5">
+                      {d.platformAccountNumber || "—"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {doctorResults.skipped.length > 0 && (
+                <div className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  {doctorResults.skipped.length} doctor(s) skipped:
+                  <ul className="list-disc list-inside mt-1">
+                    {doctorResults.skipped.map((s, i) => (
+                      <li key={i}>Row #{s.index + 1}: {s.reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          )}
         </div>
 
         <footer className="px-6 py-4 border-t border-border flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-9 px-4 rounded-md text-sm font-medium hover:bg-secondary"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={createMutation.isPending || !fields.name.trim()}
-            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
-          >
-            {createMutation.isPending ? "Creating…" : "Create practice"}
-          </button>
+          {doctorResults ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90"
+            >
+              Done
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-9 px-4 rounded-md text-sm font-medium hover:bg-secondary"
+              >
+                {createdOrgId ? "Close" : "Cancel"}
+              </button>
+              <button
+                type="submit"
+                disabled={createMutation.isPending || creatingDoctors || !fields.name.trim()}
+                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+              >
+                {createMutation.isPending
+                  ? "Creating practice…"
+                  : creatingDoctors
+                    ? "Adding doctors…"
+                    : createdOrgId
+                      ? "Retry adding doctors"
+                      : "Create practice"}
+              </button>
+            </>
+          )}
         </footer>
         </form>
       </div>
