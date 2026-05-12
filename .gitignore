@@ -67,6 +67,7 @@ artifacts/api-server/uploads/
 
 # Archives, installers, and other large binaries
 *.tar.gz
+*.tar.gz.part
 *.tgz
 *.zip
 *.dmg
@@ -74,6 +75,15 @@ artifacts/api-server/uploads/
 *.msi
 *.pkg
 *.AppImage
+*.ipa
+
+# Large media uploads — keep on disk if needed, but never commit
+*.mp4
+*.mov
+
+# Static export output (Expo / Vite)
+**/static-build/
+exports/
 
 # Logs
 *.log
