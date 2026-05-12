@@ -3298,12 +3298,12 @@ function AttachmentRow({
     visibilityMutation.mutate();
   }
 
-  return (
-    <div className="border border-border rounded-md px-3 py-2 text-sm flex items-start gap-3">
+  const rowBody = (
+    <>
       <div className="mt-0.5 text-muted-foreground">
         <Paperclip size={14} />
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 text-left">
         <div className="font-medium truncate flex items-center gap-2" title={attachment.fileName}>
           <span className="truncate">{attachment.fileName}</span>
           <span
@@ -3329,6 +3329,24 @@ function AttachmentRow({
           {attachment.createdAt ? ` · ${relativeTime(attachment.createdAt)}` : ""}
         </div>
       </div>
+    </>
+  );
+
+  return (
+    <div className="border border-border rounded-md px-3 py-2 text-sm flex items-start gap-3">
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer"
+          title={`Open "${attachment.fileName}"`}
+        >
+          {rowBody}
+        </a>
+      ) : (
+        <div className="flex items-start gap-3 flex-1 min-w-0">{rowBody}</div>
+      )}
       <div className="flex items-center gap-1">
         {canManage && (
           <button
