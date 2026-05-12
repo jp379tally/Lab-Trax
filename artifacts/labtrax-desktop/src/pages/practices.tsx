@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Loader2, Mail, Search, Send, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Building2, Loader2, Mail, Plus, Search, Send, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Invoice, LabCase, Organization } from "@/lib/types";
+import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney, relativeTime } from "@/lib/format";
 
 interface PracticeMember {
@@ -67,6 +67,27 @@ export default function PracticesPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [editing, setEditing] = useState<Organization | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+  });
+
+  const adminLabOrgIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const m of meQuery.data?.memberships ?? []) {
+      if (
+        m.status === "active" &&
+        ADMIN_ROLES.has(m.role) &&
+        m.organization?.type === "lab"
+      ) {
+        ids.push(m.organizationId);
+      }
+    }
+    return ids;
+  }, [meQuery.data]);
+  const canAddPractice = adminLabOrgIds.length > 0;
 
   const orgs = orgsQuery.data ?? [];
   const cases = casesQuery.data ?? [];
@@ -117,8 +138,19 @@ export default function PracticesPage() {
             Provider organizations your lab works with, plus your own lab orgs.
           </p>
         </div>
-        <div className="text-sm text-muted-foreground">
-          {filtered.length} of {orgs.length}
+        <div className="flex items-center gap-3">
+          <div className="text-sm text-muted-foreground">
+            {filtered.length} of {orgs.length}
+          </div>
+          {canAddPractice && (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 inline-flex items-center gap-1.5"
+            >
+              <Plus size={14} /> Add practice
+            </button>
+          )}
         </div>
       </div>
 
@@ -230,6 +262,240 @@ export default function PracticesPage() {
       </div>
 
       {editing && <PracticeEditor org={editing} onClose={() => setEditing(null)} />}
+      {adding && (
+        <AddPracticeDialog
+          adminLabOrgIds={adminLabOrgIds}
+          onClose={() => setAdding(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+interface AddPracticeFields {
+  name: string;
+  displayName: string;
+  billingEmail: string;
+  phone: string;
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  state: string;
+  zip: string;
+  country: string;
+  doctorName: string;
+  accountNumber: string;
+  parentLabOrganizationId: string;
+}
+
+function AddPracticeDialog({
+  adminLabOrgIds,
+  onClose,
+}: {
+  adminLabOrgIds: string[];
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [fields, setFields] = useState<AddPracticeFields>({
+    name: "",
+    displayName: "",
+    billingEmail: "",
+    phone: "",
+    addressLine1: "",
+    addressLine2: "",
+    city: "",
+    state: "",
+    zip: "",
+    country: "",
+    doctorName: "",
+    accountNumber: "",
+    parentLabOrganizationId: adminLabOrgIds[0] ?? "",
+  });
+
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+  });
+  const labOptions = useMemo(
+    () =>
+      (orgsQuery.data ?? []).filter(
+        (o) => o.type === "lab" && adminLabOrgIds.includes(o.id),
+      ),
+    [orgsQuery.data, adminLabOrgIds],
+  );
+
+  function update<K extends keyof AddPracticeFields>(key: K, value: AddPracticeFields[K]) {
+    setFields((p) => ({ ...p, [key]: value }));
+  }
+
+  const createMutation = useMutation({
+    mutationFn: () => {
+      const payload: Record<string, unknown> = {
+        type: "provider",
+        name: fields.name.trim(),
+      };
+      if (fields.displayName.trim()) payload.displayName = fields.displayName.trim();
+      if (fields.billingEmail.trim()) payload.billingEmail = fields.billingEmail.trim();
+      if (fields.phone.trim()) payload.phone = fields.phone.trim();
+      if (fields.addressLine1.trim()) payload.addressLine1 = fields.addressLine1.trim();
+      if (fields.addressLine2.trim()) payload.addressLine2 = fields.addressLine2.trim();
+      if (fields.city.trim()) payload.city = fields.city.trim();
+      if (fields.state.trim()) payload.state = fields.state.trim();
+      if (fields.zip.trim()) payload.zip = fields.zip.trim();
+      if (fields.country.trim()) payload.country = fields.country.trim();
+      if (fields.doctorName.trim()) payload.doctorName = fields.doctorName.trim();
+      if (fields.accountNumber.trim()) payload.accountNumber = fields.accountNumber.trim();
+      if (fields.parentLabOrganizationId) {
+        payload.parentLabOrganizationId = fields.parentLabOrganizationId;
+      }
+      return apiFetch<Organization>("/organizations", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["organizations"] });
+      onClose();
+    },
+    onError: (err: Error) => setError(err.message || "Could not create practice."),
+  });
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (!fields.name.trim()) {
+      setError("Practice name is required.");
+      return;
+    }
+    if (adminLabOrgIds.length > 1 && !fields.parentLabOrganizationId) {
+      setError("Choose which lab this practice belongs to.");
+      return;
+    }
+    createMutation.mutate();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/30 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-2xl bg-card border border-border rounded-xl shadow-lg max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-6 py-4 border-b border-border flex items-center justify-between">
+          <div>
+            <div className="text-xs text-muted-foreground">New practice</div>
+            <div className="text-sm font-semibold">Add a provider practice</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 w-9 rounded-md hover:bg-secondary flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <form onSubmit={handleSubmit} className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 overflow-y-auto scrollbar-thin px-6 py-6 space-y-6">
+          {error && (
+            <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">{error}</div>
+          )}
+
+          <section className="grid grid-cols-2 gap-4">
+            {labOptions.length > 1 && (
+              <FormField label="Parent lab" full>
+                <select
+                  value={fields.parentLabOrganizationId}
+                  onChange={(e) => update("parentLabOrganizationId", e.target.value)}
+                  className={inputCls}
+                >
+                  <option value="">Select a lab…</option>
+                  {labOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.displayName || o.name}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            )}
+            <FormField label="Legal name">
+              <input
+                value={fields.name}
+                onChange={(e) => update("name", e.target.value)}
+                className={inputCls}
+                required
+                autoFocus
+              />
+            </FormField>
+            <FormField label="Display name">
+              <input value={fields.displayName} onChange={(e) => update("displayName", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="Billing email">
+              <input type="email" value={fields.billingEmail} onChange={(e) => update("billingEmail", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="Phone">
+              <input value={fields.phone} onChange={(e) => update("phone", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="Primary doctor name" full>
+              <input value={fields.doctorName} onChange={(e) => update("doctorName", e.target.value)} className={inputCls} />
+              <div className="text-[11px] text-muted-foreground mt-1">
+                Used to derive the auto account number when one isn't supplied below.
+              </div>
+            </FormField>
+            <FormField label="Address line 1" full>
+              <input value={fields.addressLine1} onChange={(e) => update("addressLine1", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="Address line 2" full>
+              <input value={fields.addressLine2} onChange={(e) => update("addressLine2", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="City">
+              <input value={fields.city} onChange={(e) => update("city", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="State">
+              <input value={fields.state} onChange={(e) => update("state", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="ZIP">
+              <input value={fields.zip} onChange={(e) => update("zip", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="Country">
+              <input value={fields.country} onChange={(e) => update("country", e.target.value)} className={inputCls} />
+            </FormField>
+            <FormField label="Account number (optional)" full>
+              <input
+                value={fields.accountNumber}
+                onChange={(e) => update("accountNumber", e.target.value)}
+                className={inputCls}
+                placeholder="Leave blank to auto-generate"
+              />
+              <div className="text-[11px] text-muted-foreground mt-1">
+                Must be unique within your lab. Leave blank to let LabTrax pick one.
+              </div>
+            </FormField>
+          </section>
+        </div>
+
+        <footer className="px-6 py-4 border-t border-border flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-4 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={createMutation.isPending || !fields.name.trim()}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+          >
+            {createMutation.isPending ? "Creating…" : "Create practice"}
+          </button>
+        </footer>
+        </form>
+      </div>
     </div>
   );
 }
