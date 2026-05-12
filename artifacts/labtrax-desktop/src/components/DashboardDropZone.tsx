@@ -41,6 +41,61 @@ interface ExtractedRx {
   isRush?: boolean | null;
   notes?: string | null;
   practiceName?: string | null;
+  practiceAddress?: string | null;
+  practicePhone?: string | null;
+}
+
+interface NewPracticeDraft {
+  name: string;
+  phone: string;
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  state: string;
+  zip: string;
+  doctorName: string;
+}
+
+// Best-effort split of a free-text address into line1 / city / state / zip.
+// Accepts patterns like "123 Main St, Springfield, IL 62701" or
+// "123 Main St\nSpringfield, IL 62701". Anything we can't parse just lands
+// in addressLine1 so the user can clean it up before saving.
+function parseAddress(raw: string | null | undefined): {
+  addressLine1: string;
+  city: string;
+  state: string;
+  zip: string;
+} {
+  const empty = { addressLine1: "", city: "", state: "", zip: "" };
+  const s = (raw || "").trim();
+  if (!s) return empty;
+  const parts = s
+    .split(/\n|,/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return { ...empty, addressLine1: s };
+  const last = parts[parts.length - 1];
+  const stateZip = last.match(/^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/);
+  if (stateZip && parts.length >= 2) {
+    // "Street, City, ST ZIP" → line1=Street, city=City
+    // "City, ST ZIP"          → line1="",     city=City  (don't duplicate)
+    return {
+      addressLine1: parts.length >= 3 ? parts.slice(0, -2).join(", ") : "",
+      city: parts.length >= 3 ? parts[parts.length - 2] : parts[0],
+      state: stateZip[1].toUpperCase(),
+      zip: stateZip[2],
+    };
+  }
+  const zipOnly = last.match(/^(\d{5}(?:-\d{4})?)$/);
+  if (zipOnly && parts.length >= 2) {
+    return {
+      addressLine1: parts.slice(0, -1).join(", "),
+      city: "",
+      state: "",
+      zip: zipOnly[1],
+    };
+  }
+  return { ...empty, addressLine1: s };
 }
 
 interface OrgLite {
@@ -213,8 +268,85 @@ export function DashboardDropZone() {
     }
   }, [labOrg?.id, rxLabOrgId]);
   const [rxProviderSearch, setRxProviderSearch] = useState("");
+  // When set, the inline "Add practice" form is shown inside the rxConfirm
+  // panel instead of the practice <select>. Pre-filled from the AI-extracted
+  // Rx fields (name/phone/address) the first time it opens.
+  const [newPracticeDraft, setNewPracticeDraft] =
+    useState<NewPracticeDraft | null>(null);
+  const [creatingPractice, setCreatingPractice] = useState(false);
+  const [newPracticeError, setNewPracticeError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
+
+  function openAddPracticeForm() {
+    const r = rxDraft;
+    const parsed = parseAddress(r.practiceAddress);
+    setNewPracticeError(null);
+    setNewPracticeDraft({
+      name: (r.practiceName || rxProviderSearch || "").trim(),
+      phone: (r.practicePhone || "").trim(),
+      addressLine1: parsed.addressLine1,
+      addressLine2: "",
+      city: parsed.city,
+      state: parsed.state,
+      zip: parsed.zip,
+      doctorName: (r.doctorName || "").trim(),
+    });
+  }
+
+  async function submitNewPractice() {
+    if (!newPracticeDraft) return;
+    const draft = newPracticeDraft;
+    if (!draft.name.trim()) {
+      setNewPracticeError("Practice name is required.");
+      return;
+    }
+    if (!rxLabOrgId) {
+      setNewPracticeError("Pick a lab first.");
+      return;
+    }
+    setCreatingPractice(true);
+    setNewPracticeError(null);
+    try {
+      const created = await apiFetch<{ id: string; name?: string }>(
+        "/organizations",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            type: "provider",
+            name: draft.name.trim(),
+            displayName: draft.name.trim(),
+            parentLabOrganizationId: rxLabOrgId,
+            ...(draft.phone.trim() ? { phone: draft.phone.trim() } : {}),
+            ...(draft.addressLine1.trim()
+              ? { addressLine1: draft.addressLine1.trim() }
+              : {}),
+            ...(draft.addressLine2.trim()
+              ? { addressLine2: draft.addressLine2.trim() }
+              : {}),
+            ...(draft.city.trim() ? { city: draft.city.trim() } : {}),
+            ...(draft.state.trim() ? { state: draft.state.trim() } : {}),
+            ...(draft.zip.trim() ? { zip: draft.zip.trim() } : {}),
+            ...(draft.doctorName.trim()
+              ? { doctorName: draft.doctorName.trim() }
+              : {}),
+          }),
+        },
+      );
+      // Refresh the orgs list so the new practice shows up in the dropdown,
+      // then auto-select it and close the inline form.
+      await qc.invalidateQueries({ queryKey: ["organizations"] });
+      if (created?.id) setRxProviderOrgId(created.id);
+      setRxProviderSearch("");
+      setNewPracticeDraft(null);
+    } catch (e: any) {
+      setNewPracticeError(
+        e?.message || "Could not create practice. Please try again.",
+      );
+    } finally {
+      setCreatingPractice(false);
+    }
+  }
 
   const filteredCases = useMemo(() => {
     const q = caseSearch.trim().toLowerCase();
@@ -300,6 +432,8 @@ export function DashboardDropZone() {
           isRush: !!rx.isRush,
           notes: rx.notes ?? "",
           practiceName: rx.practiceName ?? "",
+          practiceAddress: rx.practiceAddress ?? "",
+          practicePhone: rx.practicePhone ?? "",
         });
         // Pre-select lab + try to match a practice from the AI-detected
         // practiceName so the user can confirm in one click in the common
@@ -578,41 +712,212 @@ export function DashboardDropZone() {
             </select>
           </label>
         )}
-        <label className="block text-xs text-muted-foreground space-y-1">
-          <span>
-            Practice (provider)
-            {r.practiceName && !rxProviderOrgId ? (
-              <span className="ml-1 text-amber-500">
-                · AI saw "{r.practiceName}" — pick the matching practice
-              </span>
-            ) : null}
-          </span>
-          <select
-            className={inputCls + " w-full"}
-            value={rxProviderOrgId}
-            onChange={(e) => setRxProviderOrgId(e.target.value)}
-          >
-            <option value="">Select a practice…</option>
-            {providerOrgs
-              .slice()
-              .sort((a, b) =>
-                (a.displayName || a.name || "").localeCompare(
-                  b.displayName || b.name || "",
-                ),
-              )
-              .map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.displayName || o.name}
-                </option>
-              ))}
-          </select>
-          {rxProviderSearch && !rxProviderOrgId && (
-            <span className="block text-[10px] text-muted-foreground">
-              No exact match for "{rxProviderSearch}". Pick the closest
-              practice or add it from Cases → New Case.
+        {!newPracticeDraft && (
+          <label className="block text-xs text-muted-foreground space-y-1">
+            <span>
+              Practice (provider)
+              {r.practiceName && !rxProviderOrgId ? (
+                <span className="ml-1 text-amber-500">
+                  · AI saw "{r.practiceName}" — pick the matching practice or
+                  add it
+                </span>
+              ) : null}
             </span>
-          )}
-        </label>
+            <select
+              className={inputCls + " w-full"}
+              value={rxProviderOrgId}
+              onChange={(e) => {
+                if (e.target.value === "__add_new__") {
+                  openAddPracticeForm();
+                  return;
+                }
+                setRxProviderOrgId(e.target.value);
+              }}
+            >
+              <option value="">Select a practice…</option>
+              <option value="__add_new__">
+                + Add new practice
+                {r.practiceName ? ` ("${r.practiceName}")` : "…"}
+              </option>
+              {providerOrgs
+                .slice()
+                .sort((a, b) =>
+                  (a.displayName || a.name || "").localeCompare(
+                    b.displayName || b.name || "",
+                  ),
+                )
+                .map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.displayName || o.name}
+                  </option>
+                ))}
+            </select>
+            {rxProviderSearch && !rxProviderOrgId && (
+              <span className="block text-[10px] text-muted-foreground">
+                No exact match for "{rxProviderSearch}". Pick the closest
+                practice or use "+ Add new practice" above.
+              </span>
+            )}
+          </label>
+        )}
+        {newPracticeDraft && (
+          <div className="rounded-md border border-primary/30 bg-primary/5 p-2.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-primary">
+                New practice — confirm details
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewPracticeDraft(null);
+                  setNewPracticeError(null);
+                }}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Cancel adding practice"
+                disabled={creatingPractice}
+              >
+                <X size={13} />
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Pre-filled from the prescription. Edit anything that looks off,
+              then save to add this practice and use it for the case.
+            </p>
+            <input
+              className={inputCls + " w-full"}
+              placeholder="Practice name *"
+              value={newPracticeDraft.name}
+              onChange={(e) =>
+                setNewPracticeDraft({
+                  ...newPracticeDraft,
+                  name: e.target.value,
+                })
+              }
+              disabled={creatingPractice}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                className={inputCls}
+                placeholder="Phone"
+                value={newPracticeDraft.phone}
+                onChange={(e) =>
+                  setNewPracticeDraft({
+                    ...newPracticeDraft,
+                    phone: e.target.value,
+                  })
+                }
+                disabled={creatingPractice}
+              />
+              <input
+                className={inputCls}
+                placeholder="Primary doctor"
+                value={newPracticeDraft.doctorName}
+                onChange={(e) =>
+                  setNewPracticeDraft({
+                    ...newPracticeDraft,
+                    doctorName: e.target.value,
+                  })
+                }
+                disabled={creatingPractice}
+              />
+            </div>
+            <input
+              className={inputCls + " w-full"}
+              placeholder="Address line 1"
+              value={newPracticeDraft.addressLine1}
+              onChange={(e) =>
+                setNewPracticeDraft({
+                  ...newPracticeDraft,
+                  addressLine1: e.target.value,
+                })
+              }
+              disabled={creatingPractice}
+            />
+            <input
+              className={inputCls + " w-full"}
+              placeholder="Address line 2 (optional)"
+              value={newPracticeDraft.addressLine2}
+              onChange={(e) =>
+                setNewPracticeDraft({
+                  ...newPracticeDraft,
+                  addressLine2: e.target.value,
+                })
+              }
+              disabled={creatingPractice}
+            />
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                className={inputCls}
+                placeholder="City"
+                value={newPracticeDraft.city}
+                onChange={(e) =>
+                  setNewPracticeDraft({
+                    ...newPracticeDraft,
+                    city: e.target.value,
+                  })
+                }
+                disabled={creatingPractice}
+              />
+              <input
+                className={inputCls}
+                placeholder="State"
+                value={newPracticeDraft.state}
+                onChange={(e) =>
+                  setNewPracticeDraft({
+                    ...newPracticeDraft,
+                    state: e.target.value,
+                  })
+                }
+                disabled={creatingPractice}
+              />
+              <input
+                className={inputCls}
+                placeholder="ZIP"
+                value={newPracticeDraft.zip}
+                onChange={(e) =>
+                  setNewPracticeDraft({
+                    ...newPracticeDraft,
+                    zip: e.target.value,
+                  })
+                }
+                disabled={creatingPractice}
+              />
+            </div>
+            {newPracticeError && (
+              <p className="text-[11px] text-destructive">
+                {newPracticeError}
+              </p>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setNewPracticeDraft(null);
+                  setNewPracticeError(null);
+                }}
+                disabled={creatingPractice}
+                className="h-7 px-2.5 rounded-md bg-secondary text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitNewPractice}
+                disabled={creatingPractice || !newPracticeDraft.name.trim()}
+                className="flex-1 h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-[11px] font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+              >
+                {creatingPractice ? (
+                  <>
+                    <Loader2 size={11} className="animate-spin" />
+                    Saving…
+                  </>
+                ) : (
+                  "Save practice & use it"
+                )}
+              </button>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <input
             className={inputCls}
