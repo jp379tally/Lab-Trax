@@ -616,23 +616,39 @@ router.get(
         }),
       ]);
 
-    const uploaderIds = Array.from(
-      new Set(attachments.map((a: any) => a.uploadedByUserId).filter(Boolean))
-    );
-    const uploaderRows = uploaderIds.length
-      ? await db.query.users.findMany({ where: inArray(users.id, uploaderIds) })
+    // Resolve display names for both attachment uploaders and note
+    // authors in a single users lookup so the Overview Rx Summary can
+    // show "<author> · <relative time>" alongside each note.
+    const uploaderIds = attachments
+      .map((a: any) => a.uploadedByUserId)
+      .filter(Boolean);
+    const noteAuthorIds = notes
+      .map((n: any) => n.authorUserId)
+      .filter(Boolean);
+    const userIds = Array.from(new Set([...uploaderIds, ...noteAuthorIds]));
+    const userRows = userIds.length
+      ? await db.query.users.findMany({ where: inArray(users.id, userIds) })
       : [];
-    const uploaderById = new Map(uploaderRows.map((u: any) => [u.id, u]));
-    const enrichedAttachments = attachments.map((a: any) => {
-      const u = uploaderById.get(a.uploadedByUserId) as any | undefined;
-      const name = u
-        ? [u.firstName, u.lastName].filter(Boolean).join(" ") ||
-          u.username ||
-          u.email ||
-          null
-        : null;
-      return { ...a, uploaderName: name };
-    });
+    const userById = new Map(userRows.map((u: any) => [u.id, u]));
+    const displayNameFor = (id: string | null | undefined): string | null => {
+      if (!id) return null;
+      const u = userById.get(id) as any | undefined;
+      if (!u) return null;
+      return (
+        [u.firstName, u.lastName].filter(Boolean).join(" ") ||
+        u.username ||
+        u.email ||
+        null
+      );
+    };
+    const enrichedAttachments = attachments.map((a: any) => ({
+      ...a,
+      uploaderName: displayNameFor(a.uploadedByUserId),
+    }));
+    const enrichedNotes = notes.map((n: any) => ({
+      ...n,
+      authorName: displayNameFor(n.authorUserId),
+    }));
 
     const isLabMember = !!access.labMembership;
     const labRole = access.labMembership?.role as string | undefined;
@@ -642,7 +658,7 @@ router.get(
     return ok(res, {
       ...found,
       restorations,
-      notes,
+      notes: enrichedNotes,
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
       events,
       locations,
@@ -1546,21 +1562,61 @@ const ITERO_RX_SYSTEM_PROMPT = `You are a dental laboratory prescription reader.
   "doctorName": "Dr. Full Name",
   "patientFirstName": "First",
   "patientLastName": "Last",
-  "caseType": "one of: Crown, Bridge, Veneer, Implant Crown, Inlay, Onlay, Full Denture, Partial Denture, Night Guard, Retainer, Other",
-  "material": "one of: Zirconia, PFM, E.max, Full Cast, Composite, Acrylic, Metal, PMMA, Other",
+  "caseType": "one of EXACTLY: Crown & Bridge, Removable, Appliance, Other",
+  "material": "one of: Zirconia, PFM, E.max, Lithium Disilicate, Full Cast, Composite, Acrylic, Resin, Valplast, Flexible, Metal, PMMA, Other",
   "shade": "shade value like A2 or BL2",
-  "teeth": "comma-separated Universal-system tooth numbers like 3,5,14",
+  "teeth": "see rules below — comma-separated Universal numbers (e.g. \\"29,30,31\\") OR an arch token for full-arch removables (\\"Upper\\", \\"Lower\\", \\"U/D\\", \\"U/P\\", \\"L/D\\", \\"L/P\\")",
   "dueDate": "YYYY-MM-DD or null",
   "isRush": false,
   "notes": "free-text special instructions",
   "practiceName": "dental practice or office name"
 }
 
-Important rules:
-- Tooth numbers must use Universal Numbering System (1–32). Convert FDI to Universal if needed.
+caseType bucketing rules — pick exactly one:
+- "Crown & Bridge" — single crowns, bridges (any span), veneers, implant crowns, inlays, onlays. Examples: "#3 PFM" → Crown & Bridge + PFM on tooth 3. "#29-31 Zirc" → Crown & Bridge + Zirconia on teeth 29,30,31.
+- "Removable" — full dentures, partial dentures, immediates, overdentures, flippers. Examples: "Upper acrylic denture" or "U/D" → Removable + Acrylic + teeth "Upper". "Upper partial / U/P" → Removable + (Acrylic | Resin | Valplast | Flexible — pick from the Rx wording, default Acrylic if unspecified) + teeth "Upper".
+- "Appliance" — night guards, retainers, sports guards, snore guards, bleach trays, splints.
+- "Other" — anything that doesn't cleanly fit the buckets above.
+
+teeth field rules:
+- For Crown & Bridge / Appliance with specific teeth: comma-separated Universal numbers (1–32). Expand spans like "#29-31" into "29,30,31".
+- For full-arch Removable cases: emit ONE of the literal arch tokens "Upper", "Lower", "U/D", "U/P", "L/D", "L/P" (NOT a numeric range). The desktop UI highlights the whole arch from these tokens.
+- For partial dentures listing specific teeth being replaced, emit the arch token (e.g. "U/P").
+- Convert FDI to Universal if needed.
+
+Other rules:
 - If a name appears in "Last, First" form, swap to "First Last" and remove the comma.
 - Only set isRush=true when the Rx is explicitly marked rush/urgent/STAT.
 - Return ONLY the JSON object — no commentary, no markdown fences.`;
+
+/**
+ * Normalize the AI-extracted caseType into one of the four buckets the
+ * Overview tab's Rx summary recognizes. Defensive against the model
+ * occasionally returning legacy values (e.g. "Crown", "Full Denture",
+ * "Night Guard") instead of the bucketed name.
+ */
+function normalizeIteroCaseType(
+  raw: string | null | undefined,
+): "Crown & Bridge" | "Removable" | "Appliance" | "Other" {
+  if (!raw) return "Other";
+  const v = raw.trim().toLowerCase();
+  if (!v) return "Other";
+  if (
+    v === "crown & bridge" ||
+    v === "crown and bridge" ||
+    v === "c&b" ||
+    /\b(crown|bridge|veneer|inlay|onlay|implant)\b/.test(v)
+  ) {
+    return "Crown & Bridge";
+  }
+  if (/\b(denture|partial|removable|flipper|overdenture|immediate)\b/.test(v)) {
+    return "Removable";
+  }
+  if (/\b(guard|retainer|splint|appliance|tray|nightguard)\b/.test(v)) {
+    return "Appliance";
+  }
+  return "Other";
+}
 
 function buildIteroAttachmentUrl(
   req: Request,
@@ -1795,7 +1851,17 @@ router.post(
       priceSourceName: string | null;
       priceKey: string | null;
     }> = [];
-    if (teethList.length > 0 && extracted.caseType) {
+    // Bucket the AI-extracted caseType into one of the four restorative
+    // categories the Overview Rx summary recognizes (Crown & Bridge /
+    // Removable / Appliance / Other). This guards against the model
+    // returning legacy granular values like "Crown" or "Full Denture".
+    const normalizedCaseType = extracted.caseType
+      ? normalizeIteroCaseType(extracted.caseType)
+      : null;
+    if (normalizedCaseType) {
+      extracted.caseType = normalizedCaseType;
+    }
+    if (teethList.length > 0 && normalizedCaseType) {
       prebuiltRestorations = await Promise.all(
         teethList.map(async (toothNumber) => {
           const fallback = await resolveServerPriceWithSource(
@@ -1805,11 +1871,11 @@ router.post(
               providerOrganizationId: body.providerOrganizationId,
             },
             extracted.material ?? null,
-            extracted.caseType ?? ""
+            normalizedCaseType
           );
           return {
             toothNumber,
-            restorationType: extracted.caseType ?? "Other",
+            restorationType: normalizedCaseType,
             material: extracted.material ?? null,
             shade: extracted.shade ?? null,
             unitPrice: (fallback?.amount ?? 0).toFixed(2),

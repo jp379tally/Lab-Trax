@@ -44,6 +44,11 @@ import {
   printTabContent,
 } from "@/lib/print";
 import { ToothChart, parseToothField } from "@/components/ToothChart";
+import {
+  buildHighlightedToothValue,
+  deriveRxSummary,
+  formatRxTeethLabel,
+} from "@/lib/rx-summary";
 import { StatusBadge } from "@/components/StatusBadge";
 import { InvoiceEditor } from "./invoices";
 
@@ -881,6 +886,7 @@ type CaseNote = {
   noteText?: string | null;
   visibility?: string | null;
   createdAt?: string | null;
+  authorName?: string | null;
 };
 
 type DetailedCase = LabCase & {
@@ -1520,6 +1526,124 @@ export function CaseDrawer({
                 )}
               </section>
 
+              {/* Rx summary — at-a-glance view of what the lab is being asked
+                  to make, derived from the case's restorations. Editing of
+                  restorations and notes still happens in their dedicated
+                  tabs; this section is read-only. */}
+              {(() => {
+                const summary = deriveRxSummary(data?.restorations);
+                const hasAny =
+                  summary.restorativeType ||
+                  summary.materials.length > 0 ||
+                  summary.teeth.length > 0 ||
+                  summary.isFullArch !== null;
+                const highlightValue = buildHighlightedToothValue(summary);
+                return (
+                  <section>
+                    <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-3">
+                      Rx Summary
+                    </h3>
+                    {!hasAny ? (
+                      <div className="border border-dashed border-border rounded-md px-3 py-4 text-sm text-muted-foreground">
+                        No restorations on this case yet. Add one in the
+                        Restorations tab to populate this summary.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <Field
+                            label="Restorative type"
+                            value={summary.restorativeType ?? "Other"}
+                          />
+                          <Field
+                            label={
+                              summary.materials.length > 1
+                                ? "Materials"
+                                : "Material"
+                            }
+                            value={
+                              summary.materials.length > 0
+                                ? summary.materials.join(", ")
+                                : "—"
+                            }
+                          />
+                          <div className="col-span-2">
+                            <Field
+                              label={
+                                summary.isFullArch
+                                  ? "Tooth coverage"
+                                  : "Tooth number(s)"
+                              }
+                              value={formatRxTeethLabel(summary)}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                            Notes
+                          </div>
+                          {(data?.notes?.length ?? 0) === 0 ? (
+                            <div className="text-sm text-muted-foreground border border-dashed border-border rounded-md px-3 py-2">
+                              No notes yet.
+                            </div>
+                          ) : (
+                            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                              {[...(data?.notes ?? [])]
+                                .sort((a, b) => {
+                                  const ta = a.createdAt
+                                    ? new Date(a.createdAt).getTime()
+                                    : 0;
+                                  const tb = b.createdAt
+                                    ? new Date(b.createdAt).getTime()
+                                    : 0;
+                                  return tb - ta;
+                                })
+                                .map((n) => (
+                                  <div
+                                    key={n.id}
+                                    className="border border-border rounded-md px-3 py-2 text-sm"
+                                  >
+                                    <p className="leading-relaxed whitespace-pre-wrap">
+                                      {n.noteText || "—"}
+                                    </p>
+                                    <div className="flex items-center flex-wrap gap-2 mt-1">
+                                      {n.visibility === "internal_lab_only" ? (
+                                        <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                                          <Lock size={9} /> Lab only
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-secondary text-muted-foreground border border-border">
+                                          Shared
+                                        </span>
+                                      )}
+                                      {n.authorName && (
+                                        <span className="text-[11px] font-medium text-foreground">
+                                          {n.authorName}
+                                        </span>
+                                      )}
+                                      {n.createdAt && (
+                                        <span className="text-[11px] text-muted-foreground">
+                                          · {relativeTime(n.createdAt)}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                            </div>
+                          )}
+                        </div>
+                        <ToothChart
+                          value={highlightValue}
+                          onChange={() => {}}
+                          readOnly
+                          showPrimary={false}
+                        />
+                      </div>
+                    )}
+                  </section>
+                );
+              })()}
+
               {/* Route Case */}
               <section>
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
@@ -1793,7 +1917,7 @@ export function CaseDrawer({
                 {data?.notes?.map((n) => (
                   <div key={n.id} className="border border-border rounded-md px-3 py-2.5 text-sm">
                     <p className="leading-relaxed whitespace-pre-wrap">{n.noteText || "—"}</p>
-                    <div className="flex items-center gap-2 mt-1.5">
+                    <div className="flex items-center flex-wrap gap-2 mt-1.5">
                       {n.visibility === "internal_lab_only" ? (
                         <span className="inline-flex items-center gap-1 text-[10px] uppercase font-semibold tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
                           <Lock size={9} /> Lab only
@@ -1803,9 +1927,14 @@ export function CaseDrawer({
                           Shared
                         </span>
                       )}
+                      {n.authorName && (
+                        <span className="text-[11px] font-medium text-foreground">
+                          {n.authorName}
+                        </span>
+                      )}
                       {n.createdAt && (
                         <span className="text-[11px] text-muted-foreground">
-                          {relativeTime(n.createdAt)}
+                          · {relativeTime(n.createdAt)}
                         </span>
                       )}
                     </div>

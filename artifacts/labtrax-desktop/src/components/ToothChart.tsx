@@ -132,6 +132,7 @@ interface ToothButtonProps {
   billed: boolean;
   billedTitle?: string;
   primary?: boolean;
+  readOnly?: boolean;
   onToggle: (id: ToothId) => void;
 }
 
@@ -141,16 +142,29 @@ function ToothButton({
   billed,
   billedTitle,
   primary,
+  readOnly,
   onToggle,
 }: ToothButtonProps) {
   const base =
     "h-7 w-7 text-[11px] rounded-md border font-mono tabular-nums transition-colors flex items-center justify-center select-none";
+  const interactive = !readOnly;
   const cls = selected
     ? "bg-primary text-primary-foreground border-primary"
     : billed
-      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25"
-      : "bg-secondary text-foreground border-transparent hover:bg-secondary/80";
+      ? `bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 ${interactive ? "hover:bg-emerald-500/25" : ""}`
+      : `bg-secondary text-foreground border-transparent ${interactive ? "hover:bg-secondary/80" : ""}`;
   const sizeOverride = primary ? "h-6 w-6 text-[10px]" : "";
+  if (readOnly) {
+    return (
+      <span
+        className={`${base} ${sizeOverride} ${cls} cursor-default`}
+        title={billed ? billedTitle ?? `Tooth ${id} — billed` : `Tooth ${id}`}
+        aria-label={`Tooth ${id}${selected ? " (highlighted)" : ""}`}
+      >
+        {id}
+      </span>
+    );
+  }
   return (
     <button
       type="button"
@@ -183,6 +197,13 @@ export interface ToothChartProps {
    * inline toggle so single-arch / pediatric workflows can opt in.
    */
   showPrimary?: boolean;
+  /**
+   * When true, the chart renders as a non-interactive view: teeth can be
+   * highlighted via `value` but cannot be clicked or cleared. Used by
+   * the case Overview tab to preview an Rx without exposing edit
+   * controls (editing still happens in the Restorations tab).
+   */
+  readOnly?: boolean;
 }
 
 export function ToothChart({
@@ -191,6 +212,7 @@ export function ToothChart({
   billedTeeth,
   billedTeethTypes,
   showPrimary: showPrimaryProp,
+  readOnly,
 }: ToothChartProps) {
   const [showPrimaryState, setShowPrimaryState] = useState(
     showPrimaryProp ?? false,
@@ -244,6 +266,7 @@ export function ToothChart({
               billed={billed.has(String(id))}
               billedTitle={billedTitleFor(String(id))}
               primary={primary}
+              readOnly={readOnly}
               onToggle={toggle}
             />
           ))}
@@ -258,6 +281,7 @@ export function ToothChart({
               billed={billed.has(String(id))}
               billedTitle={billedTitleFor(String(id))}
               primary={primary}
+              readOnly={readOnly}
               onToggle={toggle}
             />
           ))}
@@ -281,7 +305,7 @@ export function ToothChart({
             <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/40 border border-emerald-500/50 inline-block" />
             Billed
           </span>
-          {showPrimaryProp === undefined && (
+          {!readOnly && showPrimaryProp === undefined && (
             <button
               type="button"
               onClick={() => setShowPrimaryState((v) => !v)}
@@ -292,7 +316,7 @@ export function ToothChart({
               {showPrimaryState ? "Hide primary (A–T)" : "Show primary (A–T)"}
             </button>
           )}
-          {selected.size > 0 && (
+          {!readOnly && selected.size > 0 && (
             <button
               type="button"
               onClick={clear}
@@ -332,12 +356,14 @@ export function ToothChart({
         />
       </div>
 
-      <div className="text-[11px] text-muted-foreground pt-1">
-        Click teeth to toggle. Selection is mirrored to the Tooth # field
-        above (e.g.{" "}
-        <span className="font-mono">{selected.size > 0 ? formatToothSet(selected) : "1-3, 14"}</span>
-        ).
-      </div>
+      {!readOnly && (
+        <div className="text-[11px] text-muted-foreground pt-1">
+          Click teeth to toggle. Selection is mirrored to the Tooth # field
+          above (e.g.{" "}
+          <span className="font-mono">{selected.size > 0 ? formatToothSet(selected) : "1-3, 14"}</span>
+          ).
+        </div>
+      )}
     </div>
   );
 }
