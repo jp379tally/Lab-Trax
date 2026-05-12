@@ -1,0 +1,189 @@
+/* Shared print stylesheet — used by lib/print.ts when it opens a new
+   window for Case History, Invoice, Case Label, and per-tab printing.
+   Kept as a static .css file (not a Tailwind layer) so it can be
+   string-injected into the print window without bringing in the entire
+   app stylesheet. */
+
+@page {
+  margin: 0.5in;
+}
+
+.lt-print {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #111;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0;
+  padding: 0;
+}
+
+.lt-print h1 {
+  font-size: 18px;
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
+.lt-print h2 {
+  font-size: 14px;
+  margin: 16px 0 6px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #444;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 2px;
+}
+
+.lt-print h3 {
+  font-size: 12px;
+  margin: 12px 0 4px;
+  font-weight: 600;
+}
+
+.lt-print .lt-meta {
+  color: #555;
+  font-size: 11px;
+  margin-bottom: 12px;
+}
+
+.lt-print .lt-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 2px 0;
+}
+
+.lt-print .lt-label {
+  color: #666;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 90px;
+}
+
+.lt-print .lt-value {
+  color: #111;
+  font-weight: 500;
+}
+
+.lt-print table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.lt-print th,
+.lt-print td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid #e5e5e5;
+  vertical-align: top;
+}
+
+.lt-print th {
+  background: #f6f6f6;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.lt-print .lt-right { text-align: right; }
+.lt-print .lt-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.lt-print .lt-muted { color: #666; }
+.lt-print .lt-small { font-size: 10px; }
+
+.lt-print .lt-event {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px dashed #eee;
+}
+
+.lt-print .lt-event:last-child {
+  border-bottom: 0;
+}
+
+.lt-print .lt-event-when {
+  color: #555;
+  font-size: 10px;
+}
+
+.lt-print .lt-event-what {
+  color: #111;
+  font-weight: 500;
+}
+
+.lt-print .lt-event-meta {
+  color: #666;
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+/* ── Case Label (4in × 2in) ── */
+.lt-label-page {
+  margin: 0;
+  padding: 0.1in 0.15in;
+  width: 3.7in;
+  height: 1.8in;
+  box-sizing: border-box;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.lt-label-page .lt-label-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid #000;
+  padding-bottom: 2px;
+}
+
+.lt-label-page .lt-label-case {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.lt-label-page .lt-label-date {
+  font-size: 9px;
+  color: #333;
+}
+
+.lt-label-page .lt-label-patient {
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.lt-label-page .lt-label-doctor {
+  font-size: 11px;
+  color: #222;
+}
+
+.lt-label-page .lt-label-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
+  margin-top: 3px;
+  font-size: 10px;
+}
+
+.lt-label-page .lt-label-key {
+  text-transform: uppercase;
+  font-size: 8px;
+  color: #555;
+  letter-spacing: 0.05em;
+}
+
+@media print {
+  .lt-no-print { display: none !important; }
+}

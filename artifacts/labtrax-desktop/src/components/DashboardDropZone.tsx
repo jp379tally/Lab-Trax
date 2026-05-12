@@ -1,4 +1,10 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -35,6 +41,35 @@ interface ExtractedRx {
   isRush?: boolean | null;
   notes?: string | null;
   practiceName?: string | null;
+}
+
+interface OrgLite {
+  id: string;
+  name?: string;
+  displayName?: string | null;
+  type?: string;
+}
+
+function splitPatientName(full: string | null | undefined): {
+  first: string;
+  last: string;
+} {
+  const trimmed = (full || "").trim();
+  if (!trimmed) return { first: "Unknown", last: "Patient" };
+  // "Last, First" → swap
+  if (trimmed.includes(",")) {
+    const [last, first] = trimmed.split(",").map((s) => s.trim());
+    return {
+      first: first || "Unknown",
+      last: last || "Patient",
+    };
+  }
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 1) return { first: parts[0], last: "" };
+  return {
+    first: parts.slice(0, -1).join(" "),
+    last: parts[parts.length - 1],
+  };
 }
 
 type Phase =
@@ -122,10 +157,6 @@ function nextYearCaseNumber(legacy: LegacyCaseLite[]): string {
   return `${yy}-${max + 1}`;
 }
 
-function generateLocalId(): string {
-  return Date.now().toString() + Math.random().toString(36).slice(2, 11);
-}
-
 function initialsFromName(name: string): string {
   return name
     .split(/\s+/)
@@ -148,20 +179,40 @@ export function DashboardDropZone() {
   });
   const orgsQuery = useQuery({
     queryKey: ["organizations"],
-    queryFn: () => apiFetch<any[]>("/organizations"),
+    queryFn: () => apiFetch<OrgLite[]>("/organizations"),
   });
 
   const legacy = legacyQuery.data?.cases ?? [];
-  const labOrg = useMemo(
-    () =>
-      (orgsQuery.data ?? []).find((o: any) => o?.type === "lab") ?? null,
+  const labOrgs = useMemo(
+    () => (orgsQuery.data ?? []).filter((o) => o?.type === "lab"),
     [orgsQuery.data],
   );
+  const providerOrgs = useMemo(
+    () => (orgsQuery.data ?? []).filter((o) => o?.type !== "lab"),
+    [orgsQuery.data],
+  );
+  const labOrg = labOrgs[0] ?? null;
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [caseSearch, setCaseSearch] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [rxDraft, setRxDraft] = useState<ExtractedRx>({});
+  // Selected lab + practice when creating a modern /api/cases case from
+  // an AI-read Rx. Lab defaults to the only lab the user belongs to.
+  const [rxLabOrgId, setRxLabOrgId] = useState<string>("");
+  const [rxProviderOrgId, setRxProviderOrgId] = useState<string>("");
+
+  // Auto-pick the lab as soon as the membership list loads. This
+  // matters for single-lab users (the lab <select> is hidden in that
+  // case) — without this effect, dragging a file before the orgs query
+  // resolves would leave `rxLabOrgId` empty and the user would be
+  // stuck on the "Pick a lab" error with no UI to fix it.
+  useEffect(() => {
+    if (!rxLabOrgId && labOrg?.id) {
+      setRxLabOrgId(labOrg.id);
+    }
+  }, [labOrg?.id, rxLabOrgId]);
+  const [rxProviderSearch, setRxProviderSearch] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
 
@@ -250,6 +301,18 @@ export function DashboardDropZone() {
           notes: rx.notes ?? "",
           practiceName: rx.practiceName ?? "",
         });
+        // Pre-select lab + try to match a practice from the AI-detected
+        // practiceName so the user can confirm in one click in the common
+        // case where the practice already exists.
+        if (!rxLabOrgId && labOrg?.id) setRxLabOrgId(labOrg.id);
+        if (!rxProviderOrgId && rx.practiceName) {
+          const needle = rx.practiceName.trim().toLowerCase();
+          const match = providerOrgs.find((p) =>
+            (p.displayName || p.name || "").toLowerCase().includes(needle),
+          );
+          if (match) setRxProviderOrgId(match.id);
+          else setRxProviderSearch(rx.practiceName);
+        }
         setPhase({ kind: "rxConfirm", file, caseNumber });
       } catch (e: any) {
         setPhase({
@@ -259,7 +322,13 @@ export function DashboardDropZone() {
         window.setTimeout(() => setPhase({ kind: "idle" }), 6000);
       }
     },
-    [legacy],
+    [
+      legacy,
+      labOrg?.id,
+      providerOrgs,
+      rxLabOrgId,
+      rxProviderOrgId,
+    ],
   );
 
   const handleFiles = useCallback(
@@ -359,96 +428,105 @@ export function DashboardDropZone() {
 
   async function createCaseFromRx() {
     if (phase.kind !== "rxConfirm") return;
-    const { file, caseNumber } = phase;
+    const { file } = phase;
     const r = rxDraft;
+    if (!user?.id) {
+      setPhase({ kind: "error", message: "You must be signed in." });
+      return;
+    }
+    if (!rxLabOrgId) {
+      setPhase({ kind: "error", message: "Pick a lab to create the case in." });
+      return;
+    }
+    if (!rxProviderOrgId) {
+      setPhase({
+        kind: "error",
+        message: "Pick a practice (provider) for this case.",
+      });
+      return;
+    }
     setPhase({ kind: "uploading", message: "Creating case…" });
     try {
-      const ownerId = user?.id;
-      if (!ownerId) throw new Error("You must be signed in.");
-      const caseId = generateLocalId();
-      const now = Date.now();
-      const patientName =
-        (r.patientName || "").trim() || "Unknown Patient";
-      const affiliationKey = labOrg?.id
-        ? `org:${labOrg.id}`
-        : `user:${ownerId}`;
-      const affiliationName = labOrg?.id
-        ? labOrg.displayName || labOrg.name || null
-        : null;
-
-      // Upload original Rx file so it can live alongside the case.
-      let photoUrl: string | null = null;
+      // 1. Reserve a fresh case number from the modern endpoint so we
+      //    don't collide with cases created elsewhere on the same lab.
+      let caseNumber = phase.caseNumber;
       try {
-        photoUrl = await uploadFileGetUrl(file);
+        const next = await apiFetch<{ caseNumber: string }>(
+          `/cases/next-case-number?labOrganizationId=${encodeURIComponent(
+            rxLabOrgId,
+          )}`,
+        );
+        if (next?.caseNumber) caseNumber = next.caseNumber;
       } catch {
-        photoUrl = null;
+        /* fall back to client-computed number */
       }
 
-      const caseData = {
-        id: caseId,
-        caseNumber,
-        ownerId,
-        doctorName: (r.doctorName || "").trim() || "Unknown Provider",
-        patientName,
-        patientInitials:
-          (r.patientInitials || initialsFromName(patientName) || "").trim(),
-        caseType: r.caseType || "",
-        toothIndices: r.toothIndices || "",
-        shade: r.shade || "",
-        material: r.material || "",
-        status: "INTAKE",
-        isRush: !!r.isRush,
-        notes: [
-          r.practiceName ? `[${r.practiceName}]` : "",
-          r.notes || "",
-          "[AI Imported]",
-        ]
-          .filter(Boolean)
-          .join(" "),
-        price: 0,
-        dueDate: r.dueDate || "",
-        photos: photoUrl ? [photoUrl] : [],
-        videos: [],
-        activityLog: [
-          {
-            id: generateLocalId(),
-            type: "created",
-            timestamp: now,
-            description: "Case created from AI-read prescription",
-            station: "INTAKE",
-          },
-        ],
-        affiliationKey,
-        affiliationName,
-        createdAt: now,
-        updatedAt: now,
-        routeHistory: [{ station: "INTAKE", timestamp: now }],
-      };
+      // 2. Split AI-detected patient name into first/last (the modern
+      //    schema requires both).
+      const { first, last } = splitPatientName(r.patientName);
 
-      await apiFetch("/legacy/cases", {
-        method: "POST",
-        body: JSON.stringify({
-          id: caseId,
-          ownerId,
-          caseData: JSON.stringify(caseData),
-        }),
-      });
-
-      // Best-effort invoice generation (mirrors mobile). Ignored if the new
-      // /cases table doesn't yet have a row for this id.
-      try {
-        await apiFetch(`/invoices/cases/${caseId}/generate-invoice`, {
+      // 3. Create the case via the modern /api/cases endpoint.
+      const created = await apiFetch<{ id: string; caseNumber: string }>(
+        "/cases",
+        {
           method: "POST",
+          body: JSON.stringify({
+            caseNumber,
+            labOrganizationId: rxLabOrgId,
+            providerOrganizationId: rxProviderOrgId,
+            patientFirstName: first || "Unknown",
+            patientLastName: last || "Patient",
+            doctorName:
+              (r.doctorName || "").trim() || "Unknown Provider",
+            priority: r.isRush ? "rush" : "normal",
+            ...(r.dueDate ? { dueDate: r.dueDate } : {}),
+          }),
+        },
+      );
+
+      // 4. Upload the Rx file and attach it as a case_attachment so
+      //    it shows up in the Files tab and writes a case_event.
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const upload = await apiFetch<{
+          url: string;
+          filename: string;
+          size: number;
+        }>("/media/upload", {
+          method: "POST",
+          body: fd,
+          // Let the browser set the multipart boundary.
+          headers: {},
         });
-      } catch {
-        /* non-fatal */
+        if (upload?.url) {
+          await apiFetch(`/cases/${created.id}/attachments`, {
+            method: "POST",
+            body: JSON.stringify({
+              storageKey: upload.url,
+              fileName: file.name || upload.filename || "Rx.pdf",
+              fileType: file.type || "application/pdf",
+              visibility: "shared_with_provider",
+            }),
+          });
+        }
+      } catch (e: any) {
+        // Non-fatal: case is created; warn in the success message.
+        console.warn("Rx attachment upload failed:", e);
       }
+
+      // 5. Invoice auto-generation is handled server-side inside
+      //    POST /api/cases (creates a draft invoice + invoice_generated
+      //    case event). No client-side call needed — issuing a second
+      //    /generate-invoice request would create duplicate History
+      //    entries.
 
       qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
       qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["invoices"] });
       setPhase({
         kind: "done",
-        message: `Case ${caseNumber} created · INV-${caseNumber}.`,
+        message: `Case ${created.caseNumber} created · Rx attached · draft invoice ready.`,
       });
       window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
     } catch (e: any) {
@@ -480,10 +558,61 @@ export function DashboardDropZone() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Review or edit, then create case{" "}
-          <span className="font-mono text-foreground">{phase.caseNumber}</span>
-          .
+          Review or edit, then create the case. The Rx will be attached and a
+          draft invoice will be generated automatically.
         </p>
+        {labOrgs.length > 1 && (
+          <label className="block text-xs text-muted-foreground space-y-1">
+            <span>Lab</span>
+            <select
+              className={inputCls + " w-full"}
+              value={rxLabOrgId}
+              onChange={(e) => setRxLabOrgId(e.target.value)}
+            >
+              <option value="">Select a lab…</option>
+              {labOrgs.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.displayName || o.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="block text-xs text-muted-foreground space-y-1">
+          <span>
+            Practice (provider)
+            {r.practiceName && !rxProviderOrgId ? (
+              <span className="ml-1 text-amber-500">
+                · AI saw "{r.practiceName}" — pick the matching practice
+              </span>
+            ) : null}
+          </span>
+          <select
+            className={inputCls + " w-full"}
+            value={rxProviderOrgId}
+            onChange={(e) => setRxProviderOrgId(e.target.value)}
+          >
+            <option value="">Select a practice…</option>
+            {providerOrgs
+              .slice()
+              .sort((a, b) =>
+                (a.displayName || a.name || "").localeCompare(
+                  b.displayName || b.name || "",
+                ),
+              )
+              .map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.displayName || o.name}
+                </option>
+              ))}
+          </select>
+          {rxProviderSearch && !rxProviderOrgId && (
+            <span className="block text-[10px] text-muted-foreground">
+              No exact match for "{rxProviderSearch}". Pick the closest
+              practice or add it from Cases → New Case.
+            </span>
+          )}
+        </label>
         <div className="grid grid-cols-2 gap-2">
           <input
             className={inputCls}

@@ -16,6 +16,7 @@ import {
   Paperclip,
   Pencil,
   Plus,
+  Printer,
   ReceiptText,
   Search,
   Sparkles,
@@ -35,7 +36,14 @@ import type {
   PricingTier,
   RestorationPriceSource,
 } from "@/lib/types";
-import { formatDate, formatMoney, relativeTime, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, formatMoney, relativeTime, statusLabel } from "@/lib/format";
+import {
+  printCaseHistory,
+  printCaseLabel,
+  printInvoice,
+  printTabContent,
+} from "@/lib/print";
+import { ToothChart, parseToothField } from "@/components/ToothChart";
 import { StatusBadge } from "@/components/StatusBadge";
 import { InvoiceEditor } from "./invoices";
 
@@ -1000,6 +1008,50 @@ export function CaseDrawer({
   });
   const caseInvoice = invoiceQuery.data?.[0] ?? null;
 
+  // Pull the full invoice payload (with line items) when one exists so the
+  // Print Invoice button has data to render. Cheap query — only runs while
+  // the drawer is open and an invoice is present.
+  const invoiceDetailQuery = useQuery({
+    queryKey: ["invoice-detail", caseInvoice?.id],
+    enabled: !!caseInvoice?.id,
+    queryFn: () =>
+      apiFetch<
+        Invoice & {
+          items: Array<{
+            description: string;
+            quantity: number | string;
+            unitPrice: number | string;
+            lineTotal: number | string;
+          }>;
+        }
+      >(`/invoices/${caseInvoice!.id}`),
+  });
+
+  // Teeth that already have a restoration line on this case. The tooth
+  // chart highlights these so the user can avoid double-billing.
+  const billedTeeth = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of data?.restorations ?? []) {
+      for (const id of parseToothField(r.toothNumber)) set.add(id);
+    }
+    return set;
+  }, [data?.restorations]);
+
+  // Per-tooth restoration descriptions surfaced in the tooth-chart
+  // tooltip so users immediately see what's already on the case.
+  const billedTeethTypes = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const r of data?.restorations ?? []) {
+      const label = [r.restorationType, r.material].filter(Boolean).join(" / ");
+      for (const id of parseToothField(r.toothNumber)) {
+        const list = map.get(id) ?? [];
+        if (label) list.push(label);
+        map.set(id, list);
+      }
+    }
+    return map;
+  }, [data?.restorations]);
+
   const editMutation = useMutation({
     mutationFn: (updates: typeof editForm) =>
       apiFetch(`/cases/${labCase.id}`, {
@@ -1213,6 +1265,20 @@ export function CaseDrawer({
             </div>
           </div>
           <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() =>
+                printCaseLabel(data ?? labCase, {
+                  material: data?.restorationMaterials,
+                  teeth: data?.teeth,
+                })
+              }
+              className="h-8 px-2.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-xs font-medium"
+              title="Print 4×2in case label"
+            >
+              <Printer size={14} />
+              Label
+            </button>
             {isAdmin && (
               <button
                 type="button"
@@ -1297,15 +1363,34 @@ export function CaseDrawer({
                   <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
                     {editMode ? "Edit Case Details" : "Case Details"}
                   </h3>
-                  {!editMode && (
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={startEdit}
-                      className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() =>
+                        printTabContent({
+                          labCase: data ?? labCase,
+                          tab: "overview",
+                          restorations: data?.restorations ?? [],
+                          attachments: data?.attachments ?? [],
+                          notes: data?.notes ?? [],
+                        })
+                      }
+                      className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      title="Print overview"
                     >
-                      <Pencil size={11} /> Edit
+                      <Printer size={11} />
+                      Print
                     </button>
-                  )}
+                    {!editMode && (
+                      <button
+                        type="button"
+                        onClick={startEdit}
+                        className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <Pencil size={11} /> Edit
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {!editMode ? (
                   <div className="grid grid-cols-2 gap-4 text-sm">
@@ -1477,14 +1562,33 @@ export function CaseDrawer({
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
                   Restorations
                 </h3>
-                <button
-                  type="button"
-                  onClick={() => { setShowAddRest((v) => !v); setRestError(null); }}
-                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Plus size={12} />
-                  {showAddRest ? "Cancel" : "Add restoration"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      printTabContent({
+                        labCase: data ?? labCase,
+                        tab: "restorations",
+                        restorations: data?.restorations ?? [],
+                        attachments: data?.attachments ?? [],
+                        notes: data?.notes ?? [],
+                      })
+                    }
+                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                    title="Print restorations"
+                  >
+                    <Printer size={12} />
+                    Print
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddRest((v) => !v); setRestError(null); }}
+                    className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Plus size={12} />
+                    {showAddRest ? "Cancel" : "Add restoration"}
+                  </button>
+                </div>
               </div>
 
               {showAddRest && (
@@ -1503,6 +1607,16 @@ export function CaseDrawer({
                         onChange={(e) => setRestForm((f) => ({ ...f, toothNumber: e.target.value }))}
                         className="mt-1 w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
                       />
+                      <div className="mt-2">
+                        <ToothChart
+                          value={restForm.toothNumber}
+                          onChange={(next) =>
+                            setRestForm((f) => ({ ...f, toothNumber: next }))
+                          }
+                          billedTeeth={billedTeeth}
+                          billedTeethTypes={billedTeethTypes}
+                        />
+                      </div>
                     </div>
                     <div>
                       <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
@@ -1649,9 +1763,28 @@ export function CaseDrawer({
           {/* ── NOTES ── */}
           {activeTab === "notes" && (
             <div className="px-5 py-5 space-y-4">
-              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                Notes
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                  Notes
+                </h3>
+                <button
+                  type="button"
+                  onClick={() =>
+                    printTabContent({
+                      labCase: data ?? labCase,
+                      tab: "notes",
+                      restorations: data?.restorations ?? [],
+                      attachments: data?.attachments ?? [],
+                      notes: data?.notes ?? [],
+                    })
+                  }
+                  className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                  title="Print notes"
+                >
+                  <Printer size={12} />
+                  Print
+                </button>
+              </div>
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
               <div className="space-y-2">
                 {!isLoading && noteCount === 0 && (
@@ -1719,15 +1852,34 @@ export function CaseDrawer({
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
                   Attachments
                 </h3>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploadingFile}
-                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
-                >
-                  {uploadingFile ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />}
-                  {uploadingFile ? "Uploading…" : "Attach file"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      printTabContent({
+                        labCase: data ?? labCase,
+                        tab: "files",
+                        restorations: data?.restorations ?? [],
+                        attachments: data?.attachments ?? [],
+                        notes: data?.notes ?? [],
+                      })
+                    }
+                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    title="Print file list"
+                  >
+                    <Printer size={12} />
+                    Print
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadingFile}
+                    className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors"
+                  >
+                    {uploadingFile ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />}
+                    {uploadingFile ? "Uploading…" : "Attach file"}
+                  </button>
+                </div>
               </div>
               <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
               {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
@@ -1798,9 +1950,28 @@ export function CaseDrawer({
           {/* ── INVOICE ── */}
           {activeTab === "invoice" && (
             <div className="px-5 py-5 space-y-4">
-              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-                Invoice
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                  Invoice
+                </h3>
+                {caseInvoice && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      printInvoice(
+                        caseInvoice,
+                        data ?? labCase,
+                        { items: invoiceDetailQuery.data?.items ?? [] },
+                      )
+                    }
+                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                    title="Print invoice"
+                  >
+                    <Printer size={12} />
+                    Print
+                  </button>
+                )}
+              </div>
               {invoiceQuery.isLoading ? (
                 <div className="text-sm text-muted-foreground flex items-center gap-1.5">
                   <Loader2 size={13} className="animate-spin" />
@@ -1861,15 +2032,38 @@ export function CaseDrawer({
           {/* ── HISTORY ── */}
           {activeTab === "history" && (
             <div className="px-5 py-5">
-              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-4">
-                Activity Log
-              </h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                  Activity Log
+                </h3>
+                <button
+                  type="button"
+                  onClick={() =>
+                    printCaseHistory(data ?? labCase, data?.events ?? [])
+                  }
+                  className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                  title="Print case history"
+                >
+                  <Printer size={12} />
+                  Print history
+                </button>
+              </div>
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
               {!isLoading && (data?.events?.length ?? 0) === 0 && (
                 <div className="text-sm text-muted-foreground">No activity logged yet.</div>
               )}
               <div>
-                {data?.events?.map((e, idx, arr) => {
+                {[...(data?.events ?? [])]
+                  .sort((a, b) => {
+                    const ta = new Date(
+                      a.occurredAt || a.createdAt || 0,
+                    ).getTime();
+                    const tb = new Date(
+                      b.occurredAt || b.createdAt || 0,
+                    ).getTime();
+                    return ta - tb;
+                  })
+                  .map((e, idx, arr) => {
                   const isLast = idx === arr.length - 1;
                   const eventType = e.eventType || "";
                   const isStatus = eventType === "status_changed";
@@ -1918,7 +2112,7 @@ export function CaseDrawer({
                             )}
                           </div>
                           <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
-                            {relativeTime(e.occurredAt || e.createdAt)}
+                            {formatDateTime(e.occurredAt || e.createdAt)}
                           </span>
                         </div>
                         {e.actorInitials && (

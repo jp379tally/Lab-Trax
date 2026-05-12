@@ -529,11 +529,10 @@ router.post(
     const restorations = await db.query.caseRestorations.findMany({
       where: eq(caseRestorations.caseId, found.id),
     });
-    if (!restorations.length)
-      throw new HttpError(
-        400,
-        "Cannot generate an invoice with no restorations."
-      );
+    // Empty draft invoices are allowed: AI-imported / drag-and-dropped
+    // cases often have no restorations yet but still need an invoice
+    // skeleton to attach line items to later.
+    const hasRestorations = restorations.length > 0;
 
     const [invoice] = await db
       .insert(invoices)
@@ -560,7 +559,7 @@ router.post(
     if (!targetInvoice)
       throw new HttpError(500, "Invoice could not be generated.");
 
-    if (invoice) {
+    if (invoice && hasRestorations) {
       const itemsToInsert = restorations.map((restoration, index) => ({
         invoiceId: targetInvoice.id,
         caseRestorationId: restoration.id,
@@ -589,8 +588,11 @@ router.post(
         total: subtotal,
         balanceDue: subtotal,
         updatedByUserId: (req as any).auth.userId,
-        issuedAt: new Date(),
-        status: "open",
+        // Empty drafts stay in "draft" with no issuedAt; only invoices
+        // with at least one line item are auto-issued to "open".
+        ...(hasRestorations
+          ? { issuedAt: new Date(), status: "open" as const }
+          : {}),
       })
       .where(eq(invoices.id, targetInvoice.id))
       .returning();
@@ -1030,6 +1032,31 @@ router.patch(
       beforeJson: invoice,
       afterJson: updated,
     });
+
+    // Mirror invoice lifecycle changes onto the case History tab so users
+    // see edits and voids without digging into the audit log.
+    if (invoice.caseId) {
+      const userForEvent = (req as any).user;
+      const statusChanged = invoice.status !== updated.status;
+      const becameVoid =
+        statusChanged && updated.status === "void";
+      await db.insert(caseEvents).values({
+        caseId: invoice.caseId,
+        eventType: becameVoid ? "invoice_voided" : "invoice_updated",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: invoice.labOrganizationId,
+        actorInitials: userForEvent?.initials || "SYS",
+        metadataJson: {
+          invoiceId: invoice.id,
+          invoiceNumber: updated.invoiceNumber,
+          previousStatus: invoice.status,
+          newStatus: updated.status,
+          itemsReplaced: input.items !== undefined,
+          previousTotal: invoice.total,
+          newTotal: updated.total,
+        },
+      });
+    }
 
     if (updated.status === "paid" && invoice.status !== "paid") {
       await ensureInvoiceDeposit(

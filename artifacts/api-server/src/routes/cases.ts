@@ -12,6 +12,8 @@ import {
   caseRestorations,
   caseSubmissionQueue,
   cases,
+  invoiceLineItems,
+  invoices,
   iteroImportedOrders,
   labCases,
   organizationConnections,
@@ -22,6 +24,7 @@ import multer from "multer";
 import { randomBytes } from "node:crypto";
 import OpenAI, { toFile } from "openai";
 import { writeAuditLog } from "../lib/audit";
+import { calculateLineTotal, sumMoney } from "../lib/case";
 import { softDeleteById } from "../lib/soft-delete";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import { deleteFromOneDrive } from "../lib/onedrive";
@@ -357,6 +360,84 @@ router.post(
       entityId: createdCase.id,
       afterJson: createdCase,
     });
+
+    // Auto-generate a draft invoice for every new case so the
+    // History tab shows the invoice and the Invoice tab is
+    // immediately editable. Empty drafts are intentionally allowed:
+    // AI-imported / drag-and-dropped cases often have no priced
+    // restorations yet but still need an invoice skeleton.
+    try {
+      const restorationsForInvoice = await db.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, createdCase.id),
+      });
+      const hasLines = restorationsForInvoice.length > 0;
+      const invoiceNumber = `INV-${createdCase.caseNumber}`;
+      const [newInvoice] = await db
+        .insert(invoices)
+        .values({
+          invoiceNumber,
+          caseId: createdCase.id,
+          labOrganizationId: createdCase.labOrganizationId,
+          providerOrganizationId: createdCase.providerOrganizationId,
+          status: "draft",
+          createdByUserId: (req as any).auth.userId,
+          updatedByUserId: (req as any).auth.userId,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (newInvoice) {
+        if (hasLines) {
+          await db.insert(invoiceLineItems).values(
+            restorationsForInvoice.map((r, idx) => ({
+              invoiceId: newInvoice.id,
+              caseRestorationId: r.id,
+              description: `${r.restorationType} - Tooth ${r.toothNumber}`,
+              quantity: r.quantity,
+              unitPrice: r.unitPrice,
+              lineTotal: calculateLineTotal(r.quantity, r.unitPrice),
+              sortOrder: idx,
+            }))
+          );
+        }
+        const items = await db.query.invoiceLineItems.findMany({
+          where: eq(invoiceLineItems.invoiceId, newInvoice.id),
+        });
+        const subtotal = sumMoney(items.map((it) => it.lineTotal));
+        const [finalized] = await db
+          .update(invoices)
+          .set({
+            subtotal,
+            total: subtotal,
+            balanceDue: subtotal,
+            updatedByUserId: (req as any).auth.userId,
+            ...(hasLines
+              ? { issuedAt: new Date(), status: "open" as const }
+              : {}),
+          })
+          .where(eq(invoices.id, newInvoice.id))
+          .returning();
+        await db.insert(caseEvents).values({
+          caseId: createdCase.id,
+          eventType: "invoice_generated",
+          actorUserId: (req as any).auth.userId,
+          actorOrganizationId: createdCase.labOrganizationId,
+          actorInitials: user?.initials || "SYS",
+          metadataJson: {
+            invoiceId: finalized.id,
+            invoiceNumber: finalized.invoiceNumber,
+            empty: !hasLines,
+          },
+        });
+      }
+    } catch (err) {
+      // Auto-invoice failure should not block case creation. The user
+      // can hit "Generate invoice" manually from the Invoice tab.
+      req.log?.warn?.(
+        { err, caseId: createdCase.id },
+        "auto invoice generation on case create failed"
+      );
+    }
+
     return ok(res, createdCase, 201);
   })
 );
@@ -714,6 +795,21 @@ router.post(
       })
       .returning();
 
+    const attachmentActor = (req as any).user;
+    await db.insert(caseEvents).values({
+      caseId: found.id,
+      eventType: "case_attachment_added",
+      actorUserId: (req as any).auth.userId,
+      actorOrganizationId: found.labOrganizationId,
+      actorInitials: attachmentActor?.initials || "SYS",
+      metadataJson: {
+        attachmentId: attachment.id,
+        fileName: attachment.fileName,
+        fileType: attachment.fileType,
+        visibility: attachment.visibility,
+      },
+    });
+
     await writeAuditLog({
       req,
       organizationId: found.labOrganizationId,
@@ -782,6 +878,20 @@ router.delete(
     // mirrored copy. Same best-effort policy: log and continue on any
     // failure so the DB delete is never reverted.
     void removeAttachmentFromOneDrive(req, attachment.storageKey);
+
+    const attachmentDeleter = (req as any).user;
+    await db.insert(caseEvents).values({
+      caseId: found.id,
+      eventType: "case_attachment_deleted",
+      actorUserId: (req as any).auth.userId,
+      actorOrganizationId: found.labOrganizationId,
+      actorInitials: attachmentDeleter?.initials || "SYS",
+      metadataJson: {
+        attachmentId: attachment.id,
+        fileName: attachment.fileName,
+        fileType: attachment.fileType,
+      },
+    });
 
     await writeAuditLog({
       req,
@@ -1147,6 +1257,24 @@ router.post(
       })
       .returning();
 
+    const restorationActor = (req as any).user;
+    await db.insert(caseEvents).values({
+      caseId: found.id,
+      eventType: "restoration_added",
+      actorUserId: (req as any).auth.userId,
+      actorOrganizationId: found.labOrganizationId,
+      actorInitials: restorationActor?.initials || "SYS",
+      metadataJson: {
+        restorationId: restoration.id,
+        restorationType: restoration.restorationType,
+        toothNumber: restoration.toothNumber,
+        material: restoration.material,
+        shade: restoration.shade,
+        quantity: restoration.quantity,
+        unitPrice: restoration.unitPrice,
+      },
+    });
+
     return ok(res, restoration, 201);
   })
 );
@@ -1172,6 +1300,20 @@ router.delete(
     await db
       .delete(caseRestorations)
       .where(eq(caseRestorations.id, restoration.id));
+    const restorationDeleter = (req as any).user;
+    await db.insert(caseEvents).values({
+      caseId: found.id,
+      eventType: "restoration_deleted",
+      actorUserId: (req as any).auth.userId,
+      actorOrganizationId: found.labOrganizationId,
+      actorInitials: restorationDeleter?.initials || "SYS",
+      metadataJson: {
+        restorationId: restoration.id,
+        restorationType: restoration.restorationType,
+        toothNumber: restoration.toothNumber,
+        material: restoration.material,
+      },
+    });
     await writeAuditLog({
       req,
       organizationId: found.labOrganizationId,
