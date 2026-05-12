@@ -265,37 +265,43 @@ export default function CaseDetailScreen() {
       const found = invoices.find((inv) => inv.id === caseItem.invoiceId);
       if (found) return found;
     }
+    const safeDoctorName = caseItem.doctorName || "";
+    const safeToothIndices = caseItem.toothIndices || "";
+    const safeCaseNumber = caseItem.caseNumber || "";
+    const safePatientName = caseItem.patientName || "";
+    const safeMaterial = caseItem.material || "";
+    const safeShade = caseItem.shade || "";
     const matchedInv = invoices.find(
       (inv) => inv.caseIds.includes(caseItem.id) ||
-        (inv.patientName.toLowerCase() === (caseItem.patientName || "").toLowerCase() && inv.clientName.toLowerCase().includes(caseItem.doctorName.split(" ").pop()?.toLowerCase() || ""))
+        ((inv.patientName || "").toLowerCase() === safePatientName.toLowerCase() && (inv.clientName || "").toLowerCase().includes(safeDoctorName.split(" ").pop()?.toLowerCase() || ""))
     );
     if (matchedInv) return matchedInv;
-    const toothCount = caseItem.toothMap?.length || caseItem.toothIndices.split(",").filter(Boolean).length || 1;
-    const rate = resolvePriceForCase(caseItem.material, caseItem.caseType, caseItem.doctorName, clients, pricingTiers);
+    const toothCount = caseItem.toothMap?.length || safeToothIndices.split(",").filter(Boolean).length || 1;
+    const rate = resolvePriceForCase(safeMaterial, caseItem.caseType, safeDoctorName, clients, pricingTiers);
     const lineItems = [
-      { qty: toothCount, item: `${caseItem.material} ${caseItem.caseType || "Restoration"}`, description: `${caseItem.material} restoration - teeth ${caseItem.toothIndices}`, rate, amount: toothCount * rate },
+      { qty: toothCount, item: `${safeMaterial} ${caseItem.caseType || "Restoration"}`, description: `${safeMaterial} restoration - teeth ${safeToothIndices}`, rate, amount: toothCount * rate },
     ];
     if (caseItem.isRush) {
       lineItems.push({ qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500, amount: 500 });
     }
     const total = lineItems.reduce((s, li) => s + li.amount, 0);
-    const invNum = `INV-${new Date(caseItem.createdAt).getFullYear()}-${caseItem.caseNumber.replace(/[^0-9]/g, "").padStart(3, "0")}`;
+    const invNum = `INV-${new Date(caseItem.createdAt).getFullYear()}-${safeCaseNumber.replace(/[^0-9]/g, "").padStart(3, "0")}`;
     return {
       id: caseItem.id + "-inv",
       invoiceNumber: invNum,
       clientId: "",
-      clientName: caseItem.doctorName,
+      clientName: safeDoctorName,
       caseIds: [caseItem.id],
       amount: total,
       credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
       status: caseItem.status === "COMPLETE" ? "paid" as const : "open" as const,
       issuedAt: caseItem.createdAt,
       dueAt: caseItem.dueDate ? new Date(caseItem.dueDate + "T00:00:00").getTime() : caseItem.createdAt + 30 * 86400000,
-      billTo: caseItem.doctorName,
-      patientName: caseItem.patientName || caseItem.patientInitials,
+      billTo: safeDoctorName,
+      patientName: safePatientName || caseItem.patientInitials,
       caseType: caseItem.caseType || "Restoration",
-      teeth: caseItem.toothIndices,
-      shade: caseItem.shade,
+      teeth: safeToothIndices,
+      shade: safeShade,
       caseNotes: caseItem.notes || "",
       lineItems,
     };
@@ -3834,7 +3840,7 @@ export default function CaseDetailScreen() {
                 <View>
                   <Text style={editFieldStyles.label}>Provider / Doctor</Text>
                   <TextInput style={editFieldStyles.input} value={editDoctor} onChangeText={setEditDoctor} placeholder="Doctor name" placeholderTextColor="#94A3B8" />
-                  {editDoctor.trim().toLowerCase() !== caseItem.doctorName.toLowerCase() && editDoctor.trim().length > 0 && (
+                  {editDoctor.trim().toLowerCase() !== (caseItem.doctorName || "").toLowerCase() && editDoctor.trim().length > 0 && (
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6, backgroundColor: "#FEF3C7", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}>
                       <Ionicons name="swap-horizontal" size={14} color="#D97706" />
                       <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#92400E", flex: 1 }}>Invoice will transfer to new provider</Text>
