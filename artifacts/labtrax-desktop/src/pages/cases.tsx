@@ -31,6 +31,7 @@ import type {
   Invoice,
   LabCase,
   Organization,
+  PatientSimilarityHit,
   PricingHistoryEntry,
   PricingOverride,
   PricingTier,
@@ -318,6 +319,240 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
   );
 }
 
+interface RemakeDecision {
+  remakeOfCaseId: string;
+  remakeReason: string;
+  remakeCharged: boolean | null;
+}
+
+/**
+ * Modal that lists previously-seen cases for the same patient name and asks
+ * the user whether the new case is a remake. Shown only when the server's
+ * `/cases/patient-similarity` endpoint returns at least one match.
+ *
+ * Three exits:
+ *   - "Not a remake": create the case as a normal new case.
+ *   - "It's a remake of …": picks a candidate, captures reason + charge
+ *     decision, creates the case linked to the original.
+ *   - "Cancel": close both modals; do not create.
+ */
+function PossibleDuplicateModal({
+  matches,
+  patientFirstName,
+  patientLastName,
+  onCancel,
+  onProceedAsNew,
+  onProceedAsRemake,
+  isSubmitting,
+}: {
+  matches: PatientSimilarityHit[];
+  patientFirstName: string;
+  patientLastName: string;
+  onCancel: () => void;
+  onProceedAsNew: () => void;
+  onProceedAsRemake: (decision: RemakeDecision) => void;
+  isSubmitting: boolean;
+}) {
+  const [selectedId, setSelectedId] = useState<string>(
+    matches[0]?.id ?? "",
+  );
+  const [reason, setReason] = useState("");
+  const [charge, setCharge] = useState<"yes" | "no" | "">("");
+  const [err, setErr] = useState<string | null>(null);
+
+  function submitRemake() {
+    if (!selectedId) return setErr("Select the prior case being remade.");
+    if (!reason.trim()) {
+      return setErr("Reason for remake is required.");
+    }
+    if (charge === "") {
+      return setErr("Choose whether to charge for this remake.");
+    }
+    onProceedAsRemake({
+      remakeOfCaseId: selectedId,
+      remakeReason: reason.trim(),
+      remakeCharged: charge === "yes",
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div
+        className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Possible duplicate"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={18} className="text-amber-500" />
+            <h2 className="text-base font-semibold">
+              Possible duplicate / remake?
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-6 py-4 overflow-y-auto flex-1 space-y-4">
+          <p className="text-sm text-muted-foreground">
+            We found {matches.length} prior case{matches.length === 1 ? "" : "s"}{" "}
+            for a patient that looks like{" "}
+            <span className="font-medium text-foreground">
+              {patientFirstName} {patientLastName}
+            </span>
+            . Is this a remake of one of them?
+          </p>
+
+          <div className="border border-border rounded-lg overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-secondary/50">
+                <tr>
+                  <th className="text-left px-3 py-2 w-8"></th>
+                  <th className="text-left px-3 py-2">Case #</th>
+                  <th className="text-left px-3 py-2">Patient</th>
+                  <th className="text-left px-3 py-2">Created</th>
+                  <th className="text-left px-3 py-2">Teeth</th>
+                  <th className="text-left px-3 py-2">Type</th>
+                  <th className="text-left px-3 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matches.map((m) => (
+                  <tr
+                    key={`${m.source}:${m.id}`}
+                    onClick={() => setSelectedId(m.id)}
+                    className={`border-t border-border cursor-pointer hover:bg-secondary/40 ${
+                      selectedId === m.id ? "bg-primary/10" : ""
+                    }`}
+                  >
+                    <td className="px-3 py-2">
+                      <input
+                        type="radio"
+                        name="dup"
+                        checked={selectedId === m.id}
+                        onChange={() => setSelectedId(m.id)}
+                      />
+                    </td>
+                    <td className="px-3 py-2 font-mono">{m.caseNumber}</td>
+                    <td className="px-3 py-2">
+                      {m.patientFirstName} {m.patientLastName}
+                      {m.matchKind !== "exact" && (
+                        <span className="ml-1 text-[10px] uppercase text-muted-foreground">
+                          ({m.matchKind})
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {m.createdAt ? formatDate(m.createdAt) : "—"}
+                    </td>
+                    <td className="px-3 py-2">{m.toothNumbers || "—"}</td>
+                    <td className="px-3 py-2">{m.restorationTypes || "—"}</td>
+                    <td className="px-3 py-2">
+                      <StatusBadge status={m.status as any} />
+                      {m.source === "legacy" && (
+                        <span className="ml-1 text-[10px] text-muted-foreground">
+                          mobile
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {selectedId && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">
+                  Remake reason
+                </label>
+                <textarea
+                  rows={2}
+                  className="w-full px-3 py-2 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="e.g. Shade B1 came back too dark; doctor requested A2"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">
+                  Charge for this remake?
+                </label>
+                <div className="flex gap-2">
+                  {(
+                    [
+                      { v: "yes", label: "Yes — invoice as usual" },
+                      { v: "no", label: "No — no-charge remake" },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.v}
+                      type="button"
+                      onClick={() => setCharge(opt.v)}
+                      className={`flex-1 h-9 rounded-md text-xs font-medium transition-colors ${
+                        charge === opt.v
+                          ? opt.v === "no"
+                            ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
+                            : "bg-primary/10 text-primary border border-primary/30"
+                          : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {err && (
+            <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+              {err}
+            </p>
+          )}
+        </div>
+
+        <div className="flex gap-2 px-6 py-3 border-t border-border bg-secondary/20">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isSubmitting}
+            className="h-9 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={onProceedAsNew}
+            disabled={isSubmitting}
+            className="h-9 px-3 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/80 disabled:opacity-60"
+          >
+            Not a remake — create new
+          </button>
+          <button
+            type="button"
+            onClick={submitRemake}
+            disabled={isSubmitting || !selectedId}
+            className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+          >
+            {isSubmitting && <Loader2 size={11} className="animate-spin" />}
+            Yes, link as remake
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function NewCaseModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const orgsQuery = useQuery({
@@ -340,15 +575,20 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     priority: "normal",
   });
   const [error, setError] = useState<string | null>(null);
+  const [duplicateMatches, setDuplicateMatches] = useState<
+    PatientSimilarityHit[] | null
+  >(null);
+  const [checkingDupes, setCheckingDupes] = useState(false);
 
   const mutation = useMutation({
-    mutationFn: (data: NewCaseFormData) =>
+    mutationFn: (data: NewCaseFormData & Partial<RemakeDecision>) =>
       apiFetch<LabCase>("/cases", {
         method: "POST",
         body: JSON.stringify(data),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cases"] });
+      setDuplicateMatches(null);
       onClose();
     },
     onError: (e: Error) => setError(e.message),
@@ -359,7 +599,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     setError(null);
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.labOrganizationId)
       return setError("Please select a lab organization.");
@@ -368,6 +608,30 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
     if (!form.patientFirstName.trim() || !form.patientLastName.trim())
       return setError("Patient first and last name are required.");
     if (!form.doctorName.trim()) return setError("Doctor name is required.");
+
+    setCheckingDupes(true);
+    try {
+      const params = new URLSearchParams({
+        patientFirstName: form.patientFirstName.trim(),
+        patientLastName: form.patientLastName.trim(),
+        providerOrganizationId: form.providerOrganizationId,
+        labOrganizationId: form.labOrganizationId,
+        doctorName: form.doctorName.trim(),
+      });
+      const res = await apiFetch<{ matches: PatientSimilarityHit[] }>(
+        `/cases/patient-similarity?${params.toString()}`,
+      );
+      if (res.matches && res.matches.length > 0) {
+        setDuplicateMatches(res.matches);
+        setCheckingDupes(false);
+        return;
+      }
+    } catch (err) {
+      // Non-fatal: if the similarity check fails we still let the user
+      // create the case rather than blocking on a flaky lookup.
+      console.warn("patient-similarity check failed", err);
+    }
+    setCheckingDupes(false);
     mutation.mutate(form);
   }
 
@@ -542,14 +806,38 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
             </button>
             <button
               type="submit"
-              disabled={mutation.isPending}
-              className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-60"
+              disabled={mutation.isPending || checkingDupes}
+              className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-1.5"
             >
-              {mutation.isPending ? "Creating…" : "Create case"}
+              {(mutation.isPending || checkingDupes) && (
+                <Loader2 size={12} className="animate-spin" />
+              )}
+              {checkingDupes
+                ? "Checking…"
+                : mutation.isPending
+                ? "Creating…"
+                : "Create case"}
             </button>
           </div>
         </form>
       </div>
+
+      {duplicateMatches && (
+        <PossibleDuplicateModal
+          matches={duplicateMatches}
+          patientFirstName={form.patientFirstName}
+          patientLastName={form.patientLastName}
+          isSubmitting={mutation.isPending}
+          onCancel={() => setDuplicateMatches(null)}
+          onProceedAsNew={() => {
+            setDuplicateMatches(null);
+            mutation.mutate(form);
+          }}
+          onProceedAsRemake={(decision) => {
+            mutation.mutate({ ...form, ...decision });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -826,6 +1114,19 @@ export default function CasesPage() {
           onClose={() => setSelected(null)}
           doctorNames={distinctDoctorNames}
           patientLastNames={distinctPatientLastNames}
+          onOpenCaseId={async (id) => {
+            const found = data?.find((c) => c.id === id);
+            if (found) {
+              setSelected(found);
+              return;
+            }
+            try {
+              const fresh = await apiFetch<LabCase>(`/cases/${id}`);
+              setSelected(fresh);
+            } catch {
+              /* ignore — case may be soft-deleted or out of scope */
+            }
+          }}
         />
       )}
       {showNewCase && <NewCaseModal onClose={() => setShowNewCase(false)} />}
@@ -896,6 +1197,24 @@ type DetailedCase = LabCase & {
   attachments: CaseAttachment[];
   viewerIsLabMember?: boolean;
   viewerCanManageAttachments?: boolean;
+  remakeOriginal?: {
+    id: string;
+    caseNumber: string;
+    patientFirstName: string;
+    patientLastName: string;
+    status: string;
+    createdAt: string | null;
+  } | null;
+  remakeChildren?: Array<{
+    id: string;
+    caseNumber: string;
+    patientFirstName: string;
+    patientLastName: string;
+    status: string;
+    createdAt: string | null;
+    remakeReason: string | null;
+    remakeCharged: boolean | null;
+  }>;
 };
 
 function formatEventType(eventType: string | undefined | null): string {
@@ -948,11 +1267,13 @@ export function CaseDrawer({
   onClose,
   doctorNames = [],
   patientLastNames = [],
+  onOpenCaseId,
 }: {
   labCase: LabCase;
   onClose: () => void;
   doctorNames?: string[];
   patientLastNames?: string[];
+  onOpenCaseId?: (id: string) => void;
 }) {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1097,16 +1418,81 @@ export function CaseDrawer({
   });
 
   const ackAiReviewMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: (
+      payload?: {
+        remake?: {
+          remakeOfCaseId: string;
+          remakeReason: string;
+          remakeCharged: boolean;
+        };
+      },
+    ) =>
       apiFetch(`/cases/${labCase.id}/ai-review`, {
         method: "PATCH",
-        body: JSON.stringify({ acknowledged: true }),
+        body: JSON.stringify({ acknowledged: true, ...(payload ?? {}) }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setAiDupes(null);
+      setAiDupeSelectedId("");
+      setAiDupeReason("");
+      setAiDupeCharge("");
+      setAiDupeError(null);
     },
   });
+
+  const [aiDupes, setAiDupes] = useState<PatientSimilarityHit[] | null>(null);
+  const [aiDupesLoading, setAiDupesLoading] = useState(false);
+  const [aiDupeSelectedId, setAiDupeSelectedId] = useState<string>("");
+  const [aiDupeReason, setAiDupeReason] = useState("");
+  const [aiDupeCharge, setAiDupeCharge] = useState<"yes" | "no" | "">("");
+  const [aiDupeError, setAiDupeError] = useState<string | null>(null);
+
+  // Auto-surface possible duplicates the moment a needs-AI-review case is
+  // opened, instead of requiring the reviewer to click a separate "Check
+  // duplicates" button. Re-runs whenever the case changes or the patient
+  // identity in `data` updates from a refetch.
+  useEffect(() => {
+    if (data?.needsAiReview && aiDupes === null && !aiDupesLoading) {
+      void loadAiDuplicateCandidates();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.needsAiReview, data?.id, data?.patientFirstName, data?.patientLastName]);
+
+  async function loadAiDuplicateCandidates() {
+    setAiDupesLoading(true);
+    setAiDupeError(null);
+    try {
+      const first = (data?.patientFirstName ?? labCase.patientFirstName ?? "").trim();
+      const last = (data?.patientLastName ?? labCase.patientLastName ?? "").trim();
+      const labOrgId = data?.labOrganizationId ?? labCase.labOrganizationId;
+      const provOrgId = data?.providerOrganizationId ?? labCase.providerOrganizationId;
+      if (!first || !last || !labOrgId) {
+        setAiDupes([]);
+        return;
+      }
+      const params = new URLSearchParams({
+        patientFirstName: first,
+        patientLastName: last,
+        labOrganizationId: labOrgId,
+        ...(provOrgId ? { providerOrganizationId: provOrgId } : {}),
+        doctorName: (data?.doctorName ?? labCase.doctorName ?? "").trim(),
+      });
+      const res = await apiFetch<{ matches: PatientSimilarityHit[] }>(
+        `/cases/patient-similarity?${params.toString()}`,
+      );
+      const filtered = (res.matches ?? []).filter((m) => m.id !== labCase.id);
+      setAiDupes(filtered);
+      const firstCanonical = filtered.find((m) => m.source === "canonical");
+      setAiDupeSelectedId(firstCanonical?.id ?? "");
+    } catch (err: any) {
+      setAiDupeError(err?.message ?? "Could not load duplicate candidates.");
+      setAiDupes([]);
+    } finally {
+      setAiDupesLoading(false);
+    }
+  }
 
   const addNoteMutation = useMutation({
     mutationFn: ({ text, visibility }: { text: string; visibility: string }) =>
@@ -1305,27 +1691,254 @@ export function CaseDrawer({
           </div>
         </header>
 
+        {/* Remake link banner: shown both ways — when this case IS a remake of
+            an earlier one, and when this case HAS been remade later. */}
+        {(data?.remakeOriginal || (data?.remakeChildren?.length ?? 0) > 0) && (
+          <div className="px-5 py-3 border-b border-border bg-blue-500/10 flex items-start gap-3 shrink-0">
+            <AlertTriangle size={16} className="text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0 space-y-1">
+              {data?.remakeOriginal && (
+                <div className="text-xs text-blue-700 dark:text-blue-200">
+                  <span className="font-semibold">Remake of </span>
+                  <button
+                    type="button"
+                    onClick={() => onOpenCaseId?.(data.remakeOriginal!.id)}
+                    className="font-mono underline hover:text-blue-900 dark:hover:text-white"
+                  >
+                    {data.remakeOriginal.caseNumber}
+                  </button>
+                  {data.remakeReason && (
+                    <span className="text-blue-700/80 dark:text-blue-200/80">
+                      {" "}— {data.remakeReason}
+                    </span>
+                  )}
+                  <span className="ml-2 inline-block text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-blue-500/20">
+                    {data.remakeCharged === false
+                      ? "no charge"
+                      : data.remakeCharged === true
+                      ? "charged"
+                      : "charge unspecified"}
+                  </span>
+                </div>
+              )}
+              {(data?.remakeChildren?.length ?? 0) > 0 && (
+                <div className="text-xs text-blue-700 dark:text-blue-200">
+                  <span className="font-semibold">Remade by </span>
+                  {data!.remakeChildren!.map((c, i) => (
+                    <span key={c.id}>
+                      {i > 0 && ", "}
+                      <button
+                        type="button"
+                        onClick={() => onOpenCaseId?.(c.id)}
+                        className="font-mono underline hover:text-blue-900 dark:hover:text-white"
+                      >
+                        {c.caseNumber}
+                      </button>
+                      {c.remakeCharged === false && (
+                        <span className="text-[10px] uppercase ml-1 text-blue-700/70">
+                          (no charge)
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* AI-import review banner */}
         {data?.needsAiReview && (
-          <div className="px-5 py-3 border-b border-border bg-amber-500/10 flex items-start gap-3 shrink-0">
-            <Sparkles size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold text-amber-700 dark:text-amber-300">
-                AI-imported — needs review
+          <div className="px-5 py-3 border-b border-border bg-amber-500/10 shrink-0">
+            <div className="flex items-start gap-3">
+              <Sparkles size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                  AI-imported — needs review
+                </div>
+                <div className="text-xs text-amber-700/80 dark:text-amber-200/80 mt-0.5">
+                  This case was auto-created from {data.aiImportSource ?? "an external source"}. Please verify patient, doctor, restorations, and the attached Rx before routing.
+                </div>
               </div>
-              <div className="text-xs text-amber-700/80 dark:text-amber-200/80 mt-0.5">
-                This case was auto-created from {data.aiImportSource ?? "an external source"}. Please verify patient, doctor, restorations, and the attached Rx before routing.
-              </div>
+              <button
+                type="button"
+                onClick={loadAiDuplicateCandidates}
+                disabled={aiDupesLoading || ackAiReviewMutation.isPending}
+                className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-800 dark:text-amber-200 text-xs font-medium disabled:opacity-60"
+              >
+                {aiDupesLoading ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
+                Check duplicates
+              </button>
+              <button
+                type="button"
+                onClick={() => ackAiReviewMutation.mutate(undefined)}
+                disabled={ackAiReviewMutation.isPending}
+                className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium disabled:opacity-60"
+              >
+                {ackAiReviewMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                Mark as reviewed
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => ackAiReviewMutation.mutate()}
-              disabled={ackAiReviewMutation.isPending}
-              className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium disabled:opacity-60"
-            >
-              {ackAiReviewMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-              Mark as reviewed
-            </button>
+
+            {aiDupes && (
+              <div className="mt-3 ml-7 rounded-md border border-amber-500/30 bg-card p-3 space-y-3">
+                {aiDupes.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">
+                    No prior cases found for this patient — safe to mark as reviewed.
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-xs font-semibold text-foreground">
+                      Found {aiDupes.length} possible duplicate{aiDupes.length === 1 ? "" : "s"}. If this is a remake, link it to the original below before marking reviewed.
+                    </div>
+                    <div className="border border-border rounded overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead className="bg-secondary/50">
+                          <tr>
+                            <th className="text-left px-2 py-1 w-8"></th>
+                            <th className="text-left px-2 py-1">Case #</th>
+                            <th className="text-left px-2 py-1">Patient</th>
+                            <th className="text-left px-2 py-1">Created</th>
+                            <th className="text-left px-2 py-1">Teeth</th>
+                            <th className="text-left px-2 py-1">Type</th>
+                            <th className="text-left px-2 py-1">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {aiDupes.map((m) => {
+                            const isLegacy = m.source === "legacy";
+                            return (
+                              <tr
+                                key={`${m.source}:${m.id}`}
+                                onClick={() => {
+                                  setAiDupeSelectedId(m.id);
+                                  setAiDupeError(null);
+                                }}
+                                className={`border-t border-border cursor-pointer hover:bg-secondary/40 ${
+                                  aiDupeSelectedId === m.id ? "bg-primary/10" : ""
+                                }`}
+                              >
+                                <td className="px-2 py-1">
+                                  <input
+                                    type="radio"
+                                    name="ai-dup"
+                                    checked={aiDupeSelectedId === m.id}
+                                    onChange={() => setAiDupeSelectedId(m.id)}
+                                  />
+                                </td>
+                                <td className="px-2 py-1 font-mono">{m.caseNumber}</td>
+                                <td className="px-2 py-1">
+                                  {m.patientFirstName} {m.patientLastName}
+                                  {m.matchKind !== "exact" && (
+                                    <span className="ml-1 text-[10px] uppercase text-muted-foreground">
+                                      ({m.matchKind})
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-2 py-1 text-muted-foreground">
+                                  {m.createdAt ? formatDate(m.createdAt) : "—"}
+                                </td>
+                                <td className="px-2 py-1">{m.toothNumbers || "—"}</td>
+                                <td className="px-2 py-1">{m.restorationTypes || "—"}</td>
+                                <td className="px-2 py-1">
+                                  <StatusBadge status={m.status as any} />
+                                  {isLegacy && (
+                                    <span className="ml-1 text-[10px] text-muted-foreground">mobile</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                        Remake reason (required to link)
+                      </label>
+                      <textarea
+                        rows={2}
+                        className="w-full px-2 py-1.5 rounded bg-secondary text-xs border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
+                        value={aiDupeReason}
+                        onChange={(e) => { setAiDupeReason(e.target.value); setAiDupeError(null); }}
+                        placeholder="e.g. Doctor flagged shade as too dark; remake at A2."
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                        Charge for this remake?
+                      </label>
+                      <div className="flex gap-2">
+                        {(
+                          [
+                            { v: "yes" as const, label: "Yes — invoice as usual" },
+                            { v: "no" as const, label: "No — no-charge remake" },
+                          ]
+                        ).map((opt) => (
+                          <button
+                            key={opt.v}
+                            type="button"
+                            onClick={() => { setAiDupeCharge(opt.v); setAiDupeError(null); }}
+                            className={`flex-1 h-8 rounded text-xs font-medium transition-colors ${
+                              aiDupeCharge === opt.v
+                                ? opt.v === "no"
+                                  ? "bg-amber-500/15 text-amber-700 border border-amber-500/40"
+                                  : "bg-primary/10 text-primary border border-primary/30"
+                                : "bg-secondary text-muted-foreground border border-transparent hover:bg-secondary/80"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {aiDupeError && (
+                      <p className="text-xs text-destructive bg-destructive/10 px-2 py-1.5 rounded">
+                        {aiDupeError}
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setAiDupes(null)}
+                        className="h-7 px-2.5 rounded bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground"
+                      >
+                        Close
+                      </button>
+                      <button
+                        type="button"
+                        disabled={ackAiReviewMutation.isPending}
+                        onClick={() => {
+                          if (!aiDupeSelectedId) {
+                            setAiDupeError("Pick the prior case being remade.");
+                            return;
+                          }
+                          if (!aiDupeReason.trim()) {
+                            setAiDupeError("Reason is required to link as remake.");
+                            return;
+                          }
+                          if (aiDupeCharge === "") {
+                            setAiDupeError("Choose whether to charge for this remake.");
+                            return;
+                          }
+                          ackAiReviewMutation.mutate({
+                            remake: {
+                              remakeOfCaseId: aiDupeSelectedId,
+                              remakeReason: aiDupeReason.trim(),
+                              remakeCharged: aiDupeCharge === "yes",
+                            },
+                          });
+                        }}
+                        className="h-7 px-2.5 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+                      >
+                        {ackAiReviewMutation.isPending && <Loader2 size={11} className="animate-spin" />}
+                        Link as remake & mark reviewed
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 

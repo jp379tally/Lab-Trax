@@ -451,6 +451,9 @@ export const cases = pgTable(
     }),
     needsAiReview: boolean("needs_ai_review").default(false).notNull(),
     aiImportSource: text("ai_import_source"),
+    remakeOfCaseId: varchar("remake_of_case_id"),
+    remakeReason: text("remake_reason"),
+    remakeCharged: boolean("remake_charged"),
   },
   (table) => ({
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(
@@ -461,6 +464,7 @@ export const cases = pgTable(
     caseProviderIdx: index("cases_provider_idx").on(
       table.providerOrganizationId
     ),
+    casesRemakeOfIdx: index("cases_remake_of_idx").on(table.remakeOfCaseId),
   })
 );
 

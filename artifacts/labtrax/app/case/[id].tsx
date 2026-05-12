@@ -97,12 +97,24 @@ export default function CaseDetailScreen() {
     });
   }, []);
   const [refreshing, setRefreshing] = useState(false);
+  type RemakeRef = {
+    id: string;
+    caseNumber: string;
+    patientFirstName?: string | null;
+    patientLastName?: string | null;
+    status?: string | null;
+    createdAt?: string | null;
+    remakeReason?: string | null;
+    remakeCharged?: boolean | null;
+  };
   type FullCaseData = {
     photos?: string[];
     videos?: string[];
     activityLog?: ActivityEntry[];
     needsAiReview?: boolean;
     aiImportSource?: string | null;
+    remakeOriginal?: RemakeRef | null;
+    remakeChildren?: RemakeRef[];
     [key: string]: unknown;
   };
   const [fullCaseData, setFullCaseData] = useState<FullCaseData | null>(null);
@@ -1328,6 +1340,74 @@ export default function CaseDetailScreen() {
           ) : undefined
         }
       >
+        {caseItem.isRemake && (
+          <Pressable
+            onPress={() => {
+              if (caseItem.remakeOfCaseId) {
+                router.push(`/case/${encodeURIComponent(caseItem.remakeOfCaseId)}`);
+              } else {
+                router.push(
+                  `/chart-history?patient=${encodeURIComponent(caseItem.patientName || "")}`,
+                );
+              }
+            }}
+            style={{
+              marginHorizontal: 16,
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 10,
+              backgroundColor: "#DBEAFE",
+              borderLeftWidth: 4,
+              borderLeftColor: "#2563EB",
+              flexDirection: "row",
+              alignItems: "flex-start",
+              gap: 10,
+            }}
+          >
+            <MaterialCommunityIcons name="sync-alert" size={18} color="#1E40AF" style={{ marginTop: 1 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#1E40AF" }}>
+                Remake{caseItem.remakeCharged === false || caseItem.price === 0 ? " — no charge" : ""}
+              </Text>
+              {caseItem.remakeReason ? (
+                <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#1E40AF", marginTop: 2 }}>
+                  Reason: {caseItem.remakeReason}
+                </Text>
+              ) : null}
+              <Text style={{ fontSize: 10, fontFamily: "Inter_500Medium", color: "#1E40AF", marginTop: 4, textDecorationLine: "underline" }}>
+                {caseItem.remakeOfCaseId ? "Open original case →" : "View patient chart →"}
+              </Text>
+            </View>
+          </Pressable>
+        )}
+        {(() => {
+          const children = cases.filter((c) => c.remakeOfCaseId === caseItem.id);
+          if (children.length === 0) return null;
+          return (
+            <View style={{
+              marginHorizontal: 16,
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 10,
+              backgroundColor: "#EEF2FF",
+              borderLeftWidth: 4,
+              borderLeftColor: "#4F46E5",
+              gap: 6,
+            }}>
+              <Text style={{ fontSize: 12, fontFamily: "Inter_700Bold", color: "#3730A3" }}>
+                Remade by {children.length} case{children.length === 1 ? "" : "s"}
+              </Text>
+              {children.map((c) => (
+                <Pressable key={c.id} onPress={() => router.push(`/case/${encodeURIComponent(c.id)}`)}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#3730A3", textDecorationLine: "underline" }}>
+                    {c.caseNumber}{c.remakeCharged === false ? " (no charge)" : ""}
+                    {c.remakeReason ? ` — ${c.remakeReason}` : ""}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          );
+        })()}
         {fullCaseData?.needsAiReview && (
           <View style={{
             marginHorizontal: 16,

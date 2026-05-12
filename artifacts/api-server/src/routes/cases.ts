@@ -18,6 +18,7 @@ import {
   labCases,
   organizationConnections,
   organizationMemberships,
+  organizations,
   users,
 } from "@workspace/db";
 import multer from "multer";
@@ -25,7 +26,12 @@ import { randomBytes } from "node:crypto";
 import OpenAI, { toFile } from "openai";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
-import { softDeleteById } from "../lib/soft-delete";
+import {
+  classifyMatch,
+  splitDisplayName,
+  type SimilarityMatchKind,
+} from "../lib/patient-similarity";
+import { notDeleted, softDeleteById } from "../lib/soft-delete";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import { deleteFromOneDrive } from "../lib/onedrive";
 import { HttpError, ok } from "../lib/http";
@@ -37,6 +43,202 @@ import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 
 const router = Router();
 router.use(requireAuth);
+
+// Derive the set of doctor names that "belong" to a given (lab, provider)
+// org pair so legacy `lab_cases` rows (which only carry a free-form
+// `doctorName` string and no providerOrganizationId column) can be scoped
+// to the same provider when matching/linking. We pull distinct doctor
+// names from the canonical `cases` table for the same provider org and
+// also include the provider organization's own name + displayName as
+// fallbacks. Comparison is normalized lowercase. Result set is small
+// (one provider org's doctors).
+export async function getDoctorNameSetForProviderOrg(
+  labOrganizationId: string,
+  providerOrganizationId: string,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const canonicalDoctorRows = await db
+    .selectDistinct({ doctorName: cases.doctorName })
+    .from(cases)
+    .where(
+      and(
+        eq(cases.labOrganizationId, labOrganizationId),
+        eq(cases.providerOrganizationId, providerOrganizationId),
+        notDeleted(cases),
+      ),
+    );
+  for (const r of canonicalDoctorRows as any[]) {
+    const n = String(r.doctorName ?? "").trim().toLowerCase();
+    if (n) out.add(n);
+  }
+  const orgRow = await db.query.organizations.findFirst({
+    where: eq(organizations.id, providerOrganizationId),
+  });
+  if (orgRow) {
+    const n1 = String(orgRow.name ?? "").trim().toLowerCase();
+    if (n1) out.add(n1);
+    const n2 = String((orgRow as any).displayName ?? "").trim().toLowerCase();
+    if (n2) out.add(n2);
+  }
+  return out;
+}
+
+// Resolve a remake-target id against BOTH the canonical `cases` table and
+// the legacy `lab_cases` table so the duplicate dialog can link a new
+// canonical case to either kind of historical record. Task #331 requires
+// users to be able to pick any returned candidate; legacy rows must be
+// linkable too.
+//
+// Returns `null` when the id matches neither table (or matches but lives
+// in a different lab — cross-tenant linking is forbidden).
+export async function resolveRemakeOriginal(
+  remakeOfCaseId: string,
+  expectedLabOrgId: string,
+  expectedProviderOrgId: string | null,
+  /**
+   * Optional doctor-name fallback for legacy `lab_cases` originals.
+   * When the provider org has no canonical history yet (so
+   * `getDoctorNameSetForProviderOrg` returns an empty / sparse set), we
+   * still need to allow linking to legacy mobile cases that belong to
+   * the same provider. The caller passes the new case's doctor name
+   * here; a legacy original is accepted when its doctorName matches the
+   * derived provider doctor set OR this fallback name (case-insensitive).
+   */
+  expectedDoctorName?: string | null,
+): Promise<
+  | {
+      kind: "canonical";
+      id: string;
+      caseNumber: string;
+      labOrganizationId: string;
+      providerOrganizationId: string | null;
+    }
+  | {
+      kind: "legacy";
+      id: string;
+      caseNumber: string;
+      labOrganizationId: string;
+      caseData: any;
+    }
+  | null
+> {
+  const canonical = await db.query.cases.findFirst({
+    where: and(eq(cases.id, remakeOfCaseId), notDeleted(cases)),
+  });
+  if (canonical) {
+    if (canonical.labOrganizationId !== expectedLabOrgId) return null;
+    if (
+      expectedProviderOrgId &&
+      canonical.providerOrganizationId !== expectedProviderOrgId
+    ) {
+      return null;
+    }
+    return {
+      kind: "canonical",
+      id: canonical.id,
+      caseNumber: canonical.caseNumber,
+      labOrganizationId: canonical.labOrganizationId,
+      providerOrganizationId: canonical.providerOrganizationId,
+    };
+  }
+  const legacy = await db.query.labCases.findFirst({
+    where: and(eq(labCases.id, remakeOfCaseId), isNull(labCases.deletedAt)),
+  });
+  if (!legacy) return null;
+  if (legacy.organizationId !== expectedLabOrgId) return null;
+  let parsed: any = null;
+  try {
+    parsed =
+      typeof legacy.caseData === "string"
+        ? JSON.parse(legacy.caseData)
+        : legacy.caseData;
+  } catch {
+    parsed = null;
+  }
+  // Provider-org scoping for legacy originals: legacy lab_cases have no
+  // providerOrganizationId column, so map provider org → known doctor
+  // names and require the legacy row's doctorName to fall in that set.
+  // This blocks linking a canonical case to a legacy case from a
+  // different provider in the same lab.
+  if (expectedProviderOrgId) {
+    const doctorSet = await getDoctorNameSetForProviderOrg(
+      expectedLabOrgId,
+      expectedProviderOrgId,
+    );
+    const fallback = String(expectedDoctorName ?? "").trim().toLowerCase();
+    if (fallback) doctorSet.add(fallback);
+    const candidateDoctor = String(parsed?.doctorName ?? "")
+      .trim()
+      .toLowerCase();
+    if (!candidateDoctor || !doctorSet.has(candidateDoctor)) {
+      return null;
+    }
+  }
+  return {
+    kind: "legacy",
+    id: legacy.id,
+    caseNumber: parsed?.caseNumber ?? legacy.id,
+    labOrganizationId: legacy.organizationId,
+    caseData: parsed,
+  };
+}
+
+// Append a reciprocal "remade_by" history record on the original case
+// being remade. Canonical originals get a `case_events` row; legacy
+// originals get an entry pushed onto their `caseData.activityLog` JSON
+// (mirroring how the legacy POST writes its own history).
+async function writeReciprocalRemadeBy(
+  original:
+    | { kind: "canonical"; id: string; caseNumber: string }
+    | { kind: "legacy"; id: string; caseNumber: string; caseData: any },
+  newCase: { id: string; caseNumber: string },
+  reason: string | null,
+  charged: boolean | null,
+  actor: { userId: string; orgId: string; initials: string },
+): Promise<void> {
+  const note = `Case ${newCase.caseNumber} created as a remake of this case${
+    reason ? ` (reason: ${reason})` : ""
+  }, charged: ${charged === true ? "yes" : charged === false ? "no" : "unspecified"}`;
+  if (original.kind === "canonical") {
+    await db.insert(caseEvents).values({
+      caseId: original.id,
+      eventType: "remade_by",
+      actorUserId: actor.userId,
+      actorOrganizationId: actor.orgId,
+      actorInitials: actor.initials,
+      metadataJson: {
+        remakeCaseId: newCase.id,
+        remakeCaseNumber: newCase.caseNumber,
+        remakeReason: reason,
+        remakeCharged: charged,
+        note,
+      },
+    });
+    return;
+  }
+  // Legacy original: append to activityLog and persist.
+  const data =
+    original.caseData && typeof original.caseData === "object"
+      ? { ...original.caseData }
+      : {};
+  if (!Array.isArray(data.activityLog)) data.activityLog = [];
+  data.activityLog.push({
+    type: "remade_by",
+    timestamp: Date.now(),
+    user: actor.initials,
+    description: note,
+    metadata: {
+      remakeCaseId: newCase.id,
+      remakeCaseNumber: newCase.caseNumber,
+      remakeReason: reason,
+      remakeCharged: charged,
+    },
+  });
+  await db
+    .update(labCases)
+    .set({ caseData: JSON.stringify(data), updatedAt: new Date() })
+    .where(eq(labCases.id, original.id));
+}
 
 // Canonical authenticated file-download route.
 // Authorizes by exact (caseId, attachmentId) identity from the DB record,
@@ -239,7 +441,259 @@ const createCaseSchema = z.object({
       })
     )
     .optional(),
+  // Remake / duplicate-detection fields. When `remakeOfCaseId` is set the
+  // server links the new case to its predecessor and writes case_events on
+  // both. `remakeCharged === false` skips auto-invoice generation (a $0
+  // no-charge invoice may still be added later from the UI).
+  remakeOfCaseId: z.string().optional(),
+  remakeReason: z.string().min(1).max(2000).optional(),
+  remakeCharged: z.boolean().optional(),
+}).refine(
+  (v) => !v.remakeOfCaseId || (typeof v.remakeReason === "string" && v.remakeReason.trim().length > 0),
+  { message: "remakeReason is required when remakeOfCaseId is set.", path: ["remakeReason"] },
+).refine(
+  (v) => !v.remakeOfCaseId || typeof v.remakeCharged === "boolean",
+  { message: "remakeCharged (true/false) is required when remakeOfCaseId is set.", path: ["remakeCharged"] },
+);
+
+export interface PatientSimilarityHit {
+  id: string;
+  source: "canonical" | "legacy";
+  caseNumber: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  status: string;
+  matchKind: SimilarityMatchKind;
+  createdAt: string | null;
+  dueDate: string | null;
+  toothNumbers: string;
+  restorationTypes: string;
+  hasInvoice: boolean;
+}
+
+const patientSimilarityQuerySchema = z.object({
+  patientFirstName: z.string().min(1),
+  patientLastName: z.string().min(1),
+  // The lab the caller is searching within. Required: every search is
+  // scoped to a single lab the caller is a member of, so the endpoint
+  // cannot be used to enumerate patient names across tenants.
+  labOrganizationId: z.string().min(1),
+  // Optional further-narrow to a specific provider org. Must also be
+  // tied to the same lab via existing cases (verified at query time).
+  providerOrganizationId: z.string().optional(),
+  doctorName: z.string().optional(),
 });
+
+router.get(
+  "/patient-similarity",
+  asyncHandler(async (req, res) => {
+    const params = patientSimilarityQuerySchema.parse({
+      patientFirstName: String(req.query.patientFirstName ?? ""),
+      patientLastName: String(req.query.patientLastName ?? ""),
+      providerOrganizationId: req.query.providerOrganizationId
+        ? String(req.query.providerOrganizationId)
+        : undefined,
+      labOrganizationId: String(req.query.labOrganizationId ?? ""),
+      doctorName: req.query.doctorName ? String(req.query.doctorName) : undefined,
+    });
+
+    const userId = (req as any).auth.userId as string;
+
+    // Authorization: caller MUST be an active member of the lab they're
+    // searching. Every result is scoped to that lab — there is no path
+    // to read patient names from another tenant by passing a different
+    // providerOrganizationId.
+    await requireMembership(userId, params.labOrganizationId);
+
+    // Pull a bounded candidate set (filtered by lastName ILIKE prefix to
+    // keep the scan tight) and classify in memory. We deliberately do the
+    // fuzzy / nickname work in JS rather than SQL because the rules need
+    // to match the mobile client's behavior exactly.
+    const lastNamePrefix = params.patientLastName.trim().slice(0, 3);
+
+    // Provider scoping rules — same-provider-organization is the spec:
+    //   * If `providerOrganizationId` is supplied (canonical/desktop path),
+    //     filter strictly by it.
+    //   * Otherwise (legacy mobile path, where the client only knows the
+    //     doctor name) fall back to a doctor-name ILIKE match on canonical
+    //     rows so we don't surface every other provider's patients in
+    //     the lab. Without this fallback a mobile user could see prior
+    //     case names from unrelated providers in the same lab.
+    // No row caps on either query: Task #331 explicitly requires
+    // remakes from years ago to still be detected, so we MUST NOT
+    // truncate the candidate set before classification. The lastName
+    // ILIKE prefix + lab/provider/doctor scope keeps this bounded to
+    // patients with a similar surname inside a single tenant, which
+    // is small enough in practice to scan in full.
+    const canonicalRows = await db.query.cases.findMany({
+      where: and(
+        eq(cases.labOrganizationId, params.labOrganizationId),
+        params.providerOrganizationId
+          ? eq(cases.providerOrganizationId, params.providerOrganizationId)
+          : params.doctorName
+            ? sql`lower(${cases.doctorName}) = ${params.doctorName.trim().toLowerCase()}`
+            : undefined,
+        notDeleted(cases),
+        sql`lower(${cases.patientLastName}) like ${`${lastNamePrefix.toLowerCase()}%`}`,
+      ),
+      orderBy: [desc(cases.createdAt)],
+    });
+
+    const legacyRows = await db
+      .select()
+      .from(labCases)
+      .where(
+        and(
+          eq(labCases.organizationId, params.labOrganizationId),
+          isNull(labCases.deletedAt),
+        ),
+      );
+
+    const candidateIds = canonicalRows.map((r: any) => r.id);
+    const restorations = candidateIds.length
+      ? await db.query.caseRestorations.findMany({
+          where: inArray(caseRestorations.caseId, candidateIds),
+        })
+      : [];
+    const invoiceRows = candidateIds.length
+      ? await db
+          .select({ caseId: invoices.caseId })
+          .from(invoices)
+          .where(inArray(invoices.caseId, candidateIds))
+      : [];
+    const invoicedSet = new Set(
+      invoiceRows.map((r: any) => r.caseId).filter(Boolean) as string[],
+    );
+    const restByCase = new Map<string, typeof restorations>();
+    for (const r of restorations) {
+      const list = restByCase.get(r.caseId) ?? [];
+      list.push(r);
+      restByCase.set(r.caseId, list);
+    }
+
+    const hits: PatientSimilarityHit[] = [];
+
+    for (const row of canonicalRows as any[]) {
+      const kind = classifyMatch(
+        params.patientFirstName,
+        params.patientLastName,
+        { firstName: row.patientFirstName, lastName: row.patientLastName },
+      );
+      if (!kind) continue;
+      const items = restByCase.get(row.id) ?? [];
+      hits.push({
+        id: row.id,
+        source: "canonical",
+        caseNumber: row.caseNumber,
+        patientFirstName: row.patientFirstName,
+        patientLastName: row.patientLastName,
+        doctorName: row.doctorName,
+        status: row.status,
+        matchKind: kind,
+        createdAt: row.createdAt
+          ? new Date(row.createdAt).toISOString()
+          : null,
+        dueDate: row.dueDate ? new Date(row.dueDate).toISOString() : null,
+        toothNumbers: items
+          .map((i: any) => i.toothNumber)
+          .filter(Boolean)
+          .join(", "),
+        restorationTypes: Array.from(
+          new Set(items.map((i: any) => i.restorationType).filter(Boolean)),
+        ).join(", "),
+        hasInvoice: invoicedSet.has(row.id),
+      });
+    }
+
+    const wantDoctor = params.doctorName?.trim().toLowerCase() ?? "";
+    // Provider-org scoping for legacy candidates: when the caller passed
+    // a providerOrganizationId, derive the set of doctor names known to
+    // belong to that provider org from canonical cases (legacy lab_cases
+    // have no providerOrganizationId column). A legacy candidate is only
+    // returned if its doctorName matches that set OR matches the
+    // explicit doctorName param. This honors the spec requirement that
+    // matching is scoped to the same provider organization.
+    const providerDoctorSet = params.providerOrganizationId
+      ? await getDoctorNameSetForProviderOrg(
+          params.labOrganizationId,
+          params.providerOrganizationId,
+        )
+      : null;
+    // Fallback: when the provider has no canonical history (so the
+    // derived set is empty), still allow legacy candidates whose
+    // doctorName matches the explicit `doctorName` param. This keeps
+    // legacy-only providers from being silently ignored.
+    if (providerDoctorSet && wantDoctor) {
+      providerDoctorSet.add(wantDoctor);
+    }
+    for (const lr of legacyRows as any[]) {
+      try {
+        const parsed =
+          typeof lr.caseData === "string" ? JSON.parse(lr.caseData) : lr.caseData;
+        if (!parsed || typeof parsed !== "object") continue;
+        const split = splitDisplayName(parsed.patientName);
+        const kind = classifyMatch(
+          params.patientFirstName,
+          params.patientLastName,
+          { firstName: split.first, lastName: split.last },
+        );
+        if (!kind) continue;
+        const candidateDoctor = String(parsed.doctorName ?? "")
+          .trim()
+          .toLowerCase();
+        if (providerDoctorSet) {
+          if (!candidateDoctor || !providerDoctorSet.has(candidateDoctor)) {
+            continue;
+          }
+        } else if (wantDoctor && candidateDoctor !== wantDoctor) {
+          // No providerOrganizationId — fall back to explicit doctorName
+          // scope so legacy mobile path still respects the same-provider
+          // boundary.
+          continue;
+        }
+        hits.push({
+          id: lr.id,
+          source: "legacy",
+          caseNumber: String(parsed.caseNumber ?? ""),
+          patientFirstName: split.first,
+          patientLastName: split.last,
+          doctorName: String(parsed.doctorName ?? ""),
+          status: String(parsed.status ?? ""),
+          matchKind: kind,
+          createdAt: parsed.createdAt
+            ? new Date(parsed.createdAt).toISOString()
+            : null,
+          dueDate: parsed.dueDate ? String(parsed.dueDate) : null,
+          toothNumbers: String(parsed.toothIndices ?? ""),
+          restorationTypes: String(parsed.caseType ?? parsed.material ?? ""),
+          hasInvoice: !!parsed.invoiceId,
+        });
+      } catch {
+        // ignore malformed legacy payloads
+      }
+    }
+
+    // Sort: exact > nickname > fuzzy, then most-recent first.
+    const rank: Record<SimilarityMatchKind, number> = {
+      exact: 0,
+      nickname: 1,
+      fuzzy: 2,
+    };
+    hits.sort((a, b) => {
+      if (rank[a.matchKind] !== rank[b.matchKind]) {
+        return rank[a.matchKind] - rank[b.matchKind];
+      }
+      const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
+      const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
+      return tb - ta;
+    });
+
+    // No result cap — Task #331 requires that remakes from years ago are
+    // still surfaced, so we never truncate the candidate list.
+    return ok(res, { matches: hits });
+  }),
+);
 
 router.get(
   "/next-case-number",
@@ -276,6 +730,25 @@ router.post(
       input.labOrganizationId
     );
 
+    // Validate remake link target. The original may live in either the
+    // canonical `cases` table or the legacy `lab_cases` table — Task #331
+    // requires linking to either kind. Cross-tenant linking is blocked
+    // by the resolver.
+    const remakeOriginal = input.remakeOfCaseId
+      ? await resolveRemakeOriginal(
+          input.remakeOfCaseId,
+          input.labOrganizationId,
+          input.providerOrganizationId,
+          input.doctorName,
+        )
+      : null;
+    if (input.remakeOfCaseId && !remakeOriginal) {
+      throw new HttpError(
+        404,
+        "Original case for remake not found in this lab.",
+      );
+    }
+
     const [createdCase] = await db
       .insert(cases)
       .values({
@@ -290,6 +763,11 @@ router.post(
         priority: input.priority,
         dueDate: input.dueDate ? new Date(input.dueDate) : null,
         createdByUserId: (req as any).auth.userId,
+        remakeOfCaseId: remakeOriginal?.id ?? null,
+        remakeReason: remakeOriginal ? input.remakeReason ?? null : null,
+        remakeCharged: remakeOriginal
+          ? input.remakeCharged ?? null
+          : null,
       })
       .returning();
 
@@ -353,6 +831,44 @@ router.post(
       },
     });
 
+    // Cross-link history entries on both the new (remake) case and the
+    // original being remade so staff can navigate between them and see
+    // the remake reason / charge decision in the timeline forever.
+    if (remakeOriginal) {
+      const reason = input.remakeReason ?? null;
+      const charged = input.remakeCharged ?? null;
+      // Forward-side event on the new canonical case is always written
+      // to case_events. Reciprocal "remade_by" goes to case_events when
+      // the original is canonical, or onto the legacy activityLog when
+      // the original is a legacy lab_cases row (handled by helper).
+      await db.insert(caseEvents).values({
+        caseId: createdCase.id,
+        eventType: "remake_of",
+        actorUserId: (req as any).auth.userId,
+        actorOrganizationId: input.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          originalCaseId: remakeOriginal.id,
+          originalCaseNumber: remakeOriginal.caseNumber,
+          originalCaseKind: remakeOriginal.kind,
+          remakeReason: reason,
+          remakeCharged: charged,
+          note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""}`,
+        },
+      });
+      await writeReciprocalRemadeBy(
+        remakeOriginal,
+        { id: createdCase.id, caseNumber: createdCase.caseNumber },
+        reason,
+        charged,
+        {
+          userId: (req as any).auth.userId,
+          orgId: input.labOrganizationId,
+          initials: user?.initials || "SYS",
+        },
+      );
+    }
+
     await writeAuditLog({
       req,
       organizationId: input.labOrganizationId,
@@ -367,12 +883,24 @@ router.post(
     // immediately editable. Empty drafts are intentionally allowed:
     // AI-imported / drag-and-dropped cases often have no priced
     // restorations yet but still need an invoice skeleton.
+    //
+    // No-charge remake exception: when the user explicitly marked the
+    // remake as "no charge" we still create the invoice so it's visible
+    // in the Invoice tab, but force it to $0 with all restoration line
+    // items zeroed and a "no-charge remake" note attached. This keeps
+    // the existing invoice flow consistent (every case has an invoice)
+    // while making the no-charge intent explicit and auditable.
+    const noChargeRemake =
+      !!remakeOriginal && input.remakeCharged === false;
     try {
       const restorationsForInvoice = await db.query.caseRestorations.findMany({
         where: eq(caseRestorations.caseId, createdCase.id),
       });
       const hasLines = restorationsForInvoice.length > 0;
       const invoiceNumber = `INV-${createdCase.caseNumber}`;
+      const noChargeNote = noChargeRemake
+        ? `No-charge remake of case ${remakeOriginal!.caseNumber}${input.remakeReason ? ` — reason: ${input.remakeReason}` : ""}`
+        : null;
       const [newInvoice] = await db
         .insert(invoices)
         .values({
@@ -383,6 +911,7 @@ router.post(
           status: "draft",
           createdByUserId: (req as any).auth.userId,
           updatedByUserId: (req as any).auth.userId,
+          ...(noChargeNote ? { notes: noChargeNote } : {}),
         })
         .onConflictDoNothing()
         .returning();
@@ -392,10 +921,14 @@ router.post(
             restorationsForInvoice.map((r, idx) => ({
               invoiceId: newInvoice.id,
               caseRestorationId: r.id,
-              description: `${r.restorationType} - Tooth ${r.toothNumber}`,
+              description: noChargeRemake
+                ? `${r.restorationType} - Tooth ${r.toothNumber} (no-charge remake)`
+                : `${r.restorationType} - Tooth ${r.toothNumber}`,
               quantity: r.quantity,
-              unitPrice: r.unitPrice,
-              lineTotal: calculateLineTotal(r.quantity, r.unitPrice),
+              unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
+              lineTotal: noChargeRemake
+                ? "0.00"
+                : calculateLineTotal(r.quantity, r.unitPrice),
               sortOrder: idx,
             }))
           );
@@ -678,6 +1211,139 @@ router.get(
     const viewerCanManageAttachments =
       isLabMember && !!labRole && (ADMIN_ROLES as string[]).includes(labRole);
 
+    // Look up the original case (if this is a remake) and any later cases
+    // that mark THIS case as their remake target. Both ends of the link are
+    // surfaced in the detail payload so the UI can render banners on either
+    // side without an extra round-trip.
+    const [
+      remakeOriginalRow,
+      remakeOriginalLegacyRow,
+      remakeChildrenRows,
+      remakeChildrenLegacyRows,
+    ] = await Promise.all([
+      found.remakeOfCaseId
+        ? db.query.cases.findFirst({
+            where: and(
+              eq(cases.id, found.remakeOfCaseId),
+              notDeleted(cases),
+            ),
+          })
+        : Promise.resolve(null),
+      found.remakeOfCaseId
+        ? db.query.labCases.findFirst({
+            where: and(
+              eq(labCases.id, found.remakeOfCaseId),
+              isNull(labCases.deletedAt),
+            ),
+          })
+        : Promise.resolve(null),
+      db.query.cases.findMany({
+        where: and(eq(cases.remakeOfCaseId, found.id), notDeleted(cases)),
+        orderBy: [desc(cases.createdAt)],
+      }),
+      // Legacy mobile cases that mark THIS canonical case as their
+      // remake target. The legacy row stores it inside the JSON
+      // `case_data.remakeOfCaseId` field, so we cast text → jsonb on
+      // the fly. Same lab only.
+      db
+        .select()
+        .from(labCases)
+        .where(
+          and(
+            eq(labCases.organizationId, found.labOrganizationId),
+            isNull(labCases.deletedAt),
+            sql`(${labCases.caseData}::jsonb->>'remakeOfCaseId') = ${found.id}`,
+          ),
+        ),
+    ]);
+    let remakeOriginal: {
+      id: string;
+      caseNumber: string;
+      patientFirstName: string | null;
+      patientLastName: string | null;
+      status: string | null;
+      createdAt: Date | string | null;
+      kind: "canonical" | "legacy";
+    } | null = null;
+    if (remakeOriginalRow) {
+      remakeOriginal = {
+        id: remakeOriginalRow.id,
+        caseNumber: remakeOriginalRow.caseNumber,
+        patientFirstName: remakeOriginalRow.patientFirstName,
+        patientLastName: remakeOriginalRow.patientLastName,
+        status: remakeOriginalRow.status,
+        createdAt: remakeOriginalRow.createdAt,
+        kind: "canonical",
+      };
+    } else if (
+      remakeOriginalLegacyRow &&
+      remakeOriginalLegacyRow.organizationId === found.labOrganizationId
+    ) {
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(remakeOriginalLegacyRow.caseData);
+      } catch {
+        parsed = {};
+      }
+      remakeOriginal = {
+        id: remakeOriginalLegacyRow.id,
+        caseNumber: parsed?.caseNumber ?? remakeOriginalLegacyRow.id,
+        patientFirstName: parsed?.patientFirstName ?? parsed?.patientName ?? null,
+        patientLastName: parsed?.patientLastName ?? null,
+        status: parsed?.status ?? null,
+        createdAt: parsed?.createdAt ?? remakeOriginalLegacyRow.updatedAt ?? null,
+        kind: "legacy",
+      };
+    }
+    const remakeChildren: Array<{
+      id: string;
+      caseNumber: string;
+      patientFirstName: string | null;
+      patientLastName: string | null;
+      status: string | null;
+      createdAt: Date | string | null;
+      remakeReason: string | null;
+      remakeCharged: boolean | null;
+      kind: "canonical" | "legacy";
+    }> = remakeChildrenRows.map((r: any) => ({
+      id: r.id,
+      caseNumber: r.caseNumber,
+      patientFirstName: r.patientFirstName,
+      patientLastName: r.patientLastName,
+      status: r.status,
+      createdAt: r.createdAt,
+      remakeReason: r.remakeReason,
+      remakeCharged: r.remakeCharged,
+      kind: "canonical",
+    }));
+    // Append legacy mobile remakes-of-this-case so the desktop UI sees
+    // the full set of children, not just canonical ones.
+    for (const lr of remakeChildrenLegacyRows as any[]) {
+      let parsed: any = {};
+      try {
+        parsed =
+          typeof lr.caseData === "string" ? JSON.parse(lr.caseData) : lr.caseData;
+      } catch {
+        parsed = {};
+      }
+      const split = splitDisplayName(parsed?.patientName);
+      remakeChildren.push({
+        id: lr.id,
+        caseNumber: String(parsed?.caseNumber ?? lr.id),
+        patientFirstName: parsed?.patientFirstName ?? split.first ?? null,
+        patientLastName: parsed?.patientLastName ?? split.last ?? null,
+        status: parsed?.status ?? null,
+        createdAt: parsed?.createdAt ?? lr.updatedAt ?? null,
+        remakeReason:
+          typeof parsed?.remakeReason === "string" ? parsed.remakeReason : null,
+        remakeCharged:
+          typeof parsed?.remakeCharged === "boolean"
+            ? parsed.remakeCharged
+            : null,
+        kind: "legacy",
+      });
+    }
+
     return ok(res, {
       ...found,
       restorations,
@@ -685,6 +1351,8 @@ router.get(
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
       events,
       locations,
+      remakeOriginal,
+      remakeChildren,
       viewerIsLabMember: isLabMember,
       viewerCanManageAttachments,
     });
@@ -2068,6 +2736,120 @@ router.post(
       },
     });
 
+    // After commit, run a duplicate-name check and stash any hits in
+    // the new case's history. The reviewer can then decide on the AI-
+    // review screen whether to link this case as a remake of one of
+    // them. Failures here are non-fatal — they only mean the reviewer
+    // won't see suggested duplicates ahead of time.
+    try {
+      const lastNamePrefix = patientLastName.trim().slice(0, 3).toLowerCase();
+      // No row cap — Task #331 requires that remakes from years ago are
+      // still surfaced, even on the iTero auto-import path.
+      const candidateRows = await db.query.cases.findMany({
+        where: and(
+          eq(cases.providerOrganizationId, body.providerOrganizationId),
+          notDeleted(cases),
+          sql`lower(${cases.patientLastName}) like ${`${lastNamePrefix}%`}`,
+        ),
+        orderBy: [desc(cases.createdAt)],
+      });
+      const dupes: Array<{
+        id: string;
+        source: "canonical" | "legacy";
+        caseNumber: string;
+        matchKind: SimilarityMatchKind;
+      }> = [];
+      for (const r of candidateRows as any[]) {
+        if (r.id === createdCase.id) continue;
+        const kind = classifyMatch(patientFirstName, patientLastName, {
+          firstName: r.patientFirstName,
+          lastName: r.patientLastName,
+        });
+        if (kind) {
+          dupes.push({
+            id: r.id,
+            source: "canonical",
+            caseNumber: r.caseNumber,
+            matchKind: kind,
+          });
+        }
+      }
+      // Also scan legacy lab_cases for the same lab, scoped to doctor
+      // names known to belong to this provider org so cross-provider
+      // legacy data isn't surfaced.
+      const legacyCandidates = await db
+        .select()
+        .from(labCases)
+        .where(
+          and(
+            eq(labCases.organizationId, body.labOrganizationId),
+            isNull(labCases.deletedAt),
+          ),
+        );
+      const providerDoctorSet = await getDoctorNameSetForProviderOrg(
+        body.labOrganizationId,
+        body.providerOrganizationId,
+      );
+      // Fallback for legacy-only providers (no canonical history yet):
+      // also include the extracted Rx doctor name so legacy mobile cases
+      // for the same doctor still surface as duplicates.
+      const fallbackDoctor = String(extracted?.doctorName ?? "")
+        .trim()
+        .toLowerCase();
+      if (fallbackDoctor) providerDoctorSet.add(fallbackDoctor);
+      for (const lr of legacyCandidates as any[]) {
+        try {
+          const parsed =
+            typeof lr.caseData === "string"
+              ? JSON.parse(lr.caseData)
+              : lr.caseData;
+          if (!parsed || typeof parsed !== "object") continue;
+          const candidateDoctor = String(parsed.doctorName ?? "")
+            .trim()
+            .toLowerCase();
+          if (!candidateDoctor || !providerDoctorSet.has(candidateDoctor)) {
+            continue;
+          }
+          const split = splitDisplayName(parsed.patientName);
+          const kind = classifyMatch(patientFirstName, patientLastName, {
+            firstName: split.first,
+            lastName: split.last,
+          });
+          if (kind) {
+            dupes.push({
+              id: lr.id,
+              source: "legacy",
+              caseNumber: String(parsed.caseNumber ?? lr.id),
+              matchKind: kind,
+            });
+          }
+        } catch {
+          // ignore malformed legacy payloads
+        }
+      }
+      if (dupes.length > 0) {
+        await db.insert(caseEvents).values({
+          caseId: createdCase.id,
+          eventType: "possible_duplicates_detected",
+          actorUserId: userId,
+          actorOrganizationId: body.labOrganizationId,
+          actorInitials: "SYS",
+          metadataJson: {
+            source: "itero",
+            patientFirstName,
+            patientLastName,
+            candidates: dupes.slice(0, 10),
+            note: `iTero auto-import detected ${dupes.length} possible duplicate case(s) for this patient. Review and link as remake if appropriate.`,
+          },
+        });
+      }
+    } catch (err) {
+      req.log?.warn?.(
+        { err: (err as Error)?.message, caseId: createdCase.id },
+        "iTero duplicate-name check failed",
+      );
+    }
+
     return ok(
       res,
       {
@@ -2084,6 +2866,20 @@ router.post(
 );
 
 // Clear the "needs AI review" flag once a human has verified the imported case.
+// Optionally accepts a `remake` payload so the reviewer can link this case as
+// a remake of an earlier one in the same step. Linking writes events on both
+// cases and (for no-charge remakes) zeros out any existing draft invoice.
+const aiReviewBodySchema = z.object({
+  acknowledged: z.boolean().default(true),
+  remake: z
+    .object({
+      remakeOfCaseId: z.string().min(1),
+      remakeReason: z.string().min(1).max(2000),
+      remakeCharged: z.boolean(),
+    })
+    .optional(),
+});
+
 router.patch(
   "/:caseId/ai-review",
   asyncHandler(async (req: Request, res: Response) => {
@@ -2091,41 +2887,144 @@ router.patch(
     const found = await assertCaseAccess(userId, String(req.params.caseId ?? ""));
     await requireMembership(userId, found.labOrganizationId);
 
-    const input = z
-      .object({ acknowledged: z.boolean().default(true) })
-      .parse(req.body ?? {});
+    const input = aiReviewBodySchema.parse(req.body ?? {});
 
-    if (!input.acknowledged) {
+    if (!input.acknowledged && !input.remake) {
       return ok(res, { caseId: found.id, needsAiReview: found.needsAiReview ?? false });
+    }
+
+    const user = (req as any).user;
+
+    // Optional remake link. The original may be either canonical or
+    // legacy — same as POST /cases.
+    let remakeOriginal: Awaited<ReturnType<typeof resolveRemakeOriginal>> = null;
+    if (input.remake) {
+      if (input.remake.remakeOfCaseId === found.id) {
+        throw new HttpError(400, "A case cannot be a remake of itself.");
+      }
+      remakeOriginal = await resolveRemakeOriginal(
+        input.remake.remakeOfCaseId,
+        found.labOrganizationId,
+        found.providerOrganizationId,
+        found.doctorName,
+      );
+      if (!remakeOriginal) {
+        throw new HttpError(
+          404,
+          "Original case for remake not found in this lab.",
+        );
+      }
+    }
+
+    const setFields: Record<string, unknown> = {};
+    if (input.acknowledged) setFields.needsAiReview = false;
+    if (remakeOriginal) {
+      setFields.remakeOfCaseId = remakeOriginal.id;
+      setFields.remakeReason = input.remake?.remakeReason ?? null;
+      setFields.remakeCharged = input.remake?.remakeCharged ?? null;
     }
 
     const [updated] = await db
       .update(cases)
-      .set({ needsAiReview: false })
+      .set(setFields)
       .where(eq(cases.id, found.id))
       .returning();
 
-    const user = (req as any).user;
-    await db.insert(caseEvents).values({
-      caseId: found.id,
-      eventType: "ai_review_acknowledged",
-      actorUserId: userId,
-      actorOrganizationId: found.labOrganizationId,
-      actorInitials: user?.initials || "SYS",
-      metadataJson: { aiImportSource: found.aiImportSource ?? null },
-    });
+    if (input.acknowledged) {
+      await db.insert(caseEvents).values({
+        caseId: found.id,
+        eventType: "ai_review_acknowledged",
+        actorUserId: userId,
+        actorOrganizationId: found.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: { aiImportSource: found.aiImportSource ?? null },
+      });
+    }
+
+    if (remakeOriginal) {
+      const reason = input.remake?.remakeReason ?? null;
+      const charged = input.remake?.remakeCharged ?? null;
+      await db.insert(caseEvents).values({
+        caseId: found.id,
+        eventType: "remake_of",
+        actorUserId: userId,
+        actorOrganizationId: found.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          originalCaseId: remakeOriginal.id,
+          originalCaseNumber: remakeOriginal.caseNumber,
+          originalCaseKind: remakeOriginal.kind,
+          remakeReason: reason,
+          remakeCharged: charged,
+          note: `Marked as remake of ${remakeOriginal.kind === "legacy" ? "legacy " : ""}case ${remakeOriginal.caseNumber}${reason ? ` (reason: ${reason})` : ""} during AI review`,
+        },
+      });
+      await writeReciprocalRemadeBy(
+        remakeOriginal,
+        { id: found.id, caseNumber: found.caseNumber },
+        reason,
+        charged,
+        {
+          userId,
+          orgId: found.labOrganizationId,
+          initials: user?.initials || "SYS",
+        },
+      );
+
+      // For no-charge remakes, zero out any auto-created draft invoice
+      // and append a note. We deliberately don't void/delete it — the
+      // invoice row stays so the audit trail is intact.
+      if (charged === false) {
+        const draft = await db.query.invoices.findFirst({
+          where: and(
+            eq(invoices.caseId, found.id),
+            eq(invoices.status, "draft"),
+          ),
+        });
+        if (draft) {
+          await db
+            .update(invoiceLineItems)
+            .set({ unitPrice: "0.00", lineTotal: "0.00" })
+            .where(eq(invoiceLineItems.invoiceId, draft.id));
+          await db
+            .update(invoices)
+            .set({
+              subtotal: "0.00",
+              total: "0.00",
+              balanceDue: "0.00",
+              notes: `No-charge remake of case ${remakeOriginal.caseNumber}${reason ? ` — reason: ${reason}` : ""}`,
+              updatedByUserId: userId,
+            })
+            .where(eq(invoices.id, draft.id));
+        }
+      }
+    }
 
     await writeAuditLog({
       req,
       organizationId: found.labOrganizationId,
-      action: "ai_review_acknowledged",
+      action: remakeOriginal ? "case_remake_linked" : "ai_review_acknowledged",
       entityType: "case",
       entityId: found.id,
-      beforeJson: { needsAiReview: found.needsAiReview },
-      afterJson: { needsAiReview: false },
+      beforeJson: {
+        needsAiReview: found.needsAiReview,
+        remakeOfCaseId: found.remakeOfCaseId,
+      },
+      afterJson: {
+        needsAiReview: updated.needsAiReview,
+        remakeOfCaseId: updated.remakeOfCaseId,
+        remakeReason: updated.remakeReason,
+        remakeCharged: updated.remakeCharged,
+      },
     });
 
-    return ok(res, { caseId: updated.id, needsAiReview: updated.needsAiReview ?? false });
+    return ok(res, {
+      caseId: updated.id,
+      needsAiReview: updated.needsAiReview ?? false,
+      remakeOfCaseId: updated.remakeOfCaseId ?? null,
+      remakeReason: updated.remakeReason ?? null,
+      remakeCharged: updated.remakeCharged ?? null,
+    });
   })
 );
 

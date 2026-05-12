@@ -20,7 +20,8 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads } from "@workspace/db";
+import { notDeleted } from "../lib/soft-delete";
 import { eq, and, inArray, or, isNull, sql, desc } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
@@ -1123,6 +1124,47 @@ export async function registerRoutes(): Promise<IRouter> {
           const safeOwnerId = lockedRow ? lockedRow.owner_id : callerUserId;
           normalizedCaseData.ownerId = safeOwnerId;
 
+          // On first insert of a remake-linked legacy case, append a
+          // reciprocal "remake_of" entry to the new case's local
+          // activityLog so the case has a visible history record on its
+          // own side (mirroring the `remade_by` event we write on the
+          // canonical original below). Two-way traceability is required
+          // by Task #331.
+          if (
+            !lockedRow &&
+            normalizedCaseData.isRemake === true &&
+            typeof normalizedCaseData.remakeOfCaseId === "string" &&
+            normalizedCaseData.remakeOfCaseId.length > 0
+          ) {
+            const reasonStr =
+              typeof normalizedCaseData.remakeReason === "string" &&
+              normalizedCaseData.remakeReason.trim().length > 0
+                ? normalizedCaseData.remakeReason.trim()
+                : null;
+            const charged =
+              normalizedCaseData.remakeCharged === false ||
+              normalizedCaseData.price === 0
+                ? false
+                : true;
+            const entry = {
+              type: "remake_of",
+              timestamp: Date.now(),
+              user: "SYS",
+              description: `Created as a remake of case ${normalizedCaseData.remakeOfCaseId}${
+                reasonStr ? ` — reason: ${reasonStr}` : ""
+              } (charged: ${charged ? "yes" : "no"})`,
+              metadata: {
+                remakeOfCaseId: normalizedCaseData.remakeOfCaseId,
+                remakeReason: reasonStr,
+                remakeCharged: charged,
+              },
+            };
+            if (!Array.isArray(normalizedCaseData.activityLog)) {
+              normalizedCaseData.activityLog = [];
+            }
+            normalizedCaseData.activityLog.push(entry);
+          }
+
           const serializedCaseData = JSON.stringify(normalizedCaseData);
           await tx
             .insert(labCases)
@@ -1147,11 +1189,119 @@ export async function registerRoutes(): Promise<IRouter> {
               },
             });
 
-          return { restoredFromTrash: wasSoftDeleted };
+          return {
+            restoredFromTrash: wasSoftDeleted,
+            isNewInsert: !lockedRow,
+            normalizedCaseData,
+            organizationIdFromKey,
+          };
         });
       } catch (txErr: any) {
         console.error("Legacy upsert case tx error:", txErr?.message || txErr);
         return res.status(500).json({ error: "Failed to save case" });
+      }
+
+      // Cross-link a remake created from the legacy mobile app to its
+      // original canonical case (when the original lives in the canonical
+      // `cases` table and is in the same lab). We only do this on the
+      // first insert of a legacy case so re-syncs from the mobile app
+      // don't double-write history entries. All work here is best-effort
+      // and never fails the primary save.
+      try {
+        const data = (result as any).normalizedCaseData;
+        const orgId = (result as any).organizationIdFromKey as string | null;
+        const isNew = !!(result as any).isNewInsert;
+        if (
+          isNew &&
+          orgId &&
+          data &&
+          data.isRemake === true &&
+          typeof data.remakeOfCaseId === "string" &&
+          data.remakeOfCaseId.length > 0
+        ) {
+          const reason =
+            typeof data.remakeReason === "string" && data.remakeReason.trim().length > 0
+              ? String(data.remakeReason).trim()
+              : null;
+          const charged =
+            data.price === 0 || data.remakeCharged === false ? false : true;
+          const originalCanonical = await db.query.cases.findFirst({
+            where: and(
+              eq(casesTable.id, String(data.remakeOfCaseId)),
+              eq(casesTable.labOrganizationId, orgId),
+              notDeleted(casesTable),
+            ),
+          });
+          if (originalCanonical) {
+            await db.insert(caseEvents).values({
+              caseId: originalCanonical.id,
+              eventType: "remade_by",
+              actorUserId: callerUserId,
+              actorOrganizationId: orgId,
+              actorInitials: "SYS",
+              metadataJson: {
+                source: "legacy",
+                legacyCaseId: id,
+                legacyCaseNumber: data.caseNumber ?? null,
+                remakeReason: reason,
+                remakeCharged: charged,
+                note: `Legacy mobile case ${data.caseNumber ?? id} created as a remake of this case${reason ? ` (reason: ${reason})` : ""}, charged: ${charged ? "yes" : "no"}`,
+              },
+            });
+          } else {
+            // Original may live in legacy lab_cases — append a remade_by
+            // entry to its activityLog so the timeline is two-way for
+            // legacy↔legacy pairings too (Task #331).
+            const [originalLegacy] = await db
+              .select()
+              .from(labCases)
+              .where(
+                and(
+                  eq(labCases.id, String(data.remakeOfCaseId)),
+                  isNull(labCases.deletedAt),
+                ),
+              );
+            if (originalLegacy && originalLegacy.organizationId === orgId) {
+              // labCases stores the case as a JSON string in caseData;
+              // activityLog lives inside that JSON.
+              let parsed: any = {};
+              try {
+                parsed = JSON.parse(originalLegacy.caseData);
+              } catch {
+                parsed = {};
+              }
+              const prevLog = Array.isArray(parsed.activityLog)
+                ? parsed.activityLog
+                : [];
+              const entry = {
+                type: "remade_by",
+                timestamp: Date.now(),
+                user: "SYS",
+                description: `Legacy mobile case ${data.caseNumber ?? id} created as a remake of this case${reason ? ` — reason: ${reason}` : ""} (charged: ${charged ? "yes" : "no"})`,
+                metadata: {
+                  source: "legacy",
+                  legacyCaseId: id,
+                  legacyCaseNumber: data.caseNumber ?? null,
+                  remakeReason: reason,
+                  remakeCharged: charged,
+                },
+              };
+              parsed.activityLog = [...prevLog, entry];
+              await db
+                .update(labCases)
+                .set({
+                  caseData: JSON.stringify(parsed),
+                  updatedAt: new Date(),
+                })
+                .where(eq(labCases.id, originalLegacy.id));
+            }
+          }
+        }
+      } catch (linkErr: any) {
+        req.log?.warn?.(
+          { err: linkErr?.message || String(linkErr) },
+          "legacy_remake_link_failed",
+        );
       }
 
       if (result.authError) {
@@ -1336,6 +1486,17 @@ export async function registerRoutes(): Promise<IRouter> {
             ownerId: dc.createdByUserId ?? null,
             createdAt: createdMs,
             updatedAt: updatedMs,
+            // Surface canonical remake linkage on the legacy bridge so the
+            // mobile case detail (`app/case/[id].tsx`) can render the
+            // remake banner + "remade by N" panel for canonical-side
+            // remakes the same way it does for native legacy ones.
+            isRemake: !!(dc as any).remakeOfCaseId,
+            remakeOfCaseId: (dc as any).remakeOfCaseId ?? null,
+            remakeReason: (dc as any).remakeReason ?? null,
+            remakeCharged:
+              (dc as any).remakeCharged === null || (dc as any).remakeCharged === undefined
+                ? null
+                : !!(dc as any).remakeCharged,
             _sourceTable: "cases",
           };
         });

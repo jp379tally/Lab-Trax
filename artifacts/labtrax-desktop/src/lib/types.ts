@@ -42,6 +42,32 @@ export interface LabCase {
   needsAiReview?: boolean;
   /** Identifier of the upstream import source, e.g. "itero". */
   aiImportSource?: string | null;
+  /** When this case is a remake of another, that original's id. */
+  remakeOfCaseId?: string | null;
+  /** Free-text reason captured at remake creation. */
+  remakeReason?: string | null;
+  /** True = chargeable remake, false = no-charge remake, null = unspecified. */
+  remakeCharged?: boolean | null;
+}
+
+/**
+ * One result from `GET /cases/patient-similarity`. Used by the desktop and
+ * mobile clients to render the "possible duplicate / remake?" dialog.
+ */
+export interface PatientSimilarityHit {
+  id: string;
+  source: "canonical" | "legacy";
+  caseNumber: string;
+  patientFirstName: string;
+  patientLastName: string;
+  doctorName: string;
+  status: string;
+  matchKind: "exact" | "nickname" | "fuzzy";
+  createdAt: string | null;
+  dueDate: string | null;
+  toothNumbers: string;
+  restorationTypes: string;
+  hasInvoice: boolean;
 }
 
 export type RestorationPriceSource = "default" | "tier" | "override" | "manual";

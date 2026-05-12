@@ -39,6 +39,19 @@ import { ManualCropOverlay } from "@/components/ManualCropOverlay";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
+type DuplicateHit = {
+  id: string;
+  caseNumber: string;
+  matchKind: "exact" | "nickname" | "fuzzy" | string;
+  source: "canonical" | "legacy";
+  patientFirstName: string;
+  patientLastName: string;
+  status?: string;
+  createdAt?: string | null;
+  toothNumbers?: string;
+  restorationTypes?: string;
+};
+
 async function normalizePrescriptionImage(uri: string): Promise<{ uri: string; mimeType: string }> {
   if ((Platform.OS as string) === "web") return { uri, mimeType: "image/jpeg" };
   try {
@@ -137,7 +150,7 @@ export default function ScanScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const isFocused = useIsFocused();
-  const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers } = useApp();
+  const { addCase, cases, clients, addClient, role, adminUnlocked, invoices, updateCase, removeInvoice, attachCaseToInvoice, assignBarcodeToCase, findCaseByBarcode, pricingTiers, activeLabAffiliationKey } = useApp();
   const { currentUser, registeredUsers } = useAuth();
   const currentRegisteredUser = registeredUsers.find(
     (user) => user.username?.toLowerCase() === (currentUser || "").toLowerCase()
@@ -151,6 +164,14 @@ export default function ScanScreen() {
   const [labelModalVisible, setLabelModalVisible] = useState(false);
   const [labelData, setLabelData] = useState<LabelData | null>(null);
   const [pendingRemakeCheck, setPendingRemakeCheck] = useState<{caseId: string, patientName: string} | null>(null);
+  const [duplicatePrompt, setDuplicatePrompt] = useState<{
+    matches: DuplicateHit[];
+    patientName: string;
+  } | null>(null);
+  const [duplicateReason, setDuplicateReason] = useState("");
+  const [duplicateCharge, setDuplicateCharge] = useState<"yes" | "no" | "">("");
+  const [duplicateSelectedId, setDuplicateSelectedId] = useState<string>("");
+  const [duplicateError, setDuplicateError] = useState<string | null>(null);
   const lastCreatedCaseIdRef = useRef<string | null>(null);
   const barcodeAlreadyAttachedRef = useRef(false);
   const [phase, setPhase] = useState<ScanPhase>("camera");
@@ -2185,7 +2206,17 @@ export default function ScanScreen() {
     }
   }
 
-  function createCase(isDuplicate?: boolean) {
+  function createCase(
+    isDuplicate?: boolean,
+    overrides?: {
+      isRemake?: boolean;
+      remakeReason?: string;
+      remakeCharged?: boolean;
+      remakeOfCaseId?: string;
+      price?: number;
+      notes?: string;
+    },
+  ) {
     try {
     const currentYear = new Date().getFullYear();
     const yy = String(currentYear).slice(-2);
@@ -2226,13 +2257,21 @@ export default function ScanScreen() {
       material,
       status: "INTAKE",
       isRush,
-      notes: finalNotes,
-      price: calculatedPrice,
+      notes: overrides?.notes ?? finalNotes,
+      price: overrides?.price ?? calculatedPrice,
       dueDate: timeDue ? `${dueDate} ${timeDue}` : dueDate,
       photos: casePhotos,
       videos: caseAttachments.filter((x) => x.kind === "video").map((x) => x.uri),
       activityLog: activityEntries,
       toothMap: toothMapEntries,
+      ...(overrides?.isRemake
+        ? {
+            isRemake: true,
+            remakeReason: overrides.remakeReason,
+            remakeCharged: overrides.remakeCharged,
+            remakeOfCaseId: overrides.remakeOfCaseId,
+          }
+        : {}),
     });
 
     if ((Platform.OS as string) !== "web") {
@@ -2267,7 +2306,16 @@ export default function ScanScreen() {
 
     lastCreatedCaseIdRef.current = newCase.id;
 
-    if (isDuplicate) {
+    // The new state-driven duplicate Modal in `setDuplicatePrompt` already
+    // captures the remake decision (reason + charged + linked original)
+    // BEFORE this function is called — the new "Not a remake" path calls
+    // `createCase(false)` and the new "Yes — link as remake" path goes
+    // through `createRemakeCase` which passes `overrides.isRemake`. So we
+    // must NOT also queue the legacy `pendingRemakeCheck` follow-up Alert
+    // chain in either case, otherwise the user would see a second
+    // contradictory prompt asking the same questions again.
+    const triggersLegacyRemakeFollowup = !!isDuplicate && !overrides?.isRemake;
+    if (triggersLegacyRemakeFollowup) {
       setPendingRemakeCheck({ caseId: newCase.id, patientName: savedPatientName });
     }
 
@@ -2372,7 +2420,39 @@ export default function ScanScreen() {
     });
   }
 
-  function handleSubmit() {
+  async function fetchServerSimilarity(): Promise<DuplicateHit[]> {
+    // Server-side check goes beyond exact-name matching (catches nicknames
+    // and 1-edit typos across the same lab). The legacy local-only check
+    // below stays as a fallback for offline use.
+    const labOrgId =
+      typeof activeLabAffiliationKey === "string" &&
+      activeLabAffiliationKey.startsWith("org:")
+        ? activeLabAffiliationKey.slice(4)
+        : "";
+    if (!labOrgId) return [];
+    const trimmed = patientName.trim();
+    const parts = trimmed.split(/\s+/);
+    const first = parts[0] ?? "";
+    const last = parts.length > 1 ? parts.slice(1).join(" ") : parts[0] ?? "";
+    if (!first || !last) return [];
+    const qs = new URLSearchParams({
+      patientFirstName: first,
+      patientLastName: last,
+      labOrganizationId: labOrgId,
+      doctorName: doctorName.trim(),
+    });
+    try {
+      const res = await resilientFetch(`/api/cases/patient-similarity?${qs.toString()}`);
+      if (!res.ok) return [];
+      const body = await res.json();
+      const matches = body?.data?.matches ?? body?.matches ?? [];
+      return Array.isArray(matches) ? matches : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function handleSubmit() {
     if (isSubmittingCase) return;
 
     if (!doctorName.trim()) {
@@ -2388,40 +2468,39 @@ export default function ScanScreen() {
     const finish = () => setIsSubmittingCase(false);
 
     try {
-      const matchingCases = cases.filter(
+      const localMatches = cases.filter(
         (c) => (c.patientName || "").toLowerCase() === patientName.trim().toLowerCase()
       );
+      const serverMatches = await fetchServerSimilarity();
+      const totalCount = Math.max(localMatches.length, serverMatches.length);
 
-      if (matchingCases.length > 0) {
-        const caseNums = matchingCases.map((c) => c.caseNumber).join(", ");
-        Alert.alert(
-          "Patient Already on File",
-          `"${patientName.trim()}" already has ${matchingCases.length} case${matchingCases.length > 1 ? "s" : ""} (${caseNums}). Add a new case to this patient's file?`,
-          [
-            {
-              text: "Cancel",
-              style: "cancel",
-              onPress: finish,
-            },
-            {
-              text: "View Chart",
-              onPress: () => {
-                finish();
-                router.push(`/chart-history?patient=${encodeURIComponent(patientName.trim())}`);
-              },
-            },
-            {
-              text: "Add Case",
-              onPress: () => {
-                try {
-                  createCase(true);
-                } finally {
-                  finish();
-                }
-              },
-            },
-          ]
+      if (totalCount > 0) {
+        // Build a unified candidate list. Server hits (canonical cases)
+        // are the only ones we can hard-link via remakeOfCaseId. We still
+        // show local-only legacy hits so the user can see the full
+        // history, but they're flagged as not selectable for linking.
+        const merged: DuplicateHit[] = serverMatches.length > 0
+          ? serverMatches
+          : localMatches.map((c) => ({
+              id: c.id,
+              caseNumber: c.caseNumber,
+              matchKind: "exact",
+              source: "legacy" as const,
+              patientFirstName: (c.patientName ?? "").split(" ")[0] ?? "",
+              patientLastName: (c.patientName ?? "").split(" ").slice(1).join(" "),
+              status: c.status,
+              createdAt: typeof c.createdAt === "string" ? c.createdAt : null,
+              toothNumbers: c.toothIndices,
+              restorationTypes: c.caseType,
+            }));
+        finish();
+        setDuplicateReason("");
+        setDuplicateCharge("");
+        setDuplicateError(null);
+        setDuplicateSelectedId(
+          merged.find((m) => m.source === "canonical")?.id ?? "",
         );
+        setDuplicatePrompt({ matches: merged, patientName: patientName.trim() });
         return;
       }
 
@@ -2434,6 +2513,33 @@ export default function ScanScreen() {
       finish();
       console.error("[handleSubmit] ERROR:", err);
       Alert.alert("Error", "Could not submit case.");
+    }
+  }
+
+  function createRemakeCase(
+    reason: string,
+    charged: boolean,
+    originalCanonicalCaseId: string | null,
+  ) {
+    // The legacy mobile flow stores remake metadata in the per-case JSON
+    // payload that the server persists via POST /api/legacy/cases. The
+    // server-side handler reads `isRemake`, `remakeOfCaseId`,
+    // `remakeReason`, and `remakeCharged` to write a `remade_by` event
+    // on the canonical original (when it exists in the same lab).
+    // No-charge remakes also force price=0 to match the existing
+    // local-state convention.
+    setIsSubmittingCase(true);
+    try {
+      createCase(true, {
+        isRemake: true,
+        remakeReason: reason,
+        remakeCharged: charged,
+        remakeOfCaseId: originalCanonicalCaseId ?? undefined,
+        price: charged ? undefined : 0,
+        notes: charged ? undefined : `Remake - ${reason}\n(REMAKE - No Charge)`,
+      });
+    } finally {
+      setIsSubmittingCase(false);
     }
   }
 
@@ -2497,6 +2603,198 @@ export default function ScanScreen() {
 
   const labelAndBarcodeModals = (
     <>
+      <Modal
+        visible={!!duplicatePrompt}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setDuplicatePrompt(null)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 16 }}>
+          <View style={{ backgroundColor: "#FFF", borderRadius: 14, maxHeight: "88%", overflow: "hidden" }}>
+            <View style={{ paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "#E5E7EB", flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Ionicons name="warning" size={18} color="#D97706" />
+              <Text style={{ flex: 1, fontFamily: "Inter_700Bold", fontSize: 15, color: "#111827" }}>
+                Possible duplicate / remake?
+              </Text>
+              <Pressable onPress={() => setDuplicatePrompt(null)} hitSlop={10}>
+                <Ionicons name="close" size={20} color="#6B7280" />
+              </Pressable>
+            </View>
+            <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ padding: 16 }}>
+              <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: "#374151", marginBottom: 12 }}>
+                Found {duplicatePrompt?.matches.length ?? 0} prior case
+                {(duplicatePrompt?.matches.length ?? 0) === 1 ? "" : "s"} for{" "}
+                <Text style={{ fontFamily: "Inter_600SemiBold", color: "#111827" }}>
+                  {duplicatePrompt?.patientName}
+                </Text>
+                . If this is a remake, pick which prior case it is remaking.
+              </Text>
+              {(duplicatePrompt?.matches ?? []).map((m) => {
+                const isLegacy = m.source === "legacy";
+                const selected = duplicateSelectedId === m.id;
+                return (
+                  <Pressable
+                    key={`${m.source}:${m.id}`}
+                    onPress={() => {
+                      setDuplicateSelectedId(m.id);
+                      setDuplicateError(null);
+                    }}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: selected ? "#2563EB" : "#E5E7EB",
+                      backgroundColor: selected ? "#EFF6FF" : "#FFF",
+                      borderRadius: 10,
+                      padding: 10,
+                      marginBottom: 8,
+                    }}
+                  >
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <View style={{
+                        width: 16, height: 16, borderRadius: 8,
+                        borderWidth: 2,
+                        borderColor: selected ? "#2563EB" : "#9CA3AF",
+                        alignItems: "center", justifyContent: "center",
+                      }}>
+                        {selected && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#2563EB" }} />}
+                      </View>
+                      <Text style={{ fontFamily: "Inter_700Bold", fontSize: 13, color: "#111827" }}>
+                        Case {m.caseNumber}
+                      </Text>
+                      {m.matchKind && m.matchKind !== "exact" && (
+                        <Text style={{ fontFamily: "Inter_500Medium", fontSize: 10, color: "#6B7280", textTransform: "uppercase" }}>
+                          {m.matchKind}
+                        </Text>
+                      )}
+                      {isLegacy && (
+                        <Text style={{ fontFamily: "Inter_500Medium", fontSize: 10, color: "#9CA3AF", marginLeft: "auto" }}>
+                          mobile
+                        </Text>
+                      )}
+                    </View>
+                    <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: "#374151", marginTop: 6 }}>
+                      {m.patientFirstName} {m.patientLastName}
+                    </Text>
+                    <Text style={{ fontFamily: "Inter_400Regular", fontSize: 11, color: "#6B7280", marginTop: 2 }}>
+                      {(m.createdAt ? new Date(m.createdAt).toLocaleDateString() : "—")}
+                      {m.toothNumbers ? ` · Teeth ${m.toothNumbers}` : ""}
+                      {m.restorationTypes ? ` · ${m.restorationTypes}` : ""}
+                      {m.status ? ` · ${m.status}` : ""}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151", marginTop: 6, marginBottom: 4 }}>
+                Reason for remake (required if remake)
+              </Text>
+              <TextInput
+                value={duplicateReason}
+                onChangeText={(t) => { setDuplicateReason(t); setDuplicateError(null); }}
+                placeholder="e.g. Doesn't fit / open margins / wrong shade..."
+                multiline
+                style={{
+                  borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
+                  paddingHorizontal: 10, paddingVertical: 8, minHeight: 60,
+                  fontFamily: "Inter_400Regular", fontSize: 13, color: "#111827",
+                  textAlignVertical: "top",
+                }}
+              />
+
+              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151", marginTop: 12, marginBottom: 4 }}>
+                Charge for this remake?
+              </Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {(["yes", "no"] as const).map((v) => (
+                  <Pressable
+                    key={v}
+                    onPress={() => { setDuplicateCharge(v); setDuplicateError(null); }}
+                    style={{
+                      flex: 1, paddingVertical: 10, borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: duplicateCharge === v ? (v === "no" ? "#D97706" : "#2563EB") : "#E5E7EB",
+                      backgroundColor: duplicateCharge === v ? (v === "no" ? "#FEF3C7" : "#EFF6FF") : "#FFF",
+                      alignItems: "center",
+                    }}
+                  >
+                    <Text style={{
+                      fontFamily: "Inter_600SemiBold", fontSize: 12,
+                      color: duplicateCharge === v ? (v === "no" ? "#92400E" : "#1D4ED8") : "#374151",
+                    }}>
+                      {v === "yes" ? "Yes — charge as usual" : "No — no-charge remake"}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {duplicateError && (
+                <Text style={{ marginTop: 10, color: "#B91C1C", fontFamily: "Inter_500Medium", fontSize: 12 }}>
+                  {duplicateError}
+                </Text>
+              )}
+            </ScrollView>
+
+            <View style={{ flexDirection: "row", gap: 8, padding: 12, borderTopWidth: 1, borderTopColor: "#E5E7EB" }}>
+              <Pressable
+                onPress={() => setDuplicatePrompt(null)}
+                style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#F3F4F6" }}
+              >
+                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151" }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  const pn = duplicatePrompt?.patientName ?? patientName.trim();
+                  setDuplicatePrompt(null);
+                  router.push(`/chart-history?patient=${encodeURIComponent(pn)}`);
+                }}
+                style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#E5E7EB" }}
+              >
+                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#111827" }}>View chart</Text>
+              </Pressable>
+              <View style={{ flex: 1 }} />
+              <Pressable
+                onPress={() => {
+                  // User has explicitly answered "no" to the duplicate
+                  // prompt — create the case as a normal new case and do
+                  // NOT trigger the legacy remake follow-up alerts.
+                  setDuplicatePrompt(null);
+                  createCase(false);
+                }}
+                style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#F3F4F6" }}
+              >
+                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151" }}>Not a remake</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  if (!duplicateSelectedId) {
+                    setDuplicateError("Pick the prior case being remade.");
+                    return;
+                  }
+                  if (!duplicateReason.trim()) {
+                    setDuplicateError("Reason for remake is required.");
+                    return;
+                  }
+                  if (duplicateCharge === "") {
+                    setDuplicateError("Choose whether to charge for this remake.");
+                    return;
+                  }
+                  setDuplicatePrompt(null);
+                  createRemakeCase(
+                    duplicateReason.trim(),
+                    duplicateCharge === "yes",
+                    duplicateSelectedId,
+                  );
+                }}
+                style={{ paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, backgroundColor: "#2563EB" }}
+              >
+                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#FFF" }}>
+                  Yes — link as remake
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
       <Modal
         visible={labelModalVisible}
         transparent

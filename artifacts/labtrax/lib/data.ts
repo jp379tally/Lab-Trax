@@ -119,6 +119,8 @@ export interface LabCase {
   courtesyTexts?: CourtesyTextRequest[];
   invoiceId?: string;
   remakeReason?: string;
+  remakeCharged?: boolean;
+  remakeOfCaseId?: string;
   assignedBarcode?: string;
   exocadWebviewUrl?: string;
 }
