@@ -7,6 +7,7 @@ import {
   bankTransactionInvoices,
   bankTransactions,
   caseEvents,
+  caseNotes,
   caseRestorations,
   cases,
   invoiceLineItems,
@@ -374,6 +375,71 @@ function nextInvoiceNumber(caseNumber: string) {
   return `INV-${caseNumber}`;
 }
 
+// Build the invoice editor's `displayMetadataJson` blob from the originating
+// case + its restorations + its notes. This pre-fills the patient name,
+// bill-to (doctor), teeth list (comma-separated), shade, and case notes
+// fields the same way they appear on the case card / case drawer — including
+// when the case was originally AI-imported from a prescription, since the
+// AI flow writes those values into the same `cases` and `case_restorations`
+// columns we read here.
+function buildInvoiceDisplayMetadataFromCase(
+  caseRow: {
+    patientFirstName: string | null;
+    patientLastName: string | null;
+    doctorName: string | null;
+  },
+  restorationRows: Array<{
+    toothNumber: string | null;
+    shade: string | null;
+  }>,
+  noteRows: Array<{ noteText: string | null }>,
+) {
+  const patientName = `${caseRow.patientFirstName ?? ""} ${caseRow.patientLastName ?? ""}`
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const seenTeeth = new Set<string>();
+  const teethOrdered: string[] = [];
+  for (const r of restorationRows) {
+    const t = (r.toothNumber ?? "").trim();
+    if (t && !seenTeeth.has(t)) {
+      seenTeeth.add(t);
+      teethOrdered.push(t);
+    }
+  }
+  // Sort numerically when every tooth parses as a number, otherwise keep
+  // restoration order so non-numeric notations (e.g. FDI "11", "UR1") are
+  // not reordered into something nonsensical.
+  const allNumeric = teethOrdered.every((t) => /^\d+$/.test(t));
+  const teeth = allNumeric
+    ? teethOrdered.slice().sort((a, b) => Number(a) - Number(b)).join(", ")
+    : teethOrdered.join(", ");
+
+  const seenShades = new Set<string>();
+  const shadesOrdered: string[] = [];
+  for (const r of restorationRows) {
+    const s = (r.shade ?? "").trim();
+    if (s && !seenShades.has(s)) {
+      seenShades.add(s);
+      shadesOrdered.push(s);
+    }
+  }
+  const shade = shadesOrdered.join(", ");
+
+  const caseNotesText = noteRows
+    .map((n) => (n.noteText ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+
+  return {
+    patientName,
+    billTo: (caseRow.doctorName ?? "").trim(),
+    teeth,
+    shade,
+    caseNotes: caseNotesText,
+  };
+}
+
 // Admin-only batch backfill: for a given lab org, find every case that does
 // not yet have an invoice and generate one for it using the same per-case
 // generation logic. Idempotent: relies on the unique index on
@@ -423,6 +489,18 @@ router.post(
       }
 
       const invoiceNumber = nextInvoiceNumber(found.caseNumber);
+      const noteRows = await db.query.caseNotes.findMany({
+        where: and(
+          eq(caseNotes.caseId, found.id),
+          eq(caseNotes.visibility, "shared_with_provider"),
+        ),
+        orderBy: [caseNotes.createdAt],
+      });
+      const displayMetadataJson = buildInvoiceDisplayMetadataFromCase(
+        found,
+        restorations,
+        noteRows,
+      );
       const [invoice] = await db
         .insert(invoices)
         .values({
@@ -431,6 +509,7 @@ router.post(
           labOrganizationId: found.labOrganizationId,
           providerOrganizationId: found.providerOrganizationId,
           status: "draft",
+          displayMetadataJson,
           createdByUserId: (req as any).auth.userId,
           updatedByUserId: (req as any).auth.userId,
         })
@@ -536,6 +615,25 @@ router.post(
     // skeleton to attach line items to later.
     const hasRestorations = restorations.length > 0;
 
+    // Pre-fill the invoice editor's patient/doctor/teeth/shade/case-notes
+    // fields from the originating case so an admin doesn't have to retype
+    // anything the AI prescription analysis already extracted. Restrict
+    // notes to provider-shared visibility — invoices are readable by the
+    // practice (provider org members), so internal-lab-only notes must
+    // never be persisted into invoice metadata or its downstream PDF/email.
+    const noteRows = await db.query.caseNotes.findMany({
+      where: and(
+        eq(caseNotes.caseId, found.id),
+        eq(caseNotes.visibility, "shared_with_provider"),
+      ),
+      orderBy: [caseNotes.createdAt],
+    });
+    const displayMetadataJson = buildInvoiceDisplayMetadataFromCase(
+      found,
+      restorations,
+      noteRows,
+    );
+
     const [invoice] = await db
       .insert(invoices)
       .values({
@@ -544,6 +642,7 @@ router.post(
         labOrganizationId: found.labOrganizationId,
         providerOrganizationId: found.providerOrganizationId,
         status: "draft",
+        displayMetadataJson,
         createdByUserId: (req as any).auth.userId,
         updatedByUserId: (req as any).auth.userId,
       })
