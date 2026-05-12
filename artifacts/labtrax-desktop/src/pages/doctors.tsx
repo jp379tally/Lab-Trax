@@ -589,13 +589,21 @@ function MergeDoctorSection({
   const mergeMutation = useMutation({
     mutationFn: () => {
       if (!target) throw new Error("Pick a target doctor first.");
+      const labOrganizationId =
+        source.labOrganizationId || target.labOrganizationId;
+      if (!labOrganizationId) {
+        throw new Error(
+          "Missing lab for these doctors. Refresh and try again.",
+        );
+      }
       return apiFetch<{ casesMoved: number }>(`/doctors/merge`, {
         method: "POST",
         body: JSON.stringify({
           sourceDoctorName: source.doctorName,
-          sourceProviderOrganizationId: source.practiceId,
+          sourceProviderOrganizationId: source.practiceId || null,
           targetDoctorName: target.doctorName,
-          targetProviderOrganizationId: target.practiceId,
+          targetProviderOrganizationId: target.practiceId || null,
+          labOrganizationId,
         }),
       });
     },
