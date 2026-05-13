@@ -32,6 +32,7 @@ import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
+import { fetch as expoFetch } from "expo/fetch";
 import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
@@ -1211,11 +1212,17 @@ export default function ScanScreen() {
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
+    // Prefer expo/fetch on native — RN's built-in XHR-based fetch can hang
+    // silently on large request bodies (multi-page base64 payloads).
+    const useExpoFetch = (Platform.OS as string) !== "web";
+    const fetchFn: any = useExpoFetch
+      ? expoFetch
+      : ((globalThis as any).fetch ?? fetch);
+
     try {
-      const fetchFn: typeof fetch = (globalThis as any).fetch ?? fetch;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 90000);
-      let res: Response;
+      let res: any;
       try {
         res = await fetchFn(primaryUrl, {
           method: "POST",
@@ -1231,21 +1238,35 @@ export default function ScanScreen() {
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
         console.log("AI response error:", res.status, errText.substring(0, 300));
+        let parsedDetail = "";
         try {
           const errJson = JSON.parse(errText);
           if (errJson.error && errJson.error.includes("HEIC")) {
             return { success: false, error: errJson.error };
           }
-          if (errJson.detail) console.log("AI error detail:", errJson.detail);
+          if (errJson.detail) {
+            console.log("AI error detail:", errJson.detail);
+            parsedDetail = String(errJson.detail).substring(0, 200);
+          } else if (errJson.error) {
+            parsedDetail = String(errJson.error).substring(0, 200);
+          }
         } catch {}
-        return { success: false };
+        const httpReason = res.status === 413
+          ? "Image is too large for the server (413). Try fewer pages."
+          : res.status === 503
+          ? "AI service is not configured on the server."
+          : `Server returned ${res.status}${parsedDetail ? `: ${parsedDetail}` : ""}`;
+        return { success: false, error: httpReason };
       }
       const result = await res.json();
       console.log("AI: Parsed result success:", result?.success, "fields:", result?.data ? Object.keys(result.data).join(",") : "none");
       return result;
     } catch (err: any) {
-      console.log("AI: Request failed:", err?.message || String(err));
-      return { success: false };
+      const msg = err?.name === "AbortError"
+        ? "AI request timed out after 90s"
+        : err?.message || String(err);
+      console.log("AI: Request failed:", msg);
+      return { success: false, error: msg };
     }
   }
 
@@ -1437,6 +1458,14 @@ export default function ScanScreen() {
     if (analyzeUri) {
       setIsAnalyzing(true);
       let failReason = "";
+      // Watchdog: no matter what goes wrong below, never leave the user
+      // stuck on the "Analyzing RX..." spinner. After 100s, force the
+      // flow forward to the form so the user can fill it in by hand.
+      const watchdog = setTimeout(() => {
+        console.log("AI: watchdog fired — forcing form transition after 100s");
+        setIsAnalyzing(false);
+        setPhase("form");
+      }, 100000);
 
       try {
         analyzeUri = await ensureHighQualityBase64(analyzeUri);
@@ -1501,9 +1530,12 @@ export default function ScanScreen() {
         let result: { success: boolean; data?: any; error?: string };
         try {
           result = await sendToAI(base64Data, additionalBase64.length > 0 ? additionalBase64 : undefined);
-          console.log("AI: Response received, success:", result.success, "pages sent:", 1 + additionalBase64.length);
+          console.log("AI: Response received, success:", result.success, "pages sent:", 1 + additionalBase64.length, "error:", result.error || "");
+          if (!result.success && result.error) {
+            failReason = result.error;
+          }
         } catch (sendErr: any) {
-          failReason = "Network request failed";
+          failReason = sendErr?.message || "Network request failed";
           console.log("AI: Send error:", sendErr?.message || sendErr);
           throw sendErr;
         }
@@ -1708,6 +1740,7 @@ export default function ScanScreen() {
         console.log("AI analysis failed:", failReason, err?.message || err);
         if (!failReason) failReason = err?.message || "Unknown error";
       } finally {
+        clearTimeout(watchdog);
         setIsAnalyzing(false);
       }
 
