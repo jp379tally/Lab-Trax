@@ -23,6 +23,45 @@ import { requireAuth } from "../middlewares/auth";
 const router = Router();
 router.use(requireAuth);
 
+// Resolve end-of-day for a calendar Y/M/D in an IANA tz, returned as
+// the UTC instant. Falls back to UTC if no tz is supplied or invalid.
+function endOfDayInTz(
+  yr: number,
+  mo: number,
+  day: number,
+  tz: string | undefined,
+): Date {
+  if (!tz) return new Date(Date.UTC(yr, mo, day, 23, 59, 59, 999));
+  try {
+    const guess = Date.UTC(yr, mo, day, 23, 59, 59, 999);
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const parts = fmt.formatToParts(new Date(guess));
+    const get = (t: string) =>
+      Number(parts.find((p) => p.type === t)?.value ?? "0");
+    const wallAsUtc = Date.UTC(
+      get("year"),
+      get("month") - 1,
+      get("day"),
+      get("hour"),
+      get("minute"),
+      get("second"),
+    );
+    const offset = wallAsUtc - guess; // ms tz is ahead of UTC
+    return new Date(guess - offset);
+  } catch {
+    return new Date(Date.UTC(yr, mo, day, 23, 59, 59, 999));
+  }
+}
+
 function uid(req: any): string {
   return req.auth.userId as string;
 }
@@ -1507,6 +1546,355 @@ router.get(
       categoryBreakdown,
     });
   })
+);
+
+// ─────────────────── Reports: Profit & Loss (Task #381) ───────────────────
+//
+// Revenue: invoices issued in the window (excluding void / soft-deleted).
+// Expenses: posted, non-transfer bank transactions whose category is of
+// kind "expense", grouped by category name. Categories whose name matches
+// /cogs|material|outsourc|lab supply/i are treated as Cost of Goods Sold;
+// the remainder count as Operating Expenses. Uncategorised expenses fall
+// into a single "Uncategorized" OpEx bucket so nothing is silently lost.
+const COGS_PATTERN = /cogs|material|outsourc|lab supply|lab supplies/i;
+
+router.get(
+  "/reports/profit-loss",
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        organizationId: z.string().min(1),
+        dateFrom: z.string().min(1),
+        dateTo: z.string().min(1),
+        comparePrevious: z
+          .union([z.literal("true"), z.literal("false"), z.boolean()])
+          .optional()
+          .transform((v) => v === true || v === "true"),
+      })
+      .parse(req.query);
+    await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
+    const from = new Date(q.dateFrom);
+    const to = new Date(q.dateTo);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      throw new HttpError(400, "Invalid dateFrom/dateTo.");
+    }
+
+    const cats = (await db.query.transactionCategories.findMany({
+      where: eq(transactionCategories.labOrganizationId, q.organizationId),
+    })) as Array<{ id: string; name: string; kind: string }>;
+    const catById = new Map(cats.map((c) => [c.id, c]));
+
+    const main = await computePnl(q.organizationId, from, to, catById);
+    let previous: PnlBlock | null = null;
+    if (q.comparePrevious) {
+      // Previous window of the same number of whole days, ending the
+      // day before `from`. The DateRangePicker sends `to` as end-of-day,
+      // so days = round((to - from) / 1d). Example: May 1 00:00 –
+      // May 31 23:59:59.999 → 31 days, prev = Mar 31 – Apr 30 (also 31).
+      const dayMs = 86_400_000;
+      const days = Math.max(
+        1,
+        Math.round((to.getTime() - from.getTime()) / dayMs),
+      );
+      const prevFrom = new Date(from.getTime() - days * dayMs);
+      const prevTo = new Date(from.getTime() - 1);
+      previous = await computePnl(q.organizationId, prevFrom, prevTo, catById);
+    }
+
+    return ok(res, {
+      ...main,
+      previous,
+    });
+  }),
+);
+
+interface PnlBlock {
+  from: string;
+  to: string;
+  revenue: string;
+  invoiceCount: number;
+  cogs: Array<{ name: string; amount: string }>;
+  cogsTotal: string;
+  grossProfit: string;
+  grossMargin: number;
+  opex: Array<{ name: string; amount: string }>;
+  opexTotal: string;
+  netIncome: string;
+  netMargin: number;
+}
+
+async function computePnl(
+  organizationId: string,
+  from: Date,
+  to: Date,
+  catById: Map<string, { id: string; name: string; kind: string }>,
+): Promise<PnlBlock> {
+  const issued = sql<Date>`COALESCE(${invoices.issuedAt}, ${invoices.createdAt})`;
+  const invRows = (await db
+    .select({ total: invoices.total, status: invoices.status })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.labOrganizationId, organizationId),
+        sql`${invoices.deletedAt} IS NULL`,
+        gte(issued, from),
+        lte(issued, to),
+      ),
+    )) as Array<{ total: string; status: string }>;
+  let revenue = 0;
+  let invoiceCount = 0;
+  for (const r of invRows) {
+    if (r.status === "void") continue;
+    revenue += Number(r.total || 0);
+    invoiceCount += 1;
+  }
+
+  const txnRows = (await db
+    .select({
+      categoryId: bankTransactions.categoryId,
+      debit: bankTransactions.debitAmount,
+      transferGroupId: bankTransactions.transferGroupId,
+    })
+    .from(bankTransactions)
+    .where(
+      and(
+        eq(bankTransactions.labOrganizationId, organizationId),
+        sql`${bankTransactions.deletedAt} IS NULL`,
+        eq(bankTransactions.status, "posted"),
+        gte(bankTransactions.txnDate, from),
+        lte(bankTransactions.txnDate, to),
+      ),
+    )) as Array<{
+    categoryId: string | null;
+    debit: string;
+    transferGroupId: string | null;
+  }>;
+
+  const cogsByName = new Map<string, number>();
+  const opexByName = new Map<string, number>();
+  let cogsTotal = 0;
+  let opexTotal = 0;
+  for (const t of txnRows) {
+    if (t.transferGroupId) continue;
+    const debit = Number(t.debit || 0);
+    if (debit <= 0) continue;
+    const cat = t.categoryId ? catById.get(t.categoryId) : null;
+    // Only categorise expense-kind categories. Income/transfer-kind
+    // categories that somehow have a debit are ignored to avoid
+    // distorting the P&L.
+    if (cat && cat.kind !== "expense") continue;
+    const name = cat?.name ?? "Uncategorized";
+    const isCogs = cat ? COGS_PATTERN.test(name) : false;
+    if (isCogs) {
+      cogsByName.set(name, (cogsByName.get(name) ?? 0) + debit);
+      cogsTotal += debit;
+    } else {
+      opexByName.set(name, (opexByName.get(name) ?? 0) + debit);
+      opexTotal += debit;
+    }
+  }
+
+  const cogs = Array.from(cogsByName.entries())
+    .map(([name, amount]) => ({ name, amount: amount.toFixed(2) }))
+    .sort((a, b) => Number(b.amount) - Number(a.amount));
+  const opex = Array.from(opexByName.entries())
+    .map(([name, amount]) => ({ name, amount: amount.toFixed(2) }))
+    .sort((a, b) => Number(b.amount) - Number(a.amount));
+
+  const grossProfit = revenue - cogsTotal;
+  const netIncome = grossProfit - opexTotal;
+
+  return {
+    from: from.toISOString(),
+    to: to.toISOString(),
+    revenue: revenue.toFixed(2),
+    invoiceCount,
+    cogs,
+    cogsTotal: cogsTotal.toFixed(2),
+    grossProfit: grossProfit.toFixed(2),
+    grossMargin: revenue > 0 ? grossProfit / revenue : 0,
+    opex,
+    opexTotal: opexTotal.toFixed(2),
+    netIncome: netIncome.toFixed(2),
+    netMargin: revenue > 0 ? netIncome / revenue : 0,
+  };
+}
+
+// Reports: Balance Sheet — assets/liabilities/equity snapshot at asOf.
+// retainedEarnings = cumulative net income to date; ownerContributions
+// is the residual that keeps assets = liabilities + equity.
+router.get(
+  "/reports/balance-sheet",
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        organizationId: z.string().min(1),
+        asOfDate: z.string().min(1),
+        timeZone: z.string().min(1).max(64).optional(),
+      })
+      .parse(req.query);
+    await requireAnyRole(uid(req), q.organizationId, BILLING_ROLES);
+    const ymdMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(q.asOfDate);
+    if (!ymdMatch) throw new HttpError(400, "Invalid asOfDate.");
+    const [, ys, ms, ds] = ymdMatch;
+    const yr = Number(ys);
+    const mo = Number(ms) - 1;
+    const day = Number(ds);
+    // Resolve end-of-day for the asOfDate in the caller's IANA tz so
+    // labs in non-UTC zones don't lose evening transactions or roll
+    // into the next day. Falls back to UTC if no tz is supplied.
+    const asOfEnd = endOfDayInTz(yr, mo, day, q.timeZone);
+    if (Number.isNaN(asOfEnd.getTime())) {
+      throw new HttpError(400, "Invalid asOfDate.");
+    }
+
+    const accts = (await db.query.bankAccounts.findMany({
+      where: eq(bankAccounts.labOrganizationId, q.organizationId),
+    })) as Array<{
+      id: string;
+      name: string;
+      last4: string | null;
+      openingBalance: string;
+      isArchived: boolean;
+    }>;
+    const acctSums = accts.length
+      ? ((await db
+          .select({
+            bankAccountId: bankTransactions.bankAccountId,
+            sum: sql<string>`COALESCE(SUM(CASE WHEN ${bankTransactions.status} <> 'void' THEN ${bankTransactions.netAmount} ELSE 0 END), 0)::text`,
+          })
+          .from(bankTransactions)
+          .where(
+            and(
+              eq(bankTransactions.labOrganizationId, q.organizationId),
+              sql`${bankTransactions.deletedAt} IS NULL`,
+              lte(bankTransactions.txnDate, asOfEnd),
+              inArray(
+                bankTransactions.bankAccountId,
+                accts.map((a) => a.id),
+              ),
+            ),
+          )
+          .groupBy(bankTransactions.bankAccountId)) as Array<{
+          bankAccountId: string;
+          sum: string;
+        }>)
+      : [];
+    const txnSumByAcct = new Map(
+      acctSums.map((s) => [s.bankAccountId, Number(s.sum)]),
+    );
+    // Account creation already writes an "Opening balance" row into
+    // bank_transactions (see POST /accounts), so the txn sum already
+    // contains the opening balance — don't add it again.
+    const cashAccounts = accts
+      .filter((a) => !a.isArchived)
+      .map((a) => {
+        const balance = txnSumByAcct.get(a.id) ?? 0;
+        return {
+          accountId: a.id,
+          name: a.name + (a.last4 ? ` ··${a.last4}` : ""),
+          balance: balance.toFixed(2),
+        };
+      });
+    const cashTotal = cashAccounts.reduce(
+      (sum, a) => sum + Number(a.balance),
+      0,
+    );
+
+    const issued = sql<Date>`COALESCE(${invoices.issuedAt}, ${invoices.createdAt})`;
+    const arRows = (await db
+      .select({
+        balanceDue: invoices.balanceDue,
+        total: invoices.total,
+        status: invoices.status,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.labOrganizationId, q.organizationId),
+          sql`${invoices.deletedAt} IS NULL`,
+          lte(issued, asOfEnd),
+        ),
+      )) as Array<{ balanceDue: string; total: string; status: string }>;
+    let accountsReceivable = 0;
+    let customerCredits = 0;
+    let cumulativeRevenue = 0;
+    for (const r of arRows) {
+      if (r.status === "void") continue;
+      cumulativeRevenue += Number(r.total || 0);
+      if (r.status === "paid") continue;
+      const due = Number(r.balanceDue || 0);
+      if (due >= 0) accountsReceivable += due;
+      else customerCredits += -due;
+    }
+
+    const cats = (await db.query.transactionCategories.findMany({
+      where: eq(transactionCategories.labOrganizationId, q.organizationId),
+    })) as Array<{ id: string; kind: string }>;
+    const catKindById = new Map(cats.map((c) => [c.id, c.kind]));
+    const expenseRows = (await db
+      .select({
+        categoryId: bankTransactions.categoryId,
+        debit: bankTransactions.debitAmount,
+        transferGroupId: bankTransactions.transferGroupId,
+      })
+      .from(bankTransactions)
+      .where(
+        and(
+          eq(bankTransactions.labOrganizationId, q.organizationId),
+          sql`${bankTransactions.deletedAt} IS NULL`,
+          eq(bankTransactions.status, "posted"),
+          lte(bankTransactions.txnDate, asOfEnd),
+        ),
+      )) as Array<{
+      categoryId: string | null;
+      debit: string;
+      transferGroupId: string | null;
+    }>;
+    let cumulativeExpenses = 0;
+    for (const t of expenseRows) {
+      if (t.transferGroupId) continue;
+      const debit = Number(t.debit || 0);
+      if (debit <= 0) continue;
+      const kind = t.categoryId ? catKindById.get(t.categoryId) : null;
+      if (kind && kind !== "expense") continue;
+      cumulativeExpenses += debit;
+    }
+
+    const retainedEarnings = cumulativeRevenue - cumulativeExpenses;
+    const assetsTotal = cashTotal + accountsReceivable;
+    const liabilityItems: Array<{ name: string; amount: string }> = [];
+    if (customerCredits > 0) {
+      liabilityItems.push({
+        name: "Customer credits",
+        amount: customerCredits.toFixed(2),
+      });
+    }
+    const liabilitiesTotal = customerCredits;
+    const ownerContributions =
+      assetsTotal - liabilitiesTotal - retainedEarnings;
+    const equityTotal = retainedEarnings + ownerContributions;
+
+    return ok(res, {
+      asOf: asOfEnd.toISOString(),
+      assets: {
+        cashAccounts,
+        cashTotal: cashTotal.toFixed(2),
+        accountsReceivable: accountsReceivable.toFixed(2),
+        total: assetsTotal.toFixed(2),
+      },
+      liabilities: {
+        items: liabilityItems,
+        customerCredits: customerCredits.toFixed(2),
+        total: liabilitiesTotal.toFixed(2),
+      },
+      equity: {
+        retainedEarnings: retainedEarnings.toFixed(2),
+        ownerContributions: ownerContributions.toFixed(2),
+        total: equityTotal.toFixed(2),
+      },
+    });
+  }),
 );
 
 export default router;

@@ -27,6 +27,9 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useUploads } from "@/lib/uploads-context";
 import { Logo } from "./Logo";
+import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api";
+import type { MeResponse } from "@/lib/types";
 
 interface NavItem {
   label: string;
@@ -34,6 +37,7 @@ interface NavItem {
   icon: typeof LayoutDashboard;
   badge?: string;
   adminOnly?: boolean;
+  billingOnly?: boolean;
 }
 
 const NAV: NavItem[] = [
@@ -45,8 +49,10 @@ const NAV: NavItem[] = [
   { label: "Financial", path: "/finance", icon: Wallet },
   { label: "Statements", path: "/statements", icon: CreditCard },
   { label: "Pricing", path: "/pricing", icon: Tag },
-  { label: "Reports", path: "/reports", icon: FileBarChart2 },
+  { label: "Reports", path: "/reports", icon: FileBarChart2, billingOnly: true },
 ];
+
+const BILLING_ROLES = new Set(["owner", "admin", "billing"]);
 
 const SECONDARY: NavItem[] = [
   { label: "Admin Settings", path: "/settings", icon: Settings },
@@ -64,6 +70,21 @@ export function AppLayout({ children }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const { entries, activeCount, removeEntry, cancelEntry } = useUploads();
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+    enabled: !!user,
+  });
+  const hasBillingLab = useMemo(
+    () =>
+      (meQuery.data?.memberships ?? []).some(
+        (m) =>
+          m.status === "active" &&
+          m.organization?.type === "lab" &&
+          BILLING_ROLES.has(m.role),
+      ),
+    [meQuery.data],
+  );
   const successCount = entries.filter((e) => e.status === "success").length;
   const errorCount = entries.filter((e) => e.status === "error").length;
   const interruptedCount = entries.filter((e) => e.status === "interrupted").length;
@@ -95,7 +116,7 @@ export function AppLayout({ children }: Props) {
             Workspace
           </div>
           <ul className="space-y-0.5">
-            {NAV.map((item) => {
+            {NAV.filter((item) => !item.billingOnly || hasBillingLab).map((item) => {
               const active =
                 item.path === "/"
                   ? location === "/" || location === ""

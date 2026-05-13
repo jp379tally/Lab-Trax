@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, lte, or, sum } from "drizzle-orm";
+import { and, desc, eq, gte, lte, or, sql, sum } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -1337,6 +1337,174 @@ router.get(
       ).length,
     });
   })
+);
+
+// ───────── Reports: Sales time series (Task #381) ─────────
+//
+// Buckets invoiced sales for one lab into day / week (Mon-anchored) /
+// month periods. Bucketing key uses `issuedAt` if set, otherwise
+// `createdAt`. Voided invoices are excluded. Soft-deleted invoices are
+// excluded via `notDeleted(invoices)`.
+router.get(
+  "/reports/sales-series",
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        organizationId: z.string().min(1),
+        dateFrom: z.string().min(1),
+        dateTo: z.string().min(1),
+        groupBy: z.enum(["day", "week", "month"]).default("month"),
+        // IANA TZ (e.g. "America/Los_Angeles"); buckets anchor to it.
+        timeZone: z.string().min(1).max(64).optional(),
+      })
+      .parse(req.query);
+    await requireAnyRole(
+      (req as any).auth.userId,
+      q.organizationId,
+      BILLING_ROLES,
+    );
+    const from = new Date(q.dateFrom);
+    const to = new Date(q.dateTo);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      throw new HttpError(400, "Invalid dateFrom/dateTo.");
+    }
+    const tz = q.timeZone ?? "UTC";
+    let tzFmt: Intl.DateTimeFormat;
+    try {
+      tzFmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+    } catch {
+      throw new HttpError(400, `Invalid timeZone: ${tz}`);
+    }
+
+    const issued = sql<Date>`COALESCE(${invoices.issuedAt}, ${invoices.createdAt})`;
+    const rows = (await db
+      .select({
+        issued,
+        subtotal: invoices.subtotal,
+        discount: invoices.discount,
+        tax: invoices.tax,
+        total: invoices.total,
+        status: invoices.status,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.labOrganizationId, q.organizationId),
+          isNull(invoices.deletedAt),
+          gte(issued, from),
+          lte(issued, to),
+        ),
+      )) as Array<{
+      issued: string | Date;
+      subtotal: string;
+      discount: string;
+      tax: string;
+      total: string;
+      status: string;
+    }>;
+
+    function bucketKey(d: Date): { key: string; start: Date } {
+      const parts = tzFmt.format(d).split("-"); // en-CA → "YYYY-MM-DD"
+      const yr = Number(parts[0]);
+      const mo = Number(parts[1]) - 1;
+      const day = Number(parts[2]);
+      if (q.groupBy === "day") {
+        const start = new Date(Date.UTC(yr, mo, day));
+        return { key: start.toISOString().slice(0, 10), start };
+      }
+      if (q.groupBy === "month") {
+        const start = new Date(Date.UTC(yr, mo, 1));
+        return { key: `${yr}-${String(mo + 1).padStart(2, "0")}`, start };
+      }
+      // Week — anchor to local Monday.
+      const local = new Date(Date.UTC(yr, mo, day));
+      const dow = (local.getUTCDay() + 6) % 7; // Mon = 0
+      const start = new Date(Date.UTC(yr, mo, day - dow));
+      return { key: start.toISOString().slice(0, 10), start };
+    }
+
+    const buckets = new Map<
+      string,
+      {
+        periodStart: string;
+        gross: number;
+        discounts: number;
+        net: number;
+        tax: number;
+        count: number;
+      }
+    >();
+    let tGross = 0;
+    let tDiscounts = 0;
+    let tNet = 0;
+    let tTax = 0;
+    let tCount = 0;
+    for (const r of rows) {
+      if (r.status === "void") continue;
+      const d = new Date(r.issued as string);
+      if (Number.isNaN(d.getTime())) continue;
+      const { key, start } = bucketKey(d);
+      const subtotal = Number(r.subtotal || 0);
+      const discount = Number(r.discount || 0);
+      const tax = Number(r.tax || 0);
+      const net = subtotal - discount; // pre-tax revenue
+      const gross = subtotal;
+      const cur =
+        buckets.get(key) ??
+        {
+          periodStart: start.toISOString(),
+          gross: 0,
+          discounts: 0,
+          net: 0,
+          tax: 0,
+          count: 0,
+        };
+      cur.gross += gross;
+      cur.discounts += discount;
+      cur.net += net;
+      cur.tax += tax;
+      cur.count += 1;
+      buckets.set(key, cur);
+      tGross += gross;
+      tDiscounts += discount;
+      tNet += net;
+      tTax += tax;
+      tCount += 1;
+    }
+
+    const series = Array.from(buckets.values())
+      .sort((a, b) => a.periodStart.localeCompare(b.periodStart))
+      .map((b) => ({
+        periodStart: b.periodStart,
+        gross: b.gross.toFixed(2),
+        discounts: b.discounts.toFixed(2),
+        net: b.net.toFixed(2),
+        tax: b.tax.toFixed(2),
+        count: b.count,
+        avg: b.count ? (b.net / b.count).toFixed(2) : "0.00",
+      }));
+
+    return ok(res, {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      groupBy: q.groupBy,
+      timeZone: tz,
+      series,
+      totals: {
+        gross: tGross.toFixed(2),
+        discounts: tDiscounts.toFixed(2),
+        net: tNet.toFixed(2),
+        tax: tTax.toFixed(2),
+        count: tCount,
+        avg: tCount ? (tNet / tCount).toFixed(2) : "0.00",
+      },
+    });
+  }),
 );
 
 export default router;

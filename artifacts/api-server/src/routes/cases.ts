@@ -37,7 +37,7 @@ import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import { deleteFromOneDrive } from "../lib/onedrive";
 import { HttpError, ok } from "../lib/http";
 import { resolveServerPriceWithSource } from "../lib/pricing";
-import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
@@ -3153,6 +3153,132 @@ router.patch(
       remakeCharged: updated.remakeCharged ?? null,
     });
   })
+);
+
+// ───────── Reports: Production by restoration type (Task #381) ─────────
+//
+// Counts and revenue for each restorationType across cases received in
+// the given window for one lab. Cases are scoped by `cases.receivedAt`
+// and exclude soft-deleted rows. A synthetic "Crowns" rollup row sums
+// any restoration type whose label contains "crown" (case-insensitive)
+// so admins can see total crown production at a glance without losing
+// the per-subtype breakdown.
+router.get(
+  "/reports/production-by-type",
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        organizationId: z.string().min(1),
+        dateFrom: z.string().min(1),
+        dateTo: z.string().min(1),
+      })
+      .parse(req.query);
+    await requireAnyRole(
+      (req as any).auth.userId,
+      q.organizationId,
+      BILLING_ROLES,
+    );
+    const from = new Date(q.dateFrom);
+    const to = new Date(q.dateTo);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      throw new HttpError(400, "Invalid dateFrom/dateTo.");
+    }
+
+    const rows = (await db
+      .select({
+        caseId: caseRestorations.caseId,
+        restorationType: caseRestorations.restorationType,
+        quantity: caseRestorations.quantity,
+        unitPrice: caseRestorations.unitPrice,
+      })
+      .from(caseRestorations)
+      .innerJoin(cases, eq(cases.id, caseRestorations.caseId))
+      .where(
+        and(
+          eq(cases.labOrganizationId, q.organizationId),
+          notDeleted(cases),
+          sql`${cases.receivedAt} >= ${from}`,
+          sql`${cases.receivedAt} <= ${to}`,
+        ),
+      )) as Array<{
+      caseId: string;
+      restorationType: string;
+      quantity: number;
+      unitPrice: string;
+    }>;
+
+    const byType = new Map<
+      string,
+      { count: number; units: number; cases: Set<string>; revenue: number }
+    >();
+    let totalCount = 0;
+    let totalUnits = 0;
+    let totalRevenue = 0;
+    const totalCases = new Set<string>();
+    let crownCount = 0;
+    let crownUnits = 0;
+    let crownRevenue = 0;
+    const crownCases = new Set<string>();
+
+    for (const r of rows) {
+      const type = (r.restorationType || "Unspecified").trim() || "Unspecified";
+      const qty = Number(r.quantity || 0);
+      const rev = qty * Number(r.unitPrice || 0);
+      const cur =
+        byType.get(type) ?? {
+          count: 0,
+          units: 0,
+          cases: new Set<string>(),
+          revenue: 0,
+        };
+      cur.count += 1;
+      cur.units += qty;
+      cur.revenue += rev;
+      cur.cases.add(r.caseId);
+      byType.set(type, cur);
+      totalCount += 1;
+      totalUnits += qty;
+      totalRevenue += rev;
+      totalCases.add(r.caseId);
+      if (/crown/i.test(type)) {
+        crownCount += 1;
+        crownUnits += qty;
+        crownRevenue += rev;
+        crownCases.add(r.caseId);
+      }
+    }
+
+    const items = Array.from(byType.entries())
+      .map(([restorationType, v]) => ({
+        restorationType,
+        count: v.count,
+        units: v.units,
+        cases: v.cases.size,
+        revenue: v.revenue.toFixed(2),
+      }))
+      .sort((a, b) => Number(b.revenue) - Number(a.revenue));
+
+    return ok(res, {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      items,
+      crownsRollup:
+        crownCount > 0
+          ? {
+              count: crownCount,
+              units: crownUnits,
+              cases: crownCases.size,
+              revenue: crownRevenue.toFixed(2),
+            }
+          : null,
+      totals: {
+        count: totalCount,
+        units: totalUnits,
+        cases: totalCases.size,
+        revenue: totalRevenue.toFixed(2),
+      },
+    });
+  }),
 );
 
 export default router;
