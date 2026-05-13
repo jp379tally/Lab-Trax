@@ -46,6 +46,17 @@ import {
   formatActivityTimestamp,
 } from "@/lib/scan-helpers";
 import { deriveDisplayInitials } from "@/lib/display-initials";
+import {
+  nextCaseNumber,
+  buildPatientInitials,
+  buildToothDiagram,
+  buildFinalNotes,
+  effectiveToothIndices as computeEffectiveToothIndices,
+} from "@/lib/scan/case-number";
+import { pickProviderMatch, ensureDrPrefix } from "@/lib/scan/provider-match";
+import { mergeDuplicateMatches, defaultSelectedDuplicateId } from "@/lib/scan/duplicate-merge";
+import { DuplicatePromptModal } from "@/components/scan/DuplicatePromptModal";
+import { AttachBarcodeModal } from "@/components/scan/AttachBarcodeModal";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -1570,83 +1581,18 @@ export default function ScanScreen() {
           }
 
           if (d.doctorName) {
-            const normName = (n: string) => n.trim().toLowerCase()
-              .replace(/^dr\.?\s*/i, "")
-              .replace(/,?\s*(dds|dmd|ms|bds|bchd|phd|dmd\/phd)\b.*$/i, "")
-              .replace(/[,.']/g, "")
-              .replace(/\s+/g, " ")
-              .trim();
-            const levenshtein = (a: string, b: string) => {
-              if (a === b) return 0;
-              const m = a.length, n = b.length;
-              if (!m) return n;
-              if (!n) return m;
-              const dp: number[] = new Array(n + 1);
-              for (let j = 0; j <= n; j++) dp[j] = j;
-              for (let i = 1; i <= m; i++) {
-                let prev = dp[0];
-                dp[0] = i;
-                for (let j = 1; j <= n; j++) {
-                  const tmp = dp[j];
-                  dp[j] = a.charCodeAt(i - 1) === b.charCodeAt(j - 1)
-                    ? prev
-                    : 1 + Math.min(prev, dp[j], dp[j - 1]);
-                  prev = tmp;
-                }
-              }
-              return dp[n];
-            };
-            const scoreMatch = (
-              provName: string,
-              practice: string,
-              scanned: string,
-              scannedPractice?: string,
-            ): number => {
-              const a = normName(provName);
-              const b = normName(scanned);
-              if (!a || !b) return 0;
-              if (a === b) return 100;
-              const partsA = a.split(" ").filter(w => w.length > 1);
-              const partsB = b.split(" ").filter(w => w.length > 1);
-              const shared = partsA.filter(w => partsB.includes(w));
-              let score = shared.length * 25;
-              const lastA = partsA[partsA.length - 1] || "";
-              const lastB = partsB[partsB.length - 1] || "";
-              if (lastA && lastB) {
-                if (lastA === lastB) score += 45;
-                else if (lastA.length >= 4 && lastB.length >= 4) {
-                  const dist = levenshtein(lastA, lastB);
-                  const maxLen = Math.max(lastA.length, lastB.length);
-                  if (dist <= 1) score += 35;
-                  else if (dist === 2 && maxLen >= 6) score += 18;
-                }
-              }
-              if (practice && scannedPractice) {
-                const pa = normName(practice);
-                const pb = normName(scannedPractice);
-                if (pa && pb && (pa === pb || pa.includes(pb) || pb.includes(pa))) {
-                  score += 15;
-                }
-              }
-              return score;
-            };
-
-            type Cand = { providerName: string; practiceName: string; clientId: string; score: number };
-            const ranked: Cand[] = allProviderEntries
-              .map(e => ({
+            const matchResult = pickProviderMatch(
+              allProviderEntries.map((e) => ({
                 providerName: e.providerName,
                 practiceName: e.practiceName,
                 clientId: e.clientId,
-                score: scoreMatch(e.providerName, e.practiceName, d.doctorName, d.practiceName),
-              }))
-              .filter(c => c.score >= 35)
-              .sort((a, b) => b.score - a.score);
+              })),
+              { name: d.doctorName, practiceName: d.practiceName },
+            );
+            const exactMatch = matchResult.kind === "exact" ? matchResult.entry : null;
+            const bestSimilar = matchResult.kind === "similar" ? matchResult.entry : null;
 
-            const exactMatch = ranked.find(c => c.score >= 100);
-            const bestSimilar = ranked[0];
-
-            const ensureDr = (n: string) =>
-              /^dr\.?\s/i.test(n.trim()) ? n.trim() : `Dr. ${n.trim()}`;
+            const ensureDr = ensureDrPrefix;
 
             const assignToProvider = (entry: { providerName: string }) => {
               setDoctorName(entry.providerName);
@@ -2257,16 +2203,8 @@ export default function ScanScreen() {
     },
   ) {
     try {
-    const currentYear = new Date().getFullYear();
-    const yy = String(currentYear).slice(-2);
-    const yearCases = cases.filter(c => c.caseNumber.startsWith(`${yy}-`));
-    const maxN = yearCases.reduce((max, c) => {
-      const parts = c.caseNumber.split("-");
-      const n = parseInt(parts[1]) || 0;
-      return n > max ? n : max;
-    }, 0);
-    const nextN = maxN + 1;
-    const caseNumber = `${yy}-${nextN}`;
+    const yy = String(new Date().getFullYear()).slice(-2);
+    const caseNumber = nextCaseNumber(yy, cases.map((c) => c.caseNumber));
 
     const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
       num,
@@ -2275,21 +2213,24 @@ export default function ScanScreen() {
 
     const savedPatientName = patientName.trim();
 
-    const archLabel = removableArch === "Both" ? "Upper, Lower" : removableArch || "";
-    const finalNotes = [
-      removableSubtype ? `[${removableSubtype}]` : "",
-      removableArch ? `[${removableArch === "Both" ? "Upper & Lower" : removableArch}]` : "",
-      removableStage ? `[Stage: ${removableStage}]` : "",
-      notes.trim(),
-    ].filter(Boolean).join(" ");
+    const finalNotes = buildFinalNotes({
+      removableSubtype,
+      removableArch: removableArch as "Upper" | "Lower" | "Both" | "" | undefined,
+      removableStage,
+      notes,
+    });
 
-    const effectiveToothIndices = caseType === "Removable" && archLabel ? archLabel : toothIndices.trim();
+    const effectiveToothIndices = computeEffectiveToothIndices({
+      caseType,
+      removableArch: removableArch as "Upper" | "Lower" | "Both" | "" | undefined,
+      toothIndices,
+    });
 
     const newCase = addCase({
       caseNumber,
       doctorName: doctorName.trim(),
       patientName: savedPatientName,
-      patientInitials: savedPatientName.split(" ").map((w: string) => w.charAt(0).toUpperCase() + ".").join(""),
+      patientInitials: buildPatientInitials(savedPatientName),
       caseType: (caseType || "") as any,
       toothIndices: effectiveToothIndices,
       shade: shade.trim(),
@@ -2320,12 +2261,7 @@ export default function ScanScreen() {
     const now = new Date();
     const createdStr = `${(now.getMonth() + 1).toString().padStart(2, "0")}/${now.getDate().toString().padStart(2, "0")}/${now.getFullYear()}`;
 
-    const diagramTeeth: number[] = [];
-    const tiStr = toothIndices.trim();
-    if (tiStr) {
-      const nums = tiStr.match(/\d+/g);
-      if (nums) nums.forEach(n => { const v = parseInt(n, 10); if (v >= 1 && v <= 32) diagramTeeth.push(v); });
-    }
+    const diagramTeeth = buildToothDiagram(toothIndices);
 
     const savedLabel: LabelData = {
       caseNumber,
@@ -2340,7 +2276,7 @@ export default function ScanScreen() {
       notes: notes.trim(),
       price: calculatedPrice,
       createdAt: createdStr,
-      toothDiagram: diagramTeeth.length > 0 ? diagramTeeth : undefined,
+      toothDiagram: diagramTeeth,
     };
 
     lastCreatedCaseIdRef.current = newCase.id;
@@ -2518,27 +2454,12 @@ export default function ScanScreen() {
         // are the only ones we can hard-link via remakeOfCaseId. We still
         // show local-only legacy hits so the user can see the full
         // history, but they're flagged as not selectable for linking.
-        const merged: DuplicateHit[] = serverMatches.length > 0
-          ? serverMatches
-          : localMatches.map((c) => ({
-              id: c.id,
-              caseNumber: c.caseNumber,
-              matchKind: "exact",
-              source: "legacy" as const,
-              patientFirstName: (c.patientName ?? "").split(" ")[0] ?? "",
-              patientLastName: (c.patientName ?? "").split(" ").slice(1).join(" "),
-              status: c.status,
-              createdAt: typeof c.createdAt === "string" ? c.createdAt : null,
-              toothNumbers: c.toothIndices,
-              restorationTypes: c.caseType,
-            }));
+        const merged: DuplicateHit[] = mergeDuplicateMatches(serverMatches, localMatches);
         finish();
         setDuplicateReason("");
         setDuplicateCharge("");
         setDuplicateError(null);
-        setDuplicateSelectedId(
-          merged.find((m) => m.source === "canonical")?.id ?? "",
-        );
+        setDuplicateSelectedId(defaultSelectedDuplicateId(merged));
         setDuplicatePrompt({ matches: merged, patientName: patientName.trim() });
         return;
       }
@@ -2643,198 +2564,30 @@ export default function ScanScreen() {
 
   const labelAndBarcodeModals = (
     <>
-      <Modal
-        visible={!!duplicatePrompt}
-        transparent
-        animationType="fade"
-        statusBarTranslucent
-        onRequestClose={() => setDuplicatePrompt(null)}
-      >
-        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 16 }}>
-          <View style={{ backgroundColor: "#FFF", borderRadius: 14, maxHeight: "88%", overflow: "hidden" }}>
-            <View style={{ paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "#E5E7EB", flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Ionicons name="warning" size={18} color="#D97706" />
-              <Text style={{ flex: 1, fontFamily: "Inter_700Bold", fontSize: 15, color: "#111827" }}>
-                Possible duplicate / remake?
-              </Text>
-              <Pressable onPress={() => setDuplicatePrompt(null)} hitSlop={10}>
-                <Ionicons name="close" size={20} color="#6B7280" />
-              </Pressable>
-            </View>
-            <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ padding: 16 }}>
-              <Text style={{ fontFamily: "Inter_400Regular", fontSize: 13, color: "#374151", marginBottom: 12 }}>
-                Found {duplicatePrompt?.matches.length ?? 0} prior case
-                {(duplicatePrompt?.matches.length ?? 0) === 1 ? "" : "s"} for{" "}
-                <Text style={{ fontFamily: "Inter_600SemiBold", color: "#111827" }}>
-                  {duplicatePrompt?.patientName}
-                </Text>
-                . If this is a remake, pick which prior case it is remaking.
-              </Text>
-              {(duplicatePrompt?.matches ?? []).map((m) => {
-                const isLegacy = m.source === "legacy";
-                const selected = duplicateSelectedId === m.id;
-                return (
-                  <Pressable
-                    key={`${m.source}:${m.id}`}
-                    onPress={() => {
-                      setDuplicateSelectedId(m.id);
-                      setDuplicateError(null);
-                    }}
-                    style={{
-                      borderWidth: 1,
-                      borderColor: selected ? "#2563EB" : "#E5E7EB",
-                      backgroundColor: selected ? "#EFF6FF" : "#FFF",
-                      borderRadius: 10,
-                      padding: 10,
-                      marginBottom: 8,
-                    }}
-                  >
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                      <View style={{
-                        width: 16, height: 16, borderRadius: 8,
-                        borderWidth: 2,
-                        borderColor: selected ? "#2563EB" : "#9CA3AF",
-                        alignItems: "center", justifyContent: "center",
-                      }}>
-                        {selected && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#2563EB" }} />}
-                      </View>
-                      <Text style={{ fontFamily: "Inter_700Bold", fontSize: 13, color: "#111827" }}>
-                        Case {m.caseNumber}
-                      </Text>
-                      {m.matchKind && m.matchKind !== "exact" && (
-                        <Text style={{ fontFamily: "Inter_500Medium", fontSize: 10, color: "#6B7280", textTransform: "uppercase" }}>
-                          {m.matchKind}
-                        </Text>
-                      )}
-                      {isLegacy && (
-                        <Text style={{ fontFamily: "Inter_500Medium", fontSize: 10, color: "#9CA3AF", marginLeft: "auto" }}>
-                          mobile
-                        </Text>
-                      )}
-                    </View>
-                    <Text style={{ fontFamily: "Inter_500Medium", fontSize: 12, color: "#374151", marginTop: 6 }}>
-                      {m.patientFirstName} {m.patientLastName}
-                    </Text>
-                    <Text style={{ fontFamily: "Inter_400Regular", fontSize: 11, color: "#6B7280", marginTop: 2 }}>
-                      {(m.createdAt ? new Date(m.createdAt).toLocaleDateString() : "—")}
-                      {m.toothNumbers ? ` · Teeth ${m.toothNumbers}` : ""}
-                      {m.restorationTypes ? ` · ${m.restorationTypes}` : ""}
-                      {m.status ? ` · ${m.status}` : ""}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151", marginTop: 6, marginBottom: 4 }}>
-                Reason for remake (required if remake)
-              </Text>
-              <TextInput
-                value={duplicateReason}
-                onChangeText={(t) => { setDuplicateReason(t); setDuplicateError(null); }}
-                placeholder="e.g. Doesn't fit / open margins / wrong shade..."
-                multiline
-                style={{
-                  borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 8,
-                  paddingHorizontal: 10, paddingVertical: 8, minHeight: 60,
-                  fontFamily: "Inter_400Regular", fontSize: 13, color: "#111827",
-                  textAlignVertical: "top",
-                }}
-              />
-
-              <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151", marginTop: 12, marginBottom: 4 }}>
-                Charge for this remake?
-              </Text>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                {(["yes", "no"] as const).map((v) => (
-                  <Pressable
-                    key={v}
-                    onPress={() => { setDuplicateCharge(v); setDuplicateError(null); }}
-                    style={{
-                      flex: 1, paddingVertical: 10, borderRadius: 8,
-                      borderWidth: 1,
-                      borderColor: duplicateCharge === v ? (v === "no" ? "#D97706" : "#2563EB") : "#E5E7EB",
-                      backgroundColor: duplicateCharge === v ? (v === "no" ? "#FEF3C7" : "#EFF6FF") : "#FFF",
-                      alignItems: "center",
-                    }}
-                  >
-                    <Text style={{
-                      fontFamily: "Inter_600SemiBold", fontSize: 12,
-                      color: duplicateCharge === v ? (v === "no" ? "#92400E" : "#1D4ED8") : "#374151",
-                    }}>
-                      {v === "yes" ? "Yes — charge as usual" : "No — no-charge remake"}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-
-              {duplicateError && (
-                <Text style={{ marginTop: 10, color: "#B91C1C", fontFamily: "Inter_500Medium", fontSize: 12 }}>
-                  {duplicateError}
-                </Text>
-              )}
-            </ScrollView>
-
-            <View style={{ flexDirection: "row", gap: 8, padding: 12, borderTopWidth: 1, borderTopColor: "#E5E7EB" }}>
-              <Pressable
-                onPress={() => setDuplicatePrompt(null)}
-                style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#F3F4F6" }}
-              >
-                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151" }}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  const pn = duplicatePrompt?.patientName ?? patientName.trim();
-                  setDuplicatePrompt(null);
-                  router.push(`/chart-history?patient=${encodeURIComponent(pn)}`);
-                }}
-                style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#E5E7EB" }}
-              >
-                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#111827" }}>View chart</Text>
-              </Pressable>
-              <View style={{ flex: 1 }} />
-              <Pressable
-                onPress={() => {
-                  // User has explicitly answered "no" to the duplicate
-                  // prompt — create the case as a normal new case and do
-                  // NOT trigger the legacy remake follow-up alerts.
-                  setDuplicatePrompt(null);
-                  createCase(false);
-                }}
-                style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: "#F3F4F6" }}
-              >
-                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#374151" }}>Not a remake</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  if (!duplicateSelectedId) {
-                    setDuplicateError("Pick the prior case being remade.");
-                    return;
-                  }
-                  if (!duplicateReason.trim()) {
-                    setDuplicateError("Reason for remake is required.");
-                    return;
-                  }
-                  if (duplicateCharge === "") {
-                    setDuplicateError("Choose whether to charge for this remake.");
-                    return;
-                  }
-                  setDuplicatePrompt(null);
-                  createRemakeCase(
-                    duplicateReason.trim(),
-                    duplicateCharge === "yes",
-                    duplicateSelectedId,
-                  );
-                }}
-                style={{ paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, backgroundColor: "#2563EB" }}
-              >
-                <Text style={{ fontFamily: "Inter_600SemiBold", fontSize: 12, color: "#FFF" }}>
-                  Yes — link as remake
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      <DuplicatePromptModal
+        prompt={duplicatePrompt}
+        selectedId={duplicateSelectedId}
+        reason={duplicateReason}
+        charge={duplicateCharge}
+        error={duplicateError}
+        onSelectId={setDuplicateSelectedId}
+        onChangeReason={setDuplicateReason}
+        onChangeCharge={setDuplicateCharge}
+        onSetError={setDuplicateError}
+        onClose={() => setDuplicatePrompt(null)}
+        onViewChart={(pn) => {
+          setDuplicatePrompt(null);
+          router.push(`/chart-history?patient=${encodeURIComponent(pn || patientName.trim())}`);
+        }}
+        onNotARemake={() => {
+          setDuplicatePrompt(null);
+          createCase(false);
+        }}
+        onConfirmRemake={(selectedId, reason, charged) => {
+          setDuplicatePrompt(null);
+          createRemakeCase(reason, charged, selectedId);
+        }}
+      />
       <Modal
         visible={labelModalVisible}
         transparent
@@ -3022,101 +2775,19 @@ export default function ScanScreen() {
         </View>
       </Modal>
 
-      <Modal
+      <AttachBarcodeModal
         visible={!!barcodeScanForCase}
-        animationType="slide"
-        statusBarTranslucent
-        onRequestClose={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
-      >
-        <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: (Platform.OS as string) === "web" ? 67 : insets.top, paddingHorizontal: 20, paddingBottom: 12, flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(0,0,0,0.8)" }}>
-            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Attach Barcode</Text>
-            <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}>
-              <Ionicons name="close" size={28} color="#FFF" />
-            </Pressable>
-          </View>
-          {(Platform.OS as string) === "web" ? (
-            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 40 }}>
-              <Ionicons name="barcode-outline" size={60} color="#FFF" />
-              <Text style={{ color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: 16 }}>Barcode scanning requires a device camera.</Text>
-              <Text style={{ color: "#999", marginTop: 8, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>Enter a barcode manually:</Text>
-              <TextInput
-                style={{ backgroundColor: "rgba(255,255,255,0.15)", borderRadius: 10, paddingHorizontal: 16, paddingVertical: 12, color: "#FFF", fontSize: 16, fontFamily: "Inter_500Medium", width: 260, marginTop: 12, textAlign: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}
-                placeholder="Enter barcode..."
-                placeholderTextColor="rgba(255,255,255,0.4)"
-                autoCapitalize="none"
-                onSubmitEditing={(e) => {
-                  const val = e.nativeEvent.text.trim();
-                  if (val) handleBarcodeAttachScanned({ data: val });
-                }}
-              />
-              <Pressable onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }} style={{ marginTop: 20, backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 28, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" }}>
-                <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <View style={{ flex: 1 }}>
-              {permission?.granted ? (
-                <CameraView
-                  style={{ flex: 1 }}
-                  facing="back"
-                  autofocus="on"
-                  barcodeScannerSettings={{ barcodeTypes: ["qr", "code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "codabar", "itf14"] }}
-                  onBarcodeScanned={barcodeAttachScanned ? undefined : (e) => {
-                    if (!isBarcodeInTargetArea(e.bounds, e.cornerPoints, barcodeCameraLayout.width, barcodeCameraLayout.height)) return;
-                    handleBarcodeAttachScanned(e);
-                  }}
-                  onLayout={(e) => {
-                    const { width, height } = e.nativeEvent.layout;
-                    setBarcodeCameraLayout({ width, height });
-                  }}
-                >
-                  <View style={{ flex: 1 }} pointerEvents="none">
-                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
-                    <View style={{ flexDirection: "row", height: SCAN_TARGET_HEIGHT }}>
-                      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
-                      <View style={{ width: SCAN_TARGET_WIDTH, height: SCAN_TARGET_HEIGHT, borderRadius: 16, overflow: "hidden" }}>
-                        <View style={{ position: "absolute", top: 0, left: 0, width: 30, height: 30, borderTopWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderTopLeftRadius: 16 }} />
-                        <View style={{ position: "absolute", top: 0, right: 0, width: 30, height: 30, borderTopWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderTopRightRadius: 16 }} />
-                        <View style={{ position: "absolute", bottom: 0, left: 0, width: 30, height: 30, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: "#22C55E", borderBottomLeftRadius: 16 }} />
-                        <View style={{ position: "absolute", bottom: 0, right: 0, width: 30, height: 30, borderBottomWidth: 3, borderRightWidth: 3, borderColor: "#22C55E", borderBottomRightRadius: 16 }} />
-                        <View style={{ position: "absolute", top: "50%", left: 16, right: 16, height: 2, backgroundColor: "rgba(34,197,94,0.4)", marginTop: -1 }} />
-                      </View>
-                      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
-                    </View>
-                    <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", paddingTop: 20 }}>
-                      <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Position barcode inside the frame</Text>
-                      <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 4 }}>Hold steady and aim the barcode at the frame</Text>
-                    </View>
-                  </View>
-                </CameraView>
-              ) : (
-                <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-                  <Ionicons name="camera-outline" size={48} color="rgba(255,255,255,0.4)" />
-                  <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 15, fontFamily: "Inter_500Medium", marginTop: 12, textAlign: "center", paddingHorizontal: 40 }}>Camera permission is required to scan barcodes.</Text>
-                  <Pressable onPress={async () => { const r = await requestPermission(); if (!r.granted) Alert.alert("Permission Denied", "Please enable camera access in your device settings."); }} style={({ pressed }) => ({ marginTop: 16, backgroundColor: "#4F8EF7", paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, opacity: pressed ? 0.8 : 1 })}>
-                    <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Grant Camera Access</Text>
-                  </Pressable>
-                </View>
-              )}
-              <View style={{ paddingHorizontal: 20, paddingBottom: (Platform.OS as string) === "web" ? 34 : insets.bottom + 10, paddingTop: 12, backgroundColor: "rgba(0,0,0,0.85)" }}>
-                <Pressable
-                  onPress={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
-                  style={({ pressed }) => ({
-                    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-                    paddingVertical: 14, borderRadius: 14,
-                    backgroundColor: "rgba(255,255,255,0.12)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)",
-                    opacity: pressed ? 0.7 : 1,
-                  })}
-                >
-                  <Ionicons name="arrow-forward" size={20} color="#FFF" />
-                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Skip — No Barcode</Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
-        </View>
-      </Modal>
+        onSkipAndProceed={() => { setBarcodeScanForCase(null); proceedAfterLabel(); }}
+        insetsTop={insets.top}
+        insetsBottom={insets.bottom}
+        permission={permission}
+        requestPermission={requestPermission}
+        alreadyScanned={barcodeAttachScanned}
+        cameraLayout={barcodeCameraLayout}
+        onCameraLayout={setBarcodeCameraLayout}
+        isInTargetArea={isBarcodeInTargetArea}
+        onScanned={handleBarcodeAttachScanned}
+      />
     </>
   );
 

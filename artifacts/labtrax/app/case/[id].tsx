@@ -43,6 +43,27 @@ import {
 } from "@/lib/rx-summary";
 import { ReadOnlyToothChart } from "@/components/ReadOnlyToothChart";
 import { deriveDisplayInitials } from "@/lib/display-initials";
+import { resolveCaseInvoice } from "@/lib/case-detail/draft-invoice";
+import { LabSlipModal } from "@/components/case/LabSlipModal";
+import { EditCaseModal } from "@/components/case/EditCaseModal";
+import { QuickEditModal } from "@/components/case/QuickEditModal";
+import { CaseBarcodeScannerModal } from "@/components/case/CaseBarcodeScannerModal";
+import { computeQuickEditPlan } from "@/lib/case-detail/quick-edit";
+import {
+  computeCaseEditDiff,
+  buildInvoicePatchForCaseEdit,
+} from "@/lib/case-detail/edit-diff";
+import {
+  buildCaseLabelHtml,
+  buildCaseHistoryHtml,
+} from "@/lib/case-detail/case-html";
+import {
+  formatToothDisplay,
+  computeBillableCount,
+  getAppliancePriceKey,
+  getApplianceUnitPrice,
+  buildApplianceLineItems,
+} from "@/lib/case-detail/add-item";
 
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -227,52 +248,7 @@ export default function CaseDetailScreen() {
 
   const stationInfo = getStationInfo(caseItem.status, customStationLabels);
 
-  const caseInvoice: Invoice = (() => {
-    if (caseItem.invoiceId) {
-      const found = invoices.find((inv) => inv.id === caseItem.invoiceId);
-      if (found) return found;
-    }
-    const safeDoctorName = caseItem.doctorName || "";
-    const safeToothIndices = caseItem.toothIndices || "";
-    const safeCaseNumber = caseItem.caseNumber || "";
-    const safePatientName = caseItem.patientName || "";
-    const safeMaterial = caseItem.material || "";
-    const safeShade = caseItem.shade || "";
-    const matchedInv = invoices.find(
-      (inv) => inv.caseIds.includes(caseItem.id) ||
-        ((inv.patientName || "").toLowerCase() === safePatientName.toLowerCase() && (inv.clientName || "").toLowerCase().includes(safeDoctorName.split(" ").pop()?.toLowerCase() || ""))
-    );
-    if (matchedInv) return matchedInv;
-    const toothCount = caseItem.toothMap?.length || safeToothIndices.split(",").filter(Boolean).length || 1;
-    const rate = resolvePriceForCase(safeMaterial, caseItem.caseType, safeDoctorName, clients, pricingTiers);
-    const lineItems = [
-      { qty: toothCount, item: `${safeMaterial} ${caseItem.caseType || "Restoration"}`, description: `${safeMaterial} restoration - teeth ${safeToothIndices}`, rate, amount: toothCount * rate },
-    ];
-    if (caseItem.isRush) {
-      lineItems.push({ qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500, amount: 500 });
-    }
-    const total = lineItems.reduce((s, li) => s + li.amount, 0);
-    const invNum = `INV-${new Date(caseItem.createdAt).getFullYear()}-${safeCaseNumber.replace(/[^0-9]/g, "").padStart(3, "0")}`;
-    return {
-      id: caseItem.id + "-inv",
-      invoiceNumber: invNum,
-      clientId: "",
-      clientName: safeDoctorName,
-      caseIds: [caseItem.id],
-      amount: total,
-      credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
-      status: caseItem.status === "COMPLETE" ? "paid" as const : "open" as const,
-      issuedAt: caseItem.createdAt,
-      dueAt: caseItem.dueDate ? new Date(caseItem.dueDate + "T00:00:00").getTime() : caseItem.createdAt + 30 * 86400000,
-      billTo: safeDoctorName,
-      patientName: safePatientName || caseItem.patientInitials,
-      caseType: caseItem.caseType || "Restoration",
-      teeth: safeToothIndices,
-      shade: safeShade,
-      caseNotes: caseItem.notes || "",
-      lineItems,
-    };
-  })();
+  const caseInvoice: Invoice = resolveCaseInvoice({ caseItem, invoices, clients, pricingTiers });
 
   function handleRoute(newStatus: CaseStatus) {
     updateCaseStatus(caseItem!.id, newStatus, userInitials);
@@ -310,42 +286,16 @@ export default function CaseDetailScreen() {
 
   function handleSaveEditCase() {
     if (!caseItem) return;
-    const oldDoctor = caseItem.doctorName;
+    const { updates, changes, providerChanged } = computeCaseEditDiff(caseItem, {
+      doctor: editDoctor,
+      patient: editPatient,
+      teeth: editTeeth,
+      shade: editShade,
+      material: editMaterial,
+      dueDate: editDueDate,
+      notes: editNotes,
+    });
     const newDoctor = editDoctor.trim();
-    const providerChanged = newDoctor.toLowerCase() !== oldDoctor.toLowerCase() && newDoctor.length > 0;
-    const changes: string[] = [];
-
-    const updates: Partial<typeof caseItem> = {};
-
-    if (newDoctor !== oldDoctor) {
-      updates.doctorName = newDoctor;
-      changes.push(`Provider: ${oldDoctor} → ${newDoctor}`);
-    }
-    if (editPatient.trim() !== (caseItem.patientName || caseItem.patientInitials)) {
-      updates.patientName = editPatient.trim();
-      updates.patientInitials = editPatient.trim().split(" ").map(w => w[0]).join("").toUpperCase().substring(0, 2);
-      changes.push(`Patient: ${caseItem.patientName || caseItem.patientInitials} → ${editPatient.trim()}`);
-    }
-    if (editTeeth.trim() !== caseItem.toothIndices) {
-      updates.toothIndices = editTeeth.trim();
-      changes.push(`Teeth: ${caseItem.toothIndices} → ${editTeeth.trim()}`);
-    }
-    if (editShade.trim() !== caseItem.shade) {
-      updates.shade = editShade.trim();
-      changes.push(`Shade: ${caseItem.shade} → ${editShade.trim()}`);
-    }
-    if (editMaterial.trim() !== caseItem.material) {
-      updates.material = editMaterial.trim();
-      changes.push(`Material: ${caseItem.material} → ${editMaterial.trim()}`);
-    }
-    if (editDueDate.trim() !== (caseItem.dueDate || "")) {
-      updates.dueDate = editDueDate.trim();
-      changes.push(`Due Date: ${caseItem.dueDate || "none"} → ${editDueDate.trim()}`);
-    }
-    if (editNotes.trim() !== (caseItem.notes || "")) {
-      updates.notes = editNotes.trim();
-      changes.push("Notes updated");
-    }
 
     if (changes.length === 0) {
       setShowEditCase(false);
@@ -360,21 +310,10 @@ export default function CaseDetailScreen() {
 
     const targetInvId = caseItem.invoiceId || (caseInvoice && caseInvoice.id !== caseItem.id + "-inv" ? caseInvoice.id : null);
     if (targetInvId) {
-      const invUpdates: Partial<Invoice> = {};
-      if (updates.doctorName) {
-        invUpdates.clientName = updates.doctorName;
-        invUpdates.billTo = updates.doctorName;
-      }
-      if (updates.patientName) invUpdates.patientName = updates.patientName;
-      if (updates.toothIndices) invUpdates.teeth = updates.toothIndices;
-      if (updates.shade) invUpdates.shade = updates.shade;
-      if (updates.material || updates.toothIndices) {
-        const mat = updates.material || caseItem.material;
-        invUpdates.caseType = `${mat} Restoration`;
-      }
-      if (updates.dueDate) {
-        invUpdates.dueAt = new Date(updates.dueDate + "T00:00:00").getTime();
-      }
+      const invUpdates = buildInvoicePatchForCaseEdit({
+        updates,
+        currentMaterial: caseItem.material,
+      });
       updateInvoice(targetInvId, invUpdates);
     }
 
@@ -418,127 +357,10 @@ export default function CaseDetailScreen() {
     }
   }
 
-  function buildCaseHistoryHtml(): string {
-    if (!caseItem) return "";
-    const stationLabel = getStationInfo(caseItem.status, customStationLabels).label;
-    const fmtDate = (ts: number | undefined | null) => {
-      if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return "—";
-      const d = new Date(ts);
-      if (Number.isNaN(d.getTime())) return "—";
-      return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} · ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })}`;
-    };
-    const escapeHtml = (s: string) =>
-      String(s ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-
-    const safeActivityLog = Array.isArray(caseItem.activityLog) ? caseItem.activityLog : [];
-    const safeRouteHistory = Array.isArray(caseItem.routeHistory) ? caseItem.routeHistory : [];
-    const entries = safeActivityLog.length > 0
-      ? [...safeActivityLog].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
-      : [...safeRouteHistory].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0)).map((rh) => ({
-          id: String(rh.timestamp),
-          type: "station_change" as const,
-          timestamp: rh.timestamp,
-          description: `Case moved to ${getStationInfo(rh.station, customStationLabels).label}`,
-          station: rh.station,
-          user: undefined as string | undefined,
-        }));
-
-    const typeLabel: Record<string, string> = {
-      created: "Created",
-      scan: "Scanned",
-      station_change: "Station Change",
-      note: "Note",
-      photo: "Photo",
-      video: "Video",
-      barcode_assigned: "Barcode Assigned",
-      barcode_unassigned: "Barcode Removed",
-      invoice_paid: "Invoice Paid",
-      invoice_attached: "Invoice Attached",
-      tracking_added: "Tracking Added",
-      courtesy_text: "Courtesy Text",
-      exocad_linked: "Exocad Linked",
-      exocad_shared: "Exocad Shared",
-    };
-
-    const rows = entries
-      .map((e) => {
-        const matchingUser = e.user
-          ? registeredUsers.find(
-              (u) => u.id === e.user || u.username?.toLowerCase() === (e.user ?? "").toLowerCase()
-            )
-          : null;
-        const userDisplay = matchingUser
-          ? [matchingUser.firstName, matchingUser.lastName].filter(Boolean).join(" ") || matchingUser.username || (e.user ?? "")
-          : (e.user ?? "");
-        const eType: string = (e as any).type ?? "";
-        const label = typeLabel[eType] || eType.replace(/_/g, " ");
-        const stationStr = e.station ? getStationInfo(e.station, customStationLabels).label : "";
-        return `<tr>
-          <td class="ts">${escapeHtml(fmtDate(e.timestamp))}</td>
-          <td class="ev">${escapeHtml(label)}${stationStr ? ` <span class="meta">(${escapeHtml(stationStr)})</span>` : ""}</td>
-          <td class="desc">${escapeHtml((e as any).description || "")}</td>
-          <td class="user">${escapeHtml(userDisplay)}</td>
-        </tr>`;
-      })
-      .join("");
-
-    const printedAt = new Date();
-    const printedAtStr = `${printedAt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} ${printedAt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })}`;
-
-    return `<!DOCTYPE html>
-<html><head><meta charset="utf-8" />
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; padding: 24px; color: #111; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  .sub { font-size: 12px; color: #666; margin-bottom: 18px; }
-  .summary { background: #F8FAFC; border: 1px solid #E5E7EB; border-radius: 10px; padding: 12px 16px; margin-bottom: 18px; }
-  .summary-row { display: flex; flex-wrap: wrap; gap: 18px 28px; font-size: 13px; }
-  .summary-row div { min-width: 140px; }
-  .summary-row strong { color: #111; }
-  .summary-row span { color: #555; }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  thead th { text-align: left; background: #F1F5F9; padding: 8px 10px; border-bottom: 1px solid #CBD5E1; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #475569; }
-  tbody td { padding: 8px 10px; border-bottom: 1px solid #F1F5F9; vertical-align: top; }
-  tbody tr:nth-child(even) td { background: #FAFAFA; }
-  .ts { white-space: nowrap; color: #475569; width: 150px; }
-  .ev { color: #111; font-weight: 600; width: 150px; }
-  .meta { color: #94A3B8; font-weight: 400; font-size: 11px; }
-  .desc { color: #1F2937; }
-  .user { color: #475569; white-space: nowrap; width: 120px; text-align: right; }
-  .empty { padding: 24px; text-align: center; color: #94A3B8; font-size: 13px; }
-  .footer { margin-top: 24px; font-size: 10px; color: #94A3B8; text-align: center; }
-</style></head>
-<body>
-  <h1>Case History — #${escapeHtml(String(caseItem.caseNumber || ""))}</h1>
-  <div class="sub">Printed ${escapeHtml(printedAtStr)}</div>
-  <div class="summary">
-    <div class="summary-row">
-      <div><strong>Patient:</strong> <span>${escapeHtml(caseItem.patientName || caseItem.patientInitials || "")}</span></div>
-      <div><strong>Provider:</strong> <span>${escapeHtml(cleanDoctorDisplay(caseItem.doctorName || ""))}</span></div>
-      <div><strong>Current Station:</strong> <span>${escapeHtml(stationLabel)}</span></div>
-      <div><strong>Material:</strong> <span>${escapeHtml(caseItem.material || "")}</span></div>
-      <div><strong>Teeth:</strong> <span>${escapeHtml(caseItem.toothIndices || "")}</span></div>
-      <div><strong>Shade:</strong> <span>${escapeHtml(caseItem.shade || "")}</span></div>
-      <div><strong>Due Date:</strong> <span>${escapeHtml(caseItem.dueDate || "")}</span></div>
-      <div><strong>Created:</strong> <span>${escapeHtml(fmtDate(caseItem.createdAt || 0))}</span></div>
-    </div>
-  </div>
-  ${entries.length > 0 ? `<table>
-    <thead><tr><th>When</th><th>Event</th><th>Detail</th><th>By</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>` : `<div class="empty">No history entries yet.</div>`}
-  <div class="footer">LabTrax · Case #${escapeHtml(String(caseItem.caseNumber || ""))} · ${entries.length} ${entries.length === 1 ? "entry" : "entries"}</div>
-</body></html>`;
-  }
-
   async function handlePrintCaseHistory() {
     if (!caseItem) return;
     try {
-      const html = buildCaseHistoryHtml();
+      const html = buildCaseHistoryHtml({ caseItem, customStationLabels, registeredUsers });
       if (Platform.OS === "web") {
         await Print.printAsync({ html });
         return;
@@ -582,26 +404,6 @@ export default function CaseDetailScreen() {
     } catch {
       Alert.alert("Print Error", "Unable to build the case history document.");
     }
-  }
-
-  function buildCaseLabelHtml(caseRecord: typeof caseItem) {
-    return `<html><head><style>
-      body { font-family: Arial, sans-serif; padding: 20px; }
-      .label { border: 2px solid #111; border-radius: 12px; padding: 20px; max-width: 400px; }
-      .title { font-size: 26px; font-weight: bold; margin-bottom: 12px; }
-      .row { font-size: 17px; margin: 6px 0; }
-    </style></head><body>
-      <div class="label">
-        <div class="title">Case #${caseRecord?.caseNumber || ""}</div>
-        <div class="row"><strong>Patient:</strong> ${caseRecord?.patientName || caseRecord?.patientInitials || ""}</div>
-        <div class="row"><strong>Doctor:</strong> ${cleanDoctorDisplay(caseRecord?.doctorName || "")}</div>
-        <div class="row"><strong>Teeth:</strong> ${caseRecord?.toothIndices || ""}</div>
-        <div class="row"><strong>Shade:</strong> ${caseRecord?.shade || ""}</div>
-        <div class="row"><strong>Material:</strong> ${caseRecord?.material || ""}</div>
-        <div class="row"><strong>Due:</strong> ${caseRecord?.dueDate || ""}</div>
-        ${caseRecord?.notes ? `<div class="row"><strong>Notes:</strong> ${caseRecord.notes}</div>` : ""}
-      </div>
-    </body></html>`;
   }
 
   function webFilePickerForCamera(): Promise<string | null> {
@@ -817,24 +619,6 @@ export default function CaseDetailScreen() {
     );
   }
 
-  function itemUpdateToothDisplay(teeth: number[], types: Record<number, ToothType>) {
-    const sorted = [...teeth].sort((a, b) => a - b);
-    const parts: string[] = [];
-    let i = 0;
-    while (i < sorted.length) {
-      const t = sorted[i];
-      const tp = types[t] || "normal";
-      if (tp === "missing") { parts.push(`X${t}`); i++; }
-      else if (tp === "bridge") {
-        let end = i;
-        while (end + 1 < sorted.length && (types[sorted[end + 1]] || "normal") === "bridge") end++;
-        parts.push(end > i ? `#${sorted[i]}-#${sorted[end]}` : `#${t}`);
-        i = end + 1;
-      } else { parts.push(`#${t}`); i++; }
-    }
-    return parts.join(", ");
-  }
-
   function handleItemToothTap(num: number) {
     const wasSelected = itemSelectedTeeth.includes(num);
     setItemSelectedTeeth((prev) => {
@@ -881,20 +665,20 @@ export default function CaseDetailScreen() {
     );
   }
 
-  const itemBillableCount = React.useMemo(() => {
-    const normalCount = itemSelectedTeeth.filter((t) => (itemToothTypes[t] || "normal") === "normal").length;
-    const hasPontic = itemSelectedTeeth.some((t) => (itemToothTypes[t] || "normal") === "bridge");
-    return normalCount + (hasPontic ? 1 : 0);
-  }, [itemSelectedTeeth, itemToothTypes]);
+  const itemBillableCount = React.useMemo(
+    () => computeBillableCount(itemSelectedTeeth, itemToothTypes),
+    [itemSelectedTeeth, itemToothTypes],
+  );
 
   const itemCalculatedPrice = React.useMemo(() => {
     const unitPrice = resolvePriceForCase(itemMaterial, itemCaseType, caseItem?.doctorName || "", clients, pricingTiers);
     return unitPrice * Math.max(itemBillableCount, 1);
   }, [itemMaterial, itemCaseType, itemBillableCount, caseItem?.doctorName, clients, pricingTiers]);
 
-  const itemToothDisplay = React.useMemo(() => {
-    return itemUpdateToothDisplay(itemSelectedTeeth, itemToothTypes);
-  }, [itemSelectedTeeth, itemToothTypes]);
+  const itemToothDisplay = React.useMemo(
+    () => formatToothDisplay(itemSelectedTeeth, itemToothTypes),
+    [itemSelectedTeeth, itemToothTypes],
+  );
 
   function openAddItemModal() {
     setAddItemStep("caseType");
@@ -915,48 +699,13 @@ export default function CaseDetailScreen() {
     setShowAddItemModal(true);
   }
 
-  function getAppliancePriceKey(subtype: string, variant: string): string {
-    if (subtype === "Night Guard") {
-      if (variant === "Hard") return "night_guard_hard";
-      if (variant === "Soft") return "night_guard_soft";
-      if (variant === "Hard/Soft") return "night_guard_hard_soft";
-    } else if (subtype === "Retainer") {
-      if (variant === "Hawley") return "retainer_hawley";
-      if (variant === "Hard") return "retainer_hard";
-      if (variant === "Lingual") return "retainer_lingual";
-    } else if (subtype === "Snore Guard") {
-      return "snore_guard";
-    } else if (subtype === "Sports Guard") {
-      return "sports_guard";
-    }
-    return "";
-  }
-
-  function getApplianceUnitPrice(priceKey: string): number {
-    const client = clients.find(c => c.practiceName === (caseItem as any)?.clientName);
-    if (client?.customPricing?.[priceKey] !== undefined && client.customPricing[priceKey] > 0) {
-      return client.customPricing[priceKey];
-    }
-    const tier = pricingTiers.find(t => t.name === client?.tier);
-    return tier?.prices?.[priceKey] || 0;
-  }
-
   function addApplianceToInvoice(subtype: string, variant: string, arch: string) {
     const linkedInv = caseItem!.invoiceId ? invoices.find((inv) => inv.id === caseItem!.invoiceId) : undefined;
     if (!linkedInv) return;
     const priceKey = getAppliancePriceKey(subtype, variant);
-    const unitPrice = getApplianceUnitPrice(priceKey);
-    const itemLabel = variant ? `${subtype} - ${variant}` : subtype;
-    let newItems;
-    if (arch === "Both") {
-      newItems = [
-        { qty: 1, item: itemLabel, description: `${itemLabel} (Upper)`, rate: unitPrice, amount: unitPrice },
-        { qty: 1, item: itemLabel, description: `${itemLabel} (Lower)`, rate: unitPrice, amount: unitPrice },
-      ];
-    } else {
-      const archLabel = arch ? ` (${arch})` : "";
-      newItems = [{ qty: 1, item: itemLabel, description: `${itemLabel}${archLabel}`, rate: unitPrice, amount: unitPrice }];
-    }
+    const client = clients.find((c) => c.practiceName === (caseItem as { clientName?: string } | null)?.clientName);
+    const unitPrice = getApplianceUnitPrice({ priceKey, client, pricingTiers });
+    const newItems = buildApplianceLineItems({ subtype, variant, arch, unitPrice });
     const updLi = [...linkedInv.lineItems, ...newItems];
     updateInvoice(linkedInv.id, { lineItems: updLi, amount: updLi.reduce((s, li) => s + li.amount, 0) });
   }
@@ -3790,209 +3539,103 @@ export default function CaseDetailScreen() {
       </Modal>
 
       {isAdmin && (
-      <Modal visible={showEditCase} animationType="slide" transparent>
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-        >
-          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
-            <View style={{ backgroundColor: "#FFF", borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "90%", paddingBottom: Platform.OS === "web" ? 34 : insets.bottom }}>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: "#E2E8F0" }}>
-                <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#1E293B" }}>Edit Case</Text>
-                <Pressable onPress={() => setShowEditCase(false)}>
-                  <Ionicons name="close" size={24} color="#64748B" />
-                </Pressable>
-              </View>
-              <ScrollView style={{ paddingHorizontal: 20 }} contentContainerStyle={{ paddingVertical: 16, gap: 14 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                <View>
-                  <Text style={editFieldStyles.label}>Provider / Doctor</Text>
-                  <TextInput style={editFieldStyles.input} value={editDoctor} onChangeText={setEditDoctor} placeholder="Doctor name" placeholderTextColor="#94A3B8" />
-                  {editDoctor.trim().toLowerCase() !== (caseItem.doctorName || "").toLowerCase() && editDoctor.trim().length > 0 && (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6, backgroundColor: "#FEF3C7", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}>
-                      <Ionicons name="swap-horizontal" size={14} color="#D97706" />
-                      <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#92400E", flex: 1 }}>Invoice will transfer to new provider</Text>
-                    </View>
-                  )}
-                </View>
-
-                <View>
-                  <Text style={editFieldStyles.label}>Patient Name</Text>
-                  <TextInput style={editFieldStyles.input} value={editPatient} onChangeText={setEditPatient} placeholder="Patient name" placeholderTextColor="#94A3B8" />
-                </View>
-
-                <View style={{ flexDirection: "row", gap: 12 }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={editFieldStyles.label}>Teeth</Text>
-                    <TextInput style={editFieldStyles.input} value={editTeeth} onChangeText={setEditTeeth} placeholder="e.g. 3,4,5" placeholderTextColor="#94A3B8" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={editFieldStyles.label}>Shade</Text>
-                    <TextInput style={editFieldStyles.input} value={editShade} onChangeText={setEditShade} placeholder="e.g. A2" placeholderTextColor="#94A3B8" />
-                  </View>
-                </View>
-
-                <View style={{ flexDirection: "row", gap: 12 }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={editFieldStyles.label}>Material</Text>
-                    <TextInput style={editFieldStyles.input} value={editMaterial} onChangeText={setEditMaterial} placeholder="e.g. Zirconia" placeholderTextColor="#94A3B8" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={editFieldStyles.label}>Due Date (YYYY-MM-DD)</Text>
-                    <TextInput style={editFieldStyles.input} value={editDueDate} onChangeText={setEditDueDate} placeholder="2025-12-31" placeholderTextColor="#94A3B8" />
-                  </View>
-                </View>
-
-                <View>
-                  <Text style={editFieldStyles.label}>Notes</Text>
-                  <TextInput style={[editFieldStyles.input, { height: 80, textAlignVertical: "top" }]} value={editNotes} onChangeText={setEditNotes} placeholder="Case notes..." placeholderTextColor="#94A3B8" multiline />
-                </View>
-
-                <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
-                  <Pressable
-                    onPress={() => setShowEditCase(false)}
-                    style={({ pressed }) => [{ flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: "#F1F5F9", alignItems: "center" as const }, pressed && { opacity: 0.85 }]}
-                  >
-                    <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#64748B" }}>Cancel</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={handleSaveEditCase}
-                    style={({ pressed }) => [{ flex: 1, flexDirection: "row" as const, gap: 6, paddingVertical: 14, borderRadius: 12, backgroundColor: "#10B981", alignItems: "center" as const, justifyContent: "center" as const }, pressed && { opacity: 0.85 }]}
-                  >
-                    <Ionicons name="checkmark-circle" size={18} color="#FFF" />
-                    <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Save Changes</Text>
-                  </Pressable>
-                </View>
-              </ScrollView>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      <EditCaseModal
+        visible={showEditCase}
+        onClose={() => setShowEditCase(false)}
+        insetsBottom={insets.bottom}
+        originalDoctorName={caseItem.doctorName || ""}
+        doctor={editDoctor}
+        patient={editPatient}
+        teeth={editTeeth}
+        shade={editShade}
+        material={editMaterial}
+        dueDate={editDueDate}
+        notes={editNotes}
+        onChangeDoctor={setEditDoctor}
+        onChangePatient={setEditPatient}
+        onChangeTeeth={setEditTeeth}
+        onChangeShade={setEditShade}
+        onChangeMaterial={setEditMaterial}
+        onChangeDueDate={setEditDueDate}
+        onChangeNotes={setEditNotes}
+        onSave={handleSaveEditCase}
+      />
       )}
 
-      <Modal visible={showQuickEdit} transparent animationType="fade">
-        <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 20 }} onPress={() => setShowQuickEdit(false)}>
-          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
-          <Pressable style={{ backgroundColor: "#FFF", borderRadius: 16, padding: 20, maxHeight: "90%" }} onPress={(e) => e.stopPropagation()}>
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#1E293B" }}>Edit Case Info</Text>
-              <Pressable onPress={() => setShowQuickEdit(false)} hitSlop={12}>
-                <Ionicons name="close" size={22} color="#64748B" />
-              </Pressable>
-            </View>
+      <QuickEditModal
+        visible={showQuickEdit}
+        onClose={() => setShowQuickEdit(false)}
+        doctor={qeDoctor}
+        patient={qePatient}
+        teeth={qeTeeth}
+        shade={qeShade}
+        material={qeMaterial}
+        dueDate={qeDueDate}
+        notes={qeNotes}
+        onChangeDoctor={setQeDoctor}
+        onChangePatient={setQePatient}
+        onChangeTeeth={setQeTeeth}
+        onChangeShade={setQeShade}
+        onChangeMaterial={setQeMaterial}
+        onChangeDueDate={setQeDueDate}
+        onChangeNotes={setQeNotes}
+        onSave={() => {
+          const plan = computeQuickEditPlan(
+            {
+              doctorName: caseItem.doctorName,
+              patientName: (caseItem as any).patientName,
+              patientInitials: caseItem.patientInitials,
+              toothIndices: caseItem.toothIndices,
+              shade: caseItem.shade,
+              material: caseItem.material,
+              dueDate: caseItem.dueDate,
+              notes: caseItem.notes,
+              caseType: caseItem.caseType,
+              isRush: caseItem.isRush,
+              invoiceId: caseItem.invoiceId,
+            },
+            { doctor: qeDoctor, patient: qePatient, teeth: qeTeeth, shade: qeShade, material: qeMaterial, dueDate: qeDueDate, notes: qeNotes },
+            (mat, ct, dr) => resolvePriceForCase(mat, ct ?? undefined, dr, clients, pricingTiers),
+          );
 
-            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Doctor</Text>
-            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 12 }} value={qeDoctor} onChangeText={setQeDoctor} placeholder="Doctor name" placeholderTextColor="#94A3B8" />
+          if (plan.changes.length === 0) {
+            setShowQuickEdit(false);
+            return;
+          }
 
-            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Patient</Text>
-            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 12 }} value={qePatient} onChangeText={setQePatient} placeholder="Patient name" placeholderTextColor="#94A3B8" />
+          updateCase(caseItem.id, plan.caseUpdates);
+          if (plan.newPrice !== undefined) {
+            updateCase(caseItem.id, { price: plan.newPrice });
+          }
+          if (plan.invoicePatch && caseItem.invoiceId) {
+            updateInvoice(caseItem.invoiceId, plan.invoicePatch);
+          }
 
-            <View style={{ flexDirection: "row", gap: 10, marginBottom: 12 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Teeth</Text>
-                <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B" }} value={qeTeeth} onChangeText={setQeTeeth} placeholder="#30, #31" placeholderTextColor="#94A3B8" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Shade</Text>
-                <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B" }} value={qeShade} onChangeText={setQeShade} placeholder="A2" placeholderTextColor="#94A3B8" />
-              </View>
-            </View>
+          const changeDesc = plan.changes.join("; ");
+          addCaseNote(caseItem.id, `Case info edited: ${changeDesc}`, userInitials);
 
-            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Material</Text>
-            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 12 }} value={qeMaterial} onChangeText={setQeMaterial} placeholder="Zirconia" placeholderTextColor="#94A3B8" />
+          if (!isAdmin) {
+            addNotification({
+              title: "Case Updated",
+              message: `${currentUser || "A user"} edited case ${caseItem.caseNumber}: ${changeDesc}`,
+              type: "update",
+              caseId: caseItem.id,
+            });
+          }
 
-            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Due Date (YYYY-MM-DD)</Text>
-            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 12 }} value={qeDueDate} onChangeText={setQeDueDate} placeholder="2026-04-15" placeholderTextColor="#94A3B8" />
-
-            <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#64748B", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Notes</Text>
-            <TextInput style={{ borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 10, padding: 12, fontSize: 15, fontFamily: "Inter_500Medium", color: "#1E293B", marginBottom: 16, minHeight: 80, textAlignVertical: "top" }} value={qeNotes} onChangeText={setQeNotes} placeholder="Case notes..." placeholderTextColor="#94A3B8" multiline />
-
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable onPress={() => setShowQuickEdit(false)} style={({ pressed }) => [{ flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: "#F1F5F9", alignItems: "center" as const }, pressed && { opacity: 0.85 }]}>
-                <Text style={{ fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#64748B" }}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  const changes: string[] = [];
-                  const caseUpdates: Record<string, any> = {};
-                  if (qeDoctor.trim() && qeDoctor.trim() !== caseItem.doctorName) { caseUpdates.doctorName = qeDoctor.trim(); changes.push(`Doctor: ${qeDoctor.trim()}`); }
-                  if (qePatient.trim() && qePatient.trim() !== ((caseItem as any).patientName || caseItem.patientInitials)) { caseUpdates.patientName = qePatient.trim(); changes.push(`Patient: ${qePatient.trim()}`); }
-                  if (qeTeeth.trim() && qeTeeth.trim() !== caseItem.toothIndices) { caseUpdates.toothIndices = qeTeeth.trim(); changes.push(`Teeth: ${qeTeeth.trim()}`); }
-                  if (qeShade.trim() && qeShade.trim() !== caseItem.shade) { caseUpdates.shade = qeShade.trim(); changes.push(`Shade: ${qeShade.trim()}`); }
-                  if (qeMaterial.trim() && qeMaterial.trim() !== caseItem.material) { caseUpdates.material = qeMaterial.trim(); changes.push(`Material: ${qeMaterial.trim()}`); }
-                  if (qeDueDate.trim() && qeDueDate.trim() !== caseItem.dueDate) { caseUpdates.dueDate = qeDueDate.trim(); changes.push(`Due: ${qeDueDate.trim()}`); }
-                  if (qeNotes.trim() !== (caseItem.notes || "")) { caseUpdates.notes = qeNotes.trim(); changes.push("Notes updated"); }
-
-                  if (changes.length === 0) {
-                    setShowQuickEdit(false);
-                    return;
-                  }
-
-                  updateCase(caseItem.id, caseUpdates);
-
-                  if (caseUpdates.material || caseUpdates.toothIndices || caseUpdates.doctorName) {
-                    const toothCount = (caseUpdates.toothIndices || caseItem.toothIndices).split(",").filter(Boolean).length || 1;
-                    const mat = caseUpdates.material || caseItem.material;
-                    const rate = resolvePriceForCase(mat, caseItem.caseType, caseUpdates.doctorName || caseItem.doctorName, clients, pricingTiers);
-                    const newTotal = toothCount * rate + (caseItem.isRush ? 500 : 0);
-                    updateCase(caseItem.id, { price: newTotal });
-                    if (caseItem.invoiceId) {
-                      const lineItems = [{ qty: toothCount, item: `${mat} ${caseItem.caseType || "Restoration"}`, description: `${mat} restoration - teeth ${caseUpdates.toothIndices || caseItem.toothIndices}`, rate, amount: toothCount * rate }];
-                      if (caseItem.isRush) lineItems.push({ qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500, amount: 500 });
-                      updateInvoice(caseItem.invoiceId, {
-                        lineItems,
-                        amount: newTotal,
-                        billTo: caseUpdates.doctorName || caseItem.doctorName,
-                        patientName: caseUpdates.patientName || (caseItem as any).patientName || caseItem.patientInitials,
-                        teeth: caseUpdates.toothIndices || caseItem.toothIndices,
-                        shade: caseUpdates.shade || caseItem.shade,
-                        caseNotes: caseUpdates.notes !== undefined ? caseUpdates.notes : (caseItem.notes || ""),
-                      });
-                    }
-                  } else if (caseItem.invoiceId) {
-                    const invUpdates: Record<string, any> = {};
-                    if (caseUpdates.doctorName) invUpdates.billTo = caseUpdates.doctorName;
-                    if (caseUpdates.patientName) invUpdates.patientName = caseUpdates.patientName;
-                    if (caseUpdates.shade) invUpdates.shade = caseUpdates.shade;
-                    if (caseUpdates.toothIndices) invUpdates.teeth = caseUpdates.toothIndices;
-                    if (caseUpdates.notes !== undefined) invUpdates.caseNotes = caseUpdates.notes;
-                    if (Object.keys(invUpdates).length > 0) updateInvoice(caseItem.invoiceId, invUpdates);
-                  }
-
-                  const changeDesc = changes.join("; ");
-                  addCaseNote(caseItem.id, `Case info edited: ${changeDesc}`, userInitials);
-
-                  if (!isAdmin) {
-                    addNotification({
-                      title: "Case Updated",
-                      message: `${currentUser || "A user"} edited case ${caseItem.caseNumber}: ${changeDesc}`,
-                      type: "update",
-                      caseId: caseItem.id,
-                    });
-                  }
-
-                  if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  const savedQe = { ...caseItem, ...caseUpdates };
-                  setShowQuickEdit(false);
-                  Alert.alert(
-                    "Changes Saved",
-                    "Do you want to reprint the case label?",
-                    [
-                      { text: "No", style: "cancel" },
-                      { text: "Yes", onPress: () => handlePrintCaseLabel(savedQe) },
-                    ]
-                  );
-                }}
-                style={({ pressed }) => [{ flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: "#2563EB", alignItems: "center" as const }, pressed && { opacity: 0.85 }]}
-              >
-                <Text style={{ fontSize: 15, fontFamily: "Inter_700Bold", color: "#FFF" }}>Save Changes</Text>
-              </Pressable>
-            </View>
-            </ScrollView>
-          </Pressable>
-          </KeyboardAvoidingView>
-        </Pressable>
-      </Modal>
+          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          const savedQe = { ...caseItem, ...plan.caseUpdates };
+          setShowQuickEdit(false);
+          Alert.alert(
+            "Changes Saved",
+            "Do you want to reprint the case label?",
+            [
+              { text: "No", style: "cancel" },
+              { text: "Yes", onPress: () => handlePrintCaseLabel(savedQe) },
+            ]
+          );
+        }}
+      />
 
       {showPrice && (
       <InvoicePDFViewer
@@ -4035,212 +3678,42 @@ export default function CaseDetailScreen() {
       />
       )}
 
-      <Modal visible={showLabSlipModal} animationType="slide" transparent>
-        <View style={labSlipStyles.overlay}>
-          <View style={labSlipStyles.container}>
-            <View style={labSlipStyles.header}>
-              <Text style={labSlipStyles.headerTitle}>Lab Slip</Text>
-              <Pressable onPress={() => setShowLabSlipModal(false)}>
-                <Ionicons name="close" size={24} color={Colors.light.text} />
-              </Pressable>
-            </View>
+      <LabSlipModal
+        visible={showLabSlipModal}
+        onClose={() => setShowLabSlipModal(false)}
+        caseItem={caseItem}
+        customStationLabels={customStationLabels}
+      />
 
-            <ScrollView style={labSlipStyles.body} showsVerticalScrollIndicator={false}>
-              <View style={labSlipStyles.slipCard}>
-                <View style={labSlipStyles.slipHeader}>
-                  <Text style={labSlipStyles.slipTitle}>DENTAL LAB WORK ORDER</Text>
-                  <Text style={labSlipStyles.slipCaseNum}>Case {caseItem.caseNumber}</Text>
-                </View>
-
-                <View style={labSlipStyles.divider} />
-
-                <View style={labSlipStyles.slipRow}>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Doctor</Text>
-                    <Text style={labSlipStyles.slipValue}>{cleanDoctorDisplay(caseItem.doctorName)}</Text>
-                  </View>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Patient</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.patientName}</Text>
-                  </View>
-                </View>
-
-                <View style={labSlipStyles.slipRow}>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Case Type</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.caseType || "N/A"}</Text>
-                  </View>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Material</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.material}</Text>
-                  </View>
-                </View>
-
-                <View style={labSlipStyles.slipRow}>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Tooth / Units</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.toothIndices}</Text>
-                  </View>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Shade</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.shade}</Text>
-                  </View>
-                </View>
-
-                <View style={labSlipStyles.slipRow}>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Due Date</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.dueDate || "N/A"}</Text>
-                  </View>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Current Station</Text>
-                    <Text style={labSlipStyles.slipValue}>{getStationInfo(caseItem.status, customStationLabels).label}</Text>
-                  </View>
-                </View>
-
-                <View style={labSlipStyles.slipRow}>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Rush</Text>
-                    <Text style={[labSlipStyles.slipValue, caseItem.isRush && { color: "#EF4444", fontFamily: "Inter_700Bold" }]}>
-                      {caseItem.isRush ? "YES - RUSH" : "No"}
-                    </Text>
-                  </View>
-                  <View style={labSlipStyles.slipCol}>
-                    <Text style={labSlipStyles.slipLabel}>Remake</Text>
-                    <Text style={[labSlipStyles.slipValue, caseItem.isRemake && { color: "#F59E0B", fontFamily: "Inter_700Bold" }]}>
-                      {caseItem.isRemake ? "YES" : "No"}
-                    </Text>
-                  </View>
-                </View>
-
-                {caseItem.isRemake && caseItem.remakeReason && (
-                  <View style={labSlipStyles.slipFullRow}>
-                    <Text style={labSlipStyles.slipLabel}>Remake Reason</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.remakeReason}</Text>
-                  </View>
-                )}
-
-                {(caseItem.toothMap || []).length > 0 && (
-                  <View style={labSlipStyles.slipFullRow}>
-                    <Text style={labSlipStyles.slipLabel}>Tooth Details</Text>
-                    {caseItem.toothMap!.map((t, i) => (
-                      <Text key={i} style={labSlipStyles.slipValue}>
-                        #{t.num} - {t.type}
-                      </Text>
-                    ))}
-                  </View>
-                )}
-
-                {caseItem.notes ? (
-                  <View style={labSlipStyles.slipFullRow}>
-                    <Text style={labSlipStyles.slipLabel}>Notes</Text>
-                    <Text style={labSlipStyles.slipValue}>{caseItem.notes}</Text>
-                  </View>
-                ) : null}
-
-                <View style={labSlipStyles.divider} />
-
-                <View style={labSlipStyles.slipFooter}>
-                  <Text style={labSlipStyles.footerText}>
-                    Received: {new Date(caseItem.createdAt).toLocaleDateString()}
-                  </Text>
-                  {caseItem.assignedBarcode && (
-                    <Text style={labSlipStyles.footerText}>
-                      Barcode: {caseItem.assignedBarcode}
-                    </Text>
-                  )}
-                </View>
-              </View>
-            </ScrollView>
-
-            <Pressable
-              onPress={() => {
-                if (Platform.OS === "web") {
-                  window.print();
-                } else {
-                  Alert.alert("Print", "The lab slip is displayed above. Use your device's print feature to print this document.");
-                }
-              }}
-              style={({ pressed }) => [
-                labSlipStyles.printBtn,
-                pressed && { opacity: 0.85 },
-              ]}
-            >
-              <Ionicons name="print" size={20} color="#FFF" />
-              <Text style={labSlipStyles.printBtnText}>Print Lab Slip</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={showBarcodeScanner} animationType="slide" onRequestClose={() => setShowBarcodeScanner(false)}>
-        <View style={{ flex: 1, backgroundColor: "#000" }}>
-          <View style={{ paddingTop: Platform.OS === "web" ? 67 : insets.top + 10, paddingHorizontal: 20, paddingBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ fontSize: 18, fontFamily: "Inter_700Bold", color: "#FFF" }}>Scan Barcode</Text>
-            <Pressable onPress={() => setShowBarcodeScanner(false)} style={{ padding: 8 }}>
-              <Ionicons name="close" size={24} color="#FFF" />
-            </Pressable>
-          </View>
-          <View style={{ flex: 1, overflow: "hidden" }}>
-            {cameraPermission?.granted ? (
-              <>
-                <CameraView
-                  style={{ flex: 1 }}
-                  facing="back"
-                  barcodeScannerSettings={{ barcodeTypes: ["code128", "code39", "ean13", "ean8", "upc_a", "upc_e", "qr", "pdf417", "itf14", "codabar"] }}
-                  onBarcodeScanned={barcodeScanned ? undefined : (result) => {
-                    setBarcodeScanned(true);
-                    const scannedBarcode = result.data;
-                    const existingCase = findCaseByBarcode(scannedBarcode);
-                    if (existingCase && existingCase.id !== id) {
-                      Alert.alert(
-                        "Barcode In Use",
-                        `This barcode is already assigned to case ${existingCase.caseNumber}. Please scan a different barcode.`,
-                        [{ text: "OK", onPress: () => setBarcodeScanned(false) }]
-                      );
-                    } else {
-                      assignBarcodeToCase(id!, scannedBarcode);
-                      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                      Alert.alert(
-                        "Barcode Assigned",
-                        `Barcode ${scannedBarcode} has been assigned to this case.`,
-                        [{ text: "OK", onPress: () => setShowBarcodeScanner(false) }]
-                      );
-                    }
-                  }}
-                />
-                <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "center", alignItems: "center" }} pointerEvents="none">
-                  <View style={{ width: 260, height: 100, borderWidth: 2, borderColor: "rgba(79,142,247,0.6)", borderRadius: 12, borderStyle: "dashed" }} />
-                  <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 8 }}>
-                    Align barcode in the box
-                  </Text>
-                </View>
-              </>
-            ) : (
-              <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-                <Ionicons name="camera-outline" size={48} color="rgba(255,255,255,0.4)" />
-                <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 15, fontFamily: "Inter_500Medium", marginTop: 12, textAlign: "center", paddingHorizontal: 40 }}>Camera permission is required to scan barcodes.</Text>
-                <Pressable
-                  onPress={async () => {
-                    const result = await requestCameraPermission();
-                    if (!result.granted) {
-                      Alert.alert("Permission Denied", "Please enable camera access in your device settings.");
-                    }
-                  }}
-                  style={({ pressed }) => ({ marginTop: 16, backgroundColor: "#4F8EF7", paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, opacity: pressed ? 0.8 : 1 })}
-                >
-                  <Text style={{ color: "#FFF", fontSize: 15, fontFamily: "Inter_600SemiBold" }}>Grant Camera Access</Text>
-                </Pressable>
-              </View>
-            )}
-          </View>
-          <View style={{ paddingHorizontal: 20, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 10, paddingTop: 16, alignItems: "center" }}>
-            <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" }}>
-              Point camera at a barcode to assign it to case {caseItem?.caseNumber}
-            </Text>
-          </View>
-        </View>
-      </Modal>
+      <CaseBarcodeScannerModal
+        visible={showBarcodeScanner}
+        onClose={() => setShowBarcodeScanner(false)}
+        insetsTop={insets.top}
+        insetsBottom={insets.bottom}
+        caseNumber={caseItem?.caseNumber}
+        cameraPermission={cameraPermission}
+        requestCameraPermission={requestCameraPermission}
+        scanned={barcodeScanned}
+        onSetScanned={setBarcodeScanned}
+        onScan={(scannedBarcode) => {
+          const existingCase = findCaseByBarcode(scannedBarcode);
+          if (existingCase && existingCase.id !== id) {
+            Alert.alert(
+              "Barcode In Use",
+              `This barcode is already assigned to case ${existingCase.caseNumber}. Please scan a different barcode.`,
+              [{ text: "OK", onPress: () => setBarcodeScanned(false) }]
+            );
+          } else {
+            assignBarcodeToCase(id!, scannedBarcode);
+            if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            Alert.alert(
+              "Barcode Assigned",
+              `Barcode ${scannedBarcode} has been assigned to this case.`,
+              [{ text: "OK", onPress: () => setShowBarcodeScanner(false) }]
+            );
+          }
+        }}
+      />
 
       <Modal
         visible={!!fullScreenPhoto}
@@ -5523,113 +4996,6 @@ const ctStyles = StyleSheet.create({
   },
 });
 
-const labSlipStyles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-  },
-  container: {
-    flex: 1,
-    backgroundColor: "#FFF",
-    marginTop: 60,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-  },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E2E8F0",
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
-  },
-  body: {
-    flex: 1,
-    padding: 20,
-  },
-  slipCard: {
-    backgroundColor: "#FAFAFA",
-    borderRadius: 12,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
-  slipHeader: {
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  slipTitle: {
-    fontSize: 18,
-    fontFamily: "Inter_700Bold",
-    color: Colors.light.text,
-    letterSpacing: 1.5,
-  },
-  slipCaseNum: {
-    fontSize: 14,
-    fontFamily: "Inter_600SemiBold",
-    color: Colors.light.tint,
-    marginTop: 4,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: "#CBD5E1",
-    marginVertical: 14,
-  },
-  slipRow: {
-    flexDirection: "row",
-    marginBottom: 14,
-    gap: 12,
-  },
-  slipCol: {
-    flex: 1,
-  },
-  slipFullRow: {
-    marginBottom: 14,
-  },
-  slipLabel: {
-    fontSize: 11,
-    fontFamily: "Inter_600SemiBold",
-    color: "#94A3B8",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginBottom: 3,
-  },
-  slipValue: {
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
-    color: Colors.light.text,
-  },
-  slipFooter: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  footerText: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-    color: "#94A3B8",
-  },
-  printBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: "#6366F1",
-    paddingVertical: 16,
-    margin: 20,
-    borderRadius: 14,
-  },
-  printBtnText: {
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
-    color: "#FFF",
-  },
-});
-
 const exoStyles = StyleSheet.create({
   exocadCard: {
     backgroundColor: "#F5F3FF",
@@ -5676,26 +5042,6 @@ const exoStyles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
     color: "#FFF",
-  },
-});
-
-const editFieldStyles = StyleSheet.create({
-  label: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    color: "#64748B",
-    marginBottom: 4,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
-    color: "#1E293B",
-    backgroundColor: "#F8FAFC",
   },
 });
 
