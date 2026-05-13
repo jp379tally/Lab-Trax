@@ -391,7 +391,16 @@ export function InvoiceEditor({
       ),
     [items],
   );
-  const total = subtotal + Number(tax || 0) - Number(discount || 0);
+  // Credits behave like a discount applied to the invoice (e.g. a
+  // patient/practice deposit or store credit). They reduce the final
+  // total just like the Discount field, and are shown as their own
+  // line in the totals footer so the user can see exactly how the
+  // total was computed.
+  const total =
+    subtotal +
+    Number(tax || 0) -
+    Number(discount || 0) -
+    Number(credits || 0);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -998,6 +1007,20 @@ export function InvoiceEditor({
                     </td>
                     <td />
                   </tr>
+                  {Number(credits || 0) > 0 && (
+                    <tr className="border-t border-border">
+                      <td
+                        colSpan={4}
+                        className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium"
+                      >
+                        Credits applied
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                        −{formatMoney(Number(credits || 0))}
+                      </td>
+                      <td />
+                    </tr>
+                  )}
                   <tr className="border-t border-border bg-secondary/30">
                     <td colSpan={4} className="px-3 py-2.5 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Total

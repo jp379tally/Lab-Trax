@@ -1087,10 +1087,21 @@ router.patch(
         input.discount !== undefined
           ? input.discount.toFixed(2)
           : invoice.discount;
+      // Credits live in displayMetadata.credits (a JSON-blob column).
+      // They behave like an additional discount applied to the invoice
+      // — the desktop editor shows them on their own row and subtracts
+      // them from the visible total, so we must do the same on the
+      // server or the persisted total will drift from what the user
+      // saw when they hit Save.
+      const incomingMeta = (input.displayMetadata ??
+        (invoice as any).displayMetadataJson ??
+        {}) as Record<string, unknown>;
+      const credits = Math.max(0, Number(incomingMeta.credits ?? 0) || 0);
       const total = (
         Number(subtotal) +
         Number(tax) -
-        Number(discount)
+        Number(discount) -
+        credits
       ).toFixed(2);
 
       const paidSum = await tx
