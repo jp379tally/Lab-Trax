@@ -73,5 +73,9 @@
     "vitest": "^4.1.5",
     "zod": "catalog:",
     "zod-validation-error": "^3.4.0"
+  },
+  "dependencies": {
+    "@shopify/react-native-skia": "^2.2.12",
+    "expo-file-system": "^19.0.22"
   }
 }

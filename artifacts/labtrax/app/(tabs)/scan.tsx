@@ -37,6 +37,7 @@ import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
 import { convertPdfToImages } from "@/lib/pdfToImages";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { ManualCropOverlay } from "@/components/ManualCropOverlay";
+import { ReviewAndEditScreen } from "@/components/scan/ReviewAndEditScreen";
 import {
   decideManualEntry,
   shouldAutoAnalyze,
@@ -528,15 +529,9 @@ export default function ScanScreen() {
         if ((Platform.OS as string) !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }
-        // Auto-fire AI analysis on the captured page(s) so the user doesn't
-        // have to discover the "Finished" button. handleFinishedReview will
-        // advance to the form on success and surface a clear error otherwise.
-        if (shouldAutoAnalyze({ cancelled, alreadyFired: autoAnalyzedRef.current })) {
-          autoAnalyzedRef.current = true;
-          try { await handleFinishedReview(); } catch (err: any) {
-            console.log("Auto AI analyze failed:", err?.message || err);
-          }
-        }
+        // Auto-fire is disabled: the new ReviewAndEditScreen lets the user
+        // crop / rotate / annotate before the AI runs. handleFinishedReview
+        // is invoked from the screen's "Finish" button instead.
       };
       waitAndTransition();
       return () => { cancelled = true; };
@@ -1450,9 +1445,10 @@ export default function ScanScreen() {
     return uri;
   }
 
-  async function handleFinishedReview() {
+  async function handleFinishedReview(overridePhotos?: string[]) {
+    const photos = overridePhotos && overridePhotos.length > 0 ? overridePhotos : casePhotos;
     const entries: ActivityEntry[] = [];
-    casePhotos.forEach((uri) => {
+    photos.forEach((uri) => {
       const photoEntry: ActivityEntry = {
         id: generateId(),
         type: "photo",
@@ -1464,7 +1460,7 @@ export default function ScanScreen() {
       entries.push(photoEntry);
     });
 
-    let analyzeUri = casePhotos[0] || capturedUri;
+    let analyzeUri = photos[0] || capturedUri;
     let aiSuccess = false;
     if (analyzeUri) {
       setIsAnalyzing(true);
@@ -1484,7 +1480,7 @@ export default function ScanScreen() {
         console.log("AI: ensureHighQualityBase64 failed:", e?.message);
       }
 
-      autoGeneratePdf(casePhotos).then((pdfUri) => {
+      autoGeneratePdf(photos).then((pdfUri) => {
         if (pdfUri) {
           setActivityEntries((prev) => [
             ...prev,
@@ -1526,10 +1522,10 @@ export default function ScanScreen() {
         }
 
         const additionalBase64: string[] = [];
-        if (casePhotos.length > 1) {
-          for (let i = 1; i < casePhotos.length; i++) {
+        if (photos.length > 1) {
+          for (let i = 1; i < photos.length; i++) {
             try {
-              const compressed = await compressImageForAI(casePhotos[i]);
+              const compressed = await compressImageForAI(photos[i]);
               additionalBase64.push(compressed);
               console.log(`AI: Compressed page ${i + 1}, base64 length:`, compressed.length);
             } catch (compErr: any) {
@@ -4371,40 +4367,7 @@ export default function ScanScreen() {
           </View>
         )}
 
-        {phase === "review" && (
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(15,23,42,0.95)" }]}>
-            <View style={styles.reviewContent}>
-              <Ionicons name="checkmark-circle" size={48} color={Colors.light.success} />
-              <Text style={styles.detectedViewText}>
-                {casePhotos.length} RX Page{casePhotos.length !== 1 ? "s" : ""} Captured
-              </Text>
-              <Text style={styles.detectedSubText}>
-                Tap a thumbnail to select it, then delete or crop.
-              </Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.reviewPhotoStrip}>
-                {casePhotos.map((uri, idx) => {
-                  const isSelected = selectedReviewPhotos.includes(idx);
-                  return (
-                    <Pressable
-                      key={idx}
-                      onPress={() => toggleReviewPhotoSelection(idx)}
-                      style={styles.reviewThumbWrap}
-                    >
-                      <Image
-                        source={{ uri }}
-                        style={[styles.reviewThumb, isSelected && styles.reviewThumbSelected]}
-                        contentFit="cover"
-                      />
-                      <View style={[styles.reviewThumbBadge, isSelected && styles.reviewThumbBadgeSelected]}>
-                        <Ionicons name={isSelected ? "checkmark" : "ellipse-outline"} size={16} color="#FFF" />
-                      </View>
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-            </View>
-          </View>
-        )}
+        {/* phase === "review" UI is rendered by <ReviewAndEditScreen /> at root */}
 
         <View style={[styles.cameraHeaderOverlay, { paddingTop: (Platform.OS as string) === "web" ? 67 + 12 : insets.top + 12 }]} pointerEvents="none">
           <Text style={styles.scanTitle}>AI Intake</Text>
@@ -4413,7 +4376,7 @@ export default function ScanScreen() {
           </Text>
         </View>
 
-        {(phase === "camera" || phase === "review") && !isAnalyzing && (
+        {phase === "camera" && !isAnalyzing && (
           <Pressable
             onPress={() => {
               const action = resolveCloseAction({
@@ -4450,7 +4413,7 @@ export default function ScanScreen() {
               borderColor: "rgba(255,255,255,0.15)",
               zIndex: 50,
             }}
-            accessibilityLabel={phase === "review" ? "Discard scan" : "Close camera"}
+            accessibilityLabel="Close camera"
           >
             <Ionicons name="close" size={22} color="#FFF" />
           </Pressable>
@@ -4544,7 +4507,7 @@ export default function ScanScreen() {
             <Text style={styles.scanningText}>Analyzing RX...</Text>
           </View>
         )}
-        {phase === "review" && (
+        {false && phase === "review" && (
           <View style={styles.detectedActions}>
             <Pressable
               onPress={deleteSelectedReviewPhotos}
@@ -4601,7 +4564,7 @@ export default function ScanScreen() {
               <Text style={[styles.actionBtnText, { color: "#A78BFA" }]}>{isSavingPdf ? "Saving..." : "Save PDF"}</Text>
             </Pressable>
             <Pressable
-              onPress={handleFinishedReview}
+              onPress={() => { handleFinishedReview(); }}
               disabled={isAnalyzing}
               style={({ pressed }) => [
                 styles.reviewActionBtn,
@@ -4710,6 +4673,38 @@ export default function ScanScreen() {
         imageUri={cropOverlayUri}
         onCancel={handleCropOverlayCancel}
         onCropped={handleCropOverlayCropped}
+      />
+
+      <ReviewAndEditScreen
+        visible={phase === "review"}
+        initialPhotos={casePhotos}
+        isFinishing={isAnalyzing}
+        onCancel={() => {
+          setCasePhotos([]);
+          setCaseAttachments([]);
+          setCapturedUri(null);
+          setSelectedReviewPhotos([]);
+          autoAnalyzedRef.current = false;
+          setPhase("camera");
+        }}
+        onAddMore={handleAddMoreFromReview}
+        onPagesChanged={(uris) => {
+          // Keep parent state in sync if pages were rotated/cropped/deleted
+          // inside the editor. Avoid resetting if identical to prevent loops.
+          setCasePhotos((prev) => {
+            if (prev.length === uris.length && prev.every((u, i) => u === uris[i])) return prev;
+            return uris;
+          });
+          if (uris.length > 0) setCapturedUri(uris[uris.length - 1]);
+        }}
+        onFinish={(finalUris) => {
+          setCasePhotos(finalUris);
+          if (finalUris.length > 0) setCapturedUri(finalUris[finalUris.length - 1]);
+          autoAnalyzedRef.current = true;
+          handleFinishedReview(finalUris).catch((err) => {
+            console.log("Finish from ReviewAndEditScreen failed:", err?.message || err);
+          });
+        }}
       />
 
       <Modal
