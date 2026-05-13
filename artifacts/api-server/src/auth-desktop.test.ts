@@ -101,6 +101,10 @@ vi.mock("@workspace/db", () => {
     pricingTiers: { __table: "pricingTiers" },
     pricingOverrides: { __table: "pricingOverrides" },
     labMemberships: { __table: "labMemberships" },
+    invoiceAttachments: { __table: "invoiceAttachments" },
+    invoiceCredits: { __table: "invoiceCredits" },
+    practiceStatements: { __table: "practiceStatements" },
+    practiceStatementSends: { __table: "practiceStatementSends" },
   };
 
   const rowsByTable: RowsByTable = {

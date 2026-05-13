@@ -148,6 +148,10 @@ vi.mock("@workspace/db", () => {
     // Finance / invoices
     invoices: T,
     invoiceLineItems: T,
+    invoiceAttachments: T,
+    invoiceCredits: T,
+    practiceStatements: T,
+    practiceStatementSends: T,
     payments: T,
     bankAccounts: T,
     bankTransactions: T,

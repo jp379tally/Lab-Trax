@@ -682,6 +682,20 @@ export const invoices = pgTable(
     dueAt: timestamp("due_at", { withTimezone: true }),
     notes: text("notes"),
     displayMetadataJson: jsonb("display_metadata_json"),
+    aiGenerated: boolean("ai_generated").default(false).notNull(),
+    aiPricingWarning: text("ai_pricing_warning"),
+    aiReviewedAt: timestamp("ai_reviewed_at", { withTimezone: true }),
+    aiReviewedByUserId: varchar("ai_reviewed_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
+    voidedByUserId: varchar("voided_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    voidReason: text("void_reason"),
+    voidKind: text("void_kind"),
+    sourceInvoiceId: varchar("source_invoice_id"),
     createdByUserId: varchar("created_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -700,7 +714,157 @@ export const invoices = pgTable(
       table.invoiceNumber
     ),
     invoicesDeletedAtIdx: index("invoices_deleted_at_idx").on(table.deletedAt),
+    invoicesProviderOrgIdx: index("invoices_provider_org_idx").on(
+      table.providerOrganizationId,
+    ),
+    invoicesLabOrgIdx: index("invoices_lab_org_idx").on(
+      table.labOrganizationId,
+    ),
+    invoicesAiGeneratedIdx: index("invoices_ai_generated_idx").on(
+      table.aiGenerated,
+    ),
   })
+);
+
+export const invoiceAttachments = pgTable(
+  "invoice_attachments",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    invoiceId: varchar("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    fileName: text("file_name").notNull(),
+    storageKey: text("storage_key").notNull(),
+    fileType: text("file_type").notNull(),
+    fileSize: integer("file_size").default(0).notNull(),
+    includeInPdf: boolean("include_in_pdf").default(false).notNull(),
+    uploadedByUserId: varchar("uploaded_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: createdAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (table) => ({
+    invoiceAttachmentsInvoiceIdx: index(
+      "invoice_attachments_invoice_idx",
+    ).on(table.invoiceId),
+  }),
+);
+
+export const invoiceCredits = pgTable(
+  "invoice_credits",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    invoiceId: varchar("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    providerOrganizationId: varchar("provider_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: varchar("source_id"),
+    note: text("note"),
+    appliedByUserId: varchar("applied_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    appliedAt: timestamp("applied_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    reversedAt: timestamp("reversed_at", { withTimezone: true }),
+    reversedByUserId: varchar("reversed_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" },
+    ),
+  },
+  (table) => ({
+    invoiceCreditsInvoiceIdx: index("invoice_credits_invoice_idx").on(
+      table.invoiceId,
+    ),
+    invoiceCreditsProviderIdx: index("invoice_credits_provider_idx").on(
+      table.providerOrganizationId,
+    ),
+  }),
+);
+
+export const practiceStatements = pgTable(
+  "practice_statements",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    providerOrganizationId: varchar("provider_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+    invoiceCount: integer("invoice_count").default(0).notNull(),
+    totalBilled: decimal("total_billed", { precision: 12, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    totalPaid: decimal("total_paid", { precision: 12, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    balanceDue: decimal("balance_due", { precision: 12, scale: 2 })
+      .default("0.00")
+      .notNull(),
+    invoiceIdsJson: jsonb("invoice_ids_json").default([]).notNull(),
+    pdfStorageKey: text("pdf_storage_key"),
+    pdfFileName: text("pdf_file_name"),
+    pdfFileSize: integer("pdf_file_size"),
+    createdByUserId: varchar("created_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    practiceStatementsProviderIdx: index(
+      "practice_statements_provider_idx",
+    ).on(table.providerOrganizationId),
+    practiceStatementsLabIdx: index("practice_statements_lab_idx").on(
+      table.labOrganizationId,
+    ),
+  }),
+);
+
+export const practiceStatementSends = pgTable(
+  "practice_statement_sends",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    statementId: varchar("statement_id")
+      .notNull()
+      .references(() => practiceStatements.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    recipient: text("recipient").notNull(),
+    status: text("status").default("sent").notNull(),
+    errorMessage: text("error_message"),
+    sentByUserId: varchar("sent_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    sentAt: timestamp("sent_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    practiceStatementSendsStatementIdx: index(
+      "practice_statement_sends_statement_idx",
+    ).on(table.statementId),
+  }),
 );
 
 export const invoiceLineItems = pgTable("invoice_line_items", {

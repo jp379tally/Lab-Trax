@@ -1,4 +1,8 @@
 import { Router } from "express";
+import multer from "multer";
+import fs from "fs";
+import path from "path";
+import { randomBytes } from "crypto";
 import { and, asc, desc, eq, gte, lte, or, sql, sum } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -10,9 +14,13 @@ import {
   caseNotes,
   caseRestorations,
   cases,
+  invoiceAttachments,
+  invoiceCredits,
   invoiceLineItems,
   invoices,
   labCases,
+  practiceStatements,
+  practiceStatementSends,
   organizationMemberships,
   organizations,
   payments,
@@ -25,6 +33,10 @@ import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { HttpError, ok } from "../lib/http";
 import { createTransport, getMailerConfig } from "../lib/mailer";
+import {
+  generateStatementPdfBuffer,
+  type PracticeStatementData,
+} from "../lib/statements";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -193,6 +205,7 @@ const emailInvoiceSchema = z.object({
   message: z.string().min(1).max(20000),
   filename: z.string().min(1).max(200),
   pdfBase64: z.string().min(1).max(8 * 1024 * 1024),
+  attachmentIds: z.array(z.string().min(1)).max(20).optional(),
 });
 
 router.post(
@@ -240,6 +253,39 @@ router.post(
       throw new HttpError(400, "Invalid PDF payload.");
     }
 
+    const extraAttachments: Array<{
+      filename: string;
+      content: Buffer;
+      contentType: string;
+    }> = [];
+    if (input.attachmentIds && input.attachmentIds.length > 0) {
+      const rows = await db.query.invoiceAttachments.findMany({
+        where: and(
+          eq(invoiceAttachments.invoiceId, invoice.id),
+          inArray(invoiceAttachments.id, input.attachmentIds),
+          isNull(invoiceAttachments.deletedAt),
+        ),
+      });
+      for (const row of rows) {
+        const safeName = path.basename(row.storageKey);
+        const filePath = path.resolve(invoiceAttachmentsDir, safeName);
+        if (!filePath.startsWith(invoiceAttachmentsDir + path.sep)) continue;
+        try {
+          const buf = fs.readFileSync(filePath);
+          extraAttachments.push({
+            filename: row.fileName || row.storageKey,
+            content: buf,
+            contentType: row.fileType || "application/octet-stream",
+          });
+        } catch (err) {
+          req.log?.warn?.(
+            { err, attachmentId: row.id },
+            "[INVOICE EMAIL] failed to read attachment from disk",
+          );
+        }
+      }
+    }
+
     const transporter = createTransport(cfg);
     try {
       await transporter.sendMail({
@@ -256,6 +302,7 @@ router.post(
             content: pdfBuffer,
             contentType: "application/pdf",
           },
+          ...extraAttachments,
         ],
       });
     } catch (err: any) {
@@ -768,12 +815,75 @@ router.get(
       typeof req.query.caseId === "string" && req.query.caseId
         ? req.query.caseId
         : null;
+    const practiceIdFilter =
+      typeof req.query.practiceId === "string" && req.query.practiceId
+        ? req.query.practiceId
+        : null;
+    const practiceIdsFilter =
+      typeof req.query.practiceIds === "string" && req.query.practiceIds
+        ? req.query.practiceIds.split(",").map((s) => s.trim()).filter(Boolean)
+        : null;
+    const labIdFilter =
+      typeof req.query.labOrganizationId === "string" &&
+      req.query.labOrganizationId
+        ? req.query.labOrganizationId
+        : null;
+    const statusFilter =
+      typeof req.query.status === "string" && req.query.status
+        ? req.query.status
+        : null; // values: "open" | "all" | specific status
+    const statusList =
+      statusFilter === "open"
+        ? ["open", "partially_paid"]
+        : statusFilter && statusFilter !== "all"
+          ? statusFilter.split(",").map((s) => s.trim()).filter(Boolean)
+          : null;
+    const dateFromFilter =
+      typeof req.query.dateFrom === "string" && req.query.dateFrom
+        ? new Date(req.query.dateFrom)
+        : null;
+    const dateToFilter =
+      typeof req.query.dateTo === "string" && req.query.dateTo
+        ? new Date(req.query.dateTo)
+        : null;
+    const minAmount =
+      typeof req.query.minAmount === "string" && req.query.minAmount
+        ? Number(req.query.minAmount)
+        : null;
+    const maxAmount =
+      typeof req.query.maxAmount === "string" && req.query.maxAmount
+        ? Number(req.query.maxAmount)
+        : null;
+    const aiOnly = req.query.aiOnly === "true";
+    const overdueBucket =
+      typeof req.query.overdueBucket === "string" && req.query.overdueBucket
+        ? req.query.overdueBucket // "0_30" | "31_60" | "61_90" | "90_plus"
+        : null;
 
     const [rows, mobileCaseRows] = await Promise.all([
       orgIds.length
         ? db.query.invoices.findMany({
             where: and(
               caseIdFilter ? eq(invoices.caseId, caseIdFilter) : undefined,
+              practiceIdFilter
+                ? eq(invoices.providerOrganizationId, practiceIdFilter)
+                : undefined,
+              practiceIdsFilter && practiceIdsFilter.length
+                ? inArray(invoices.providerOrganizationId, practiceIdsFilter)
+                : undefined,
+              labIdFilter
+                ? eq(invoices.labOrganizationId, labIdFilter)
+                : undefined,
+              statusList && statusList.length
+                ? inArray(invoices.status, statusList)
+                : undefined,
+              dateFromFilter && !Number.isNaN(dateFromFilter.getTime())
+                ? gte(invoices.createdAt, dateFromFilter)
+                : undefined,
+              dateToFilter && !Number.isNaN(dateToFilter.getTime())
+                ? lte(invoices.createdAt, dateToFilter)
+                : undefined,
+              aiOnly ? eq(invoices.aiGenerated, true) : undefined,
               isNull(invoices.deletedAt),
               or(
                 ...orgIds.flatMap((orgId: string) => [
@@ -878,12 +988,157 @@ router.get(
           }
         : null,
     });
-    const enriched = [...rows.map(enrich), ...mobileInvoices.map(enrich)].sort(
+    let enriched = [...rows.map(enrich), ...mobileInvoices.map(enrich)].sort(
       (a: any, b: any) =>
         String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? ""))
     );
+
+    if (minAmount != null && Number.isFinite(minAmount)) {
+      enriched = enriched.filter(
+        (r: any) => Number(r.total ?? 0) >= minAmount,
+      );
+    }
+    if (maxAmount != null && Number.isFinite(maxAmount)) {
+      enriched = enriched.filter(
+        (r: any) => Number(r.total ?? 0) <= maxAmount,
+      );
+    }
+    if (overdueBucket) {
+      const now = Date.now();
+      const bucketDays = (b: string): [number, number] => {
+        switch (b) {
+          case "0_30":
+            return [0, 30];
+          case "31_60":
+            return [31, 60];
+          case "61_90":
+            return [61, 90];
+          case "90_plus":
+            return [91, Number.POSITIVE_INFINITY];
+          default:
+            return [0, Number.POSITIVE_INFINITY];
+        }
+      };
+      const [minD, maxD] = bucketDays(overdueBucket);
+      enriched = enriched.filter((r: any) => {
+        if (Number(r.balanceDue ?? 0) <= 0) return false;
+        const due = r.dueAt ? new Date(r.dueAt).getTime() : null;
+        if (!due || Number.isNaN(due)) return false;
+        const ageDays = Math.floor((now - due) / (24 * 60 * 60 * 1000));
+        return ageDays >= minD && ageDays <= maxD;
+      });
+    }
+
     return ok(res, enriched);
   })
+);
+
+// Per-practice summary used by the AccountSelector panel.
+router.get(
+  "/practice-summary",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const providerOrganizationId = String(req.query.providerOrganizationId ?? "");
+    const labOrganizationId =
+      typeof req.query.labOrganizationId === "string"
+        ? req.query.labOrganizationId
+        : null;
+    if (!providerOrganizationId) {
+      throw new HttpError(400, "providerOrganizationId is required.");
+    }
+
+    // Caller must be a member of either side.
+    const labMember = labOrganizationId
+      ? await requireMembership(callerId, labOrganizationId).catch(() => null)
+      : null;
+    const providerMember = await requireMembership(
+      callerId,
+      providerOrganizationId,
+    ).catch(() => null);
+    if (!labMember && !providerMember) {
+      throw new HttpError(403, "You do not have access to this practice.");
+    }
+
+    const rows = await db.query.invoices.findMany({
+      where: and(
+        eq(invoices.providerOrganizationId, providerOrganizationId),
+        labOrganizationId
+          ? eq(invoices.labOrganizationId, labOrganizationId)
+          : undefined,
+        isNull(invoices.deletedAt),
+      ),
+    });
+
+    const now = Date.now();
+    const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+    const open = rows.filter(
+      (r: any) =>
+        r.status !== "void" && r.status !== "paid" && Number(r.balanceDue) > 0,
+    );
+    const buckets = { current: 0, d30: 0, d60: 0, d90: 0, d90plus: 0 };
+    for (const r of open) {
+      const bal = Number((r as any).balanceDue ?? 0);
+      const due = (r as any).dueAt
+        ? new Date((r as any).dueAt).getTime()
+        : null;
+      if (!due) {
+        buckets.current += bal;
+        continue;
+      }
+      const age = Math.floor((now - due) / (24 * 60 * 60 * 1000));
+      if (age <= 0) buckets.current += bal;
+      else if (age <= 30) buckets.d30 += bal;
+      else if (age <= 60) buckets.d60 += bal;
+      else if (age <= 90) buckets.d90 += bal;
+      else buckets.d90plus += bal;
+    }
+
+    const credits = await db.query.invoiceCredits.findMany({
+      where: and(
+        eq(invoiceCredits.providerOrganizationId, providerOrganizationId),
+        isNull(invoiceCredits.reversedAt),
+      ),
+    });
+
+    const recent = rows
+      .slice()
+      .sort((a: any, b: any) =>
+        String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")),
+      )
+      .slice(0, 10);
+
+    return ok(res, {
+      providerOrganizationId,
+      totals: {
+        invoiceCount: rows.length,
+        openCount: open.length,
+        totalBilled: sum(rows.map((r: any) => Number(r.total ?? 0))).toFixed(2),
+        openBalance: sum(
+          open.map((r: any) => Number(r.balanceDue ?? 0)),
+        ).toFixed(2),
+        creditsAvailable: sum(
+          credits.map((c: any) => Number(c.amount ?? 0)),
+        ).toFixed(2),
+      },
+      aging: {
+        current: buckets.current.toFixed(2),
+        days_1_30: buckets.d30.toFixed(2),
+        days_31_60: buckets.d60.toFixed(2),
+        days_61_90: buckets.d90.toFixed(2),
+        days_90_plus: buckets.d90plus.toFixed(2),
+      },
+      recentInvoices: recent.map((r: any) => ({
+        id: r.id,
+        invoiceNumber: r.invoiceNumber,
+        total: r.total,
+        balanceDue: r.balanceDue,
+        status: r.status,
+        issuedAt: r.issuedAt,
+        dueAt: r.dueAt,
+        aiGenerated: r.aiGenerated ?? false,
+      })),
+    });
+  }),
 );
 
 function toMobileInvoice(lc: any, parsed: any, localInvoiceId: string) {
@@ -1566,6 +1821,1196 @@ router.post(
   })
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoice attachments (separate from case-media; per-invoice files that can
+// optionally be appended to the rendered invoice PDF).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const invoiceAttachmentsDir = path.resolve(
+  process.cwd(),
+  "uploads",
+  "invoice-attachments",
+);
+
+// Use in-memory storage so the access check below runs BEFORE we touch the
+// disk; an unauthenticated/unauthorised caller cannot create orphan files
+// in the upload directory.
+const invoiceAttachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+async function loadInvoiceWithAccess(
+  callerId: string,
+  invoiceId: string,
+  requireBilling = false,
+) {
+  const invoice = await db.query.invoices.findFirst({
+    where: eq(invoices.id, invoiceId),
+  });
+  if (!invoice) throw new HttpError(404, "Invoice not found.");
+  if (requireBilling) {
+    await requireAnyRole(callerId, invoice.labOrganizationId, BILLING_ROLES);
+    return invoice;
+  }
+  const labMember = await requireMembership(
+    callerId,
+    invoice.labOrganizationId,
+  ).catch(() => null);
+  const providerMember = await requireMembership(
+    callerId,
+    invoice.providerOrganizationId,
+  ).catch(() => null);
+  if (!labMember && !providerMember) {
+    throw new HttpError(403, "You do not have access to this invoice.");
+  }
+  return invoice;
+}
+
+router.get(
+  "/:invoiceId/attachments",
+  asyncHandler(async (req, res) => {
+    await loadInvoiceWithAccess(
+      (req as any).auth.userId,
+      req.params.invoiceId,
+    );
+    const rows = await db.query.invoiceAttachments.findMany({
+      where: and(
+        eq(invoiceAttachments.invoiceId, req.params.invoiceId),
+        isNull(invoiceAttachments.deletedAt),
+      ),
+      orderBy: [desc(invoiceAttachments.createdAt)],
+    });
+    return ok(res, rows);
+  }),
+);
+
+router.post(
+  "/:invoiceId/attachments",
+  invoiceAttachmentUpload.single("file"),
+  asyncHandler(async (req, res) => {
+    if (!req.file) throw new HttpError(400, "No file uploaded.");
+    const callerId = (req as any).auth.userId as string;
+    // Authorize BEFORE writing the in-memory upload to disk so an
+    // unauthorized caller can't create orphan files.
+    const invoice = await loadInvoiceWithAccess(
+      callerId,
+      req.params.invoiceId,
+      true,
+    );
+    const includeInPdf = req.body?.includeInPdf === "true";
+    const ext = (path.extname(req.file.originalname || "") || "").toLowerCase();
+    const safeBase =
+      path
+        .basename(req.file.originalname || "file", ext)
+        .replace(/[^a-zA-Z0-9\-_]+/g, "-")
+        .slice(0, 60) || "file";
+    const filename = `${Date.now()}-${randomBytes(4).toString("hex")}-${safeBase}${ext}`;
+    try {
+      fs.mkdirSync(invoiceAttachmentsDir, { recursive: true });
+    } catch {
+      /* ignore */
+    }
+    const diskPath = path.join(invoiceAttachmentsDir, filename);
+    fs.writeFileSync(diskPath, req.file.buffer);
+    const storageKey = `/uploads/invoice-attachments/${filename}`;
+    const [row] = await db
+      .insert(invoiceAttachments)
+      .values({
+        invoiceId: invoice.id,
+        fileName: req.file.originalname || filename,
+        storageKey,
+        fileType: req.file.mimetype || "application/octet-stream",
+        fileSize: req.file.size || 0,
+        includeInPdf,
+        uploadedByUserId: callerId,
+      })
+      .returning();
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_attachment_added",
+      entityType: "invoice",
+      entityId: invoice.id,
+      afterJson: { attachmentId: row.id, fileName: row.fileName },
+    });
+    return ok(res, row, 201);
+  }),
+);
+
+router.patch(
+  "/:invoiceId/attachments/:attachmentId",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const invoice = await loadInvoiceWithAccess(
+      callerId,
+      req.params.invoiceId,
+      true,
+    );
+    const input = z
+      .object({ includeInPdf: z.boolean().optional() })
+      .parse(req.body);
+    const [row] = await db
+      .update(invoiceAttachments)
+      .set({ includeInPdf: input.includeInPdf })
+      .where(
+        and(
+          eq(invoiceAttachments.id, req.params.attachmentId),
+          eq(invoiceAttachments.invoiceId, invoice.id),
+          isNull(invoiceAttachments.deletedAt),
+        ),
+      )
+      .returning();
+    if (!row) throw new HttpError(404, "Attachment not found.");
+    return ok(res, row);
+  }),
+);
+
+router.delete(
+  "/:invoiceId/attachments/:attachmentId",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const invoice = await loadInvoiceWithAccess(
+      callerId,
+      req.params.invoiceId,
+      true,
+    );
+    const { softDelete } = await import("../lib/soft-delete");
+    await softDelete({
+      table: invoiceAttachments,
+      where: and(
+        eq(invoiceAttachments.id, req.params.attachmentId),
+        eq(invoiceAttachments.invoiceId, invoice.id),
+      )!,
+      actorUserId: callerId,
+      req,
+      organizationId: invoice.labOrganizationId,
+      entityType: "invoice_attachment",
+      entityId: req.params.attachmentId,
+    });
+    return ok(res, { deleted: true });
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Credits applied to invoices.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post(
+  "/:invoiceId/credits/apply",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const invoice = await loadInvoiceWithAccess(
+      callerId,
+      req.params.invoiceId,
+      true,
+    );
+    const input = z
+      .object({
+        amount: z.coerce.number().positive(),
+        sourceKind: z
+          .enum(["adjustment", "deposit", "writeoff", "manual"])
+          .default("manual"),
+        sourceId: z.string().optional(),
+        note: z.string().max(500).optional(),
+      })
+      .parse(req.body);
+
+    // When applying from a deposit pool, verify the source deposit exists,
+    // belongs to the same lab + practice, and has unused capacity not yet
+    // consumed by other (non-reversed) credits pointing at the same source.
+    if (input.sourceKind === "deposit") {
+      if (!input.sourceId) {
+        throw new HttpError(400, "sourceId (bank transaction id) is required for deposit credits.");
+      }
+      const { bankTransactions, bankTransactionInvoices } = await import(
+        "@workspace/db"
+      );
+      const dep = await db.query.bankTransactions.findFirst({
+        where: eq(bankTransactions.id, input.sourceId),
+      });
+      if (!dep || dep.type !== "deposit" || dep.status !== "posted") {
+        throw new HttpError(404, "Source deposit not found or not posted.");
+      }
+      if (dep.labOrganizationId !== invoice.labOrganizationId) {
+        throw new HttpError(403, "Source deposit belongs to a different lab.");
+      }
+      // Confirm the deposit is for this practice — either explicitly tagged
+      // or already linked to one of the practice's invoices.
+      const linkedRows = await db
+        .select({ providerOrganizationId: invoices.providerOrganizationId })
+        .from(bankTransactionInvoices)
+        .innerJoin(invoices, eq(invoices.id, bankTransactionInvoices.invoiceId))
+        .where(eq(bankTransactionInvoices.bankTransactionId, dep.id));
+      const practiceMatch =
+        !linkedRows.length ||
+        linkedRows.some(
+          (r) => r.providerOrganizationId === invoice.providerOrganizationId,
+        );
+      if (!practiceMatch) {
+        throw new HttpError(403, "Source deposit belongs to a different practice.");
+      }
+      const usedRows = await db
+        .select({ amount: invoiceCredits.amount })
+        .from(invoiceCredits)
+        .where(
+          and(
+            eq(invoiceCredits.sourceKind, "deposit"),
+            eq(invoiceCredits.sourceId, dep.id),
+            isNull(invoiceCredits.reversedAt),
+          ),
+        );
+      const used = usedRows.reduce((s, r) => s + Number(r.amount || 0), 0);
+      const capacity = Number(dep.creditAmount || dep.netAmount || 0);
+      if (used + input.amount > capacity + 0.0001) {
+        throw new HttpError(
+          409,
+          `Insufficient deposit balance. Remaining ${(capacity - used).toFixed(2)}, requested ${input.amount.toFixed(2)}.`,
+        );
+      }
+    }
+
+    const [credit] = await db
+      .insert(invoiceCredits)
+      .values({
+        invoiceId: invoice.id,
+        providerOrganizationId: invoice.providerOrganizationId,
+        labOrganizationId: invoice.labOrganizationId,
+        amount: input.amount.toFixed(2),
+        sourceKind: input.sourceKind,
+        sourceId: input.sourceId ?? null,
+        note: input.note ?? null,
+        appliedByUserId: callerId,
+      })
+      .returning();
+
+    // Subtract from balanceDue (cap at 0).
+    const newBalance = Math.max(
+      0,
+      Number(invoice.balanceDue) - input.amount,
+    ).toFixed(2);
+    const newStatus =
+      Number(newBalance) === 0 && invoice.status !== "void"
+        ? "paid"
+        : invoice.status;
+    await db
+      .update(invoices)
+      .set({
+        balanceDue: newBalance,
+        status: newStatus,
+        updatedByUserId: callerId,
+      })
+      .where(eq(invoices.id, invoice.id));
+
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_credit_applied",
+      entityType: "invoice",
+      entityId: invoice.id,
+      afterJson: { creditId: credit.id, amount: input.amount },
+    });
+
+    return ok(res, credit, 201);
+  }),
+);
+
+router.delete(
+  "/credits/:creditId",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const credit = await db.query.invoiceCredits.findFirst({
+      where: eq(invoiceCredits.id, req.params.creditId),
+    });
+    if (!credit) throw new HttpError(404, "Credit not found.");
+    if (credit.reversedAt) throw new HttpError(409, "Credit already reversed.");
+    await requireAnyRole(callerId, credit.labOrganizationId, BILLING_ROLES);
+
+    const invoice = await db.query.invoices.findFirst({
+      where: eq(invoices.id, credit.invoiceId),
+    });
+    if (!invoice) throw new HttpError(404, "Invoice not found.");
+
+    await db
+      .update(invoiceCredits)
+      .set({ reversedAt: new Date(), reversedByUserId: callerId })
+      .where(eq(invoiceCredits.id, credit.id));
+
+    const newBalance = (
+      Number(invoice.balanceDue) + Number(credit.amount)
+    ).toFixed(2);
+    const newStatus = invoice.status === "paid" ? "open" : invoice.status;
+    await db
+      .update(invoices)
+      .set({
+        balanceDue: newBalance,
+        status: newStatus,
+        updatedByUserId: callerId,
+      })
+      .where(eq(invoices.id, invoice.id));
+
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_credit_reversed",
+      entityType: "invoice",
+      entityId: invoice.id,
+      afterJson: { creditId: credit.id, amount: credit.amount },
+    });
+
+    return ok(res, { reversed: true });
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Duplicate invoice. Clones the invoice + line items + displayMetadata into
+// a brand-new draft. The clone trail is recorded via sourceInvoiceId.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post(
+  "/:invoiceId/duplicate",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const original = await loadInvoiceWithAccess(
+      callerId,
+      req.params.invoiceId,
+      true,
+    );
+    const items = await db.query.invoiceLineItems.findMany({
+      where: eq(invoiceLineItems.invoiceId, original.id),
+      orderBy: [invoiceLineItems.sortOrder],
+    });
+
+    // Generate a unique invoice number based on the original's number with a -COPY suffix.
+    const baseNumber = `${original.invoiceNumber}-COPY`;
+    let candidate = baseNumber;
+    let suffix = 1;
+    while (true) {
+      const exists = await db.query.invoices.findFirst({
+        where: eq(invoices.invoiceNumber, candidate),
+      });
+      if (!exists) break;
+      suffix += 1;
+      candidate = `${baseNumber}-${suffix}`;
+      if (suffix > 100) {
+        throw new HttpError(500, "Could not generate a unique invoice number.");
+      }
+    }
+
+    const cloned = await db.transaction(async (tx) => {
+      const [newInvoice] = await tx
+        .insert(invoices)
+        .values({
+          invoiceNumber: candidate,
+          caseId: original.caseId,
+          labOrganizationId: original.labOrganizationId,
+          providerOrganizationId: original.providerOrganizationId,
+          status: "draft",
+          subtotal: original.subtotal,
+          tax: original.tax,
+          discount: original.discount,
+          total: original.total,
+          balanceDue: original.total,
+          notes: original.notes,
+          displayMetadataJson: original.displayMetadataJson,
+          sourceInvoiceId: original.id,
+          createdByUserId: callerId,
+          updatedByUserId: callerId,
+        })
+        .returning();
+      if (items.length) {
+        await tx.insert(invoiceLineItems).values(
+          items.map((it: any, idx: number) => ({
+            invoiceId: newInvoice.id,
+            caseRestorationId: it.caseRestorationId,
+            description: it.description,
+            quantity: it.quantity,
+            unitPrice: it.unitPrice,
+            lineTotal: it.lineTotal,
+            sortOrder: it.sortOrder ?? idx,
+          })),
+        );
+      }
+      return newInvoice;
+    });
+
+    await writeAuditLog({
+      req,
+      organizationId: original.labOrganizationId,
+      action: "invoice_duplicated",
+      entityType: "invoice",
+      entityId: cloned.id,
+      afterJson: {
+        sourceInvoiceId: original.id,
+        sourceInvoiceNumber: original.invoiceNumber,
+      },
+    });
+
+    return ok(res, cloned, 201);
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Void / write-off. Both record a reason and optionally reverse the
+// auto-deposit so the books match. Write-off is a special-case void that
+// also issues an offsetting credit so the open balance becomes 0.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const voidBodySchema = z.object({
+  reason: z.string().max(2000).optional().default(""),
+  reverseDeposit: z.boolean().default(true),
+});
+
+async function reverseInvoiceDepositIfAny(
+  invoiceId: string,
+  callerId: string,
+): Promise<{ reversed: boolean; transactionId: string | null }> {
+  const links = await db
+    .select({
+      bankTransactionId: bankTransactionInvoices.bankTransactionId,
+      txnSource: bankTransactions.source,
+      txnStatus: bankTransactions.status,
+    })
+    .from(bankTransactionInvoices)
+    .innerJoin(
+      bankTransactions,
+      eq(bankTransactions.id, bankTransactionInvoices.bankTransactionId),
+    )
+    .where(eq(bankTransactionInvoices.invoiceId, invoiceId));
+  const autoDeposit = links.find(
+    (l: any) => l.txnSource === "invoice" && l.txnStatus !== "void",
+  );
+  if (!autoDeposit) return { reversed: false, transactionId: null };
+  await db
+    .update(bankTransactions)
+    .set({ status: "void" })
+    .where(eq(bankTransactions.id, autoDeposit.bankTransactionId));
+  return { reversed: true, transactionId: autoDeposit.bankTransactionId };
+}
+
+router.post(
+  "/:invoiceId/void",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const invoice = await loadInvoiceWithAccess(callerId, req.params.invoiceId, true);
+    if (invoice.status === "void") {
+      throw new HttpError(409, "Invoice is already voided.");
+    }
+    const input = voidBodySchema.parse(req.body);
+    const voidReason = input.reason.trim();
+    if (voidReason.length === 0) {
+      throw new HttpError(400, "A reason is required to void an invoice.");
+    }
+
+    const dep = input.reverseDeposit
+      ? await reverseInvoiceDepositIfAny(invoice.id, callerId)
+      : { reversed: false, transactionId: null };
+
+    const [updated] = await db
+      .update(invoices)
+      .set({
+        status: "void",
+        balanceDue: "0.00",
+        voidedAt: new Date(),
+        voidedByUserId: callerId,
+        voidReason: voidReason,
+        voidKind: "void",
+        updatedByUserId: callerId,
+      })
+      .where(eq(invoices.id, invoice.id))
+      .returning();
+
+    if (invoice.caseId) {
+      const user = (req as any).user;
+      await db.insert(caseEvents).values({
+        caseId: invoice.caseId,
+        eventType: "invoice_voided",
+        actorUserId: callerId,
+        actorOrganizationId: invoice.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          reason: input.reason,
+          depositReversed: dep.reversed,
+        },
+      });
+    }
+
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_voided",
+      entityType: "invoice",
+      entityId: invoice.id,
+      beforeJson: invoice,
+      afterJson: { ...updated, depositReversed: dep.reversed },
+    });
+
+    return ok(res, { invoice: updated, depositReversed: dep.reversed });
+  }),
+);
+
+router.post(
+  "/:invoiceId/write-off",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const invoice = await loadInvoiceWithAccess(callerId, req.params.invoiceId, true);
+    if (invoice.status === "void" || invoice.status === "paid") {
+      throw new HttpError(
+        409,
+        "Only open / partially paid invoices can be written off.",
+      );
+    }
+    const input = voidBodySchema.parse(req.body);
+    // UI exposes the reason as optional for write-offs; default to a
+    // sensible value so the audit log/case event always have something
+    // human-readable.
+    const writeOffReason = input.reason.trim() || "Write-off";
+    const writeOffAmount = Number(invoice.balanceDue);
+
+    // Reverse any auto-generated deposit (mirrors /void) so the bank-side
+    // balance doesn't keep counting a payment for an invoice that's been
+    // written off.
+    const dep = input.reverseDeposit
+      ? await reverseInvoiceDepositIfAny(invoice.id, callerId)
+      : { reversed: false, transactionId: null };
+
+    if (writeOffAmount > 0) {
+      await db.insert(invoiceCredits).values({
+        invoiceId: invoice.id,
+        providerOrganizationId: invoice.providerOrganizationId,
+        labOrganizationId: invoice.labOrganizationId,
+        amount: writeOffAmount.toFixed(2),
+        sourceKind: "writeoff",
+        note: writeOffReason,
+        appliedByUserId: callerId,
+      });
+    }
+
+    const [updated] = await db
+      .update(invoices)
+      .set({
+        status: "void",
+        balanceDue: "0.00",
+        voidedAt: new Date(),
+        voidedByUserId: callerId,
+        voidReason: writeOffReason,
+        voidKind: "writeoff",
+        updatedByUserId: callerId,
+      })
+      .where(eq(invoices.id, invoice.id))
+      .returning();
+
+    if (invoice.caseId) {
+      const user = (req as any).user;
+      await db.insert(caseEvents).values({
+        caseId: invoice.caseId,
+        eventType: "invoice_written_off",
+        actorUserId: callerId,
+        actorOrganizationId: invoice.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          reason: input.reason,
+          writeOffAmount,
+          depositReversed: dep.reversed,
+        },
+      });
+    }
+
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_written_off",
+      entityType: "invoice",
+      entityId: invoice.id,
+      beforeJson: invoice,
+      afterJson: { ...updated, writeOffAmount, depositReversed: dep.reversed },
+    });
+    return ok(res, {
+      invoice: updated,
+      writeOffAmount,
+      depositReversed: dep.reversed,
+    });
+  }),
+);
+
+// Mark invoices as sent (sets issuedAt + status=open if still draft).
+router.post(
+  "/batch-mark-sent",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const input = z
+      .object({
+        invoiceIds: z.array(z.string()).min(1).max(500),
+      })
+      .parse(req.body);
+    const rows = await db.query.invoices.findMany({
+      where: inArray(invoices.id, input.invoiceIds),
+    });
+    const labOrgIds = Array.from(
+      new Set(rows.map((r: any) => r.labOrganizationId)),
+    );
+    for (const orgId of labOrgIds) {
+      await requireAnyRole(callerId, orgId as string, BILLING_ROLES);
+    }
+    const now = new Date();
+    const updatedIds: string[] = [];
+    for (const row of rows as any[]) {
+      const [u] = await db
+        .update(invoices)
+        .set({
+          status: row.status === "draft" ? "open" : row.status,
+          issuedAt: row.issuedAt ?? now,
+          updatedByUserId: callerId,
+        })
+        .where(eq(invoices.id, row.id))
+        .returning();
+      if (u) updatedIds.push(u.id);
+    }
+    return ok(res, { updated: updatedIds.length, ids: updatedIds });
+  }),
+);
+
+// AI review acknowledgment for an invoice (matches case AI review).
+router.patch(
+  "/:invoiceId/ai-review",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const invoice = await loadInvoiceWithAccess(callerId, req.params.invoiceId, true);
+    const [updated] = await db
+      .update(invoices)
+      .set({
+        aiReviewedAt: new Date(),
+        aiReviewedByUserId: callerId,
+        updatedByUserId: callerId,
+      })
+      .where(eq(invoices.id, invoice.id))
+      .returning();
+    await writeAuditLog({
+      req,
+      organizationId: invoice.labOrganizationId,
+      action: "invoice_ai_review_acknowledged",
+      entityType: "invoice",
+      entityId: invoice.id,
+    });
+    return ok(res, updated);
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Practice statements (manual builder).
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get(
+  "/practice-statements",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const providerOrganizationId =
+      typeof req.query.providerOrganizationId === "string"
+        ? req.query.providerOrganizationId
+        : null;
+    const labOrganizationId =
+      typeof req.query.labOrganizationId === "string"
+        ? req.query.labOrganizationId
+        : null;
+    if (!providerOrganizationId && !labOrganizationId) {
+      throw new HttpError(
+        400,
+        "Provide providerOrganizationId or labOrganizationId.",
+      );
+    }
+    if (labOrganizationId) {
+      await requireMembership(callerId, labOrganizationId);
+    } else if (providerOrganizationId) {
+      await requireMembership(callerId, providerOrganizationId);
+    }
+    const rows = await db.query.practiceStatements.findMany({
+      where: and(
+        providerOrganizationId
+          ? eq(practiceStatements.providerOrganizationId, providerOrganizationId)
+          : undefined,
+        labOrganizationId
+          ? eq(practiceStatements.labOrganizationId, labOrganizationId)
+          : undefined,
+      ),
+      orderBy: [desc(practiceStatements.createdAt)],
+    });
+    return ok(res, rows);
+  }),
+);
+
+const practiceStatementsDir = path.resolve(
+  process.cwd(),
+  "uploads",
+  "practice-statements",
+);
+
+async function buildAndPersistStatementPdf(opts: {
+  statementId: string;
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  periodStart: Date;
+  periodEnd: Date;
+  invoicesList: any[];
+  totals: { billed: number; paid: number; open: number };
+}): Promise<{ storageKey: string; fileName: string; size: number }> {
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, opts.labOrganizationId),
+  });
+  const practice = await db.query.organizations.findFirst({
+    where: eq(organizations.id, opts.providerOrganizationId),
+  });
+  const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
+  const practiceName =
+    practice?.displayName || practice?.name || "Practice";
+  const data: PracticeStatementData = {
+    practiceId: opts.providerOrganizationId,
+    practiceName,
+    practiceEmail: practice?.billingEmail || null,
+    invoiceCount: opts.invoicesList.length,
+    totalBilled: opts.totals.billed,
+    totalPaid: opts.totals.paid,
+    openBalance: opts.totals.open,
+    invoices: opts.invoicesList.map((inv: any) => {
+      const meta = (inv.displayMetadataJson ?? null) as
+        | { patientName?: string | null; billTo?: string | null }
+        | null;
+      return {
+        invoiceNumber: inv.invoiceNumber,
+        issuedAt: inv.issuedAt ?? inv.createdAt ?? null,
+        dueAt: inv.dueAt ?? null,
+        status: inv.status,
+        total: String(inv.total ?? "0"),
+        balanceDue: String(inv.balanceDue ?? "0"),
+        patientName: meta?.patientName ?? null,
+        billTo: meta?.billTo ?? null,
+      };
+    }),
+  };
+  const periodLabel = `${opts.periodStart.toISOString().slice(0, 10)} to ${opts.periodEnd.toISOString().slice(0, 10)}`;
+  const buf = await generateStatementPdfBuffer(labName, data, periodLabel);
+  fs.mkdirSync(practiceStatementsDir, { recursive: true });
+  const safeName = practiceName.replace(/[^a-z0-9-_]+/gi, "_").slice(0, 60);
+  const fileName = `statement-${safeName}-${opts.statementId}.pdf`;
+  const filePath = path.resolve(practiceStatementsDir, fileName);
+  if (!filePath.startsWith(practiceStatementsDir + path.sep)) {
+    throw new HttpError(500, "Invalid statement file path.");
+  }
+  fs.writeFileSync(filePath, buf);
+  return { storageKey: fileName, fileName, size: buf.length };
+}
+
+router.post(
+  "/practice-statements/generate",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const input = z
+      .object({
+        labOrganizationId: z.string().min(1),
+        providerOrganizationIds: z.array(z.string().min(1)).min(1).max(200),
+        periodStart: z.string().datetime(),
+        periodEnd: z.string().datetime(),
+        includeStatuses: z
+          .array(z.enum(["draft", "open", "partially_paid", "paid"]))
+          .default(["open", "partially_paid"]),
+      })
+      .parse(req.body);
+    await requireAnyRole(callerId, input.labOrganizationId, BILLING_ROLES);
+
+    const periodStart = new Date(input.periodStart);
+    const periodEnd = new Date(input.periodEnd);
+    const created: any[] = [];
+
+    for (const providerOrganizationId of input.providerOrganizationIds) {
+      const list = await db.query.invoices.findMany({
+        where: and(
+          eq(invoices.labOrganizationId, input.labOrganizationId),
+          eq(invoices.providerOrganizationId, providerOrganizationId),
+          isNull(invoices.deletedAt),
+          inArray(invoices.status, input.includeStatuses),
+          gte(invoices.createdAt, periodStart),
+          lte(invoices.createdAt, periodEnd),
+        ),
+      });
+      const totalBilled = list
+        .reduce((acc: number, r: any) => acc + Number(r.total ?? 0), 0)
+        .toFixed(2);
+      const totalPaid = list
+        .reduce(
+          (acc: number, r: any) =>
+            acc + (Number(r.total ?? 0) - Number(r.balanceDue ?? 0)),
+          0,
+        )
+        .toFixed(2);
+      const balanceDue = list
+        .reduce((acc: number, r: any) => acc + Number(r.balanceDue ?? 0), 0)
+        .toFixed(2);
+
+      const [stmt] = await db
+        .insert(practiceStatements)
+        .values({
+          labOrganizationId: input.labOrganizationId,
+          providerOrganizationId,
+          periodStart,
+          periodEnd,
+          invoiceCount: list.length,
+          totalBilled,
+          totalPaid,
+          balanceDue,
+          invoiceIdsJson: list.map((r: any) => r.id),
+          createdByUserId: callerId,
+        })
+        .returning();
+      // Server-side PDF generation + persistence so subsequent send/download
+      // operations reference the durable artifact, not a client-supplied blob.
+      try {
+        const pdf = await buildAndPersistStatementPdf({
+          statementId: stmt.id,
+          labOrganizationId: input.labOrganizationId,
+          providerOrganizationId,
+          periodStart,
+          periodEnd,
+          invoicesList: list,
+          totals: {
+            billed: Number(totalBilled),
+            paid: Number(totalPaid),
+            open: Number(balanceDue),
+          },
+        });
+        const [withPdf] = await db
+          .update(practiceStatements)
+          .set({
+            pdfStorageKey: pdf.storageKey,
+            pdfFileName: pdf.fileName,
+            pdfFileSize: pdf.size,
+          })
+          .where(eq(practiceStatements.id, stmt.id))
+          .returning();
+        created.push(withPdf ?? stmt);
+      } catch (pdfErr) {
+        req.log?.warn(
+          { err: pdfErr, statementId: stmt.id },
+          "practice-statement PDF generation failed",
+        );
+        created.push(stmt);
+      }
+    }
+
+    await writeAuditLog({
+      req,
+      organizationId: input.labOrganizationId,
+      action: "practice_statements_generated",
+      entityType: "organization",
+      entityId: input.labOrganizationId,
+      metadataJson: {
+        count: created.length,
+        statementIds: created.map((s: any) => s.id),
+      },
+    });
+
+    return ok(res, { statements: created }, 201);
+  }),
+);
+
+router.post(
+  "/practice-statements/:statementId/email",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const stmt = await db.query.practiceStatements.findFirst({
+      where: eq(practiceStatements.id, req.params.statementId),
+    });
+    if (!stmt) throw new HttpError(404, "Statement not found.");
+    await requireAnyRole(callerId, stmt.labOrganizationId, BILLING_ROLES);
+
+    const input = z
+      .object({
+        to: z.string().email().optional(),
+        subject: z.string().min(1).max(500).default("Account statement"),
+        message: z.string().min(1).max(20000).default("Please find your account statement attached."),
+      })
+      .parse(req.body);
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, stmt.providerOrganizationId),
+    });
+    if (!practice) throw new HttpError(404, "Practice not found.");
+    const recipient = (input.to ?? practice.billingEmail ?? "").trim();
+    if (!recipient) {
+      throw new HttpError(
+        400,
+        "This practice has no billing email on file. Add one first or enter a recipient.",
+      );
+    }
+
+    const cfg = getMailerConfig();
+    if (!cfg) {
+      throw new HttpError(503, "Email is not configured on the server.");
+    }
+    if (!stmt.pdfStorageKey) {
+      throw new HttpError(
+        409,
+        "Statement PDF was not generated. Re-generate the statement and try again.",
+      );
+    }
+    const safeKey = path.basename(stmt.pdfStorageKey);
+    const pdfPath = path.resolve(practiceStatementsDir, safeKey);
+    if (!pdfPath.startsWith(practiceStatementsDir + path.sep)) {
+      throw new HttpError(500, "Invalid statement file path.");
+    }
+    const buffer = fs.readFileSync(pdfPath);
+    if (buffer.length === 0) throw new HttpError(500, "Statement PDF is empty.");
+    const filename = stmt.pdfFileName || "statement.pdf";
+
+    let errorMessage: string | null = null;
+    let status: "sent" | "failed" = "sent";
+    try {
+      const t = createTransport(cfg);
+      await t.sendMail({
+        from: cfg.from,
+        to: recipient,
+        subject: input.subject,
+        text: input.message,
+        attachments: [
+          {
+            filename: filename.endsWith(".pdf") ? filename : `${filename}.pdf`,
+            content: buffer,
+            contentType: "application/pdf",
+          },
+        ],
+      });
+    } catch (err: any) {
+      status = "failed";
+      errorMessage = err?.message || "Email failed.";
+    }
+
+    const [send] = await db
+      .insert(practiceStatementSends)
+      .values({
+        statementId: stmt.id,
+        channel: "email",
+        recipient,
+        status,
+        errorMessage,
+        sentByUserId: callerId,
+      })
+      .returning();
+
+    if (status === "failed") {
+      throw new HttpError(502, errorMessage || "Email failed.");
+    }
+    return ok(res, send);
+  }),
+);
+
+router.get(
+  "/practice-statements/:statementId/pdf",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const stmt = await db.query.practiceStatements.findFirst({
+      where: eq(practiceStatements.id, req.params.statementId),
+    });
+    if (!stmt) throw new HttpError(404, "Statement not found.");
+    await requireAnyRole(callerId, stmt.labOrganizationId, BILLING_ROLES);
+    if (!stmt.pdfStorageKey) {
+      throw new HttpError(409, "Statement PDF was not generated.");
+    }
+    const safeKey = path.basename(stmt.pdfStorageKey);
+    const pdfPath = path.resolve(practiceStatementsDir, safeKey);
+    if (!pdfPath.startsWith(practiceStatementsDir + path.sep)) {
+      throw new HttpError(500, "Invalid statement file path.");
+    }
+    if (!fs.existsSync(pdfPath)) throw new HttpError(404, "PDF file missing.");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${stmt.pdfFileName || "statement.pdf"}"`,
+    );
+    res.sendFile(pdfPath);
+  }),
+);
+
+router.post(
+  "/practice-statements/:statementId/sms",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const stmt = await db.query.practiceStatements.findFirst({
+      where: eq(practiceStatements.id, req.params.statementId),
+    });
+    if (!stmt) throw new HttpError(404, "Statement not found.");
+    await requireAnyRole(callerId, stmt.labOrganizationId, BILLING_ROLES);
+    const input = z
+      .object({
+        to: z.string().min(7).max(40),
+        message: z.string().min(1).max(1500),
+      })
+      .parse(req.body);
+
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from = process.env.TWILIO_PHONE_NUMBER;
+    if (!sid || !token || !from) {
+      throw new HttpError(503, "SMS is not configured on the server.");
+    }
+    const params = new URLSearchParams();
+    params.set("From", from);
+    params.set("To", input.to.trim());
+    params.set("Body", input.message);
+    let status: "sent" | "failed" = "sent";
+    let errorMessage: string | null = null;
+    try {
+      const r = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization:
+              "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: params.toString(),
+        },
+      );
+      if (!r.ok) {
+        status = "failed";
+        errorMessage = `Twilio HTTP ${r.status}`;
+      }
+    } catch (err: any) {
+      status = "failed";
+      errorMessage = err?.message || "SMS failed.";
+    }
+    const [send] = await db
+      .insert(practiceStatementSends)
+      .values({
+        statementId: stmt.id,
+        channel: "sms",
+        recipient: input.to.trim(),
+        status,
+        errorMessage,
+        sentByUserId: callerId,
+      })
+      .returning();
+    if (status === "failed") {
+      throw new HttpError(502, errorMessage || "SMS failed.");
+    }
+    return ok(res, send);
+  }),
+);
+
+// Batch email: send a separate email per invoice (uses each invoice's
+// existing /email handler logic via a loop). Single-tx, best-effort.
+router.post(
+  "/batch-email",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const input = z
+      .object({
+        items: z
+          .array(
+            z.object({
+              invoiceId: z.string().min(1),
+              to: z
+                .union([
+                  z.string().email(),
+                  z.array(z.string().email()).min(1).max(20),
+                ])
+                .optional(),
+              cc: z.array(z.string().email()).max(20).optional(),
+              bcc: z.array(z.string().email()).max(20).optional(),
+              subject: z.string().min(1).max(500),
+              message: z.string().min(1).max(20000),
+              filename: z.string().min(1).max(200),
+              pdfBase64: z.string().min(1).max(8 * 1024 * 1024),
+            }),
+          )
+          .min(1)
+          .max(100),
+      })
+      .parse(req.body);
+
+    const cfg = getMailerConfig();
+    if (!cfg) {
+      throw new HttpError(503, "Email is not configured on the server.");
+    }
+    const transporter = createTransport(cfg);
+
+    const results: Array<{
+      invoiceId: string;
+      status: "sent" | "failed";
+      error?: string;
+    }> = [];
+    for (const item of input.items) {
+      try {
+        const invoice = await db.query.invoices.findFirst({
+          where: eq(invoices.id, item.invoiceId),
+        });
+        if (!invoice) {
+          results.push({ invoiceId: item.invoiceId, status: "failed", error: "not found" });
+          continue;
+        }
+        await requireAnyRole(callerId, invoice.labOrganizationId, BILLING_ROLES);
+        const practice = await db.query.organizations.findFirst({
+          where: eq(organizations.id, invoice.providerOrganizationId),
+        });
+        const recipientList: string[] = Array.isArray(item.to)
+          ? item.to.map((s) => s.trim()).filter(Boolean)
+          : item.to
+            ? [item.to.trim()]
+            : practice?.billingEmail
+              ? [practice.billingEmail.trim()]
+              : [];
+        if (recipientList.length === 0) {
+          results.push({
+            invoiceId: item.invoiceId,
+            status: "failed",
+            error: "no recipient",
+          });
+          continue;
+        }
+        const buf = Buffer.from(item.pdfBase64, "base64");
+        await transporter.sendMail({
+          from: cfg.from,
+          to: recipientList,
+          ...(item.cc && item.cc.length ? { cc: item.cc } : {}),
+          ...(item.bcc && item.bcc.length ? { bcc: item.bcc } : {}),
+          subject: item.subject,
+          text: item.message,
+          attachments: [
+            {
+              filename: item.filename.endsWith(".pdf")
+                ? item.filename
+                : `${item.filename}.pdf`,
+              content: buf,
+              contentType: "application/pdf",
+            },
+          ],
+        });
+        // Mark as sent
+        if (invoice.status === "draft") {
+          await db
+            .update(invoices)
+            .set({ status: "open", issuedAt: invoice.issuedAt ?? new Date() })
+            .where(eq(invoices.id, invoice.id));
+        }
+        results.push({ invoiceId: item.invoiceId, status: "sent" });
+      } catch (err: any) {
+        results.push({
+          invoiceId: item.invoiceId,
+          status: "failed",
+          error: err?.message || "send failed",
+        });
+      }
+    }
+
+    return ok(res, {
+      sent: results.filter((r) => r.status === "sent").length,
+      failed: results.filter((r) => r.status === "failed").length,
+      results,
+    });
+  }),
+);
 
 router.get(
   "/reports/sales",

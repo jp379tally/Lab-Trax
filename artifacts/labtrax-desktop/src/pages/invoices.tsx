@@ -4,21 +4,32 @@ import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
+  Ban,
   CheckCircle2,
+  Copy,
   CreditCard,
   Download,
   Eye,
+  FileText,
   Loader2,
   Mail,
+  MoreHorizontal,
   Plus,
   Printer,
   Search,
+  Sparkles,
   Trash2,
   TrendingUp,
   X,
 } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Invoice, InvoiceDisplayMetadata, InvoiceLineItem, Organization } from "@/lib/types";
+import type {
+  Invoice,
+  InvoiceDisplayMetadata,
+  InvoiceLineItem,
+  Organization,
+  PracticeStatement,
+} from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import {
@@ -59,24 +70,80 @@ function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMet
   return (inv.displayMetadata ?? inv.displayMetadataJson ?? {}) as InvoiceDisplayMetadata;
 }
 
+function getUrlParam(name: string): string {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get(name) ?? "";
+}
+
+function setUrlParams(updates: Record<string, string | null>) {
+  if (typeof window === "undefined") return;
+  const sp = new URLSearchParams(window.location.search);
+  for (const [k, v] of Object.entries(updates)) {
+    if (v === null || v === "") sp.delete(k);
+    else sp.set(k, v);
+  }
+  const qs = sp.toString();
+  const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  window.history.replaceState({}, "", url);
+}
+
 export default function InvoicesPage() {
   const queryClient = useQueryClient();
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["invoices"],
-    queryFn: () => apiFetch<Invoice[]>("/invoices"),
-  });
 
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("all");
+  const [search, setSearch] = useState(() => getUrlParam("q"));
+  const [status, setStatus] = useState(() => getUrlParam("status") || "all");
+  const [openOnly, setOpenOnly] = useState(
+    () => getUrlParam("view") === "open",
+  );
+  const [aiOnly, setAiOnly] = useState(() => getUrlParam("ai") === "1");
+  const [practiceId, setPracticeId] = useState(() => getUrlParam("practice"));
+  const [overdueBucket, setOverdueBucket] = useState(
+    () => getUrlParam("overdue"),
+  );
   const [editing, setEditing] = useState<Invoice | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [statementBuilderOpen, setStatementBuilderOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const queryString = useMemo(() => {
+    const sp = new URLSearchParams();
+    if (openOnly) sp.set("status", "open");
+    else if (status && status !== "all") sp.set("status", status);
+    if (practiceId) sp.set("practiceId", practiceId);
+    if (aiOnly) sp.set("aiOnly", "true");
+    if (overdueBucket) sp.set("overdueBucket", overdueBucket);
+    return sp.toString();
+  }, [openOnly, status, practiceId, aiOnly, overdueBucket]);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["invoices", queryString],
+    queryFn: () =>
+      apiFetch<Invoice[]>(
+        `/invoices${queryString ? `?${queryString}` : ""}`,
+      ),
+  });
+
+  useEffect(() => {
+    setUrlParams({
+      q: search || null,
+      status: openOnly ? null : status === "all" ? null : status,
+      view: openOnly ? "open" : null,
+      ai: aiOnly ? "1" : null,
+      practice: practiceId || null,
+      overdue: overdueBucket || null,
+    });
+  }, [search, status, openOnly, aiOnly, practiceId, overdueBucket]);
 
   const filtered = useMemo(() => {
     const rows = data ?? [];
     const q = search.trim().toLowerCase();
     return rows
       .filter((i) => {
-        if (status !== "all" && i.status !== status) return false;
+        if (openOnly) {
+          if (i.status !== "open" && i.status !== "partially_paid") return false;
+        } else if (status !== "all" && i.status !== status) {
+          return false;
+        }
         if (!q) return true;
         const meta = readDisplayMetadata(i);
         return (
@@ -89,7 +156,7 @@ export default function InvoicesPage() {
       .sort((a, b) =>
         (b.createdAt || b.issuedAt || "").localeCompare(a.createdAt || a.issuedAt || ""),
       );
-  }, [data, search, status]);
+  }, [data, search, status, openOnly]);
 
   const stats = useMemo(() => {
     const rows = data ?? [];
@@ -186,17 +253,65 @@ export default function InvoicesPage() {
               className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
             />
           </div>
+          <div className="inline-flex rounded-md border border-border overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setOpenOnly(true)}
+              className={`h-9 px-3 text-xs font-medium ${openOnly ? "bg-primary text-primary-foreground" : "bg-secondary hover:bg-secondary/70"}`}
+            >
+              Open
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpenOnly(false)}
+              className={`h-9 px-3 text-xs font-medium border-l border-border ${!openOnly ? "bg-primary text-primary-foreground" : "bg-secondary hover:bg-secondary/70"}`}
+            >
+              All
+            </button>
+          </div>
+          {!openOnly && (
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+            >
+              {STATUS_FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
+          )}
           <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
+            value={overdueBucket}
+            onChange={(e) => setOverdueBucket(e.target.value)}
             className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+            title="Overdue bucket"
           >
-            {STATUS_FILTERS.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
-            ))}
+            <option value="">Any age</option>
+            <option value="0_30">0–30 days overdue</option>
+            <option value="31_60">31–60 days overdue</option>
+            <option value="61_90">61–90 days overdue</option>
+            <option value="90_plus">90+ days overdue</option>
           </select>
+          <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground select-none">
+            <input
+              type="checkbox"
+              checked={aiOnly}
+              onChange={(e) => setAiOnly(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            <Sparkles size={12} className="text-amber-500" />
+            AI-imported only
+          </label>
+          <button
+            type="button"
+            onClick={() => setStatementBuilderOpen(true)}
+            className="ml-auto inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-xs font-medium hover:bg-secondary"
+            title="Build a multi-practice statement"
+          >
+            <FileText size={14} /> Statements
+          </button>
         </div>
 
         <div className="overflow-x-auto">
@@ -245,7 +360,16 @@ export default function InvoicesPage() {
                   onClick={() => setEditing(i)}
                   className="border-t border-border cursor-pointer hover:bg-secondary/40"
                 >
-                  <td className="px-5 py-3 font-mono text-xs">{i.invoiceNumber}</td>
+                  <td className="px-5 py-3 font-mono text-xs">
+                    <span className="inline-flex items-center gap-1.5">
+                      {i.invoiceNumber}
+                      {i.aiGenerated && !i.aiReviewedAt && (
+                        <span title="AI-imported — needs review">
+                          <Sparkles size={11} className="text-amber-500" />
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td className="py-3">
                     {i.providerOrganization?.name || (
                       <span className="text-muted-foreground">—</span>
@@ -288,6 +412,12 @@ export default function InvoicesPage() {
             setCreateOpen(false);
             setEditing(inv);
           }}
+        />
+      )}
+      {statementBuilderOpen && (
+        <StatementBuilderDialog
+          knownLabOrgId={data?.[0]?.labOrganizationId}
+          onClose={() => setStatementBuilderOpen(false)}
         />
       )}
     </div>
@@ -492,6 +622,78 @@ export function InvoiceEditor({
 
   const [emailOpen, setEmailOpen] = useState(false);
   const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [voidDialog, setVoidDialog] = useState<null | "void" | "writeoff">(null);
+
+  const ackAiMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<Invoice>(`/invoices/${invoice.id}/ai-review`, {
+        method: "PATCH",
+        body: JSON.stringify({ acknowledged: true }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+  });
+
+  const duplicateMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<Invoice>(`/invoices/${invoice.id}/duplicate`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      onClose();
+      // Brief alert: the user can find the duplicate at the top of the list.
+      window.alert(`Created duplicate ${created.invoiceNumber}`);
+    },
+    onError: (err: Error) => setError(err.message || "Duplicate failed."),
+  });
+
+  const voidMutation = useMutation({
+    mutationFn: async (input: { kind: "void" | "writeoff"; reason: string }) => {
+      const path =
+        input.kind === "void"
+          ? `/invoices/${invoice.id}/void`
+          : `/invoices/${invoice.id}/write-off`;
+      return apiFetch(path, {
+        method: "POST",
+        body: JSON.stringify({ reason: input.reason, reverseDeposit: true }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
+      setVoidDialog(null);
+      onClose();
+    },
+    onError: (err: Error) => setError(err.message || "Operation failed."),
+  });
+
+  // Keyboard shortcuts: Cmd/Ctrl+S = save, Cmd/Ctrl+P = print, Esc = close
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (!saveMutation.isPending) saveMutation.mutate();
+      } else if (meta && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        printInvoicePdf(buildPdfOptions());
+      } else if (meta && e.shiftKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        setEmailOpen(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  });
 
   const practiceName =
     detailQuery.data?.providerOrganization?.name ||
@@ -596,6 +798,59 @@ export function InvoiceEditor({
             >
               <CreditCard size={14} /> Record Payment
             </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMoreOpen((v) => !v)}
+                className="inline-flex items-center justify-center h-9 w-9 rounded-md hover:bg-secondary"
+                aria-label="More actions"
+                title="More actions"
+              >
+                <MoreHorizontal size={16} />
+              </button>
+              {moreOpen && (
+                <div
+                  className="absolute right-0 mt-1 z-50 w-56 bg-card border border-border rounded-md shadow-lg py-1 text-sm"
+                  onMouseLeave={() => setMoreOpen(false)}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      duplicateMutation.mutate();
+                    }}
+                    disabled={duplicateMutation.isPending}
+                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <Copy size={14} /> Duplicate
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      setVoidDialog("writeoff");
+                    }}
+                    disabled={
+                      invoice.status === "paid" || invoice.status === "void"
+                    }
+                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <CheckCircle2 size={14} /> Write off balance
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      setVoidDialog("void");
+                    }}
+                    disabled={invoice.status === "void"}
+                    className="w-full text-left px-3 py-1.5 hover:bg-secondary inline-flex items-center gap-2 text-destructive disabled:opacity-50"
+                  >
+                    <Ban size={14} /> Void invoice
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               onClick={() => {
@@ -629,6 +884,42 @@ export function InvoiceEditor({
           {error && (
             <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
               {error}
+            </div>
+          )}
+
+          {invoice.aiGenerated && !invoice.aiReviewedAt && (
+            <div className="flex items-start gap-3 px-3 py-2.5 rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30">
+              <Sparkles size={16} className="text-amber-500 mt-0.5 shrink-0" />
+              <div className="flex-1 text-sm">
+                <div className="font-medium text-amber-900 dark:text-amber-200">
+                  AI-imported invoice — please review
+                </div>
+                {invoice.aiPricingWarning && (
+                  <div className="text-xs text-amber-800 dark:text-amber-300/90 mt-0.5">
+                    {invoice.aiPricingWarning}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => ackAiMutation.mutate()}
+                disabled={ackAiMutation.isPending}
+                className="text-xs font-medium px-2.5 py-1 rounded border border-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
+              >
+                Mark reviewed
+              </button>
+            </div>
+          )}
+
+          {invoice.voidedAt && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-destructive/40 bg-destructive/10 text-sm">
+              <Ban size={14} className="text-destructive" />
+              <span className="font-medium">
+                {invoice.voidKind === "writeoff" ? "Written off" : "Voided"}
+              </span>
+              {invoice.voidReason && (
+                <span className="text-muted-foreground">— {invoice.voidReason}</span>
+              )}
             </div>
           )}
 
@@ -1151,6 +1442,348 @@ export function InvoiceEditor({
           }}
         />
       )}
+      {voidDialog && (
+        <VoidConfirmDialog
+          kind={voidDialog}
+          pending={voidMutation.isPending}
+          onCancel={() => setVoidDialog(null)}
+          onConfirm={(reason) =>
+            voidMutation.mutate({ kind: voidDialog, reason })
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function VoidConfirmDialog({
+  kind,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  kind: "void" | "writeoff";
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const isWriteoff = kind === "writeoff";
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+      <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+        <h3 className="text-base font-semibold">
+          {isWriteoff ? "Write off remaining balance?" : "Void this invoice?"}
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          {isWriteoff
+            ? "This issues a write-off credit equal to the remaining balance and marks the invoice as settled. Any deposit linked to this invoice will be reversed."
+            : "Voiding marks this invoice as cancelled and reverses any linked deposit. This is reversible only by re-creating the invoice."}
+        </p>
+        <div>
+          <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+            Reason {isWriteoff ? "(optional)" : "(required)"}
+          </label>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={3}
+            className="w-full px-3 py-2 rounded-md bg-background border border-input text-sm resize-y"
+            placeholder={isWriteoff ? "e.g. small balance write-off" : "e.g. duplicate invoice"}
+          />
+        </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={pending}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(reason.trim())}
+            disabled={pending || (!isWriteoff && reason.trim().length === 0)}
+            className={`h-9 px-3 rounded-md text-sm font-medium text-white disabled:opacity-50 ${isWriteoff ? "bg-primary hover:bg-primary/90" : "bg-destructive hover:bg-destructive/90"}`}
+          >
+            {pending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : isWriteoff ? (
+              "Write off"
+            ) : (
+              "Void"
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatementBuilderDialog({
+  knownLabOrgId,
+  onClose,
+}: {
+  knownLabOrgId?: string;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+  });
+  const today = new Date();
+  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const [providerOrgId, setProviderOrgId] = useState("");
+  const [periodStart, setPeriodStart] = useState(
+    firstOfMonth.toISOString().slice(0, 10),
+  );
+  const [periodEnd, setPeriodEnd] = useState(today.toISOString().slice(0, 10));
+  const [openOnly, setOpenOnly] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [generated, setGenerated] = useState<PracticeStatement | null>(null);
+  const [emailTo, setEmailTo] = useState("");
+  const [smsTo, setSmsTo] = useState("");
+
+  const labOrgId = useMemo(() => {
+    if (knownLabOrgId) return knownLabOrgId;
+    return orgsQuery.data?.find((o) => o.type === "lab")?.id ?? "";
+  }, [knownLabOrgId, orgsQuery.data]);
+
+  const practiceOrgs = useMemo(
+    () => (orgsQuery.data ?? []).filter((o) => o.type === "provider"),
+    [orgsQuery.data],
+  );
+
+  const practiceName = useMemo(() => {
+    return practiceOrgs.find((o) => o.id === providerOrgId)?.name || "Practice";
+  }, [practiceOrgs, providerOrgId]);
+
+  const generateMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiFetch<{ statements: PracticeStatement[] }>(
+        "/invoices/practice-statements/generate",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            labOrganizationId: labOrgId,
+            providerOrganizationIds: [providerOrgId],
+            periodStart: new Date(periodStart).toISOString(),
+            periodEnd: new Date(periodEnd).toISOString(),
+            includeStatuses: openOnly
+              ? ["open", "partially_paid"]
+              : ["open", "partially_paid", "paid"],
+          }),
+        },
+      );
+      return res.statements?.[0] ?? null;
+    },
+    onSuccess: (s) => {
+      setGenerated(s);
+      queryClient.invalidateQueries({ queryKey: ["statements"] });
+    },
+    onError: (e: Error) => setError(e.message || "Failed to generate"),
+  });
+
+  const sendEmailMutation = useMutation({
+    mutationFn: () => {
+      if (!generated) throw new Error("Generate a statement first.");
+      return apiFetch(
+        `/invoices/practice-statements/${generated.id}/email`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            to: emailTo.trim(),
+            subject: `Statement for ${practiceName}`,
+            message: `Please find your account statement for ${periodStart} – ${periodEnd} attached.`,
+          }),
+        },
+      );
+    },
+    onError: (e: Error) => setError(e.message || "Email failed"),
+  });
+
+  const sendSmsMutation = useMutation({
+    mutationFn: () => {
+      if (!generated) throw new Error("Generate a statement first.");
+      const balance = Number(generated.balanceDue || 0);
+      return apiFetch(
+        `/invoices/practice-statements/${generated.id}/sms`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            to: smsTo.trim(),
+            message: `${practiceName}: account statement for ${periodStart} – ${periodEnd}. Balance due ${formatMoney(balance)}. Reply with any questions.`,
+          }),
+        },
+      );
+    },
+    onError: (e: Error) => setError(e.message || "SMS failed"),
+  });
+
+  function submit() {
+    setError(null);
+    if (!labOrgId) {
+      setError("No lab organization found.");
+      return;
+    }
+    if (!providerOrgId) {
+      setError("Pick a practice.");
+      return;
+    }
+    generateMutation.mutate();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+      <div className="bg-card border border-border rounded-lg w-full max-w-lg p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-start justify-between">
+          <h3 className="text-base font-semibold">Build practice statement</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 inline-flex items-center justify-center rounded hover:bg-secondary"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {error && (
+          <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
+            {error}
+          </div>
+        )}
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+              Practice
+            </label>
+            <select
+              value={providerOrgId}
+              onChange={(e) => setProviderOrgId(e.target.value)}
+              className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+            >
+              <option value="">Select practice…</option>
+              {practiceOrgs.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                Period start
+              </label>
+              <input
+                type="date"
+                value={periodStart}
+                onChange={(e) => setPeriodStart(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                Period end
+              </label>
+              <input
+                type="date"
+                value={periodEnd}
+                onChange={(e) => setPeriodEnd(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+              />
+            </div>
+          </div>
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={openOnly}
+              onChange={(e) => setOpenOnly(e.target.checked)}
+            />
+            Include only open invoices
+          </label>
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={generateMutation.isPending}
+            className="h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-1.5"
+          >
+            {generateMutation.isPending ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <FileText size={14} />
+            )}
+            Generate statement
+          </button>
+        </div>
+
+        {generated && (
+          <div className="border-t border-border pt-4 space-y-3">
+            <div className="text-sm">
+              <div className="font-medium">Statement generated</div>
+              <div className="text-xs text-muted-foreground">
+                {generated.invoiceCount} invoice
+                {generated.invoiceCount === 1 ? "" : "s"} · billed{" "}
+                {formatMoney(Number(generated.totalBilled || 0))} · balance{" "}
+                {formatMoney(Number(generated.balanceDue || 0))}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-3">
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Email recipient
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={emailTo}
+                    onChange={(e) => setEmailTo(e.target.value)}
+                    placeholder="practice@example.com"
+                    className="flex-1 h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => sendEmailMutation.mutate()}
+                    disabled={sendEmailMutation.isPending || !emailTo.trim()}
+                    className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary border border-border disabled:opacity-50 inline-flex items-center gap-1.5"
+                  >
+                    <Mail size={14} /> Email
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  SMS recipient
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="tel"
+                    value={smsTo}
+                    onChange={(e) => setSmsTo(e.target.value)}
+                    placeholder="+15551234567"
+                    className="flex-1 h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => sendSmsMutation.mutate()}
+                    disabled={sendSmsMutation.isPending || !smsTo.trim()}
+                    className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary border border-border disabled:opacity-50"
+                  >
+                    SMS
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

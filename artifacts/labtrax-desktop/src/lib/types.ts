@@ -231,6 +231,82 @@ export interface Invoice {
     source: string;
     accountName?: string | null;
   }>;
+  aiGenerated?: boolean;
+  aiPricingWarning?: string | null;
+  aiReviewedAt?: string | null;
+  aiReviewedByUserId?: string | null;
+  voidedAt?: string | null;
+  voidedByUserId?: string | null;
+  voidReason?: string | null;
+  voidKind?: "void" | "writeoff" | null;
+  sourceInvoiceId?: string | null;
+}
+
+export interface InvoiceAttachment {
+  id: string;
+  invoiceId: string;
+  fileName: string;
+  storageKey: string;
+  fileType: string;
+  fileSize: number;
+  includeInPdf: boolean;
+  uploadedByUserId?: string | null;
+  createdAt?: string | null;
+}
+
+export interface InvoiceCredit {
+  id: string;
+  invoiceId: string;
+  providerOrganizationId: string;
+  labOrganizationId: string;
+  amount: string | number;
+  sourceKind: "adjustment" | "deposit" | "writeoff" | "manual";
+  note?: string | null;
+  appliedByUserId?: string | null;
+  createdAt?: string | null;
+  reversedAt?: string | null;
+}
+
+export interface PracticeSummary {
+  providerOrganizationId: string;
+  totals: {
+    invoiceCount: number;
+    openCount: number;
+    totalBilled: string;
+    openBalance: string;
+    creditsAvailable: string;
+  };
+  aging: {
+    current: string;
+    days_1_30: string;
+    days_31_60: string;
+    days_61_90: string;
+    days_90_plus: string;
+  };
+  recentInvoices: Array<{
+    id: string;
+    invoiceNumber: string;
+    total: string | number;
+    balanceDue: string | number;
+    status: string;
+    issuedAt?: string | null;
+    dueAt?: string | null;
+    aiGenerated?: boolean;
+  }>;
+}
+
+export interface PracticeStatement {
+  id: string;
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  periodStart: string;
+  periodEnd: string;
+  invoiceCount: number;
+  totalBilled: string | number;
+  totalPaid: string | number;
+  balanceDue: string | number;
+  invoiceIdsJson?: string[];
+  createdAt?: string;
 }
 
 export interface Organization {

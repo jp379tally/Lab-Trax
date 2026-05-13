@@ -2825,7 +2825,124 @@ router.post(
         },
       });
 
-      return { kind: "created" as const, createdCase, attachment };
+      // ── Auto-create draft invoice from the AI-extracted restorations ──
+      // Marked aiGenerated=true so the desktop UI shows a sparkle badge and
+      // an "AI-imported — please review" banner that the billing user must
+      // acknowledge via PATCH /api/invoices/:id/ai-review. If pricing for
+      // any restoration fell back to a default, surface that warning so the
+      // reviewer knows to double-check.
+      let autoInvoiceId: string | null = null;
+      try {
+        const restorationRowsForInvoice = await tx.query.caseRestorations.findMany({
+          where: eq(caseRestorations.caseId, createdCase.id),
+          orderBy: [caseRestorations.createdAt],
+        });
+        const noteRowsForInvoice = extracted.notes && extracted.notes.trim()
+          ? [{ noteText: `[iTero AI import] ${extracted.notes.trim()}` }]
+          : [];
+        const patientName = `${createdCase.patientFirstName ?? ""} ${createdCase.patientLastName ?? ""}`
+          .replace(/\s+/g, " ")
+          .trim();
+        const teethList = restorationRowsForInvoice
+          .map((r: any) => (r.toothNumber ?? "").trim())
+          .filter(Boolean);
+        const shadeList = Array.from(
+          new Set(
+            restorationRowsForInvoice
+              .map((r: any) => (r.shade ?? "").trim())
+              .filter(Boolean),
+          ),
+        );
+        const displayMetadataJson = {
+          patientName,
+          billTo: (createdCase.doctorName ?? "").trim(),
+          teeth: teethList.join(", "),
+          shade: shadeList.join(", "),
+          caseNotes: noteRowsForInvoice.map((n) => n.noteText).join("\n\n"),
+        };
+
+        const hasRestorations = prebuiltRestorations.length > 0;
+        const fallbackPriced =
+          hasRestorations &&
+          prebuiltRestorations.some(
+            (r) => r.priceSource === "fallback" || r.priceSource === null,
+          );
+        const aiPricingWarning = !hasRestorations
+          ? "AI could not extract restorations from this Rx — please add line items and pricing before sending."
+          : fallbackPriced
+            ? "Some line items use default/fallback pricing — please verify before sending."
+            : null;
+
+        const [autoInvoice] = await tx
+          .insert(invoices)
+          .values({
+            invoiceNumber: `INV-${createdCase.caseNumber}`,
+            caseId: createdCase.id,
+            labOrganizationId: createdCase.labOrganizationId,
+            providerOrganizationId: createdCase.providerOrganizationId,
+            status: "draft",
+            displayMetadataJson,
+            aiGenerated: true,
+            aiPricingWarning,
+            createdByUserId: userId,
+            updatedByUserId: userId,
+          })
+          .onConflictDoNothing()
+          .returning();
+
+        if (autoInvoice) {
+          const itemsToInsert = hasRestorations
+            ? restorationRowsForInvoice.map(
+                (restoration: any, index: number) => {
+                  const qty = Number(restoration.quantity ?? 1);
+                  const unit = Number(restoration.unitPrice ?? 0);
+                  return {
+                    invoiceId: autoInvoice.id,
+                    caseRestorationId: restoration.id,
+                    description: `${restoration.restorationType} - Tooth ${restoration.toothNumber}`,
+                    quantity: restoration.quantity,
+                    unitPrice: restoration.unitPrice,
+                    lineTotal: (qty * unit).toFixed(2),
+                    sortOrder: index,
+                  };
+                },
+              )
+            : [
+                {
+                  invoiceId: autoInvoice.id,
+                  caseRestorationId: null,
+                  description:
+                    "[AI placeholder] Restorations could not be extracted — replace with actual line items.",
+                  quantity: "1",
+                  unitPrice: "0.00",
+                  lineTotal: "0.00",
+                  sortOrder: 0,
+                },
+              ];
+          await tx.insert(invoiceLineItems).values(itemsToInsert);
+          const subtotal = itemsToInsert
+            .reduce((acc, it) => acc + Number(it.lineTotal), 0)
+            .toFixed(2);
+          await tx
+            .update(invoices)
+            .set({
+              subtotal,
+              total: subtotal,
+              balanceDue: subtotal,
+            })
+            .where(eq(invoices.id, autoInvoice.id));
+          autoInvoiceId = autoInvoice.id;
+        }
+      } catch (autoErr) {
+        // Don't block case creation on a draft-invoice problem; the user
+        // can still mint an invoice manually from the case drawer.
+        req.log?.warn(
+          { err: autoErr, caseId: createdCase.id },
+          "iTero auto-invoice creation failed",
+        );
+      }
+
+      return { kind: "created" as const, createdCase, attachment, autoInvoiceId };
     });
 
     if (txResult.kind === "deduped") {
