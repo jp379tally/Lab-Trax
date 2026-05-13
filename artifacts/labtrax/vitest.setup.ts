@@ -55,6 +55,36 @@ export function setMockSearchParams(
   mockSearchParams.current = params;
 }
 
+// Mutable slice of the mocked `useApp()` payload. Tests override only the
+// fields they care about (cases, invoices, clients, …); everything else
+// stays at the empty defaults. `resetMockAppState()` is called between
+// tests so overrides don't leak across files.
+type MockAppOverrides = Record<string, unknown>;
+const mockAppOverrides: { current: MockAppOverrides } = { current: {} };
+export function setMockAppState(overrides: MockAppOverrides): void {
+  mockAppOverrides.current = { ...mockAppOverrides.current, ...overrides };
+}
+export function resetMockAppState(): void {
+  mockAppOverrides.current = {};
+}
+
+// Mutable handler for the mocked `resilientFetch`. The default returns
+// `{ data: null }` (preserves the previous behaviour). Tests that need
+// `/api/legacy/cases/:id` to return a hydrated case override this.
+type FetchHandler = (
+  url: string,
+  init?: RequestInit,
+) => Response | Promise<Response>;
+const defaultFetchHandler: FetchHandler = () =>
+  new Response(JSON.stringify({ data: null }), { status: 200 });
+const fetchHandler: { current: FetchHandler } = { current: defaultFetchHandler };
+export function setMockFetchHandler(handler: FetchHandler): void {
+  fetchHandler.current = handler;
+}
+export function resetMockFetchHandler(): void {
+  fetchHandler.current = defaultFetchHandler;
+}
+
 type StackComponent = React.FC<ChildrenOnly> & {
   Screen: React.FC<ChildrenOnly>;
 };
@@ -277,6 +307,7 @@ vi.mock("@/lib/app-context", () => ({
     refreshCases: vi.fn(async () => undefined),
     fullRefreshCases: vi.fn(async () => undefined),
     setPendingInvoiceEditId: vi.fn(),
+    ...mockAppOverrides.current,
   }),
   AppProvider: passthrough,
 }));
@@ -298,7 +329,7 @@ vi.mock("@/lib/query-client", () => ({
   getApiUrl: () => "http://localhost/",
   getAccessToken: vi.fn(async () => null),
   resilientFetch: vi.fn(
-    async () => new Response(JSON.stringify({ data: null }), { status: 200 }),
+    async (url: string, init?: RequestInit) => fetchHandler.current(url, init),
   ),
   queryClient: { clear: vi.fn() },
 }));

@@ -18,7 +18,77 @@ export const Text = makeHost("Text");
 export const TextInput = makeHost("TextInput");
 export const Pressable = makeHost("Pressable");
 export const ScrollView = makeHost("ScrollView");
-export const FlatList = makeHost("FlatList");
+// FlatList in the real RN renders each `data` row via `renderItem`. The
+// trivial host stub used to ignore `data`, which made smoke tests blind
+// to per-row regressions. This minimal implementation invokes
+// `renderItem` (and optional separators) so tests can assert on rendered
+// case rows.
+type FlatListProps = {
+  data?: ReadonlyArray<unknown> | null;
+  renderItem?: (info: {
+    item: unknown;
+    index: number;
+    separators: Record<string, () => void>;
+  }) => React.ReactNode;
+  keyExtractor?: (item: unknown, index: number) => string;
+  ListHeaderComponent?: React.ReactNode | React.ComponentType;
+  ListFooterComponent?: React.ReactNode | React.ComponentType;
+  ListEmptyComponent?: React.ReactNode | React.ComponentType;
+  ItemSeparatorComponent?: React.ComponentType;
+  children?: React.ReactNode;
+  [key: string]: unknown;
+};
+const renderListSlot = (
+  slot: React.ReactNode | React.ComponentType | undefined,
+): React.ReactNode => {
+  if (!slot) return null;
+  if (typeof slot === "function") {
+    const Slot = slot as React.ComponentType;
+    return React.createElement(Slot);
+  }
+  return slot as React.ReactNode;
+};
+export const FlatList: React.FC<FlatListProps> = (props) => {
+  const {
+    data,
+    renderItem,
+    keyExtractor,
+    ListHeaderComponent,
+    ListFooterComponent,
+    ListEmptyComponent,
+    ItemSeparatorComponent,
+    children,
+    ...rest
+  } = props;
+  const rows: React.ReactNode[] = [];
+  const items = Array.isArray(data) ? data : [];
+  if (items.length === 0) {
+    const empty = renderListSlot(ListEmptyComponent);
+    if (empty) rows.push(React.createElement(React.Fragment, { key: "empty" }, empty));
+  } else if (renderItem) {
+    items.forEach((item, index) => {
+      const key = keyExtractor ? keyExtractor(item, index) : String(index);
+      const node = renderItem({ item, index, separators: {} as Record<string, () => void> });
+      rows.push(React.createElement(React.Fragment, { key }, node));
+      if (ItemSeparatorComponent && index < items.length - 1) {
+        rows.push(
+          React.createElement(ItemSeparatorComponent as React.ComponentType, {
+            key: `${key}__sep`,
+          }),
+        );
+      }
+    });
+  }
+  return React.createElement(
+    "FlatList",
+    rest,
+    renderListSlot(ListHeaderComponent),
+    ...rows,
+    renderListSlot(ListFooterComponent),
+    children,
+  );
+};
+FlatList.displayName = "FlatList";
 export const Modal = makeHost("Modal");
 export const KeyboardAvoidingView = makeHost("KeyboardAvoidingView");
 export const RefreshControl = makeHost("RefreshControl");
