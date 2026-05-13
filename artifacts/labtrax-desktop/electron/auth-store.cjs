@@ -23,25 +23,88 @@ function ensurePaths() {
   tokensPath = path.join(dir, "auth-tokens.bin");
 }
 
-function getTokens() {
+/**
+ * Returns the saved tokens together with a status that distinguishes the
+ * three "no tokens" outcomes the renderer cares about:
+ *   - "empty"                — no blob has ever been written
+ *   - "keychain-unavailable" — a blob exists but the OS keychain can't decrypt
+ *                              it on this machine (e.g. fresh Linux session
+ *                              with no gnome-keyring/kwallet)
+ *   - "decrypt-failed"       — the blob is corrupt / unreadable; we delete
+ *                              it so a fresh sign-in starts clean
+ *   - "ok"                   — `tokens` populated
+ */
+function getTokensWithStatus() {
   ensurePaths();
-  if (!fs.existsSync(tokensPath)) return null;
-  if (!safeStorage.isEncryptionAvailable()) return null;
-  try {
-    const blob = fs.readFileSync(tokensPath);
-    const json = safeStorage.decryptString(blob);
-    const parsed = JSON.parse(json);
-    if (
-      parsed &&
-      typeof parsed.accessToken === "string" &&
-      typeof parsed.refreshToken === "string"
-    ) {
-      return { accessToken: parsed.accessToken, refreshToken: parsed.refreshToken };
-    }
-  } catch {
-    /* ignore — corrupt or unreadable blob */
+  // Check keychain availability first so the renderer can warn the user
+  // ("we won't be able to remember your sign-in on this machine") even
+  // before they've ever signed in. Past behaviour only surfaced the
+  // problem after the first successful sign-in had created a blob, which
+  // meant fresh Linux sessions with no gnome-keyring had no warning at
+  // all.
+  if (!safeStorage.isEncryptionAvailable()) {
+    return { status: "keychain-unavailable" };
   }
-  return null;
+  if (!fs.existsSync(tokensPath)) {
+    return { status: "empty" };
+  }
+  let blob;
+  try {
+    blob = fs.readFileSync(tokensPath);
+  } catch {
+    return { status: "decrypt-failed" };
+  }
+  let json;
+  try {
+    json = safeStorage.decryptString(blob);
+  } catch {
+    // Corrupt or wrong-key blob — wipe it so the user gets a clean slate
+    // on next sign-in instead of a permanently-stuck app.
+    try {
+      fs.unlinkSync(tokensPath);
+    } catch {
+      /* ignore */
+    }
+    return { status: "decrypt-failed" };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    try {
+      fs.unlinkSync(tokensPath);
+    } catch {
+      /* ignore */
+    }
+    return { status: "decrypt-failed" };
+  }
+  if (
+    parsed &&
+    typeof parsed.accessToken === "string" &&
+    typeof parsed.refreshToken === "string" &&
+    parsed.accessToken &&
+    parsed.refreshToken
+  ) {
+    return {
+      status: "ok",
+      tokens: {
+        accessToken: parsed.accessToken,
+        refreshToken: parsed.refreshToken,
+      },
+    };
+  }
+  // JSON decoded but didn't carry the expected fields — treat as corrupt.
+  try {
+    fs.unlinkSync(tokensPath);
+  } catch {
+    /* ignore */
+  }
+  return { status: "decrypt-failed" };
+}
+
+function getTokens() {
+  const { tokens } = getTokensWithStatus();
+  return tokens ?? null;
 }
 
 function setTokens(value) {
@@ -84,6 +147,7 @@ function isAvailable() {
 
 module.exports = {
   getTokens,
+  getTokensWithStatus,
   setTokens,
   clearTokens,
   isAvailable,

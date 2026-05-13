@@ -1,6 +1,7 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { UploadsProvider } from "@/lib/uploads-context";
 import LoginPage from "@/pages/login";
 import DashboardPage from "@/pages/dashboard";
@@ -65,6 +66,21 @@ function AppLayoutWithUploads() {
   );
 }
 
+function AuthRestoreBanner() {
+  const { restoreStatus } = useAuth();
+  const notice = describeAuthRestoreStatus(restoreStatus);
+  if (!notice || notice.kind !== "banner") return null;
+  return (
+    <div
+      role="status"
+      data-testid="auth-restore-banner"
+      className="w-full bg-amber-100 text-amber-900 border-b border-amber-200 px-4 py-2 text-xs"
+    >
+      {notice.message}
+    </div>
+  );
+}
+
 function Gate() {
   const { status } = useAuth();
   if (status === "loading") {
@@ -74,8 +90,20 @@ function Gate() {
       </div>
     );
   }
-  if (status === "anonymous") return <LoginPage />;
-  return <AuthedRoutes />;
+  if (status === "anonymous") {
+    return (
+      <>
+        <AuthRestoreBanner />
+        <LoginPage />
+      </>
+    );
+  }
+  return (
+    <>
+      <AuthRestoreBanner />
+      <AuthedRoutes />
+    </>
+  );
 }
 
 function App() {

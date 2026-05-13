@@ -9,15 +9,25 @@ import {
 } from "react";
 import {
   fetchMe,
+  getAuthRestoreStatus,
   login as apiLogin,
   logout as apiLogout,
   subscribeSession,
+  waitForTokenHydration,
   type SessionUser,
 } from "./api";
+import type { AuthRestoreStatus } from "./auth-restore-status";
 
 interface AuthContextValue {
   user: SessionUser | null;
   status: "loading" | "authed" | "anonymous";
+  /** Outcome of the desktop main-process restoring the saved sign-in. */
+  restoreStatus: AuthRestoreStatus;
+  /** True after the renderer has shown the user the "saved sign-in
+   * expired — please sign in again" notice for a decrypt-failed restore.
+   * The notice is one-shot per launch. */
+  acknowledgeRestoreNotice: () => void;
+  restoreNoticeDismissed: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -28,9 +38,16 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [status, setStatus] = useState<"loading" | "authed" | "anonymous">("loading");
+  const [restoreStatus, setRestoreStatus] = useState<AuthRestoreStatus>("empty");
+  const [restoreNoticeDismissed, setRestoreNoticeDismissed] = useState(false);
 
   const verify = useCallback(async () => {
     try {
+      // Make sure the encrypted-token hydration has finished before we
+      // snapshot the restore status — otherwise the very first read can
+      // race past it and report "empty" for a real keychain failure.
+      await waitForTokenHydration();
+      setRestoreStatus(getAuthRestoreStatus());
       const me = await fetchMe();
       setUser(me);
       setStatus("authed");
@@ -38,6 +55,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setStatus("anonymous");
     }
+  }, []);
+
+  const acknowledgeRestoreNotice = useCallback(() => {
+    setRestoreNoticeDismissed(true);
   }, []);
 
   // Tell the Electron iTero poller whether a LabTrax user is signed in.
@@ -85,11 +106,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user,
       status,
+      restoreStatus,
+      restoreNoticeDismissed,
+      acknowledgeRestoreNotice,
       login,
       logout,
       refresh: verify,
     }),
-    [user, status, login, logout, verify],
+    [
+      user,
+      status,
+      restoreStatus,
+      restoreNoticeDismissed,
+      acknowledgeRestoreNotice,
+      login,
+      logout,
+      verify,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

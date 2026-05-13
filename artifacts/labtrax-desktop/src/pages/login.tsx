@@ -1,14 +1,27 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { ApiError, getApiOrigin } from "@/lib/api";
+import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { Logo } from "@/components/Logo";
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const {
+    login,
+    restoreStatus,
+    restoreNoticeDismissed,
+    acknowledgeRestoreNotice,
+  } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // One-shot toast-style notice when the saved sign-in blob couldn't be
+  // decrypted. Distinct from the persistent keychain-unavailable banner
+  // (which is rendered globally above the login screen).
+  const restoreNotice = describeAuthRestoreStatus(restoreStatus);
+  const showRestoreToast =
+    restoreNotice?.kind === "toast" && !restoreNoticeDismissed;
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -68,6 +81,23 @@ export default function LoginPage() {
               Welcome back. Use your LabTrax account to continue.
             </p>
           </div>
+          {showRestoreToast && restoreNotice && (
+            <div
+              role="alert"
+              data-testid="auth-restore-toast"
+              className="mb-4 text-sm text-amber-900 bg-amber-100 border border-amber-200 px-3 py-2 rounded-md flex items-start gap-2"
+            >
+              <span className="flex-1">{restoreNotice.message}</span>
+              <button
+                type="button"
+                onClick={acknowledgeRestoreNotice}
+                aria-label="Dismiss"
+                className="text-amber-900/70 hover:text-amber-900"
+              >
+                ×
+              </button>
+            </div>
+          )}
           <form onSubmit={onSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-foreground mb-1.5">

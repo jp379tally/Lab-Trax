@@ -36,6 +36,7 @@ const EXPECTED_CHANNELS = [
   "platformAdmin:test-secret",
   // auth tokens
   "auth:get-tokens",
+  "auth:get-tokens-status",
   "auth:set-tokens",
   "auth:clear-tokens",
   "auth:is-available",

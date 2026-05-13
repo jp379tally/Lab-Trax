@@ -171,12 +171,29 @@ const TOKEN_STORAGE_KEY = "labtrax_desktop_tokens_v1";
 
 type TokenPair = { accessToken: string; refreshToken: string };
 
+import type { AuthRestoreStatus } from "./auth-restore-status";
+
 type AuthBridge = {
   getTokens: () => Promise<TokenPair | null>;
+  getTokensStatus?: () => Promise<{
+    status: AuthRestoreStatus;
+    tokens?: TokenPair;
+  }>;
   setTokens: (payload: TokenPair) => Promise<unknown>;
   clearTokens: () => Promise<unknown>;
   isAvailable?: () => Promise<boolean>;
 };
+
+let _restoreStatus: AuthRestoreStatus = "empty";
+
+/**
+ * The outcome of the desktop main-process trying to restore the saved
+ * sign-in on launch. Drives the keychain-unavailable banner and the
+ * "saved sign-in expired" toast in the renderer.
+ */
+export function getAuthRestoreStatus(): AuthRestoreStatus {
+  return _restoreStatus;
+}
 
 function getAuthBridge(): AuthBridge | null {
   if (typeof window === "undefined") return null;
@@ -259,7 +276,20 @@ const hydrationPromise: Promise<void> = (async () => {
   const bridge = getAuthBridge();
   if (bridge) {
     try {
-      const fromKeychain = await bridge.getTokens();
+      // Prefer the rich status call so we can tell the user *why* their
+      // saved sign-in didn't restore (no keychain vs. corrupt blob) instead
+      // of silently bouncing them to the login screen.
+      let status: AuthRestoreStatus = "empty";
+      let fromKeychain: TokenPair | null = null;
+      if (bridge.getTokensStatus) {
+        const result = await bridge.getTokensStatus();
+        status = result?.status ?? "empty";
+        fromKeychain = result?.tokens ?? null;
+      } else {
+        fromKeychain = await bridge.getTokens();
+        status = fromKeychain ? "ok" : "empty";
+      }
+      _restoreStatus = status;
       if (fromKeychain) {
         _tokens = fromKeychain;
         // Drop any leftover plain-text copy in localStorage from older builds.
@@ -274,11 +304,13 @@ const hydrationPromise: Promise<void> = (async () => {
         try {
           await bridge.setTokens(legacy);
           _tokens = legacy;
+          _restoreStatus = "ok";
         } catch {
           // Encryption unavailable (e.g. headless Linux without a keyring).
           // Keep the legacy tokens in memory so the user isn't kicked out,
           // but do not re-write them anywhere on disk.
           _tokens = legacy;
+          _restoreStatus = "keychain-unavailable";
         } finally {
           clearLocalStorageTokens();
         }
@@ -290,6 +322,7 @@ const hydrationPromise: Promise<void> = (async () => {
   }
   // No Electron bridge: dev browser. Read from localStorage as before.
   _tokens = readTokensFromLocalStorage();
+  _restoreStatus = _tokens ? "ok" : "empty";
 })();
 
 export function waitForTokenHydration(): Promise<void> {

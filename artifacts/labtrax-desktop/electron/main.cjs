@@ -69,6 +69,7 @@ function registerPlatformAdminIpc() {
 
 function registerAuthIpc() {
   ipcMain.handle("auth:get-tokens", () => authStore.getTokens());
+  ipcMain.handle("auth:get-tokens-status", () => authStore.getTokensWithStatus());
   ipcMain.handle("auth:set-tokens", (_e, payload) => {
     authStore.setTokens(payload || {});
     return true;

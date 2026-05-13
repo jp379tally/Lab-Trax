@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   auth: {
     getTokens: () => ipcRenderer.invoke("auth:get-tokens"),
+    getTokensStatus: () => ipcRenderer.invoke("auth:get-tokens-status"),
     setTokens: (payload) => ipcRenderer.invoke("auth:set-tokens", payload),
     clearTokens: () => ipcRenderer.invoke("auth:clear-tokens"),
     isAvailable: () => ipcRenderer.invoke("auth:is-available"),

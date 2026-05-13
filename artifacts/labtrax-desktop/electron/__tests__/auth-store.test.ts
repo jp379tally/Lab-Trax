@@ -9,6 +9,10 @@ let encryptionAvailable = true;
 
 type AuthStore = {
   getTokens: () => { accessToken: string; refreshToken: string } | null;
+  getTokensWithStatus: () => {
+    status: "ok" | "empty" | "keychain-unavailable" | "decrypt-failed";
+    tokens?: { accessToken: string; refreshToken: string };
+  };
   setTokens: (v: unknown) => void;
   clearTokens: () => void;
   isAvailable: () => boolean;
@@ -127,5 +131,61 @@ describe("auth-store", () => {
     expect(authStore.isAvailable()).toBe(true);
     encryptionAvailable = false;
     expect(authStore.isAvailable()).toBe(false);
+  });
+
+  describe("getTokensWithStatus", () => {
+    it('returns "empty" when no blob has ever been written', () => {
+      expect(authStore.getTokensWithStatus()).toEqual({ status: "empty" });
+    });
+
+    it('returns "ok" with tokens when the blob decrypts cleanly', () => {
+      authStore.setTokens({ accessToken: "a", refreshToken: "b" });
+      expect(authStore.getTokensWithStatus()).toEqual({
+        status: "ok",
+        tokens: { accessToken: "a", refreshToken: "b" },
+      });
+    });
+
+    it('returns "keychain-unavailable" (not "empty") when a blob exists but the keychain is locked', () => {
+      authStore.setTokens({ accessToken: "a", refreshToken: "b" });
+      encryptionAvailable = false;
+      expect(authStore.getTokensWithStatus()).toEqual({
+        status: "keychain-unavailable",
+      });
+      // The blob must NOT be wiped — the user may regain keychain access by
+      // unlocking their session, and we don't want to force a re-sign-in.
+      expect(fs.existsSync(path.join(tmpDir, "auth-tokens.bin"))).toBe(true);
+    });
+
+    it('returns "keychain-unavailable" on a fresh machine with no saved blob, so the banner is shown before first sign-in', () => {
+      // The previous behaviour only flagged keychain problems after the
+      // first sign-in created a blob; on fresh Linux sessions with no
+      // gnome-keyring the user got no warning at all. Availability must
+      // be checked before file presence.
+      encryptionAvailable = false;
+      expect(fs.existsSync(path.join(tmpDir, "auth-tokens.bin"))).toBe(false);
+      expect(authStore.getTokensWithStatus()).toEqual({
+        status: "keychain-unavailable",
+      });
+    });
+
+    it('returns "decrypt-failed" and clears the corrupt blob so the next launch starts clean', () => {
+      const blobPath = path.join(tmpDir, "auth-tokens.bin");
+      fs.writeFileSync(blobPath, Buffer.from("not-encrypted"));
+      expect(authStore.getTokensWithStatus()).toEqual({
+        status: "decrypt-failed",
+      });
+      expect(fs.existsSync(blobPath)).toBe(false);
+    });
+
+    it('returns "decrypt-failed" when the JSON is missing required fields and clears the blob', () => {
+      const blobPath = path.join(tmpDir, "auth-tokens.bin");
+      const bad = Buffer.from("ENC::" + JSON.stringify({ accessToken: "a" }), "utf8");
+      fs.writeFileSync(blobPath, bad);
+      expect(authStore.getTokensWithStatus()).toEqual({
+        status: "decrypt-failed",
+      });
+      expect(fs.existsSync(blobPath)).toBe(false);
+    });
   });
 });
