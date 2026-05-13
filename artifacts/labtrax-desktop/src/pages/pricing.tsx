@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
@@ -1498,6 +1498,11 @@ function OverrideEditor({
     override?.practiceName ?? ""
   );
   const [tierName, setTierName] = useState<string>(override?.tierName ?? "");
+  // Track the last tier we auto-filled from so we can tell user-typed
+  // values apart from tier-derived ones. Switching tiers replaces any
+  // values that came from the previous tier; values the user typed
+  // themselves are preserved.
+  const lastFilledTierRef = useRef<string>(override?.tierName ?? "");
   const [notes, setNotes] = useState(override?.notes ?? "");
 
   const tiersQuery = useQuery({
@@ -1547,6 +1552,50 @@ function OverrideEditor({
   const [confirming, setConfirming] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [restoring, setRestoring] = useState<AuditEntry | null>(null);
+
+  // Tier prices for the currently selected tier. Used both as the
+  // input placeholder and as the source for auto-fill when the user
+  // picks a tier.
+  const selectedTierPrices = useMemo<Record<string, number>>(() => {
+    if (!tierName) return {};
+    const t = availableTiers.find(
+      (x: any) => x.name?.trim().toLowerCase() === tierName.trim().toLowerCase()
+    );
+    return (t?.prices ?? {}) as Record<string, number>;
+  }, [tierName, availableTiers]);
+
+  // When the user switches the assigned tier, prefill the per-item
+  // boxes with the selected tier's prices. We only overwrite rows
+  // that are blank or that we previously auto-filled from another
+  // tier — values the user typed themselves are preserved.
+  useEffect(() => {
+    if (lastFilledTierRef.current === tierName) return;
+    if (availableTiers.length === 0 && tierName) return;
+    const prevTier = lastFilledTierRef.current;
+    const prevTierPrices: Record<string, number> = prevTier
+      ? (((availableTiers.find(
+          (x: any) =>
+            x.name?.trim().toLowerCase() === prevTier.trim().toLowerCase()
+        ) as any)?.prices ?? {}) as Record<string, number>)
+      : {};
+    setPrices((prev) => {
+      const next: Record<string, string> = { ...prev };
+      for (const k of keys) {
+        const current = prev[k] ?? "";
+        const fromPrev = Number(prevTierPrices[k] ?? 0);
+        const wasFromPrevTier =
+          current !== "" &&
+          fromPrev > 0 &&
+          Number(current).toFixed(2) === fromPrev.toFixed(2);
+        if (current === "" || wasFromPrevTier) {
+          const v = Number(selectedTierPrices[k] ?? 0);
+          next[k] = v > 0 ? v.toFixed(2) : "";
+        }
+      }
+      return next;
+    });
+    lastFilledTierRef.current = tierName;
+  }, [tierName, selectedTierPrices, availableTiers, keys]);
 
   const nextPrices = useMemo(() => {
     const out: Record<string, number> = {};
@@ -1810,17 +1859,23 @@ function OverrideEditor({
           Item prices
         </div>
         <div className="space-y-2">
-          {keys.map((k) => (
-            <PriceField
-              key={k}
-              label={labelFor(k)}
-              value={prices[k] ?? ""}
-              onChange={(v) => setPrices((p) => ({ ...p, [k]: v }))}
-            />
-          ))}
+          {keys.map((k) => {
+            const tierPrice = Number(selectedTierPrices[k] ?? 0);
+            return (
+              <PriceField
+                key={k}
+                label={labelFor(k)}
+                value={prices[k] ?? ""}
+                placeholder={tierPrice > 0 ? tierPrice.toFixed(2) : "0.00"}
+                onChange={(v) => setPrices((p) => ({ ...p, [k]: v }))}
+              />
+            );
+          })}
         </div>
         <p className="text-xs text-muted-foreground mt-2">
-          Leave a row blank to fall back to this doctor's tier (or the default).
+          Picking a tier above auto-fills these from the tier's prices.
+          Edit any row to override just that item; clear a row to fall
+          back to the tier (or the lab default).
         </p>
       </div>
 
@@ -1909,10 +1964,12 @@ function PriceField({
   label,
   value,
   onChange,
+  placeholder = "0.00",
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
+  placeholder?: string;
 }) {
   return (
     <div className="flex items-center gap-3">
@@ -1925,7 +1982,7 @@ function PriceField({
           step="0.01"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="0.00"
+          placeholder={placeholder}
           className="w-28 h-8 px-2 rounded-md bg-background border border-input text-sm text-right tabular-nums"
         />
       </div>
