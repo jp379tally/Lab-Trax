@@ -137,9 +137,9 @@ async function bakePage(page: PageEdit): Promise<string> {
             ]
           : page.filter === "enhance"
           ? [
-              1.35, 0, 0, 0, -25,
-              0, 1.35, 0, 0, -25,
-              0, 0, 1.35, 0, -25,
+              1.35, 0, 0, 0, -25 / 255,
+              0, 1.35, 0, 0, -25 / 255,
+              0, 0, 1.35, 0, -25 / 255,
               0, 0, 0, 1, 0,
             ]
           : [
@@ -245,12 +245,19 @@ export function ReviewAndEditScreen({
   }, [visible, initialPhotos]);
 
   // Notify parent on changes — only while visible so a hidden screen can't
-  // overwrite parent state with stale URIs from a previous session.
+  // overwrite parent state with stale URIs from a previous session. Use a
+  // ref for the callback to avoid stale closures, and dedupe by joined URIs
+  // so identical updates don't churn the parent.
   const onPagesChangedRef = useRef(onPagesChanged);
   useEffect(() => { onPagesChangedRef.current = onPagesChanged; }, [onPagesChanged]);
+  const lastNotifyUrisRef = useRef<string>("");
   useEffect(() => {
     if (!visible) return;
-    onPagesChangedRef.current?.(pages.map((p) => p.uri));
+    const uris = pages.map((p) => p.uri).join(",");
+    if (uris !== lastNotifyUrisRef.current) {
+      lastNotifyUrisRef.current = uris;
+      onPagesChangedRef.current?.(pages.map((p) => p.uri));
+    }
   }, [pages, visible]);
 
   const activePage = pages[activeIndex];
@@ -780,9 +787,9 @@ function SkiaImageWithFilter({ uri, filter, rect, container }:
       0, 0, 0, 1, 0,
     ] :
     filter === "enhance" ? [
-      1.35, 0, 0, 0, -25,
-      0, 1.35, 0, 0, -25,
-      0, 0, 1.35, 0, -25,
+      1.35, 0, 0, 0, -25 / 255,
+      0, 1.35, 0, 0, -25 / 255,
+      0, 0, 1.35, 0, -25 / 255,
       0, 0, 0, 1, 0,
     ] :
     filter === "color" ? [
