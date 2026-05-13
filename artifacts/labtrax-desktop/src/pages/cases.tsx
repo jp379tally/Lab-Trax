@@ -1529,6 +1529,12 @@ export function CaseDrawer({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
       qc.invalidateQueries({ queryKey: ["cases"] });
+      // Server now auto-syncs the invoice from restorations, so refresh
+      // the Invoice tab queries too — otherwise the user has to close
+      // and re-open the drawer to see the new line item / total.
+      qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] });
+      qc.invalidateQueries({ queryKey: ["invoice-detail"] });
+      qc.invalidateQueries({ queryKey: ["invoices"] });
       setRestForm({
         toothNumber: "",
         restorationType: "",
@@ -2493,6 +2499,13 @@ export function CaseDrawer({
                     onDeleted={() => {
                       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
                       qc.invalidateQueries({ queryKey: ["cases"] });
+                      // Server keeps the invoice in sync, so refresh
+                      // the Invoice tab queries too.
+                      qc.invalidateQueries({
+                        queryKey: ["invoice-for-case", labCase.id],
+                      });
+                      qc.invalidateQueries({ queryKey: ["invoice-detail"] });
+                      qc.invalidateQueries({ queryKey: ["invoices"] });
                     }}
                   />
                 ))}

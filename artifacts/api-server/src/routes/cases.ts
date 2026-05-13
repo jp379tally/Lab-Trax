@@ -26,6 +26,7 @@ import { randomBytes } from "node:crypto";
 import OpenAI, { toFile } from "openai";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
+import { syncInvoiceFromRestorations } from "../lib/invoice-sync";
 import {
   classifyMatch,
   splitDisplayName,
@@ -1981,6 +1982,27 @@ router.patch(
       },
     });
 
+    // Each affected case's invoice now references stale unit prices.
+    // Re-sync the invoice line items + totals on each one so the
+    // Invoice tab reflects the new pricing immediately. Sync errors
+    // on a single case must not block the others — log and continue.
+    const affectedCaseIds = Array.from(
+      new Set(matching.map((r) => r.caseId)),
+    );
+    for (const cId of affectedCaseIds) {
+      try {
+        await syncInvoiceFromRestorations({
+          caseId: cId,
+          actorUserId: (req as any).auth.userId,
+        });
+      } catch (err) {
+        req.log?.error(
+          { err, caseId: cId },
+          "Failed to sync invoice after bulk restoration pricing update",
+        );
+      }
+    }
+
     return ok(res, { updated: matching.length });
   })
 );
@@ -2069,6 +2091,15 @@ router.post(
       },
     });
 
+    // Keep the case's invoice in sync with the restoration set so the
+    // user doesn't have to also open the Invoice tab and regenerate by
+    // hand — adding a Night Guard line should immediately appear on
+    // the invoice with the right unit price + total.
+    await syncInvoiceFromRestorations({
+      caseId: found.id,
+      actorUserId: (req as any).auth.userId,
+    });
+
     return ok(res, restoration, 201);
   })
 );
@@ -2116,6 +2147,15 @@ router.delete(
       entityId: restoration.id,
       beforeJson: restoration,
     });
+
+    // Mirror the add-side behavior: keep the invoice in sync so a
+    // removed restoration is also pulled off the invoice (and the
+    // total drops accordingly).
+    await syncInvoiceFromRestorations({
+      caseId: found.id,
+      actorUserId: (req as any).auth.userId,
+    });
+
     return ok(res, { deleted: true });
   })
 );
