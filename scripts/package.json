@@ -8,6 +8,7 @@
     "run-finance-cron": "tsx ./src/run-finance-cron.ts",
     "cleanup-orphaned-case-media": "tsx ./src/cleanup-orphaned-case-media.ts",
     "upload-desktop-installer": "tsx ./src/upload-desktop-installer.ts",
+    "diagnose-desktop-installer": "tsx ./src/diagnose-desktop-installer.ts",
     "test-publish-failure-alert": "tsx ./src/test-publish-failure-alert.ts",
     "lint-protected-tables": "tsx ./src/lint-protected-tables.ts",
     "backfill-platform-account-numbers": "tsx ./src/backfill-platform-account-numbers.ts",

@@ -740,7 +740,8 @@ function CaseRow({ c, onSelect }: { c: LabCase; onSelect: (c: LabCase) => void }
       className="border-t border-border hover:bg-secondary/40 cursor-pointer"
       onClick={() => onSelect(c)}
     >
-      <td className="px-5 py-3 font-mono text-xs">{c.caseNumber}</td>
+      <td className="px-5 py-3 text-muted-foreground whitespace-nowrap">{formatDate(c.createdAt)}</td>
+      <td className="py-3 font-mono text-xs">{c.caseNumber}</td>
       <td className="py-3">
         {c.patientFirstName} {c.patientLastName}
       </td>
@@ -769,7 +770,8 @@ function CasesTable({
       <table className="w-full text-sm">
         <thead>
           <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            <th className="text-left font-medium px-5 py-2.5">Case</th>
+            <th className="text-left font-medium px-5 py-2.5">Entered</th>
+            <th className="text-left font-medium py-2.5">Case #</th>
             <th className="text-left font-medium py-2.5">Patient</th>
             <th className="text-left font-medium py-2.5">Doctor</th>
             <th className="text-left font-medium py-2.5">Status</th>
@@ -779,14 +781,14 @@ function CasesTable({
         <tbody>
           {loading && (
             <tr>
-              <td colSpan={5} className="px-5 py-8 text-center text-sm text-muted-foreground">
+              <td colSpan={6} className="px-5 py-8 text-center text-sm text-muted-foreground">
                 Loading…
               </td>
             </tr>
           )}
           {!loading && cases.length === 0 && (
             <tr>
-              <td colSpan={5} className="px-5 py-8 text-center text-sm text-muted-foreground">
+              <td colSpan={6} className="px-5 py-8 text-center text-sm text-muted-foreground">
                 {emptyText}
               </td>
             </tr>

@@ -35,7 +35,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createWriteStream, existsSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,32 @@ import archiver from "archiver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
+
+// Surface the build's identity in the renderer so the login screen can
+// display it. Past "Failed to fetch" reports were impossible to attribute
+// to a build because we couldn't tell which installer the user was on —
+// thread package.json version + short git SHA through Vite as VITE_*
+// env vars so they end up baked into the bundle and rendered on the
+// login screen.
+const pkgVersion = JSON.parse(
+  readFileSync(resolve(root, "package.json"), "utf8"),
+).version || "0.0.0";
+let commitSha = process.env.GIT_COMMIT_SHA || process.env.GITHUB_SHA || "";
+if (!commitSha) {
+  try {
+    const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    if (r.status === 0) commitSha = (r.stdout || "").trim();
+  } catch {
+    /* git not available — fall through */
+  }
+}
+const shortSha = commitSha ? commitSha.slice(0, 7) : "";
+process.env.VITE_APP_VERSION = pkgVersion;
+process.env.VITE_COMMIT_SHA = shortSha;
+console.log(`Build identity: v${pkgVersion}${shortSha ? ` (${shortSha})` : ""}`);
 
 if (!process.env.VITE_API_BASE_URL) {
   console.error(

@@ -67,6 +67,15 @@ export default function LoginPage() {
   // reveal which server the desktop app is talking to (and make it obvious
   // when no URL was baked in at all — that build is broken).
   const apiOrigin = getApiOrigin();
+  // Build identity (package.json version + short commit SHA) is injected
+  // by scripts/electron-build.mjs at build time. Showing it on the login
+  // screen lets us tell from any future screenshot whether the user is
+  // on the fixed build or a stale local copy — no more guessing.
+  const appVersion = (import.meta.env.VITE_APP_VERSION as string | undefined) || "";
+  const commitSha = (import.meta.env.VITE_COMMIT_SHA as string | undefined) || "";
+  const buildLabel = appVersion
+    ? `v${appVersion}${commitSha ? ` · ${commitSha}` : ""}`
+    : "";
 
   return (
     <div className="min-h-screen w-full flex items-center justify-center bg-background px-6">
@@ -148,6 +157,11 @@ export default function LoginPage() {
             ? `Server: ${apiOrigin}`
             : "Server: not configured — please reinstall LabTrax Desktop"}
         </p>
+        {buildLabel && (
+          <p className="text-center text-[10px] text-muted-foreground/60 mt-1">
+            Build: {buildLabel}
+          </p>
+        )}
       </div>
     </div>
   );
