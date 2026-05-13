@@ -448,6 +448,14 @@ const createCaseSchema = z.object({
   remakeOfCaseId: z.string().optional(),
   remakeReason: z.string().min(1).max(2000).optional(),
   remakeCharged: z.boolean().optional(),
+  // Optional case-level note inserted alongside the case. Used by the
+  // dashboard drag-drop AI flow to forward the prescription's free-text
+  // notes ("Old shade A2, new shade B1", "Patient grinds at night",
+  // etc.) so they land in case_notes BEFORE the auto-invoice block runs
+  // and pre-populates `displayMetadataJson.caseNotes` from them.
+  // Visibility defaults to shared_with_provider so the doctor sees the
+  // note on their end too.
+  notes: z.string().min(1).max(8000).optional(),
 }).refine(
   (v) => !v.remakeOfCaseId || (typeof v.remakeReason === "string" && v.remakeReason.trim().length > 0),
   { message: "remakeReason is required when remakeOfCaseId is set.", path: ["remakeReason"] },
@@ -877,6 +885,19 @@ router.post(
       entityId: createdCase.id,
       afterJson: createdCase,
     });
+
+    // Persist any AI-extracted (or user-entered) case-level note BEFORE
+    // the auto-invoice block runs so `displayMetadataJson.caseNotes`
+    // picks it up when the invoice is materialized.
+    if (input.notes && input.notes.trim()) {
+      await db.insert(caseNotes).values({
+        caseId: createdCase.id,
+        authorUserId: (req as any).auth.userId,
+        authorOrganizationId: input.labOrganizationId,
+        noteText: input.notes.trim(),
+        visibility: "shared_with_provider",
+      });
+    }
 
     // Auto-generate an invoice for every new case so the
     // History tab shows the invoice and the Invoice tab is

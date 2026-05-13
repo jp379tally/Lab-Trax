@@ -909,7 +909,42 @@ export function DashboardDropZone() {
       //    schema requires both).
       const { first, last } = splitPatientName(r.patientName);
 
-      // 3. Create the case via the modern /api/cases endpoint.
+      // 3. Build a `restorations[]` array from the AI-extracted Rx so
+      //    the server can (a) insert one row per tooth into
+      //    case_restorations, (b) auto-look-up unit prices via the
+      //    lab's pricing tier / per-doctor overrides, and (c) auto-
+      //    generate invoice line items from those restorations. Without
+      //    this, the auto-generated invoice has zero line items and a
+      //    $0 subtotal even though the AI saw the teeth + material.
+      //
+      //    Mapping:
+      //      • toothNumber  — each tooth in r.toothIndices (split on
+      //                       commas / whitespace, trimmed)
+      //      • restorationType — r.caseType from the AI ("Crown &
+      //                       Bridge", "Removable", "Implant", etc.).
+      //                       Defaults to "Other" when the AI didn't
+      //                       extract a case type.
+      //      • material/shade — straight from the AI extraction
+      //      • quantity     — 1 per tooth (matches the iTero importer
+      //                       convention in cases.ts)
+      //      • unitPrice    — 0 so the server price-lookup runs
+      const teethList = (r.toothIndices || "")
+        .split(/[,\s]+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const restorations =
+        teethList.length > 0
+          ? teethList.map((toothNumber) => ({
+              toothNumber,
+              restorationType: (r.caseType || "Other").trim() || "Other",
+              ...(r.material ? { material: r.material } : {}),
+              ...(r.shade ? { shade: r.shade } : {}),
+              quantity: 1,
+              unitPrice: 0,
+            }))
+          : undefined;
+
+      // 4. Create the case via the modern /api/cases endpoint.
       const created = await apiFetch<{ id: string; caseNumber: string }>(
         "/cases",
         {
@@ -924,12 +959,14 @@ export function DashboardDropZone() {
               (r.doctorName || "").trim() || "Unknown Provider",
             priority: r.isRush ? "rush" : "normal",
             ...(r.dueDate ? { dueDate: r.dueDate } : {}),
+            ...(restorations ? { restorations } : {}),
+            ...(r.notes && r.notes.trim() ? { notes: r.notes.trim() } : {}),
             ...(remake ?? {}),
           }),
         },
       );
 
-      // 4. Upload the Rx file and attach it as a case_attachment so
+      // 5. Upload the Rx file and attach it as a case_attachment so
       //    it shows up in the Files tab and writes a case_event.
       try {
         const fd = new FormData();
