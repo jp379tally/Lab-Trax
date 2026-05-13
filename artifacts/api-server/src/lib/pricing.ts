@@ -1,72 +1,75 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   organizationConnections,
   pricingOverrides,
   pricingTiers,
 } from "@workspace/db";
+import {
+  DEFAULT_TIER_ITEMS,
+  DEFAULT_TIER_KEYS,
+  materialToPriceKey,
+} from "./material-mapping.js";
 
-export const DEFAULT_TIER_ITEMS = [
-  { key: "zirconia_crown", label: "Zirconia Crown" },
-  { key: "emax_crown", label: "E.max Crown" },
-  { key: "pfm_crown", label: "PFM Crown" },
-  { key: "denture", label: "Denture" },
-  { key: "partial", label: "Partial" },
-  { key: "implant", label: "Implant" },
-  { key: "night_guard_hard", label: "Night Guard - Hard" },
-  { key: "night_guard_soft", label: "Night Guard - Soft" },
-  { key: "night_guard_hard_soft", label: "Night Guard - Hard/Soft" },
-  { key: "retainer_hawley", label: "Retainer - Hawley" },
-  { key: "retainer_hard", label: "Retainer - Hard" },
-  { key: "retainer_lingual", label: "Retainer - Lingual" },
-  { key: "snore_guard", label: "Snore Guard" },
-  { key: "sports_guard", label: "Sports Guard" },
-] as const;
+export {
+  DEFAULT_TIER_ITEMS,
+  DEFAULT_TIER_KEYS,
+  materialToPriceKey,
+} from "./material-mapping.js";
 
-export const DEFAULT_TIER_KEYS = DEFAULT_TIER_ITEMS.map((i) => i.key);
-
-export function materialToPriceKey(
-  material?: string | null,
-  restorationType?: string | null
-): string | null {
-  const m = (material || "").toLowerCase().trim();
-  const rt = (restorationType || "").toLowerCase().trim();
-  if (m.includes("zirconia")) return "zirconia_crown";
-  if (m.includes("emax") || m.includes("e.max") || m.includes("e max"))
-    return "emax_crown";
-  if (m.includes("pfz")) return "pfz_crown";
-  if (m.includes("pfm")) return "pfm_crown";
-  if (
-    m.includes("gold") ||
-    m.includes("full cast") ||
-    m.includes("semi precious") ||
-    m.includes("cast metal")
-  )
-    return "pfm_crown";
-  if (m === "acrylic" || rt.includes("denture")) return "denture";
-  if (m.includes("flexible") || rt.includes("partial")) return "partial";
-  if (rt.includes("implant")) return "implant";
-  if (m.includes("night guard hard/soft") || rt.includes("hard/soft"))
-    return "night_guard_hard_soft";
-  if (m.includes("night guard soft") || rt.includes("night guard - soft"))
-    return "night_guard_soft";
-  if (m.includes("night guard") || rt.includes("night guard"))
-    return "night_guard_hard";
-  if (rt.includes("retainer hawley") || rt.includes("hawley"))
-    return "retainer_hawley";
-  if (rt.includes("retainer lingual") || rt.includes("lingual"))
-    return "retainer_lingual";
-  if (m.includes("retainer") || rt.includes("retainer")) return "retainer_hard";
-  if (rt.includes("snore")) return "snore_guard";
-  if (rt.includes("sports")) return "sports_guard";
-  return null;
-}
-
-function normalizeDoctor(name?: string | null) {
+/**
+ * Strip a leading "Dr." (any casing, optional period/whitespace) and
+ * lowercase. Mirrored in SQL by `normalizedDoctorSql` below so the
+ * override lookup can filter in the database instead of pulling every
+ * lab's overrides into Node.
+ */
+export function normalizeDoctor(name?: string | null) {
   return (name || "")
     .trim()
     .toLowerCase()
     .replace(/^dr\.?\s*/i, "");
+}
+
+/**
+ * Pure-JS simulation of `normalizedDoctorSql` (regexp_replace +
+ * lower(trim(...))) — used by unit tests to lock the SQL behavior to JS
+ * without needing a live database.
+ */
+export function __simulateNormalizedDoctorSql(name?: string | null) {
+  const trimmed = (name ?? "").trim().toLowerCase();
+  return trimmed.replace(/^dr\.?\s*/, "");
+}
+
+// Mirrors JS `normalizeDoctor`: trim → lowercase → strip leading "dr"/"dr."
+// (any casing) and following whitespace. We lowercase BEFORE the regex so a
+// single lowercase pattern handles "Dr", "DR", "dr.", "  Dr  Smith", etc.
+const normalizedDoctorSql = sql`regexp_replace(lower(trim(${pricingOverrides.doctorName})), '^dr\\.?\\s*', '')`;
+
+async function findDoctorOverride(
+  labOrganizationId: string,
+  doctorName: string | null | undefined,
+) {
+  const normalized = normalizeDoctor(doctorName);
+  if (!normalized) return null;
+  // Filter in SQL so we don't materialize every override on the lab
+  // every time a single restoration's price needs resolving.
+  const rows = await db
+    .select({
+      id: pricingOverrides.id,
+      doctorName: pricingOverrides.doctorName,
+      tierName: pricingOverrides.tierName,
+      pricesJson: pricingOverrides.pricesJson,
+    })
+    .from(pricingOverrides)
+    .where(
+      and(
+        eq(pricingOverrides.labOrganizationId, labOrganizationId),
+        sql`${normalizedDoctorSql} = ${normalized}`,
+        sql`${pricingOverrides.deletedAt} is null`,
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export interface ResolvedPriceContext {
@@ -89,12 +92,12 @@ export interface ResolvedPriceDetails {
 export async function resolveServerPrice(
   ctx: ResolvedPriceContext,
   material?: string | null,
-  restorationType?: string | null
+  restorationType?: string | null,
 ): Promise<number | null> {
   const details = await resolveServerPriceWithSource(
     ctx,
     material,
-    restorationType
+    restorationType,
   );
   return details ? details.amount : null;
 }
@@ -102,7 +105,7 @@ export async function resolveServerPrice(
 export async function resolveServerPriceWithSource(
   ctx: ResolvedPriceContext,
   material?: string | null,
-  restorationType?: string | null
+  restorationType?: string | null,
 ): Promise<ResolvedPriceDetails | null> {
   const key = materialToPriceKey(material, restorationType);
   if (!key) return null;
@@ -110,28 +113,23 @@ export async function resolveServerPriceWithSource(
   let doctorTierName: string | null = null;
 
   // Per-doctor override beats tier
-  const doctor = normalizeDoctor(ctx.doctorName);
-  if (doctor) {
-    const overrides = await db.query.pricingOverrides.findMany({
-      where: eq(pricingOverrides.labOrganizationId, ctx.labOrganizationId),
-    });
-    const match = overrides.find(
-      (o) => normalizeDoctor(o.doctorName) === doctor
-    );
-    if (match) {
-      const prices = (match.pricesJson ?? {}) as Record<string, unknown>;
-      const value = Number(prices[key]);
-      if (Number.isFinite(value) && value > 0) {
-        return {
-          amount: value,
-          source: "override",
-          sourceId: match.id,
-          sourceName: match.doctorName,
-          key,
-        };
-      }
-      if (match.tierName) doctorTierName = match.tierName;
+  const match = await findDoctorOverride(
+    ctx.labOrganizationId,
+    ctx.doctorName,
+  );
+  if (match) {
+    const prices = (match.pricesJson ?? {}) as Record<string, unknown>;
+    const value = Number(prices[key]);
+    if (Number.isFinite(value) && value > 0) {
+      return {
+        amount: value,
+        source: "override",
+        sourceId: match.id,
+        sourceName: match.doctorName,
+        key,
+      };
     }
+    if (match.tierName) doctorTierName = match.tierName;
   }
 
   // Practice-level tier from the lab/provider connection.
@@ -141,12 +139,12 @@ export async function resolveServerPriceWithSource(
       where: and(
         eq(
           organizationConnections.labOrganizationId,
-          ctx.labOrganizationId
+          ctx.labOrganizationId,
         ),
         eq(
           organizationConnections.providerOrganizationId,
-          ctx.providerOrganizationId
-        )
+          ctx.providerOrganizationId,
+        ),
       ),
     });
     if (connection?.tierName) connectionTierName = connection.tierName;
@@ -175,12 +173,12 @@ export async function resolveServerPriceWithSource(
 
   const findByName = (name: string) =>
     sortedTiers.find(
-      (t) => t.name.trim().toLowerCase() === name.trim().toLowerCase()
+      (t) => t.name.trim().toLowerCase() === name.trim().toLowerCase(),
     );
 
   const tryTier = (
     tier: typeof sortedTiers[number] | undefined,
-    source: Exclude<PriceSource, "manual">
+    source: Exclude<PriceSource, "manual">,
   ): ResolvedPriceDetails | null => {
     if (!tier) return null;
     const prices = (tier.pricesJson ?? {}) as Record<string, unknown>;
@@ -212,13 +210,6 @@ export async function resolveServerPriceWithSource(
  * Used by the invoice editor's "Item" dropdown so it can show every
  * available item and auto-fill the unit price the moment a user picks
  * one — without N+1 calls to {@link resolveServerPriceWithSource}.
- *
- * Resolution priority per key (matches the per-restoration resolver):
- *   1. per-doctor override price
- *   2. doctor-assigned tier
- *   3. practice-assigned tier (organization_connections.tierName)
- *   4. caller-supplied ctx.tierName
- *   5. lab's first tier (legacy fallback)
  */
 export interface ResolvedItemRow {
   key: string;
@@ -232,28 +223,12 @@ export interface ResolvedItemRow {
 export async function resolveAllPricesForContext(
   ctx: ResolvedPriceContext,
 ): Promise<ResolvedItemRow[]> {
-  // 1. Per-doctor override row (single match) and its tierName fallback.
-  let overrideRow:
-    | { id: string; doctorName: string; pricesJson: unknown }
-    | null = null;
-  let doctorTierName: string | null = null;
-  const doctor = normalizeDoctor(ctx.doctorName);
-  if (doctor) {
-    const overrides = await db.query.pricingOverrides.findMany({
-      where: eq(pricingOverrides.labOrganizationId, ctx.labOrganizationId),
-    });
-    const match = overrides.find(
-      (o) => normalizeDoctor(o.doctorName) === doctor,
-    );
-    if (match) {
-      overrideRow = {
-        id: match.id,
-        doctorName: match.doctorName,
-        pricesJson: match.pricesJson,
-      };
-      if (match.tierName) doctorTierName = match.tierName;
-    }
-  }
+  // 1. Per-doctor override (single SQL-filtered match).
+  const overrideRow = await findDoctorOverride(
+    ctx.labOrganizationId,
+    ctx.doctorName,
+  );
+  const doctorTierName = overrideRow?.tierName ?? null;
 
   // 2. Practice-level tier from the lab/provider connection.
   let connectionTierName: string | null = null;

@@ -18,6 +18,13 @@ import {
 import { ApiError, apiFetch } from "@/lib/api";
 import type { LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
+import {
+  DEFAULT_PRICE_KEYS,
+  isKnownPriceKey,
+  isTierMissing,
+  labelFor,
+  materialToPriceKey,
+} from "@/lib/pricing-keys";
 
 type Section = "billed" | "tiers" | "overrides";
 
@@ -51,29 +58,7 @@ interface OverridesResponse {
   overrides: PricingOverride[];
 }
 
-const PRICE_KEY_LABELS: Record<string, string> = {
-  zirconia_crown: "Zirconia Crown",
-  emax_crown: "E.max Crown",
-  pfm_crown: "PFM Crown",
-  denture: "Denture",
-  partial: "Partial",
-  implant: "Implant",
-  night_guard_hard: "Night Guard - Hard",
-  night_guard_soft: "Night Guard - Soft",
-  night_guard_hard_soft: "Night Guard - Hard/Soft",
-  retainer_hawley: "Retainer - Hawley",
-  retainer_hard: "Retainer - Hard",
-  retainer_lingual: "Retainer - Lingual",
-  snore_guard: "Snore Guard",
-  sports_guard: "Sports Guard",
-};
-
-function labelFor(key: string): string {
-  return (
-    PRICE_KEY_LABELS[key] ||
-    key.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase())
-  );
-}
+// labelFor / PRICE_KEY_LABELS now imported from @/lib/pricing-keys.
 
 interface PriceDiffEntry {
   key: string;
@@ -431,6 +416,8 @@ export default function PricingPage() {
         </div>
       </div>
 
+      <ResolutionOrderExplainer />
+
       <div className="flex items-center gap-1 border-b border-border mb-5 text-sm">
         <SectionTab
           active={section === "billed"}
@@ -508,65 +495,99 @@ type SortKey =
   | "avgPrice"
   | "totalRevenue";
 
-function BilledSection() {
-  const casesQuery = useQuery({
-    queryKey: ["cases", { include: "restorations" }],
-    queryFn: () => apiFetch<LabCase[]>("/cases?include=restorations"),
-  });
+interface BilledResponse {
+  labOrganizationId: string;
+  rows: Array<{
+    restorationType: string;
+    material: string;
+    priceKey: string | null;
+    unitsBilled: number;
+    caseCount: number;
+    totalRevenue: number;
+    avgPrice: number;
+    minPrice: number;
+    maxPrice: number;
+  }>;
+}
 
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function defaultFromISO() {
+  const d = new Date();
+  d.setMonth(d.getMonth() - 3);
+  return d.toISOString().slice(0, 10);
+}
+
+function BilledSection() {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("totalRevenue");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [editing, setEditing] = useState<PriceRow | null>(null);
+  const [from, setFrom] = useState<string>(defaultFromISO());
+  const [to, setTo] = useState<string>(todayISO());
+  const [practiceId, setPracticeId] = useState<string>("");
+  const [doctorName, setDoctorName] = useState<string>("");
+
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const practices = useMemo(
+    () =>
+      (orgsQuery.data ?? [])
+        .filter((o) => o.type === "provider")
+        .sort((a, b) =>
+          (a.displayName || a.name || "").localeCompare(
+            b.displayName || b.name || "",
+          ),
+        ),
+    [orgsQuery.data],
+  );
+
+  const billedQuery = useQuery({
+    queryKey: ["pricing", "billed", { from, to, practiceId, doctorName }],
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (from) qs.set("from", new Date(`${from}T00:00:00`).toISOString());
+      if (to) qs.set("to", new Date(`${to}T23:59:59.999`).toISOString());
+      if (practiceId) qs.set("providerOrganizationId", practiceId);
+      if (doctorName.trim()) qs.set("doctorName", doctorName.trim());
+      const tail = qs.toString();
+      return apiFetch<BilledResponse>(
+        `/pricing/billed${tail ? `?${tail}` : ""}`,
+      );
+    },
+  });
 
   const rows = useMemo<PriceRow[]>(() => {
-    const cases = casesQuery.data ?? [];
-    interface Bucket extends PriceRow {
-      caseIds: Set<string>;
-    }
-    const map = new Map<string, Bucket>();
-    for (const c of cases) {
-      for (const r of c.restorations ?? []) {
-        const type = (r.restorationType || "Other").trim();
-        const material = (r.material || "—").trim() || "—";
-        const key = `${type}|${material}`;
-        const qty = Number(r.quantity ?? 0);
-        const unit = Number(r.unitPrice ?? 0);
-        const existing = map.get(key);
-        if (existing) {
-          existing.unitsBilled += qty;
-          existing.totalRevenue += qty * unit;
-          existing.caseIds.add(c.id);
-          if (unit > 0 && unit < existing.minPrice) existing.minPrice = unit;
-          if (unit > existing.maxPrice) existing.maxPrice = unit;
-        } else {
-          map.set(key, {
-            key,
-            restorationType: type,
-            material,
-            unitsBilled: qty,
-            caseCount: 0,
-            totalRevenue: qty * unit,
-            avgPrice: 0,
-            minPrice: unit > 0 ? unit : Number.POSITIVE_INFINITY,
-            maxPrice: unit,
-            caseIds: new Set([c.id]),
-          });
-        }
-      }
-    }
-    const list: PriceRow[] = [];
-    for (const v of map.values()) {
-      const { caseIds, ...rest } = v;
-      list.push({
-        ...rest,
-        caseCount: caseIds.size,
-        avgPrice: v.unitsBilled > 0 ? v.totalRevenue / v.unitsBilled : 0,
-        minPrice: Number.isFinite(v.minPrice) ? v.minPrice : 0,
-      });
-    }
-    return list;
-  }, [casesQuery.data]);
+    return (billedQuery.data?.rows ?? []).map((r) => ({
+      key: `${r.restorationType}|${r.material}`,
+      restorationType: r.restorationType,
+      material: r.material,
+      unitsBilled: Number(r.unitsBilled) || 0,
+      caseCount: Number(r.caseCount) || 0,
+      totalRevenue: Number(r.totalRevenue) || 0,
+      avgPrice: Number(r.avgPrice) || 0,
+      minPrice: Number(r.minPrice) || 0,
+      maxPrice: Number(r.maxPrice) || 0,
+    }));
+  }, [billedQuery.data]);
+
+  const unmappedCount = useMemo(
+    () =>
+      rows.filter(
+        (r) =>
+          !isKnownPriceKey(
+            materialToPriceKey(
+              r.material === "—" ? null : r.material,
+              r.restorationType,
+            ),
+          ),
+      ).length,
+    [rows],
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -621,12 +642,47 @@ function BilledSection() {
     );
   }
 
-  const isLoading = casesQuery.isLoading;
+  const isLoading = billedQuery.isLoading;
 
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[220px] max-w-md">
+      <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1 text-xs">
+          <span className="text-muted-foreground">From</span>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="h-8 px-2 rounded-md bg-background border border-input"
+          />
+          <span className="text-muted-foreground">to</span>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="h-8 px-2 rounded-md bg-background border border-input"
+          />
+        </div>
+        <select
+          value={practiceId}
+          onChange={(e) => setPracticeId(e.target.value)}
+          className="h-8 px-2 rounded-md bg-background border border-input text-xs min-w-[160px]"
+        >
+          <option value="">All practices</option>
+          {practices.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.displayName || p.name}
+            </option>
+          ))}
+        </select>
+        <input
+          type="search"
+          value={doctorName}
+          onChange={(e) => setDoctorName(e.target.value)}
+          placeholder="Doctor…"
+          className="h-8 px-2 rounded-md bg-background border border-input text-xs w-36"
+        />
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search
             size={14}
             className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
@@ -636,17 +692,29 @@ function BilledSection() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search restoration or material…"
-            className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+            className="w-full h-8 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
           />
         </div>
-        <p className="text-xs text-muted-foreground">
-          Click any row to retroactively set a unit price on every matching
-          restoration in your cases.
-        </p>
         <div className="ml-auto text-sm text-muted-foreground">
           {filtered.length} of {rows.length}
         </div>
       </div>
+      {unmappedCount > 0 && (
+        <div className="px-4 py-2 bg-warning/10 border-b border-warning/30 text-xs text-foreground flex items-start gap-2">
+          <span className="font-medium">{unmappedCount} unmapped:</span>
+          <span className="text-muted-foreground">
+            these restorations don't match any standard pricing key, so tier
+            and per-doctor prices won't auto-apply. Click a row to retro-set
+            a unit price, or rename the restoration/material to match a
+            known item.
+          </span>
+        </div>
+      )}
+      {billedQuery.error && (
+        <div className="px-4 py-2 bg-destructive/10 text-destructive text-xs">
+          {(billedQuery.error as ApiError).message}
+        </div>
+      )}
 
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -704,7 +772,14 @@ function BilledSection() {
                 </td>
               </tr>
             )}
-            {filtered.map((r) => (
+            {filtered.map((r) => {
+              const unmapped = !isKnownPriceKey(
+                materialToPriceKey(
+                  r.material === "—" ? null : r.material,
+                  r.restorationType,
+                ),
+              );
+              return (
               <tr
                 key={r.key}
                 onClick={() => setEditing(r)}
@@ -712,10 +787,28 @@ function BilledSection() {
               >
                 <td className="px-5 py-3">
                   <div className="flex items-center gap-2.5">
-                    <div className="h-7 w-7 rounded-md bg-primary/10 text-primary flex items-center justify-center">
+                    <div
+                      className={`h-7 w-7 rounded-md flex items-center justify-center ${
+                        unmapped
+                          ? "bg-warning/15 text-warning"
+                          : "bg-primary/10 text-primary"
+                      }`}
+                      title={
+                        unmapped
+                          ? "Unmapped: tier/override prices won't auto-apply"
+                          : undefined
+                      }
+                    >
                       <Tag size={13} />
                     </div>
-                    <div className="font-medium">{r.restorationType}</div>
+                    <div className="font-medium">
+                      {r.restorationType}
+                      {unmapped && (
+                        <span className="ml-2 text-[10px] uppercase tracking-wide text-warning font-medium">
+                          unmapped
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </td>
                 <td className="py-3 text-muted-foreground">{r.material}</td>
@@ -738,7 +831,8 @@ function BilledSection() {
                   </span>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -787,6 +881,7 @@ function BilledEditor({
       setSuccess(res.updated);
       setError(null);
       queryClient.invalidateQueries({ queryKey: ["cases"] });
+      queryClient.invalidateQueries({ queryKey: ["pricing", "billed"] });
     },
     onError: (err: Error) => {
       setSuccess(null);
@@ -1204,6 +1299,12 @@ function TierEditor({
         />
       </div>
 
+      <BulkPriceTools
+        keys={keys}
+        prices={prices}
+        onApply={(next) => setPrices(next)}
+      />
+
       <div>
         <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
           Item prices
@@ -1312,9 +1413,20 @@ function OverridesSection() {
     queryFn: () => apiFetch<OverridesResponse>("/pricing/overrides"),
     retry: false,
   });
+  const tiersQuery = useQuery({
+    queryKey: ["pricing", "tiers"],
+    queryFn: () => apiFetch<TiersResponse>("/pricing/tiers"),
+    retry: false,
+  });
 
   const items = overridesQuery.data?.overrides ?? [];
   const keys = overridesQuery.data?.keys ?? [];
+  const availableTiers = tiersQuery.data?.tiers ?? [];
+  const orphanCount = useMemo(
+    () =>
+      items.filter((o) => isTierMissing(o.tierName, availableTiers)).length,
+    [items, availableTiers],
+  );
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return items;
@@ -1376,6 +1488,11 @@ function OverridesSection() {
         <div className="text-xs text-muted-foreground flex-1">
           Per-doctor prices override your tiers when new restorations are
           billed.
+          {orphanCount > 0 && (
+            <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/15 text-warning text-[10px] font-medium uppercase tracking-wide">
+              {orphanCount} on missing tier — click to reassign
+            </span>
+          )}
         </div>
         {isAdmin && (
           <button
@@ -1410,12 +1527,15 @@ function OverridesSection() {
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                 <th className="text-left px-5 py-2.5 font-medium">Doctor</th>
                 <th className="text-left py-2.5 font-medium">Practice</th>
+                <th className="text-left py-2.5 font-medium">Tier</th>
                 <th className="text-right py-2.5 font-medium">Items priced</th>
                 <th className="px-5 py-2.5" />
               </tr>
             </thead>
             <tbody>
-              {filtered.map((o) => (
+              {filtered.map((o) => {
+                const tierMissing = isTierMissing(o.tierName, availableTiers);
+                return (
                 <tr
                   key={o.id}
                   onClick={() => setEditing(o)}
@@ -1424,6 +1544,24 @@ function OverridesSection() {
                   <td className="px-5 py-3 font-medium">{o.doctorName}</td>
                   <td className="py-3 text-muted-foreground">
                     {o.practiceName || "—"}
+                  </td>
+                  <td className="py-3">
+                    {o.tierName ? (
+                      tierMissing ? (
+                        <span
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/15 text-warning text-[11px] font-medium"
+                          title="This tier no longer exists. Click the row to pick a replacement."
+                        >
+                          {o.tierName} (missing — click to reassign)
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          {o.tierName}
+                        </span>
+                      )
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </td>
                   <td className="py-3 text-right tabular-nums">
                     {Object.values(o.prices).filter((v) => Number(v) > 0).length}{" "}
@@ -1455,7 +1593,8 @@ function OverridesSection() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1821,13 +1960,34 @@ function OverrideEditor({
       </div>
 
       <div>
-        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+        <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5 flex items-center gap-2">
           Assigned tier (optional)
+          {tierName &&
+            availableTiers.length > 0 &&
+            !availableTiers.some(
+              (t) =>
+                t.name.trim().toLowerCase() ===
+                tierName.trim().toLowerCase(),
+            ) && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/15 text-warning text-[10px] font-medium normal-case tracking-normal">
+                missing — pick a replacement
+              </span>
+            )}
         </label>
         <select
           value={tierName}
           onChange={(e) => setTierName(e.target.value)}
-          className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+          className={`w-full h-9 px-2.5 rounded-md bg-background border text-sm ${
+            tierName &&
+            availableTiers.length > 0 &&
+            !availableTiers.some(
+              (t) =>
+                t.name.trim().toLowerCase() ===
+                tierName.trim().toLowerCase(),
+            )
+              ? "border-warning"
+              : "border-input"
+          }`}
         >
           <option value="">— Use practice default / first tier —</option>
           {availableTiers.map((t) => (
@@ -1835,6 +1995,15 @@ function OverrideEditor({
               {t.name}
             </option>
           ))}
+          {tierName &&
+            availableTiers.length > 0 &&
+            !availableTiers.some(
+              (t) =>
+                t.name.trim().toLowerCase() ===
+                tierName.trim().toLowerCase(),
+            ) && (
+              <option value={tierName}>{tierName} (missing)</option>
+            )}
         </select>
         <p className="text-xs text-muted-foreground mt-1">
           Per-item prices below still take precedence. Use this to put a doctor
@@ -2041,6 +2210,213 @@ function Stat({ label, value }: { label: string; value: string }) {
         {label}
       </div>
       <div className="text-sm font-medium tabular-nums mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function BulkPriceTools({
+  keys,
+  prices,
+  onApply,
+}: {
+  keys: string[];
+  prices: Record<string, string>;
+  onApply: (next: Record<string, string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pct, setPct] = useState("");
+  const [paste, setPaste] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  function applyPct() {
+    setErr(null);
+    setMsg(null);
+    const n = Number(pct);
+    if (!Number.isFinite(n) || n === 0) {
+      setErr("Enter a non-zero percent (e.g. 5 for +5%, -3 for −3%).");
+      return;
+    }
+    const factor = 1 + n / 100;
+    let touched = 0;
+    const next: Record<string, string> = { ...prices };
+    for (const k of keys) {
+      const cur = Number(prices[k]);
+      if (Number.isFinite(cur) && cur > 0) {
+        next[k] = (cur * factor).toFixed(2);
+        touched++;
+      }
+    }
+    if (touched === 0) {
+      setErr("No priced items to adjust. Set at least one price first.");
+      return;
+    }
+    onApply(next);
+    setMsg(`Adjusted ${touched} price${touched === 1 ? "" : "s"} by ${n}%.`);
+  }
+
+  function applyPaste() {
+    setErr(null);
+    setMsg(null);
+    const next: Record<string, string> = { ...prices };
+    let updated = 0;
+    const skipped: string[] = [];
+    const lines = paste
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      const m = line.match(/^([A-Za-z0-9_.\- ]+?)\s*[=:,\t]\s*\$?([0-9]+(?:\.[0-9]+)?)$/);
+      if (!m) {
+        skipped.push(line);
+        continue;
+      }
+      const rawKey = m[1].trim().toLowerCase().replace(/\s+/g, "_");
+      const value = Number(m[2]);
+      if (!keys.includes(rawKey) || !Number.isFinite(value) || value < 0) {
+        skipped.push(line);
+        continue;
+      }
+      next[rawKey] = value.toFixed(2);
+      updated++;
+    }
+    if (updated === 0) {
+      setErr(
+        skipped.length
+          ? `No valid lines. Format: key = price (e.g. zirconia_crown = 250).`
+          : "Paste at least one line.",
+      );
+      return;
+    }
+    onApply(next);
+    setMsg(
+      `Updated ${updated} item${updated === 1 ? "" : "s"}${
+        skipped.length ? `, skipped ${skipped.length}.` : "."
+      }`,
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-secondary/20">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium hover:bg-secondary/40"
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <Pencil size={12} /> Bulk edit prices
+        </span>
+        {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-3">
+          <div>
+            <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
+              Adjust all priced items by percent
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                step="0.5"
+                value={pct}
+                onChange={(e) => setPct(e.target.value)}
+                placeholder="e.g. 5 or -3"
+                className="h-8 w-32 px-2 rounded-md bg-background border border-input text-sm"
+              />
+              <span className="text-xs text-muted-foreground">%</span>
+              <button
+                type="button"
+                onClick={applyPct}
+                className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">
+              Paste many (one per line — key = price)
+            </label>
+            <textarea
+              rows={4}
+              value={paste}
+              onChange={(e) => setPaste(e.target.value)}
+              placeholder={"zirconia_crown = 250\npfm_crown = 235\nimplant: 850"}
+              className="w-full px-2 py-1.5 rounded-md bg-background border border-input text-xs font-mono"
+            />
+            <button
+              type="button"
+              onClick={applyPaste}
+              className="mt-1 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90"
+            >
+              Apply pasted prices
+            </button>
+          </div>
+          {msg && <div className="text-xs text-success">{msg}</div>}
+          {err && <div className="text-xs text-destructive">{err}</div>}
+          <div className="text-[10px] text-muted-foreground">
+            Tip: changes here update the form only — hit Save to commit.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ResolutionOrderExplainer() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-secondary/30">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium hover:bg-secondary/50 rounded-lg"
+      >
+        <span className="inline-flex items-center gap-2">
+          <Layers size={14} className="text-primary" />
+          How prices are resolved on a case
+        </span>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 pt-1 text-xs text-muted-foreground space-y-1.5">
+          <p className="text-foreground font-medium">
+            For each restoration on a case, the unit price is picked in this
+            order — the first match wins:
+          </p>
+          <ol className="list-decimal pl-5 space-y-1">
+            <li>
+              <span className="text-foreground">Manual unit price</span> —
+              whatever a user typed directly on the restoration line.
+            </li>
+            <li>
+              <span className="text-foreground">Per-doctor override</span> —
+              prices set for that doctor under the Overrides tab take
+              precedence over tier prices.
+            </li>
+            <li>
+              <span className="text-foreground">Practice tier</span> — the
+              tier assigned to the case's provider organization
+              (Practices → Pricing).
+            </li>
+            <li>
+              <span className="text-foreground">Lab default tier</span> —
+              the first/only tier on this lab, used when no per-practice tier
+              is assigned.
+            </li>
+            <li>
+              <span className="text-foreground">No price</span> — the
+              restoration is left at $0 and shows as unmapped/unpriced in
+              billed analytics.
+            </li>
+          </ol>
+          <p className="pt-1">
+            Restorations whose material doesn't match a known pricing key
+            (e.g. a free-text "Custom" type) are flagged "unmapped" in the
+            Billed tab — tier and override prices won't auto-apply to them.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

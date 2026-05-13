@@ -1,22 +1,27 @@
 import { Router } from "express";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
   auditLogs,
+  caseRestorations,
   cases,
+  organizationConnections,
   organizationMemberships,
   pricingOverrides,
   pricingTiers,
   users,
 } from "@workspace/db";
 import { writeAuditLog } from "../lib/audit";
-import { softDeleteById } from "../lib/soft-delete";
+import { notDeleted, softDeleteById } from "../lib/soft-delete";
 import { HttpError, ok } from "../lib/http";
 import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
-import { DEFAULT_TIER_KEYS, resolveAllPricesForContext } from "../lib/pricing";
+import {
+  DEFAULT_TIER_KEYS,
+  resolveAllPricesForContext,
+} from "../lib/pricing";
 
 const router = Router();
 router.use(requireAuth);
@@ -109,7 +114,10 @@ router.get(
       req.query.labOrganizationId as string | undefined
     );
     const rows = await db.query.pricingTiers.findMany({
-      where: eq(pricingTiers.labOrganizationId, labId),
+      where: and(
+        eq(pricingTiers.labOrganizationId, labId),
+        notDeleted(pricingTiers),
+      ),
     });
     return ok(res, {
       labOrganizationId: labId,
@@ -142,7 +150,8 @@ router.post(
     const existing = await db.query.pricingTiers.findFirst({
       where: and(
         eq(pricingTiers.labOrganizationId, labId),
-        eq(pricingTiers.name, input.name)
+        eq(pricingTiers.name, input.name),
+        notDeleted(pricingTiers),
       ),
     });
     if (existing) {
@@ -201,11 +210,56 @@ router.patch(
     if (input.prices !== undefined)
       update.pricesJson = sanitizePrices(input.prices);
 
-    const [updated] = await db
-      .update(pricingTiers)
-      .set(update as any)
-      .where(eq(pricingTiers.id, tier.id))
-      .returning();
+    const oldName = tier.name;
+    const newName = (input.name ?? tier.name).trim();
+    const willRename =
+      input.name !== undefined &&
+      newName.length > 0 &&
+      newName.toLowerCase() !== oldName.trim().toLowerCase();
+
+    // Cascade tier renames so per-doctor overrides and practice
+    // connections that referenced the old name keep pointing at this
+    // tier — otherwise admins would silently lose every doctor and
+    // practice they had carefully placed on the tier.
+    const [updated, overridesCascade, connectionsCascade] = await db.transaction(
+      async (tx) => {
+        const [u] = await tx
+          .update(pricingTiers)
+          .set(update as any)
+          .where(eq(pricingTiers.id, tier.id))
+          .returning();
+
+        let overridesUpdated: Array<{ id: string }> = [];
+        let connectionsUpdated: Array<{ id: string }> = [];
+        if (willRename) {
+          overridesUpdated = await tx
+            .update(pricingOverrides)
+            .set({ tierName: newName, updatedAt: new Date() })
+            .where(
+              and(
+                eq(pricingOverrides.labOrganizationId, tier.labOrganizationId),
+                sql`lower(trim(${pricingOverrides.tierName})) = lower(trim(${oldName}))`,
+                notDeleted(pricingOverrides),
+              ),
+            )
+            .returning({ id: pricingOverrides.id });
+          connectionsUpdated = await tx
+            .update(organizationConnections)
+            .set({ tierName: newName, updatedAt: new Date() })
+            .where(
+              and(
+                eq(
+                  organizationConnections.labOrganizationId,
+                  tier.labOrganizationId,
+                ),
+                sql`lower(trim(${organizationConnections.tierName})) = lower(trim(${oldName}))`,
+              ),
+            )
+            .returning({ id: organizationConnections.id });
+        }
+        return [u, overridesUpdated, connectionsUpdated] as const;
+      },
+    );
 
     await writeAuditLog({
       req,
@@ -214,7 +268,11 @@ router.patch(
       entityType: "pricing_tier",
       entityId: tier.id,
       beforeJson: tier,
-      afterJson: updated,
+      afterJson: {
+        ...updated,
+        cascadedOverrides: overridesCascade.length,
+        cascadedConnections: connectionsCascade.length,
+      },
     });
 
     return ok(res, {
@@ -222,6 +280,8 @@ router.patch(
       labOrganizationId: updated.labOrganizationId,
       name: updated.name,
       prices: updated.pricesJson ?? {},
+      cascadedOverrides: overridesCascade.length,
+      cascadedConnections: connectionsCascade.length,
     });
   })
 );
@@ -259,7 +319,10 @@ router.get(
       req.query.labOrganizationId as string | undefined
     );
     const rows = await db.query.pricingOverrides.findMany({
-      where: eq(pricingOverrides.labOrganizationId, labId),
+      where: and(
+        eq(pricingOverrides.labOrganizationId, labId),
+        notDeleted(pricingOverrides),
+      ),
     });
     return ok(res, {
       labOrganizationId: labId,
@@ -287,10 +350,6 @@ router.post(
       .object({
         labOrganizationId: z.string().optional(),
         doctorName: z.string().min(1).max(120),
-        // The desktop client sends `null` (not `undefined`) for these
-        // fields when the user picks "— Use practice default —" or the
-        // practice has no display name. Accept both so the POST shape
-        // matches the PATCH shape below.
         practiceName: z.string().max(160).nullable().optional(),
         providerOrganizationId: z.string().nullable().optional(),
         tierName: z.string().max(80).nullable().optional(),
@@ -305,7 +364,8 @@ router.post(
     const existing = await db.query.pricingOverrides.findFirst({
       where: and(
         eq(pricingOverrides.labOrganizationId, labId),
-        eq(pricingOverrides.doctorName, input.doctorName)
+        eq(pricingOverrides.doctorName, input.doctorName),
+        notDeleted(pricingOverrides),
       ),
     });
     if (existing) {
@@ -439,6 +499,110 @@ router.delete(
   })
 );
 
+// ---- Billed analytics (server-side aggregation) ----
+
+/**
+ * Aggregate restoration revenue across the lab(s) the caller administers.
+ *
+ * Replaces the previous client-side aggregation that loaded every case
+ * (and every restoration on every case) into the desktop renderer just
+ * to bucket them by (restorationType, material). With a non-trivial case
+ * history that response was several MB and took multiple seconds to
+ * render. SQL `GROUP BY` does the work on the database in a single round
+ * trip and ships back a few KB of summary rows.
+ *
+ * Optional filters: from/to (case createdAt window), providerOrganizationId,
+ * doctorName (case-insensitive prefix). All filters compose with AND.
+ */
+router.get(
+  "/billed",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({
+        labOrganizationId: z.string().optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        providerOrganizationId: z.string().optional(),
+        doctorName: z.string().optional(),
+      })
+      .parse({
+        labOrganizationId: req.query.labOrganizationId,
+        from: req.query.from,
+        to: req.query.to,
+        providerOrganizationId: req.query.providerOrganizationId,
+        doctorName: req.query.doctorName,
+      });
+
+    const labId = await resolveLabId(req, input.labOrganizationId);
+    await requireAnyRole((req as any).auth.userId, labId, ADMIN_ROLES);
+
+    const conditions = [
+      eq(cases.labOrganizationId, labId),
+      notDeleted(cases),
+    ];
+    if (input.from) {
+      const d = new Date(input.from);
+      if (!Number.isNaN(d.getTime())) conditions.push(gte(cases.createdAt, d));
+    }
+    if (input.to) {
+      const d = new Date(input.to);
+      if (!Number.isNaN(d.getTime())) conditions.push(lte(cases.createdAt, d));
+    }
+    if (input.providerOrganizationId) {
+      conditions.push(
+        eq(cases.providerOrganizationId, input.providerOrganizationId),
+      );
+    }
+    if (input.doctorName) {
+      const needle = input.doctorName.trim().toLowerCase();
+      if (needle.length > 0) {
+        conditions.push(sql`lower(${cases.doctorName}) like ${"%" + needle + "%"}`);
+      }
+    }
+
+    const rows = await db
+      .select({
+        restorationType: caseRestorations.restorationType,
+        material: caseRestorations.material,
+        priceKey: caseRestorations.priceKey,
+        unitsBilled: sql<number>`coalesce(sum(${caseRestorations.quantity}), 0)`,
+        caseCount: sql<number>`count(distinct ${caseRestorations.caseId})`,
+        totalRevenue: sql<number>`coalesce(sum(${caseRestorations.quantity} * ${caseRestorations.unitPrice}), 0)`,
+        minPrice: sql<number>`min(case when ${caseRestorations.unitPrice} > 0 then ${caseRestorations.unitPrice} else null end)`,
+        maxPrice: sql<number>`max(${caseRestorations.unitPrice})`,
+      })
+      .from(caseRestorations)
+      .innerJoin(cases, eq(cases.id, caseRestorations.caseId))
+      .where(and(...conditions))
+      .groupBy(
+        caseRestorations.restorationType,
+        caseRestorations.material,
+        caseRestorations.priceKey,
+      );
+
+    const aggregated = rows.map((r) => {
+      const units = Number(r.unitsBilled) || 0;
+      const revenue = Number(r.totalRevenue) || 0;
+      return {
+        restorationType: (r.restorationType ?? "Other") || "Other",
+        material: (r.material ?? "").trim() || "—",
+        priceKey: r.priceKey ?? null,
+        unitsBilled: units,
+        caseCount: Number(r.caseCount) || 0,
+        totalRevenue: revenue,
+        avgPrice: units > 0 ? revenue / units : 0,
+        minPrice: r.minPrice == null ? 0 : Number(r.minPrice),
+        maxPrice: Number(r.maxPrice) || 0,
+      };
+    });
+
+    return ok(res, {
+      labOrganizationId: labId,
+      rows: aggregated,
+    });
+  }),
+);
+
 // ---- Audit history ----
 
 async function fetchHistory(
@@ -501,6 +665,14 @@ async function fetchHistory(
       afterPracticeName: after?.practiceName ?? null,
       beforeNotes: before?.notes ?? null,
       afterNotes: after?.notes ?? null,
+      cascadedOverrides:
+        typeof after?.cascadedOverrides === "number"
+          ? after.cascadedOverrides
+          : null,
+      cascadedConnections:
+        typeof after?.cascadedConnections === "number"
+          ? after.cascadedConnections
+          : null,
     };
   });
 }

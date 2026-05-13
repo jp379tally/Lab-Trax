@@ -6,29 +6,7 @@ import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatMoney, relativeTime } from "@/lib/format";
 
-const PRICE_KEY_LABELS: Record<string, string> = {
-  zirconia_crown: "Zirconia Crown",
-  emax_crown: "E.max Crown",
-  pfm_crown: "PFM Crown",
-  denture: "Denture",
-  partial: "Partial",
-  implant: "Implant",
-  night_guard_hard: "Night Guard - Hard",
-  night_guard_soft: "Night Guard - Soft",
-  night_guard_hard_soft: "Night Guard - Hard/Soft",
-  retainer_hawley: "Retainer - Hawley",
-  retainer_hard: "Retainer - Hard",
-  retainer_lingual: "Retainer - Lingual",
-  snore_guard: "Snore Guard",
-  sports_guard: "Sports Guard",
-};
-const DEFAULT_PRICE_KEYS = Object.keys(PRICE_KEY_LABELS);
-function priceKeyLabel(key: string): string {
-  return (
-    PRICE_KEY_LABELS[key] ||
-    key.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase())
-  );
-}
+import { DEFAULT_PRICE_KEYS, priceKeyLabel } from "@/lib/pricing-keys";
 
 interface PracticeMember {
   id: string;
