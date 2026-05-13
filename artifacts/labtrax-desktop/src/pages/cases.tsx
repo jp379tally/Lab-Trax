@@ -1544,16 +1544,19 @@ export function CaseDrawer({
     onError: (e: Error) => setRestError(e.message),
   });
 
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteCaseMutation = useMutation({
     mutationFn: () =>
       apiFetch(`/cases/${labCase.id}`, { method: "DELETE" }),
+    onMutate: () => setDeleteError(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setConfirmDeleteCase(false);
       onClose();
     },
     onError: (e: Error) => {
-      window.alert(e.message || "Could not delete case.");
-      setConfirmDeleteCase(false);
+      setDeleteError(e?.message || "Could not delete case.");
     },
   });
 
@@ -2915,7 +2918,11 @@ export function CaseDrawer({
       {confirmDeleteCase && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40"
-          onClick={() => !deleteCaseMutation.isPending && setConfirmDeleteCase(false)}
+          onClick={() => {
+            if (deleteCaseMutation.isPending) return;
+            setConfirmDeleteCase(false);
+            setDeleteError(null);
+          }}
         >
           <div
             className="bg-card rounded-xl border border-border p-6 max-w-sm mx-4 space-y-4 shadow-xl"
@@ -2932,10 +2939,18 @@ export function CaseDrawer({
                 </p>
               </div>
             </div>
+            {deleteError && (
+              <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
+                {deleteError}
+              </div>
+            )}
             <div className="flex gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setConfirmDeleteCase(false)}
+                onClick={() => {
+                  setConfirmDeleteCase(false);
+                  setDeleteError(null);
+                }}
                 disabled={deleteCaseMutation.isPending}
                 className="flex-1 h-9 rounded-md bg-secondary text-sm font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
               >

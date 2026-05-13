@@ -1115,9 +1115,12 @@ router.get(
     const [rows, mobileRows] = await Promise.all([
       membershipOrgIds.length
         ? db.query.cases.findMany({
-            where: or(
-              inArray(cases.labOrganizationId, membershipOrgIds),
-              inArray(cases.providerOrganizationId, membershipOrgIds)
+            where: and(
+              or(
+                inArray(cases.labOrganizationId, membershipOrgIds),
+                inArray(cases.providerOrganizationId, membershipOrgIds)
+              ),
+              notDeleted(cases)
             ),
             orderBy: [desc(cases.createdAt)],
           })
@@ -1922,7 +1925,10 @@ router.patch(
     }
 
     const accessibleCases = await db.query.cases.findMany({
-      where: inArray(cases.labOrganizationId, labOrgIds),
+      where: and(
+        inArray(cases.labOrganizationId, labOrgIds),
+        notDeleted(cases)
+      ),
     });
     const accessibleCaseIds = accessibleCases.map((c) => c.id);
     if (accessibleCaseIds.length === 0) {
