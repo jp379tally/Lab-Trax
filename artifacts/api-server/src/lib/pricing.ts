@@ -203,3 +203,148 @@ export async function resolveServerPriceWithSource(
   // Legacy fallback: first tier on the lab.
   return tryTier(sortedTiers[0], "default");
 }
+
+/**
+ * Resolve the per-doctor effective unit price for every standard item
+ * key in one pass. Returns one row per `DEFAULT_TIER_ITEMS` entry, with
+ * `unitPrice = 0` and `source = null` when no priced row applies.
+ *
+ * Used by the invoice editor's "Item" dropdown so it can show every
+ * available item and auto-fill the unit price the moment a user picks
+ * one — without N+1 calls to {@link resolveServerPriceWithSource}.
+ *
+ * Resolution priority per key (matches the per-restoration resolver):
+ *   1. per-doctor override price
+ *   2. doctor-assigned tier
+ *   3. practice-assigned tier (organization_connections.tierName)
+ *   4. caller-supplied ctx.tierName
+ *   5. lab's first tier (legacy fallback)
+ */
+export interface ResolvedItemRow {
+  key: string;
+  label: string;
+  unitPrice: number;
+  source: PriceSource | null;
+  sourceId: string | null;
+  sourceName: string | null;
+}
+
+export async function resolveAllPricesForContext(
+  ctx: ResolvedPriceContext,
+): Promise<ResolvedItemRow[]> {
+  // 1. Per-doctor override row (single match) and its tierName fallback.
+  let overrideRow:
+    | { id: string; doctorName: string; pricesJson: unknown }
+    | null = null;
+  let doctorTierName: string | null = null;
+  const doctor = normalizeDoctor(ctx.doctorName);
+  if (doctor) {
+    const overrides = await db.query.pricingOverrides.findMany({
+      where: eq(pricingOverrides.labOrganizationId, ctx.labOrganizationId),
+    });
+    const match = overrides.find(
+      (o) => normalizeDoctor(o.doctorName) === doctor,
+    );
+    if (match) {
+      overrideRow = {
+        id: match.id,
+        doctorName: match.doctorName,
+        pricesJson: match.pricesJson,
+      };
+      if (match.tierName) doctorTierName = match.tierName;
+    }
+  }
+
+  // 2. Practice-level tier from the lab/provider connection.
+  let connectionTierName: string | null = null;
+  if (ctx.providerOrganizationId) {
+    const connection = await db.query.organizationConnections.findFirst({
+      where: and(
+        eq(
+          organizationConnections.labOrganizationId,
+          ctx.labOrganizationId,
+        ),
+        eq(
+          organizationConnections.providerOrganizationId,
+          ctx.providerOrganizationId,
+        ),
+      ),
+    });
+    if (connection?.tierName) connectionTierName = connection.tierName;
+  }
+
+  // 3. All tiers on the lab, sorted oldest-first to match the legacy
+  //    "first tier wins" fallback in resolveServerPriceWithSource.
+  const tiers = await db.query.pricingTiers.findMany({
+    where: eq(pricingTiers.labOrganizationId, ctx.labOrganizationId),
+  });
+  const sortedTiers = [...tiers].sort((a, b) => {
+    const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return at - bt;
+  });
+  const findTierByName = (name: string) =>
+    sortedTiers.find(
+      (t) => t.name.trim().toLowerCase() === name.trim().toLowerCase(),
+    );
+  const candidateTiers: Array<{
+    tier: (typeof sortedTiers)[number];
+    source: Exclude<PriceSource, "manual">;
+  }> = [];
+  for (const name of [
+    doctorTierName,
+    connectionTierName,
+    ctx.tierName ?? null,
+  ].filter((n): n is string => !!n)) {
+    const t = findTierByName(name);
+    if (t) candidateTiers.push({ tier: t, source: "tier" });
+  }
+  if (sortedTiers[0]) {
+    candidateTiers.push({ tier: sortedTiers[0], source: "default" });
+  }
+
+  // 4. Resolve each known item key against the same priority chain
+  //    used by resolveServerPriceWithSource.
+  return DEFAULT_TIER_ITEMS.map((item) => {
+    const key = item.key;
+    if (overrideRow) {
+      const prices = (overrideRow.pricesJson ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const value = Number(prices[key]);
+      if (Number.isFinite(value) && value > 0) {
+        return {
+          key,
+          label: item.label,
+          unitPrice: value,
+          source: "override" as const,
+          sourceId: overrideRow.id,
+          sourceName: overrideRow.doctorName,
+        };
+      }
+    }
+    for (const { tier, source } of candidateTiers) {
+      const prices = (tier.pricesJson ?? {}) as Record<string, unknown>;
+      const value = Number(prices[key]);
+      if (Number.isFinite(value) && value > 0) {
+        return {
+          key,
+          label: item.label,
+          unitPrice: value,
+          source,
+          sourceId: tier.id,
+          sourceName: tier.name,
+        };
+      }
+    }
+    return {
+      key,
+      label: item.label,
+      unitPrice: 0,
+      source: null,
+      sourceId: null,
+      sourceName: null,
+    };
+  });
+}

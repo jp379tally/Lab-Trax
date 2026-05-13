@@ -304,6 +304,28 @@ export function InvoiceEditor({
     queryFn: () => apiFetch<Invoice>(`/invoices/${invoice.id}`),
   });
 
+  // Per-doctor priced item catalog used by the "Item" dropdown so
+  // picking "Zirconia Crown" auto-fills its description and the
+  // doctor-specific unit price. Only loaded for invoices linked to a
+  // case (caseId is required by the server endpoint).
+  const caseIdForPricing =
+    detailQuery.data?.caseId ?? invoice.caseId ?? null;
+  const pricedItemsQuery = useQuery({
+    queryKey: ["pricing-resolve-items", caseIdForPricing],
+    queryFn: () =>
+      apiFetch<{
+        items: Array<{
+          key: string;
+          label: string;
+          unitPrice: number;
+          source: string | null;
+          sourceName: string | null;
+        }>;
+      }>(`/pricing/resolve-items?caseId=${encodeURIComponent(caseIdForPricing!)}`),
+    enabled: !!caseIdForPricing,
+  });
+  const pricedItems = pricedItemsQuery.data?.items ?? [];
+
   const [invoiceNumber, setInvoiceNumber] = useState(invoice.invoiceNumber);
   const [statusValue, setStatusValue] = useState<string>(
     EDITABLE_STATUSES.includes(invoice.status as (typeof EDITABLE_STATUSES)[number])
@@ -755,15 +777,113 @@ export function InvoiceEditor({
                   {items.map((it, idx) => (
                     <tr key={idx} className="border-t border-border">
                       <td className="px-3 py-1.5">
-                        <input
-                          type="text"
-                          value={it.item}
-                          onChange={(e) =>
-                            updateItem(idx, { item: e.target.value })
+                        {(() => {
+                          // No priced catalog (case-less invoice or no
+                          // tiers configured) → behave like the original
+                          // free-text input.
+                          if (pricedItems.length === 0) {
+                            return (
+                              <input
+                                type="text"
+                                value={it.item}
+                                onChange={(e) =>
+                                  updateItem(idx, { item: e.target.value })
+                                }
+                                placeholder="Item"
+                                className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
+                              />
+                            );
                           }
-                          placeholder="Item"
-                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
-                        />
+                          // A row is "in custom mode" when its item text
+                          // exists but isn't one of the priced catalog
+                          // labels — either because the user picked
+                          // "Custom…" or because the item was typed in a
+                          // prior session before the dropdown existed.
+                          const isCustom =
+                            !!it.item &&
+                            !pricedItems.some((p) => p.label === it.item);
+                          if (isCustom) {
+                            return (
+                              <div className="flex items-stretch gap-1">
+                                <input
+                                  type="text"
+                                  value={it.item}
+                                  onChange={(e) =>
+                                    updateItem(idx, { item: e.target.value })
+                                  }
+                                  placeholder="Custom item name"
+                                  className="flex-1 min-w-0 h-8 px-2 rounded bg-background border border-input text-sm"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateItem(idx, {
+                                      item: "",
+                                      description: "",
+                                      unitPrice: 0,
+                                    })
+                                  }
+                                  title="Pick from list"
+                                  className="shrink-0 h-8 px-2 rounded border border-input bg-background text-xs text-muted-foreground hover:text-foreground hover:bg-secondary"
+                                >
+                                  List
+                                </button>
+                              </div>
+                            );
+                          }
+                          // Standard catalog dropdown — picking an option
+                          // auto-fills description + unit price from this
+                          // doctor's effective tier / override.
+                          return (
+                            <select
+                              value={it.item}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (v === "") {
+                                  updateItem(idx, {
+                                    item: "",
+                                    description: "",
+                                    unitPrice: 0,
+                                  });
+                                  return;
+                                }
+                                if (v === "__custom__") {
+                                  // Seed with a single space so the row
+                                  // flips into custom mode (non-empty,
+                                  // not a catalog label) and renders the
+                                  // text input on the next paint.
+                                  updateItem(idx, {
+                                    item: " ",
+                                    description: "",
+                                    unitPrice: 0,
+                                  });
+                                  return;
+                                }
+                                const picked = pricedItems.find(
+                                  (p) => p.label === v,
+                                );
+                                if (!picked) return;
+                                updateItem(idx, {
+                                  item: picked.label,
+                                  description: picked.label,
+                                  unitPrice: picked.unitPrice,
+                                });
+                              }}
+                              className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
+                            >
+                              <option value="">Select item…</option>
+                              {pricedItems.map((p) => (
+                                <option key={p.key} value={p.label}>
+                                  {p.label}
+                                  {p.unitPrice > 0
+                                    ? ` — ${formatMoney(p.unitPrice)}`
+                                    : " — no price set"}
+                                </option>
+                              ))}
+                              <option value="__custom__">Custom…</option>
+                            </select>
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-1.5">
                         <input

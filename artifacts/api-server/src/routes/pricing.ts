@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import {
   auditLogs,
+  cases,
   organizationMemberships,
   pricingOverrides,
   pricingTiers,
@@ -12,10 +13,10 @@ import {
 import { writeAuditLog } from "../lib/audit";
 import { softDeleteById } from "../lib/soft-delete";
 import { HttpError, ok } from "../lib/http";
-import { ADMIN_ROLES, requireAnyRole } from "../lib/rbac";
+import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
-import { DEFAULT_TIER_KEYS } from "../lib/pricing";
+import { DEFAULT_TIER_KEYS, resolveAllPricesForContext } from "../lib/pricing";
 
 const router = Router();
 router.use(requireAuth);
@@ -59,6 +60,46 @@ function sanitizePrices(input: Record<string, unknown>): Record<string, number> 
 }
 
 // ---- Tiers ----
+
+/**
+ * Resolve every standard line-item's effective unit price for a given
+ * case (per-doctor override → doctor tier → practice tier → lab default).
+ * Used by the desktop invoice editor to power the "Item" dropdown so
+ * picking "Zirconia Crown" auto-fills both the description and the
+ * doctor-specific price.
+ *
+ * Authz: caller must be a member of either the case's lab OR provider
+ * organization (matches `GET /invoices/:invoiceId`).
+ */
+router.get(
+  "/resolve-items",
+  asyncHandler(async (req, res) => {
+    const caseId = String(req.query.caseId ?? "").trim();
+    if (!caseId) throw new HttpError(400, "caseId is required.");
+    const kase = await db.query.cases.findFirst({
+      where: eq(cases.id, caseId),
+    });
+    if (!kase) throw new HttpError(404, "Case not found.");
+    const userId = (req as any).auth.userId;
+    const labMember = await requireMembership(
+      userId,
+      kase.labOrganizationId,
+    ).catch(() => null);
+    const providerMember = await requireMembership(
+      userId,
+      kase.providerOrganizationId,
+    ).catch(() => null);
+    if (!labMember && !providerMember) {
+      throw new HttpError(403, "You do not have access to this case.");
+    }
+    const items = await resolveAllPricesForContext({
+      labOrganizationId: kase.labOrganizationId,
+      doctorName: kase.doctorName,
+      providerOrganizationId: kase.providerOrganizationId,
+    });
+    return ok(res, { items });
+  }),
+);
 
 router.get(
   "/tiers",
