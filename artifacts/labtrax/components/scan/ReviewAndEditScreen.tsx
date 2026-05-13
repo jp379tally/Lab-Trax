@@ -458,6 +458,7 @@ export function ReviewAndEditScreen({
           <Pressable
             onPress={() => setMode("edit")}
             disabled={pages.length === 0}
+            testID="review-edit-mode-btn"
             style={({ pressed }) => [
               styles.primaryBtn,
               pressed && { opacity: 0.85 },
@@ -574,6 +575,7 @@ export function ReviewAndEditScreen({
         <Pressable
           onPress={handleFinish}
           disabled={baking || isFinishing || pages.length === 0}
+          testID="review-finish-btn"
           style={({ pressed }) => [
             styles.primaryBtn,
             pressed && { opacity: 0.85 },
