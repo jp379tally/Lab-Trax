@@ -94,7 +94,12 @@ StackImpl.Screen = passthrough;
 // Errors from the focus callback intentionally propagate — that's the
 // class of regression the smoke tests are here to catch.
 type FocusEffectCallback = () => void | (() => void);
+let focusEffectEnabled = true;
+export function setFocusEffectEnabled(enabled: boolean): void {
+  focusEffectEnabled = enabled;
+}
 const deferredFocusEffect = (cb: FocusEffectCallback): void => {
+  if (!focusEffectEnabled) return;
   queueMicrotask(() => {
     cb();
   });
@@ -238,7 +243,14 @@ vi.mock("expo-local-authentication", () => ({
   authenticateAsync: vi.fn(async () => ({ success: true })),
 }));
 
-vi.mock("expo/fetch", () => ({ fetch: globalThis.fetch ?? vi.fn() }));
+vi.mock("expo/fetch", () => ({
+  // Route through the test fetchHandler so screen-driven tests can
+  // intercept calls made via expo/fetch (e.g. ScanScreen.sendToAI).
+  fetch: vi.fn(async (url: any, init?: RequestInit) => {
+    const u = typeof url === "string" ? url : String(url);
+    return fetchHandler.current(u, init);
+  }),
+}));
 
 vi.mock("@react-native-async-storage/async-storage", () => {
   const store = new Map<string, string>();

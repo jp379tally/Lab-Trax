@@ -54,7 +54,8 @@ import {
   buildFinalNotes,
   effectiveToothIndices as computeEffectiveToothIndices,
 } from "@/lib/scan/case-number";
-import { pickProviderMatch, ensureDrPrefix } from "@/lib/scan/provider-match";
+import { ensureDrPrefix } from "@/lib/scan/provider-match";
+import { decideAiDoctorAssignment } from "@/lib/scan/ai-doctor-assignment";
 import { mergeDuplicateMatches, defaultSelectedDuplicateId } from "@/lib/scan/duplicate-merge";
 import { DuplicatePromptModal } from "@/components/scan/DuplicatePromptModal";
 import { AttachBarcodeModal } from "@/components/scan/AttachBarcodeModal";
@@ -1564,16 +1565,16 @@ export default function ScanScreen() {
           }
 
           if (d.doctorName) {
-            const matchResult = pickProviderMatch(
+            const assignment = decideAiDoctorAssignment(
+              { doctorName: d.doctorName, practiceName: d.practiceName },
               allProviderEntries.map((e) => ({
                 providerName: e.providerName,
                 practiceName: e.practiceName,
                 clientId: e.clientId,
               })),
-              { name: d.doctorName, practiceName: d.practiceName },
             );
-            const exactMatch = matchResult.kind === "exact" ? matchResult.entry : null;
-            const bestSimilar = matchResult.kind === "similar" ? matchResult.entry : null;
+            const exactMatch = assignment.kind === "exact" ? assignment.entry : null;
+            const bestSimilar = assignment.kind === "similar" ? assignment.entry : null;
 
             const ensureDr = ensureDrPrefix;
 
@@ -4308,6 +4309,7 @@ export default function ScanScreen() {
             <Pressable
               onPress={handleAttachFiles}
               style={({ pressed }) => [styles.barcodeBtn, pressed && { opacity: 0.85 }]}
+              testID="attach-files-btn"
             >
               <Ionicons name="attach" size={22} color="#FFF" />
               <Text style={styles.barcodeBtnText}>Attach Files</Text>

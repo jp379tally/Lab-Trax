@@ -5,8 +5,9 @@ import {
   expect,
   beforeEach,
   afterEach,
+  vi,
 } from "vitest";
-import { cleanup, render, waitFor } from "@testing-library/react-native";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react-native";
 import {
   resetMockAppState,
   resetMockFetchHandler,
@@ -139,6 +140,127 @@ describe("CaseDetailScreen (smoke)", () => {
       await waitFor(async () => {
         expect(await findByText(/auto-created from itero/)).toBeTruthy();
       });
+    });
+  });
+
+  describe("edit save updating the linked invoice", () => {
+    it("calls updateInvoice with a recomputed caseType when the material changes", async () => {
+      const updateInvoice = vi.fn();
+      const updateCase = vi.fn();
+      const addCaseNote = vi.fn();
+      const caseWithInvoice = {
+        ...inProgressCase,
+        id: "case-edit",
+        caseNumber: "#5010",
+        invoiceId: sampleInvoice.id,
+      };
+      setMockSearchParams({ id: caseWithInvoice.id });
+      setMockAppState({
+        cases: [caseWithInvoice],
+        invoices: [sampleInvoice],
+        clients: [sampleClient],
+        role: "admin",
+        adminUnlocked: true,
+        updateInvoice,
+        updateCase,
+        addCaseNote,
+      });
+
+      const { getAllByText, getByDisplayValue } = render(<CaseDetailScreen />);
+
+      // The screen renders an "Edit Case" action button. The Modal stub
+      // also renders the modal title, so there are multiple matches —
+      // pressing the first text bubbles to the action Pressable.
+      fireEvent.press(getAllByText("Edit Case")[0]);
+
+      // EditCaseModal mounts the current material as a TextInput value.
+      const materialInput = getByDisplayValue("Zirconia");
+      fireEvent.changeText(materialInput, "E.max");
+
+      fireEvent.press(getAllByText("Save Changes")[0]);
+
+      expect(updateCase).toHaveBeenCalledWith(
+        caseWithInvoice.id,
+        expect.objectContaining({ material: "E.max" }),
+      );
+      expect(updateInvoice).toHaveBeenCalledWith(
+        sampleInvoice.id,
+        expect.objectContaining({ caseType: "E.max Restoration" }),
+      );
+    });
+  });
+
+  describe("add-item appliance flow", () => {
+    it("invokes addCaseItem and updateInvoice when adding a Snore Guard appliance", async () => {
+      const addCaseItem = vi.fn();
+      const updateInvoice = vi.fn();
+      const caseWithInvoice = {
+        ...inProgressCase,
+        id: "case-add-item",
+        caseNumber: "#5011",
+        invoiceId: sampleInvoice.id,
+        // addApplianceToInvoice resolves the client via
+        // `clients.find((c) => c.practiceName === caseItem.clientName)`,
+        // so the case must carry the client's practice name for the
+        // pricing tier lookup to land on a non-zero price.
+        clientName: sampleClient.practiceName,
+      };
+      setMockSearchParams({ id: caseWithInvoice.id });
+      setMockAppState({
+        cases: [caseWithInvoice],
+        invoices: [sampleInvoice],
+        clients: [sampleClient],
+        role: "admin",
+        adminUnlocked: true,
+        pricingTiers: [
+          { name: "Standard", prices: { snore_guard: 250 } },
+        ],
+        addCaseItem,
+        updateInvoice,
+      });
+
+      const { getAllByText, findAllByText } = render(<CaseDetailScreen />);
+
+      // Open the "Add Something" sheet.
+      fireEvent.press(getAllByText("Add Something to This Case")[0]);
+
+      // The sheet's "Item" entry calls openAddItemModal via setTimeout(200).
+      // The Modal stub renders all modal contents regardless of `visible`,
+      // so we can advance to the case-type step directly.
+      fireEvent.press(getAllByText("Item")[0]);
+
+      // Step 1 — pick the Appliance case type. There can be multiple
+      // "Appliance" labels in the tree (case-type list + sub-headers in
+      // sibling appliance steps), so press the first which is the
+      // top-level case-type Pressable.
+      const applianceLabels = await findAllByText("Appliance");
+      fireEvent.press(applianceLabels[0]);
+
+      // Step 2 — Snore Guard has no arch/variant, so it should fire
+      // addCaseItem + updateInvoice immediately.
+      const snoreGuard = await findAllByText("Snore Guard");
+      fireEvent.press(snoreGuard[0]);
+
+      expect(addCaseItem).toHaveBeenCalledWith(
+        caseWithInvoice.id,
+        "Appliance",
+        [],
+        {},
+        "Snore Guard",
+        expect.objectContaining({ applianceSubType: "Snore Guard" }),
+      );
+      expect(updateInvoice).toHaveBeenCalledWith(
+        sampleInvoice.id,
+        expect.objectContaining({
+          lineItems: expect.arrayContaining([
+            expect.objectContaining({
+              item: "Snore Guard",
+              rate: 250,
+              amount: 250,
+            }),
+          ]),
+        }),
+      );
     });
   });
 });
