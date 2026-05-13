@@ -250,6 +250,80 @@ jobs:
       - name: Run desktop client tests
         run: pnpm --filter @workspace/labtrax-desktop run test
 
+  smoke-labtrax-desktop:
+    name: Desktop client real-Electron smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Electron on Linux needs a Chromium-style set of system libraries
+      # plus xvfb so the main process can create a BrowserWindow under a
+      # virtual display. We use playwright-core (much smaller than the full
+      # `playwright` package) for the Electron driver, which means we have
+      # to install the system libs by hand instead of via
+      # `playwright install-deps`. The list below is the apt set Playwright
+      # itself installs for Chromium on Ubuntu — keep it in sync if a future
+      # Electron upgrade pulls in newer Chromium runtime requirements.
+      - name: Install Electron system dependencies + xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            libnss3 \
+            libatk1.0-0t64 \
+            libatk-bridge2.0-0t64 \
+            libcups2t64 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libgbm1 \
+            libpango-1.0-0 \
+            libcairo2 \
+            libasound2t64 \
+            libnspr4 \
+            libdrm2 \
+            libxshmfence1 \
+            libglib2.0-0t64
+
+      # Build the renderer the same way `electron:build` does, but skip the
+      # full electron-builder packaging step (NSIS / DMG generation is
+      # platform-specific and unrelated to runtime breakage). Loading
+      # `dist/electron-app/index.html` via the production `app://labtrax/`
+      # protocol handler is what actually exercises the runtime.
+      - name: Build renderer
+        env:
+          # Smoke-test uses no real backend — placeholder is fine.
+          VITE_API_BASE_URL: https://example.invalid
+        run: pnpm --filter @workspace/labtrax-desktop exec vite build --config vite.electron.config.ts
+
+      # Boots a real Electron binary under xvfb and asserts:
+      #   * main process loads without throwing
+      #   * a renderer window is created and finishes loading
+      #   * renderer URL is app://labtrax/… (custom protocol handler works)
+      #   * preload bridge `window.electronAPI` exposes every expected key
+      #     under contextIsolation
+      #   * no uncaught exceptions in the renderer or fatal errors on
+      #     main-process stderr
+      # Failure here blocks merge so a broken Electron build never reaches
+      # the auto-updater feed.
+      - name: Run real-Electron smoke test
+        run: xvfb-run -a pnpm --filter @workspace/labtrax-desktop run electron:smoke
+
   test-labtrax-mobile:
     name: Mobile client tests
     runs-on: ubuntu-latest

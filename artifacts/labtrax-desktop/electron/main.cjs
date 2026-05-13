@@ -198,7 +198,7 @@ app.whenReady().then(() => {
   registerAuthIpc();
   createWindow();
 
-  if (!isDev) {
+  if (!isDev && process.env.LABTRAX_SKIP_AUTOUPDATER !== "1") {
     setupAutoUpdater();
   }
 
