@@ -20,39 +20,11 @@ import { router } from "expo-router";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, MATERIAL_PRICES, Invoice } from "@/lib/data";
-import { resolvePriceForCase } from "@/lib/pricing";
+import { getStationInfo, STATIONS, CaseStatus, LabCase, cleanDoctorDisplay, Invoice } from "@/lib/data";
 import { ChatButton } from "@/components/ChatButton";
 import InvoicePDFViewer from "@/components/InvoicePDFViewer";
-
-function deriveDisplayInitials(input?: {
-  firstName?: string | null;
-  lastName?: string | null;
-  label?: string | null;
-}) {
-  const firstInitial = input?.firstName?.trim()?.[0];
-  const lastInitial = input?.lastName?.trim()?.[0];
-  if (firstInitial && lastInitial) {
-    return `${firstInitial}${lastInitial}`.toUpperCase();
-  }
-
-  const normalizedLabel = input?.label?.trim() || "";
-  if (!normalizedLabel) {
-    return "??";
-  }
-
-  const parts = normalizedLabel
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .split(/[^A-Za-z0-9]+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  if (parts.length >= 2) {
-    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-  }
-
-  return normalizedLabel.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "??";
-}
+import { deriveDisplayInitials } from "@/lib/display-initials";
+import { getCaseInvoice as getCaseInvoiceFromLib } from "@/lib/case-invoice";
 
 export default function CasesScreen() {
   const { cases, role, adminUnlocked, findCaseByBarcode, updateCaseStatus, customStationLabels, invoices, updateInvoice, addInvoice, updateCase, addCaseNote, clients, pricingTiers, refreshCases, fullRefreshCases, setPendingInvoiceEditId, hydrateInvoiceFromServer } = useApp();
@@ -89,45 +61,10 @@ export default function CasesScreen() {
     label: currentRegisteredUser?.username || currentUser,
   });
 
+  // Delegate to the extracted, unit-tested helper so the screen and the
+  // tests stay in lockstep.
   function getCaseInvoice(caseItem: LabCase): Invoice {
-    if (caseItem.invoiceId) {
-      const found = invoices.find((inv) => inv.id === caseItem.invoiceId);
-      if (found) return found;
-    }
-    const matchedInv = invoices.find(
-      (inv) => inv.caseIds.includes(caseItem.id) ||
-        (inv.patientName.toLowerCase() === (caseItem.patientName || "").toLowerCase() && inv.clientName.toLowerCase().includes(caseItem.doctorName.split(" ").pop()?.toLowerCase() || ""))
-    );
-    if (matchedInv) return matchedInv;
-    const toothCount = caseItem.toothMap?.length || caseItem.toothIndices.split(",").filter(Boolean).length || 1;
-    const rate = resolvePriceForCase(caseItem.material, caseItem.caseType, caseItem.doctorName, clients, pricingTiers);
-    const lineItems = [
-      { qty: toothCount, item: `${caseItem.material} ${caseItem.caseType || "Restoration"}`, description: `${caseItem.material} restoration - teeth ${caseItem.toothIndices}`, rate, amount: toothCount * rate },
-    ];
-    if (caseItem.isRush) {
-      lineItems.push({ qty: 1, item: "Rush Fee", description: "Expedited turnaround", rate: 500, amount: 500 });
-    }
-    const total = lineItems.reduce((s, li) => s + li.amount, 0);
-    const invNum = `INV-${new Date(caseItem.createdAt).getFullYear()}-${caseItem.caseNumber.replace(/[^0-9]/g, "").padStart(3, "0")}`;
-    return {
-      id: caseItem.id + "-inv",
-      invoiceNumber: invNum,
-      clientId: "",
-      clientName: caseItem.doctorName,
-      caseIds: [caseItem.id],
-      amount: total,
-      credits: caseItem.isRemake && caseItem.price === 0 ? total : 0,
-      status: caseItem.status === "COMPLETE" ? "paid" as const : "open" as const,
-      issuedAt: caseItem.createdAt,
-      dueAt: caseItem.dueDate ? new Date(caseItem.dueDate + "T00:00:00").getTime() : caseItem.createdAt + 30 * 86400000,
-      billTo: caseItem.doctorName,
-      patientName: caseItem.patientName || caseItem.patientInitials,
-      caseType: caseItem.caseType || "Restoration",
-      teeth: caseItem.toothIndices,
-      shade: caseItem.shade,
-      caseNotes: caseItem.notes || "",
-      lineItems,
-    };
+    return getCaseInvoiceFromLib(caseItem, invoices, clients, pricingTiers);
   }
 
   function handleBarcodeLocateScanned({ data }: { data: string }) {

@@ -41,7 +41,10 @@ import {
   shouldAutoAnalyze,
   resolveCloseAction,
   pickRawCaptureUri,
+  getActivityIcon,
+  formatActivityTimestamp,
 } from "@/lib/scan-helpers";
+import { deriveDisplayInitials } from "@/lib/display-initials";
 
 type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
@@ -79,33 +82,10 @@ type CaseAttachment = {
   name?: string;
 };
 
-function formatTimestamp(ts: number): string {
-  const d = new Date(ts);
-  const month = d.toLocaleString("en-US", { month: "short" });
-  const day = d.getDate();
-  const hours = d.getHours();
-  const mins = d.getMinutes().toString().padStart(2, "0");
-  const ampm = hours >= 12 ? "PM" : "AM";
-  const h = hours % 12 || 12;
-  return `${month} ${day}, ${h}:${mins} ${ampm}`;
-}
-
-function getActivityIcon(type: string): { name: string; color: string } {
-  switch (type) {
-    case "photo":
-      return { name: "camera", color: "#8B5CF6" };
-    case "scan":
-      return { name: "scan", color: Colors.light.tint };
-    case "note":
-      return { name: "document-text", color: "#F59E0B" };
-    case "station_change":
-      return { name: "swap-horizontal", color: "#06B6D4" };
-    case "created":
-      return { name: "add-circle", color: Colors.light.success };
-    default:
-      return { name: "ellipse", color: Colors.light.textTertiary };
-  }
-}
+// Activity-icon and timestamp formatting were extracted to ./lib/scan-helpers.ts
+// (`getActivityIcon`, `formatActivityTimestamp`) so they can be unit-tested
+// without standing up the screen.
+const formatTimestamp = formatActivityTimestamp;
 
 interface LabelData {
   caseNumber: string;
@@ -121,35 +101,6 @@ interface LabelData {
   price: number;
   createdAt: string;
   toothDiagram?: number[];
-}
-
-function deriveDisplayInitials(input?: {
-  firstName?: string | null;
-  lastName?: string | null;
-  label?: string | null;
-}) {
-  const firstInitial = input?.firstName?.trim()?.[0];
-  const lastInitial = input?.lastName?.trim()?.[0];
-  if (firstInitial && lastInitial) {
-    return `${firstInitial}${lastInitial}`.toUpperCase();
-  }
-
-  const normalizedLabel = input?.label?.trim() || "";
-  if (!normalizedLabel) {
-    return "??";
-  }
-
-  const parts = normalizedLabel
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .split(/[^A-Za-z0-9]+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  if (parts.length >= 2) {
-    return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-  }
-
-  return normalizedLabel.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "??";
 }
 
 export default function ScanScreen() {

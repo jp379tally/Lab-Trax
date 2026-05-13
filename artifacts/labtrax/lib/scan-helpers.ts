@@ -1,18 +1,41 @@
 export type ScanPhase = "camera" | "scanning" | "detected" | "review" | "form";
 
+export function getActivityIcon(type: string): { name: string; color: string } {
+  switch (type) {
+    case "photo":
+      return { name: "camera", color: "#8B5CF6" };
+    case "scan":
+      return { name: "scan", color: "#2563EB" };
+    case "note":
+      return { name: "document-text", color: "#F59E0B" };
+    case "station_change":
+      return { name: "swap-horizontal", color: "#06B6D4" };
+    case "created":
+      return { name: "add-circle", color: "#22C55E" };
+    default:
+      return { name: "ellipse", color: "#9CA3AF" };
+  }
+}
+
+// Format like "Mar 15, 2:05 PM".
+export function formatActivityTimestamp(ts: number): string {
+  const d = new Date(ts);
+  const month = d.toLocaleString("en-US", { month: "short" });
+  const day = d.getDate();
+  const hours = d.getHours();
+  const mins = d.getMinutes().toString().padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  const h = hours % 12 || 12;
+  return `${month} ${day}, ${h}:${mins} ${ampm}`;
+}
+
 export type ManualEntryDecision =
   | { kind: "fire"; nextLastNonce: string | null }
   | { kind: "reset" }
   | { kind: "noop" };
 
-/**
- * Decide what the Scan tab's focus effect should do given the current deep-link
- * params and the in-memory guard ref. Pulled out so tests can assert that:
- *   - `?mode=manual` triggers handleManualEntry exactly once per nonce
- *   - re-focusing the tab without a new nonce does NOT re-fire it
- *   - when manual mode is not requested and we're not already on the form,
- *     the tab resets to the camera phase
- */
+// Drives the Scan tab's focus effect: fire manual entry once per nonce,
+// otherwise reset to camera (unless already on the form).
 export function decideManualEntry(input: {
   manualModeRequested: boolean;
   currentNonce: string | null;
@@ -27,11 +50,7 @@ export function decideManualEntry(input: {
   return { kind: "noop" };
 }
 
-/**
- * Guard for the one-shot auto-analyze that fires when the scanner enters the
- * review phase. The guard ref is flipped to true the first time it returns
- * true, so subsequent re-renders of the same review session do nothing.
- */
+// One-shot guard for auto-analyze on review-phase entry.
 export function shouldAutoAnalyze(input: {
   cancelled: boolean;
   alreadyFired: boolean;
@@ -44,12 +63,8 @@ export type CloseAction =
   | { kind: "router-back" }
   | { kind: "router-replace"; path: "/(tabs)" };
 
-/**
- * Decide what the camera/review close button should do. From the camera phase
- * it should return to the dashboard (router.back if possible, otherwise
- * replace to /(tabs)). From the review phase it should discard the captured
- * pages and stay on the scan tab.
- */
+// Camera/review close-button behaviour: review → discard;
+// camera → router.back if possible, else replace to /(tabs).
 export function resolveCloseAction(input: {
   phase: ScanPhase;
   canGoBack: boolean;
@@ -59,12 +74,7 @@ export function resolveCloseAction(input: {
   return { kind: "router-replace", path: "/(tabs)" };
 }
 
-/**
- * Resolve the raw URI returned by the capture cascade in handleTakePhoto.
- * The camera ref is tried first, then the web canvas fallback, then the
- * native ImagePicker fallback. If all three return null the caller must
- * surface a visible error and abort — never silently swallow.
- */
+// handleTakePhoto capture cascade: camera → web canvas → ImagePicker.
 export function pickRawCaptureUri(sources: {
   cameraUri?: string | null;
   webCanvasUri?: string | null;
