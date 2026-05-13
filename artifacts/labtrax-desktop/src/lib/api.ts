@@ -21,12 +21,22 @@ export type SessionUser = {
   id: string;
   username: string;
   email?: string | null;
+  phone?: string | null;
   firstName?: string | null;
   lastName?: string | null;
   initials?: string | null;
   userType?: string | null;
   role?: string | null;
   practiceName?: string | null;
+  // Caller's primary lab (from active memberships) and its uploaded
+  // logo URL, surfaced by the API so the desktop can show + replace
+  // the lab logo without re-resolving membership client-side.
+  practiceOrganizationId?: string | null;
+  practiceLogoUrl?: string | null;
+  // Current work-status presence indicator. One of "available" (at
+  // work), "break", "lunch", or "out_of_office". Defaults to
+  // "available" server-side when unset.
+  workStatus?: "available" | "break" | "lunch" | "out_of_office" | string | null;
 };
 
 type SessionListener = (user: SessionUser | null) => void;

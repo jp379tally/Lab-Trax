@@ -1,5 +1,11 @@
 import crypto from "node:crypto";
 import { Router } from "express";
+import multer from "multer";
+import {
+  isAllowedLogoMime,
+  openLabLogoStream,
+  uploadLabLogo,
+} from "../lib/lab-logo-storage";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -2139,6 +2145,109 @@ router.delete(
       beforeJson: membership,
     });
     return ok(res, { removed: true });
+  })
+);
+
+// ─── Lab logo (used on invoices, statements, the desktop header) ────────────
+//
+// Stored in App Storage under `<PRIVATE_OBJECT_DIR>/lab-logos/<orgId>.<ext>`
+// and served back through this API so we don't depend on signed URLs or
+// public buckets. Any active lab member can view; only an admin of the
+// org can upload/replace.
+const labLogoUpload = multer({
+  storage: multer.memoryStorage(),
+  // 5 MB is plenty for a logo image and keeps memory bounded.
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+router.get(
+  "/:id/logo",
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    await resolveOrgReadAccess((req as any).auth.userId, id);
+    const stream = await openLabLogoStream(id);
+    if (!stream) {
+      res.status(404).json({ error: "No logo uploaded for this lab yet." });
+      return;
+    }
+    res.setHeader("Content-Type", stream.contentType);
+    res.setHeader("Cache-Control", "private, max-age=60");
+    stream.stream.on("error", (err) => {
+      req.log?.error?.({ err }, "lab logo stream error");
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    });
+    stream.stream.pipe(res);
+  })
+);
+
+router.post(
+  "/:id/logo",
+  (req, res, next) => {
+    labLogoUpload.single("file")(req, res, (err: any) => {
+      if (err) {
+        const status = err?.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+        res.status(status).json({ error: err?.message || "Upload failed." });
+        return;
+      }
+      next();
+    });
+  },
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, id);
+
+    const file = (req as any).file as
+      | { originalname: string; mimetype: string; buffer: Buffer; size: number }
+      | undefined;
+    if (!file || !file.buffer || file.size === 0) {
+      throw new HttpError(
+        400,
+        "Missing 'file' field — pick a PNG, JPG, SVG, or WebP image."
+      );
+    }
+    if (!isAllowedLogoMime(file.mimetype)) {
+      throw new HttpError(
+        400,
+        `Unsupported image type: ${file.mimetype}. Use PNG, JPG, SVG, GIF, or WebP.`
+      );
+    }
+    const meta = await uploadLabLogo(id, file.buffer, file.mimetype);
+
+    // Persist the *API* URL of the logo on the org row. Stamping a cache
+    // buster from the upload time forces the desktop client to re-fetch
+    // immediately when the logo changes, even though the URL itself is
+    // stable.
+    const logoUrl = `/api/organizations/${id}/logo?v=${Date.parse(
+      meta.uploadedAt
+    )}`;
+    const [updated] = await db
+      .update(organizations)
+      .set({ logoUrl, updatedAt: new Date() })
+      .where(eq(organizations.id, id))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: id,
+      action: "lab_logo_uploaded",
+      entityType: "organization",
+      entityId: id,
+      details: {
+        size: meta.size,
+        contentType: meta.contentType,
+      },
+    });
+
+    return ok(res, {
+      organization: updated,
+      logo: {
+        url: logoUrl,
+        contentType: meta.contentType,
+        size: meta.size,
+        uploadedAt: meta.uploadedAt,
+      },
+    });
   })
 );
 

@@ -112,19 +112,59 @@ export default function SettingsPage() {
   );
 }
 
+// Work-status presence values used by the API. UI labels them as
+// "At work" / "On break" / "On lunch" / "Out of office".
+const WORK_STATUS_OPTIONS: Array<{
+  value: "available" | "break" | "lunch" | "out_of_office";
+  label: string;
+  dot: string;
+}> = [
+  { value: "available", label: "At work", dot: "bg-emerald-500" },
+  { value: "break", label: "On break", dot: "bg-amber-500" },
+  { value: "lunch", label: "On lunch", dot: "bg-orange-500" },
+  { value: "out_of_office", label: "Out of office", dot: "bg-slate-400" },
+];
+
+function workStatusMeta(status: string | null | undefined) {
+  return (
+    WORK_STATUS_OPTIONS.find((s) => s.value === status) ??
+    WORK_STATUS_OPTIONS[0]
+  );
+}
+
+interface LabTeamMember {
+  id: string;
+  username: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  initials?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  role?: string | null;
+  workStatus: string;
+  labNames: string[];
+  isSelf: boolean;
+}
+
 function ProfilePanel() {
   const { user, refresh } = useAuth();
+  const queryClient = useQueryClient();
   const [firstName, setFirstName] = useState(user?.firstName ?? "");
   const [lastName, setLastName] = useState(user?.lastName ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
+  const [phone, setPhone] = useState(user?.phone ?? "");
   const [practiceName, setPracticeName] = useState(user?.practiceName ?? "");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [logoError, setLogoError] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setFirstName(user?.firstName ?? "");
     setLastName(user?.lastName ?? "");
     setEmail(user?.email ?? "");
+    setPhone(user?.phone ?? "");
     setPracticeName(user?.practiceName ?? "");
   }, [user?.id]);
 
@@ -133,7 +173,13 @@ function ProfilePanel() {
       if (!user?.id) throw new Error("Not signed in.");
       return apiFetch(`/auth/users/${user.id}/profile`, {
         method: "PUT",
-        body: JSON.stringify({ firstName, lastName, email, practiceName }),
+        body: JSON.stringify({
+          firstName,
+          lastName,
+          email,
+          phone,
+          practiceName,
+        }),
       });
     },
     onSuccess: async () => {
@@ -148,10 +194,158 @@ function ProfilePanel() {
     },
   });
 
+  // Status selector — fires on click, no Save needed. Other lab
+  // teammates see the new status the next time they re-fetch.
+  const statusMutation = useMutation({
+    mutationFn: async (next: (typeof WORK_STATUS_OPTIONS)[number]["value"]) => {
+      return apiFetch(`/auth/me/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ workStatus: next }),
+      });
+    },
+    onSuccess: async () => {
+      await refresh();
+      void queryClient.invalidateQueries({ queryKey: ["lab-team"] });
+    },
+  });
+
+  const teamQuery = useQuery<{ team: LabTeamMember[] }>({
+    queryKey: ["lab-team"],
+    queryFn: () => apiFetch("/auth/lab-team"),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
+
+  async function handleLogoFile(file: File) {
+    setLogoError(null);
+    if (!user?.practiceOrganizationId) {
+      setLogoError("No lab organization linked to your profile yet.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setLogoError("Logo must be 5 MB or smaller.");
+      return;
+    }
+    setLogoUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await apiFetch(
+        `/organizations/${user.practiceOrganizationId}/logo`,
+        // apiFetch sets JSON headers by default; pass FormData and let
+        // the browser set the multipart boundary automatically.
+        { method: "POST", body: fd, headers: {} as any },
+      );
+      await refresh();
+    } catch (err) {
+      setLogoError(
+        err instanceof ApiError
+          ? (err.body as any)?.error || err.message
+          : (err as Error).message || "Could not upload logo.",
+      );
+    } finally {
+      setLogoUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  const currentStatus = workStatusMeta(user?.workStatus);
+
   return (
     <PanelShell title="Profile" subtitle="Your personal info shown across LabTrax.">
       {error && <Alert tone="danger">{error}</Alert>}
       {success && <Alert tone="success">Profile saved.</Alert>}
+
+      {/* Lab logo */}
+      <div className="rounded-lg border border-border bg-secondary/20 p-4 mb-2">
+        <div className="flex items-center gap-4">
+          <div className="w-20 h-20 rounded-lg bg-background border border-border overflow-hidden flex items-center justify-center text-xs text-muted-foreground">
+            {user?.practiceLogoUrl ? (
+              <img
+                src={user.practiceLogoUrl}
+                alt="Lab logo"
+                className="max-w-full max-h-full object-contain"
+              />
+            ) : (
+              "No logo"
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold">Lab logo</div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Shown on invoices, statements, and the desktop header. PNG,
+              JPG, SVG, or WebP, up to 5 MB.
+            </p>
+            {logoError && (
+              <p className="text-xs text-destructive mt-1">{logoError}</p>
+            )}
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void handleLogoFile(f);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={logoUploading || !user?.practiceOrganizationId}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+              >
+                <Upload size={12} />
+                {logoUploading
+                  ? "Uploading…"
+                  : user?.practiceLogoUrl
+                  ? "Replace logo"
+                  : "Add a logo"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Status pills */}
+      <div className="rounded-lg border border-border bg-secondary/20 p-4 mb-2">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <div className="text-sm font-semibold">Status</div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Visible to everyone in your lab.
+            </p>
+          </div>
+          <div className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${currentStatus.dot}`} />
+            {currentStatus.label}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {WORK_STATUS_OPTIONS.map((opt) => {
+            const active = (user?.workStatus ?? "available") === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => statusMutation.mutate(opt.value)}
+                disabled={statusMutation.isPending}
+                className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-xs font-medium border transition-colors disabled:opacity-60 ${
+                  active
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-background border-input hover:bg-secondary"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${opt.dot}`} />
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Editable profile fields */}
       <div className="grid grid-cols-2 gap-4">
         <Field label="First name">
           <input value={firstName} onChange={(e) => setFirstName(e.target.value)} className={inputCls} />
@@ -159,8 +353,17 @@ function ProfilePanel() {
         <Field label="Last name">
           <input value={lastName} onChange={(e) => setLastName(e.target.value)} className={inputCls} />
         </Field>
-        <Field label="Email" full>
+        <Field label="Email">
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Phone">
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="(555) 555-5555"
+            className={inputCls}
+          />
         </Field>
         <Field label="Practice / lab name" full>
           <input value={practiceName} onChange={(e) => setPracticeName(e.target.value)} className={inputCls} />
@@ -181,6 +384,58 @@ function ProfilePanel() {
         >
           {mutation.isPending ? "Saving…" : "Save profile"}
         </button>
+      </div>
+
+      {/* Team status list */}
+      <div className="rounded-lg border border-border mt-4">
+        <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
+          <div className="text-sm font-semibold">Lab team status</div>
+          <div className="text-xs text-muted-foreground">
+            {teamQuery.data?.team.length ?? 0} member
+            {(teamQuery.data?.team.length ?? 0) === 1 ? "" : "s"}
+          </div>
+        </div>
+        <ul className="divide-y divide-border">
+          {teamQuery.isLoading && (
+            <li className="px-4 py-3 text-xs text-muted-foreground">Loading…</li>
+          )}
+          {teamQuery.data?.team.map((m) => {
+            const meta = workStatusMeta(m.workStatus);
+            const name =
+              [m.firstName, m.lastName].filter(Boolean).join(" ") || m.username;
+            return (
+              <li
+                key={m.id}
+                className="px-4 py-2.5 flex items-center justify-between text-sm"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium truncate">
+                    {name}
+                    {m.isSelf && (
+                      <span className="ml-1.5 text-xs text-muted-foreground font-normal">
+                        (you)
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {m.role || "user"}
+                    {m.email ? ` · ${m.email}` : ""}
+                  </div>
+                </div>
+                <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
+                  <span className={`w-2 h-2 rounded-full ${meta.dot}`} />
+                  {meta.label}
+                </div>
+              </li>
+            );
+          })}
+          {!teamQuery.isLoading &&
+            (teamQuery.data?.team.length ?? 0) === 0 && (
+              <li className="px-4 py-3 text-xs text-muted-foreground">
+                No teammates found.
+              </li>
+            )}
+        </ul>
       </div>
     </PanelShell>
   );

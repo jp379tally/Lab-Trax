@@ -142,6 +142,11 @@ export const organizations = pgTable(
     zip: text("zip"),
     isActive: boolean("is_active").default(true).notNull(),
     defaultBankAccountId: varchar("default_bank_account_id"),
+    // Public URL of the lab's logo image (PNG/JPG/SVG/WebP), shown in
+    // the desktop app header, on invoices, and in PDFs. Uploaded via
+    // Settings → Profile → "Add a logo" and stored in App Storage.
+    // Null when the lab hasn't uploaded one yet.
+    logoUrl: text("logo_url"),
     // Provider organizations are created by a specific lab. We persist the
     // creating lab's id here (nullable for non-provider orgs / legacy rows)
     // so account-number uniqueness can be scoped per lab.

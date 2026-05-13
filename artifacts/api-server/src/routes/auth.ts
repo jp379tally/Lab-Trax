@@ -177,6 +177,11 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
       practiceAddress:
         base.practiceAddress || buildOrganizationAddress(primaryOrganization),
       practicePhone: base.practicePhone || primaryOrganization?.phone || null,
+      // Surface the primary org id + uploaded logo URL so the desktop
+      // can show the lab logo in the header and POST a new logo to the
+      // right org without having to re-resolve membership.
+      practiceOrganizationId: primaryOrganization?.id ?? null,
+      practiceLogoUrl: (primaryOrganization as any)?.logoUrl ?? null,
       // Surface the lab-scoped account number from the user's primary
       // practice organization so providers can see it in their profile.
       // Falls back to the legacy per-user accountNumber field.
@@ -1066,14 +1071,104 @@ router.post(
   })
 );
 
+// Returns the caller's lab teammates with their current `workStatus`,
+// so the profile panel can show "who's around right now". Scoped to
+// every lab the caller is an active member of — only members of those
+// labs are returned, never users from other tenants.
+router.get(
+  "/lab-team",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId;
+    const callerMemberships = await db
+      .select()
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.status, "active")
+        )
+      );
+    const labIds = [...new Set(callerMemberships.map((m) => m.labId))];
+    if (labIds.length === 0) {
+      return res.json({ team: [] });
+    }
+    const teamMemberships = await db
+      .select()
+      .from(organizationMemberships)
+      .where(
+        and(
+          inArray(organizationMemberships.labId, labIds),
+          eq(organizationMemberships.status, "active")
+        )
+      );
+    const teamUserIds = [...new Set(teamMemberships.map((m) => m.userId))];
+    if (teamUserIds.length === 0) {
+      return res.json({ team: [] });
+    }
+    const teammateRows = await db
+      .select()
+      .from(users)
+      .where(inArray(users.id, teamUserIds));
+    const labsById = new Map(
+      (
+        await db
+          .select()
+          .from(organizations)
+          .where(inArray(organizations.id, labIds))
+      ).map((o) => [o.id, o])
+    );
+    const membershipByUser = new Map<string, typeof teamMemberships>();
+    for (const m of teamMemberships) {
+      const arr = membershipByUser.get(m.userId) ?? [];
+      arr.push(m);
+      membershipByUser.set(m.userId, arr);
+    }
+    const team = teammateRows
+      .filter((u) => !u.deletedAt && u.isActive)
+      .map((u) => {
+        const memberships = membershipByUser.get(u.id) ?? [];
+        const labNames = memberships
+          .map((m) => labsById.get(m.labId)?.displayName || labsById.get(m.labId)?.name)
+          .filter(Boolean);
+        return {
+          id: u.id,
+          username: u.username,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          initials: u.initials,
+          email: u.email,
+          phone: u.phone,
+          role: memberships[0]?.role ?? u.role,
+          workStatus: u.workStatus ?? "available",
+          labNames,
+          isSelf: u.id === userId,
+        };
+      })
+      .sort((a, b) => {
+        if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
+        return (a.firstName || a.username).localeCompare(
+          b.firstName || b.username
+        );
+      });
+    return res.json({ team });
+  })
+);
+
 router.patch(
   "/me/status",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const validStatuses = ["available", "break", "out_of_office"];
+    // "available" = at work, "break" = on a short break, "lunch" = at lunch,
+    // "out_of_office" = off site / signed off for the day. UI labels
+    // these as "At work", "On break", "On lunch", and "Out of office".
+    const validStatuses = ["available", "break", "lunch", "out_of_office"];
     const { workStatus } = req.body;
     if (!validStatuses.includes(workStatus)) {
-      throw new HttpError(400, "Invalid status. Must be one of: available, break, out_of_office.");
+      throw new HttpError(
+        400,
+        "Invalid status. Must be one of: available, break, lunch, out_of_office."
+      );
     }
     const userId = (req as any).auth.userId;
     const [updated] = await db
