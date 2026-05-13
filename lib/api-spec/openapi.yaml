@@ -14,6 +14,8 @@ tags:
     description: Case operations (LabTrax)
   - name: doctors
     description: Doctor / merge operations (LabTrax)
+  - name: invoices
+    description: Invoice + payment operations (LabTrax)
 paths:
   /healthz:
     get:
@@ -235,6 +237,62 @@ paths:
                     properties:
                       caseId: { type: string }
                       needsAiReview: { type: boolean }
+  /invoices/open:
+    get:
+      operationId: listOpenInvoices
+      tags: [invoices]
+      summary: List open invoices for a provider/practice (Receive Payments)
+      description: |
+        Returns the open (issued or partially-paid) invoices the lab can
+        currently receive payments against. Requires the caller to have a
+        billing role (owner, admin, or billing) in `labOrganizationId`.
+      parameters:
+        - name: labOrganizationId
+          in: query
+          required: true
+          schema: { type: string }
+          description: Lab organization to scope the invoices to.
+        - name: providerOrganizationId
+          in: query
+          required: true
+          schema: { type: string }
+          description: Provider/practice to filter open invoices for.
+      responses:
+        "200":
+          description: Open-invoice list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenInvoiceListResult"
+        "403":
+          description: Caller lacks a billing role on the lab.
+  /invoices/receive-payments:
+    post:
+      operationId: receiveInvoicePayments
+      tags: [invoices]
+      summary: Apply a single payment across multiple open invoices
+      description: |
+        QuickBooks-style "Receive Payments" — record one payment from a
+        provider, distribute it across one or more open invoices, and post
+        the combined deposit to a bank account in a single database
+        transaction. Requires a billing role on `labOrganizationId`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReceivePaymentsInput"
+      responses:
+        "201":
+          description: Payments recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReceivePaymentsResult"
+        "400":
+          description: Invalid input or per-invoice amount exceeds balance.
+        "403":
+          description: Caller lacks a billing role on the lab.
 components:
   schemas:
     HealthStatus:
@@ -410,3 +468,93 @@ components:
             needsAiReview: { type: boolean }
             attachmentId: { type: string, nullable: true }
             iteroOrderId: { type: string }
+    OpenInvoice:
+      type: object
+      required:
+        - id
+        - invoiceNumber
+        - status
+        - total
+        - balanceDue
+        - labOrganizationId
+        - providerOrganizationId
+      properties:
+        id: { type: string }
+        invoiceNumber: { type: string }
+        status: { type: string, description: "open | partially_paid | overdue" }
+        total: { type: string, description: "Decimal string" }
+        balanceDue: { type: string, description: "Decimal string" }
+        issuedAt: { type: string, format: date-time, nullable: true }
+        dueAt: { type: string, format: date-time, nullable: true }
+        ageDays: { type: integer, nullable: true }
+        labOrganizationId: { type: string }
+        providerOrganizationId: { type: string }
+    OpenInvoiceListResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/OpenInvoice" }
+    PaymentApplication:
+      type: object
+      required: [invoiceId, amount]
+      properties:
+        invoiceId: { type: string }
+        amount: { type: number, minimum: 0.01 }
+    ReceivePaymentsInput:
+      type: object
+      required:
+        - labOrganizationId
+        - providerOrganizationId
+        - paymentMethod
+        - depositBankAccountId
+        - applications
+      properties:
+        labOrganizationId: { type: string }
+        providerOrganizationId: { type: string }
+        paymentMethod:
+          type: string
+          enum: [card, ach, check, cash, other]
+        referenceNumber: { type: string, nullable: true }
+        paymentDate: { type: string, format: date-time }
+        depositBankAccountId: { type: string }
+        memo: { type: string, nullable: true }
+        applications:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: "#/components/schemas/PaymentApplication" }
+    ReceivePaymentsResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required:
+            - payments
+            - invoices
+            - depositTransactionId
+            - totalApplied
+          properties:
+            payments:
+              type: array
+              items:
+                type: object
+                required: [id, invoiceId, amount]
+                properties:
+                  id: { type: string }
+                  invoiceId: { type: string }
+                  amount: { type: string }
+            invoices:
+              type: array
+              items:
+                type: object
+                required: [id, status, balanceDue]
+                properties:
+                  id: { type: string }
+                  status: { type: string }
+                  balanceDue: { type: string }
+            depositTransactionId: { type: string }
+            totalApplied: { type: string }
+

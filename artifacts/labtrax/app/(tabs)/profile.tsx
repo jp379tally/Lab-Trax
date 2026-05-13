@@ -35,6 +35,38 @@ export default function ProfileScreen() {
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
+  const [canReceivePayments, setCanReceivePayments] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { resilientFetch } = await import("@/lib/query-client");
+        const r = await resilientFetch("/api/auth/me");
+        const j = await r.json().catch(() => ({}));
+        const memberships: Array<{
+          organizationId?: string;
+          labId?: string;
+          role: string;
+          status: string;
+          organization?: { userType?: string } | null;
+        }> = j?.memberships || j?.user?.memberships || [];
+        const ok = memberships.some((m) => {
+          if (m.status !== "active") return false;
+          if (!["owner", "admin", "billing"].includes(m.role)) return false;
+          const orgType = m.organization?.userType;
+          if (orgType && orgType !== "lab") return false;
+          return true;
+        });
+        if (!cancelled) setCanReceivePayments(ok);
+      } catch {
+        if (!cancelled) setCanReceivePayments(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
 
   useEffect(() => {
     const me = registeredUsers.find((u) => u.username === currentUser);
@@ -190,6 +222,30 @@ export default function ProfileScreen() {
             </View>
           </View>
           <View style={styles.menuDivider} />
+          {(() => {
+            if (!canReceivePayments) return null;
+            return (
+              <>
+                <Pressable
+                  style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                  onPress={() => router.push("/receive-payments" as any)}
+                  testID="receive-payments-button"
+                >
+                  <View style={[styles.menuIcon, { backgroundColor: "#DCFCE7" }]}>
+                    <Ionicons name="cash" size={18} color="#16A34A" />
+                  </View>
+                  <View style={styles.menuInfo}>
+                    <Text style={styles.menuTitle}>Receive Payments</Text>
+                    <Text style={styles.menuSub}>
+                      Apply payments across open invoices
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+                </Pressable>
+                <View style={styles.menuDivider} />
+              </>
+            );
+          })()}
           <Pressable
             style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
             onPress={() => router.push("/link-labs" as any)}

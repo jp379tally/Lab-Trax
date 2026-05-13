@@ -170,10 +170,41 @@ router.get(
     const orgIds = orgId ? [orgId] : await activeBillingLabIds(uid(req));
     if (orgId) await requireAnyRole(uid(req), orgId, BILLING_ROLES);
     if (!orgIds.length) return ok(res, []);
-    const accounts = await db.query.bankAccounts.findMany({
+    let accounts = await db.query.bankAccounts.findMany({
       where: inArray(bankAccounts.labOrganizationId, orgIds),
       orderBy: [asc(bankAccounts.name)],
     });
+    // Lazily create a single default "General Register" when an org has no
+    // bank accounts so any billing-role caller can proceed without an
+    // admin-only POST /accounts. Serialized by row-locking the org row so
+    // concurrent first-load calls cannot race and create duplicates.
+    if (!accounts.length && orgId) {
+      try {
+        await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`SELECT id FROM organizations WHERE id = ${orgId} FOR UPDATE`
+          );
+          const existing = await tx.query.bankAccounts.findMany({
+            where: eq(bankAccounts.labOrganizationId, orgId),
+            limit: 1,
+          });
+          if (existing.length) return;
+          await tx.insert(bankAccounts).values({
+            labOrganizationId: orgId,
+            name: "General Register",
+            openingBalance: "0.00",
+            openingDate: new Date(),
+            createdByUserId: uid(req),
+          });
+        });
+        accounts = await db.query.bankAccounts.findMany({
+          where: inArray(bankAccounts.labOrganizationId, orgIds),
+          orderBy: [asc(bankAccounts.name)],
+        });
+      } catch (err) {
+        req.log.warn({ err, orgId }, "default General Register create failed");
+      }
+    }
     if (!accounts.length) return ok(res, []);
     const acctIds = accounts.map((a: any) => a.id);
     const txns = await db
@@ -1365,6 +1396,70 @@ export async function generateForOrganization(
   }
   return { created, ruleCount: rules.length };
 }
+
+// Post a single, immediate occurrence of a recurring rule as a real
+// (status="posted") bank_transactions row. UI surfaces this as
+// "Post next entry now" so an operator can fire a one-off without
+// waiting for the scheduled generator. Idempotent within a 5-day window
+// via findPostedNear().
+router.post(
+  "/recurring/:id/post-next",
+  asyncHandler(async (req, res) => {
+    const rule = await db.query.recurringTransactions.findFirst({
+      where: eq(recurringTransactions.id, String(req.params.id)),
+    });
+    if (!rule) throw new HttpError(404, "Rule not found.");
+    await requireAnyRole(uid(req), rule.labOrganizationId, BILLING_ROLES);
+    let amount = rule.amount != null ? Number(rule.amount) : 0;
+    if (rule.estimateMethod === "avg_last_3") {
+      const avg = await avgOfLastThree(rule);
+      if (avg) amount = avg;
+    }
+    amount = Math.abs(Number(amount) || 0);
+    if (!amount)
+      throw new HttpError(400, "Rule has no amount to post.");
+    const occDate = new Date();
+    const dup = await findPostedNear(
+      rule.bankAccountId,
+      occDate,
+      amount,
+      rule.payee || rule.name
+    );
+    if (dup)
+      return ok(res, { posted: false, bankTransactionId: dup.id });
+    const debit = rule.direction === "debit" ? amount : 0;
+    const credit = rule.direction === "credit" ? amount : 0;
+    const net = credit - debit;
+    const [row] = await db
+      .insert(bankTransactions)
+      .values({
+        labOrganizationId: rule.labOrganizationId,
+        bankAccountId: rule.bankAccountId,
+        txnDate: occDate,
+        type: rule.direction === "credit" ? "deposit" : "payment",
+        payee: rule.payee || rule.name,
+        memo: rule.memo || rule.name,
+        categoryId: rule.categoryId,
+        debitAmount: debit.toFixed(2),
+        creditAmount: credit.toFixed(2),
+        netAmount: net.toFixed(2),
+        cleared: false,
+        status: "posted",
+        source: "recurring",
+        recurringRuleId: rule.id,
+        createdByUserId: uid(req),
+      })
+      .returning({ id: bankTransactions.id });
+    await db
+      .update(recurringTransactions)
+      .set({
+        lastGeneratedFor: occDate.toISOString().slice(0, 10),
+        updatedAt: new Date(),
+      })
+      .where(eq(recurringTransactions.id, rule.id));
+    return ok(res, { posted: true, bankTransactionId: row.id });
+  })
+);
 
 router.post(
   "/recurring/generate",

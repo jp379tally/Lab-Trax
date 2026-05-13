@@ -63,8 +63,12 @@ function safeUser(user: any) {
   };
 }
 
-function mapMembershipRoleToUserRole(role?: string | null): "admin" | "user" {
-  return role === "owner" || role === "admin" ? "admin" : "user";
+function mapMembershipRoleToUserRole(
+  role?: string | null
+): "admin" | "billing" | "user" {
+  if (role === "owner" || role === "admin") return "admin";
+  if (role === "billing") return "billing";
+  return "user";
 }
 
 function buildOrganizationAddress(organization: any): string | null {

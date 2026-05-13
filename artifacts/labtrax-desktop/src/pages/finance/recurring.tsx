@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Sparkles, Trash2, X } from "lucide-react";
+import { Pause, Play, Plus, Send, Sparkles, Trash2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount, RecurringRule, TransactionCategory } from "@/lib/types";
@@ -66,6 +66,31 @@ function Recurring({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["finance", "recurring"] }),
   });
 
+  const togglePause = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
+      apiFetch(`/finance/recurring/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ isActive }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["finance", "recurring"] }),
+  });
+
+  const postNext = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ posted: boolean; bankTransactionId: string | null }>(
+        `/finance/recurring/${id}/post-next`,
+        { method: "POST" }
+      ),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["finance"] });
+      setGenResult(
+        r.posted
+          ? "Posted next entry to the register."
+          : "Skipped: an entry was already posted near this date."
+      );
+    },
+  });
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -112,8 +137,9 @@ function Recurring({
               <th className="text-left font-medium py-2">Day</th>
               <th className="text-right font-medium py-2">Amount</th>
               <th className="text-left font-medium py-2">Last gen.</th>
+              <th className="text-left font-medium py-2">Next run</th>
               <th className="text-left font-medium py-2">Status</th>
-              <th className="px-2 py-2 w-12" />
+              <th className="px-2 py-2 w-32" />
             </tr>
           </thead>
           <tbody>
@@ -139,6 +165,9 @@ function Recurring({
                 <td className="py-2.5 text-muted-foreground">
                   {r.lastGeneratedFor || "—"}
                 </td>
+                <td className="py-2.5 text-muted-foreground">
+                  {r.isActive ? computeNextRun(r) : "—"}
+                </td>
                 <td className="py-2.5">
                   {r.isActive ? (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
@@ -151,25 +180,47 @@ function Recurring({
                   )}
                 </td>
                 <td
-                  className="px-2 py-2.5 text-right"
+                  className="px-2 py-2.5"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (confirm(`Delete recurring rule "${r.name}"?`))
-                        deleteMut.mutate(r.id);
-                    }}
-                    className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  <div className="flex items-center justify-end gap-1">
+                    <button
+                      type="button"
+                      title="Post next entry now"
+                      disabled={!r.isActive || postNext.isPending}
+                      onClick={() => postNext.mutate(r.id)}
+                      className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-primary flex items-center justify-center disabled:opacity-40"
+                    >
+                      <Send size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      title={r.isActive ? "Pause" : "Resume"}
+                      onClick={() =>
+                        togglePause.mutate({ id: r.id, isActive: !r.isActive })
+                      }
+                      className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+                    >
+                      {r.isActive ? <Pause size={13} /> : <Play size={13} />}
+                    </button>
+                    <button
+                      type="button"
+                      title="Delete"
+                      onClick={() => {
+                        if (confirm(`Delete recurring rule "${r.name}"?`))
+                          deleteMut.mutate(r.id);
+                      }}
+                      className="h-7 w-7 rounded hover:bg-secondary text-muted-foreground hover:text-destructive flex items-center justify-center"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
             {!rules.data?.length && (
               <tr>
-                <td colSpan={10} className="px-4 py-12 text-center text-muted-foreground">
+                <td colSpan={11} className="px-4 py-12 text-center text-muted-foreground">
                   No recurring rules yet.
                 </td>
               </tr>
@@ -442,6 +493,58 @@ function RuleEditor({
       </div>
     </div>
   );
+}
+
+function computeNextRun(r: RecurringRule): string {
+  // Predict next month + day. Generator runs monthly and stamps
+  // lastGeneratedFor as "YYYY-MM"; the next run is the day-of-month
+  // in the following month (or the start month if not yet generated).
+  const today = new Date();
+  let year: number;
+  let month: number; // 0-indexed
+  if (r.lastGeneratedFor && /^\d{4}-\d{2}$/.test(r.lastGeneratedFor)) {
+    const [y, m] = r.lastGeneratedFor.split("-").map(Number);
+    year = y;
+    month = m - 1 + 1;
+  } else if (r.startDate) {
+    const s = new Date(r.startDate);
+    year = s.getUTCFullYear();
+    month = s.getUTCMonth();
+  } else {
+    year = today.getUTCFullYear();
+    month = today.getUTCMonth();
+  }
+  if (month > 11) {
+    year += 1;
+    month -= 12;
+  }
+  // If predicted month is in the past, bump to current/next month.
+  const predicted = new Date(Date.UTC(year, month, 1));
+  const cursor = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  if (predicted < cursor) {
+    year = today.getUTCFullYear();
+    month = today.getUTCMonth();
+    const dim = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    if (today.getUTCDate() > Math.min(r.dayOfMonth, dim)) {
+      month += 1;
+      if (month > 11) {
+        year += 1;
+        month -= 12;
+      }
+    }
+  }
+  if (r.endDate) {
+    const end = new Date(r.endDate);
+    if (
+      year > end.getUTCFullYear() ||
+      (year === end.getUTCFullYear() && month > end.getUTCMonth())
+    ) {
+      return "—";
+    }
+  }
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const day = Math.min(r.dayOfMonth, daysInMonth);
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

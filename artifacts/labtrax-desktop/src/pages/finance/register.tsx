@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import type { BankAccount, BankTransaction, Invoice, TransactionCategory } from "@/lib/types";
@@ -39,6 +39,7 @@ function RegisterTable({
   const [editing, setEditing] = useState<BankTransaction | null>(null);
   const [importing, setImporting] = useState(false);
   const [transferring, setTransferring] = useState(false);
+  const [recurringFor, setRecurringFor] = useState<BankTransaction | null>(null);
 
   const account = accounts.find((a) => a.id === accountId);
 
@@ -326,6 +327,17 @@ function RegisterTable({
                       onClick={(e) => e.stopPropagation()}
                     >
                       <div className="flex items-center justify-end gap-0.5">
+                        {!isVoid && (
+                          <button
+                            type="button"
+                            onClick={() => setRecurringFor(r)}
+                            className="h-6 w-6 rounded hover:bg-secondary text-muted-foreground hover:text-foreground flex items-center justify-center"
+                            aria-label="Make recurring"
+                            title="Make recurring"
+                          >
+                            <Repeat size={12} />
+                          </button>
+                        )}
                         {!r.reconciled && !isVoid && (
                           <button
                             type="button"
@@ -356,6 +368,14 @@ function RegisterTable({
                   </tr>
                 );
               })}
+              <InlineBlankRows
+                accountId={accountId}
+                rowCount={3}
+                categories={cats.data || []}
+                onSaved={() =>
+                  qc.invalidateQueries({ queryKey: ["finance"] })
+                }
+              />
             </tbody>
           </table>
         </div>
@@ -390,7 +410,521 @@ function RegisterTable({
           onComplete={() => qc.invalidateQueries({ queryKey: ["finance"] })}
         />
       )}
+
+      {recurringFor && (
+        <MakeRecurringDialog
+          organizationId={organizationId}
+          accounts={accounts}
+          categories={cats.data || []}
+          source={recurringFor}
+          onClose={() => setRecurringFor(null)}
+          onComplete={() => {
+            setRecurringFor(null);
+            qc.invalidateQueries({ queryKey: ["finance"] });
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function MakeRecurringDialog({
+  organizationId,
+  accounts,
+  categories,
+  source,
+  onClose,
+  onComplete,
+}: {
+  organizationId: string;
+  accounts: BankAccount[];
+  categories: TransactionCategory[];
+  source: BankTransaction;
+  onClose: () => void;
+  onComplete: () => void;
+}) {
+  const debit = Number(source.debitAmount);
+  const credit = Number(source.creditAmount);
+  const initialDirection: "debit" | "credit" = credit > 0 ? "credit" : "debit";
+  const initialAmount =
+    initialDirection === "credit" ? credit : debit || 0;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [name, setName] = useState(
+    source.payee ||
+      `Recurring ${initialDirection === "credit" ? "deposit" : "payment"}`
+  );
+  const [payee, setPayee] = useState(source.payee || "");
+  const [memo, setMemo] = useState(source.memo || "");
+  const [categoryId, setCategoryId] = useState(source.categoryId || "");
+  const [bankAccountId, setBankAccountId] = useState(source.bankAccountId);
+  const [direction, setDirection] = useState<"debit" | "credit">(initialDirection);
+  const estimateMethod = "fixed" as const;
+  const [amount, setAmount] = useState(initialAmount.toFixed(2));
+  const [frequency, setFrequency] = useState<
+    "weekly" | "monthly" | "annual"
+  >("monthly");
+  const [dayOfMonth, setDayOfMonth] = useState<number>(
+    new Date(source.txnDate).getDate() || 1
+  );
+  const [startDate, setStartDate] = useState(today);
+  const [endDate, setEndDate] = useState("");
+  const [autoCreate, setAutoCreate] = useState(true);
+  const [postNow, setPostNow] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const usableAccounts = accounts.filter((a) => !a.isArchived);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const amt =
+        estimateMethod === "fixed" ? Number(amount) : null;
+      if (estimateMethod === "fixed" && (!amt || !(amt > 0))) {
+        throw new Error("Enter a positive amount, or switch to 'Average of last 3'.");
+      }
+      if (!name.trim()) throw new Error("Give the rule a name.");
+      if (!bankAccountId) throw new Error("Choose a bank account.");
+      const created = await apiFetch<{ id: string }>("/finance/recurring", {
+        method: "POST",
+        body: JSON.stringify({
+          organizationId,
+          bankAccountId,
+          name: name.trim(),
+          payee: payee.trim() || null,
+          memo: memo.trim() || null,
+          categoryId: categoryId || null,
+          direction,
+          estimateMethod,
+          amount: amt,
+          frequency,
+          dayOfMonth,
+          startDate: new Date(startDate).toISOString(),
+          endDate: endDate ? new Date(endDate).toISOString() : null,
+          autoCreate,
+          isActive: true,
+        }),
+      });
+      if (postNow && created?.id) {
+        await apiFetch(`/finance/recurring/${created.id}/post-next`, {
+          method: "POST",
+        });
+      }
+      return created;
+    },
+    onSuccess: () => onComplete(),
+    onError: (e: any) => setError(e?.message || "Failed to create rule."),
+  });
+
+  const inputCls =
+    "h-9 px-2.5 rounded-md bg-background border border-input text-sm";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/30 p-4">
+      <div className="w-full max-w-lg bg-card border border-border rounded-xl shadow-lg max-h-[90vh] overflow-y-auto">
+        <header className="sticky top-0 bg-card border-b border-border px-5 py-3 flex items-center justify-between">
+          <h2 className="text-base font-semibold">Make recurring</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={15} />
+          </button>
+        </header>
+        <div className="px-5 py-4 space-y-3">
+          <div>
+            <label className="block text-xs font-medium mb-1">Rule name</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className={`${inputCls} w-full`}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1">Payee</label>
+              <input
+                value={payee}
+                onChange={(e) => setPayee(e.target.value)}
+                className={`${inputCls} w-full`}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Category</label>
+              <select
+                value={categoryId}
+                onChange={(e) => setCategoryId(e.target.value)}
+                className={`${inputCls} w-full`}
+              >
+                <option value="">—</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Memo</label>
+            <input
+              value={memo}
+              onChange={(e) => setMemo(e.target.value)}
+              className={`${inputCls} w-full`}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1">Bank account</label>
+              <select
+                value={bankAccountId}
+                onChange={(e) => setBankAccountId(e.target.value)}
+                className={`${inputCls} w-full`}
+              >
+                {usableAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {a.last4 ? ` ··${a.last4}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Direction</label>
+              <select
+                value={direction}
+                onChange={(e) => setDirection(e.target.value as "debit" | "credit")}
+                className={`${inputCls} w-full`}
+              >
+                <option value="debit">Payment (out)</option>
+                <option value="credit">Deposit (in)</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1">Amount</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className={`${inputCls} w-full text-right tabular-nums`}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Frequency</label>
+              <select
+                value={frequency}
+                onChange={(e) => setFrequency(e.target.value as typeof frequency)}
+                className={`${inputCls} w-full`}
+              >
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+                <option value="annual">Yearly</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Day of month</label>
+              <input
+                type="number"
+                min={1}
+                max={31}
+                value={dayOfMonth}
+                onChange={(e) =>
+                  setDayOfMonth(
+                    Math.max(1, Math.min(31, Number(e.target.value) || 1))
+                  )
+                }
+                className={`${inputCls} w-full`}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1">Start date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className={`${inputCls} w-full`}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">
+                End date <span className="text-muted-foreground">(optional)</span>
+              </label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className={`${inputCls} w-full`}
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={autoCreate}
+              onChange={(e) => setAutoCreate(e.target.checked)}
+            />
+            Auto-create projected register entries
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={postNow}
+              onChange={(e) => setPostNow(e.target.checked)}
+            />
+            Post next entry now (creates a real register row dated today)
+          </label>
+          {error && (
+            <p className="text-xs text-destructive">{error}</p>
+          )}
+        </div>
+        <footer className="sticky bottom-0 bg-card border-t border-border px-5 py-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md hover:bg-secondary text-sm"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={save.isPending}
+            onClick={() => {
+              setError(null);
+              save.mutate();
+            }}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+          >
+            {save.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+            Create rule
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function InlineBlankRows({
+  accountId,
+  rowCount,
+  categories,
+  onSaved,
+}: {
+  accountId: string;
+  rowCount: number;
+  categories: Array<{ id: string; name: string }>;
+  onSaved: () => void;
+}) {
+  const [keys, setKeys] = useState<number[]>(() =>
+    Array.from({ length: Math.max(1, rowCount) }, (_, i) => i)
+  );
+  const nextKeyRef = useRef(keys.length);
+
+  function handleSaved() {
+    setKeys((prev) => [...prev, nextKeyRef.current++]);
+    onSaved();
+  }
+
+  return (
+    <>
+      {keys.map((k) => (
+        <BlankRow
+          key={k}
+          accountId={accountId}
+          categories={categories}
+          onSaved={handleSaved}
+        />
+      ))}
+    </>
+  );
+}
+
+function BlankRow({
+  accountId,
+  categories,
+  onSaved,
+}: {
+  accountId: string;
+  categories: Array<{ id: string; name: string }>;
+  onSaved: () => void;
+}) {
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [payee, setPayee] = useState("");
+  const [memo, setMemo] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [payment, setPayment] = useState("");
+  const [deposit, setDeposit] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedOnce, setSavedOnce] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const hasAmount =
+    (Number(payment) || 0) > 0 || (Number(deposit) || 0) > 0;
+  const ready = !!date && !!payee.trim() && hasAmount;
+
+  async function save() {
+    if (!ready || saving || savedOnce) return;
+    setError(null);
+    setSaving(true);
+    try {
+      await apiFetch("/finance/transactions", {
+        method: "POST",
+        body: JSON.stringify({
+          bankAccountId: accountId,
+          txnDate: new Date(date).toISOString(),
+          type: Number(deposit) > 0 ? "deposit" : "other",
+          payee: payee.trim(),
+          memo: memo.trim() || null,
+          categoryId: categoryId || null,
+          payment: Number(payment) || 0,
+          deposit: Number(deposit) || 0,
+          cleared: false,
+          invoiceIds: [],
+        }),
+      });
+      setSavedOnce(true);
+      onSaved();
+    } catch (e: any) {
+      setError(e?.message || "Failed to save.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleBlur(e: React.FocusEvent<HTMLTableRowElement>) {
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return;
+    if (ready) void save();
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void save();
+    }
+  }
+
+  const inputCls =
+    "w-full h-7 px-2 rounded bg-background border border-input text-sm";
+
+  return (
+    <>
+      <tr
+        className="border-t border-border bg-secondary/10"
+        onBlur={handleBlur}
+      >
+        <td className="px-4 py-1.5">
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            onKeyDown={onKeyDown}
+            disabled={savedOnce}
+            className={inputCls}
+          />
+        </td>
+        <td className="py-1.5 text-xs text-muted-foreground italic">
+          {savedOnce ? "saved" : "new"}
+        </td>
+        <td className="py-1.5"></td>
+        <td className="py-1.5">
+          <input
+            type="text"
+            value={payee}
+            onChange={(e) => setPayee(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Payee"
+            disabled={savedOnce}
+            className={inputCls}
+          />
+        </td>
+        <td className="py-1.5">
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+            onKeyDown={onKeyDown}
+            disabled={savedOnce}
+            className={inputCls}
+          >
+            <option value="">—</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </td>
+        <td className="py-1.5">
+          <input
+            type="text"
+            value={memo}
+            onChange={(e) => setMemo(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Memo"
+            disabled={savedOnce}
+            className={inputCls}
+          />
+        </td>
+        <td className="py-1.5">
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={payment}
+            onChange={(e) => setPayment(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="0.00"
+            disabled={savedOnce}
+            className={`${inputCls} text-right tabular-nums`}
+          />
+        </td>
+        <td className="py-1.5">
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={deposit}
+            onChange={(e) => setDeposit(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="0.00"
+            disabled={savedOnce}
+            className={`${inputCls} text-right tabular-nums`}
+          />
+        </td>
+        <td className="py-1.5"></td>
+        <td className="py-1.5"></td>
+        <td className="px-4 py-1.5"></td>
+        <td className="px-2 py-1.5">
+          <button
+            type="button"
+            onClick={save}
+            disabled={!ready || saving || savedOnce}
+            className="h-7 px-2 rounded bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-40 inline-flex items-center gap-1"
+            aria-label="Save row"
+            title={savedOnce ? "Saved" : "Save row"}
+          >
+            {saving ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <CheckCircle2 size={11} />
+            )}
+          </button>
+        </td>
+      </tr>
+      {error && (
+        <tr>
+          <td colSpan={12} className="px-4 py-1 text-xs text-destructive">
+            {error}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

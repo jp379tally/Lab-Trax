@@ -26,6 +26,10 @@ import type {
   HealthStatus,
   ImportCaseFromIteroRxBody,
   IteroImportResult,
+  ListOpenInvoicesParams,
+  OpenInvoiceListResult,
+  ReceivePaymentsInput,
+  ReceivePaymentsResult,
   SearchDoctorsParams,
 } from "./api.schemas";
 
@@ -698,4 +702,196 @@ export const useAcknowledgeAiReview = <
   TContext
 > => {
   return useMutation(getAcknowledgeAiReviewMutationOptions(options));
+};
+
+/**
+ * Returns the open (issued or partially-paid) invoices the lab can
+currently receive payments against. Requires the caller to have a
+billing role (owner, admin, or billing) in `labOrganizationId`.
+
+ * @summary List open invoices for a provider/practice (Receive Payments)
+ */
+export const getListOpenInvoicesUrl = (params: ListOpenInvoicesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/invoices/open?${stringifiedParams}`
+    : `/api/invoices/open`;
+};
+
+export const listOpenInvoices = async (
+  params: ListOpenInvoicesParams,
+  options?: RequestInit,
+): Promise<OpenInvoiceListResult> => {
+  return customFetch<OpenInvoiceListResult>(getListOpenInvoicesUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListOpenInvoicesQueryKey = (
+  params?: ListOpenInvoicesParams,
+) => {
+  return [`/api/invoices/open`, ...(params ? [params] : [])] as const;
+};
+
+export const getListOpenInvoicesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listOpenInvoices>>,
+  TError = ErrorType<void>,
+>(
+  params: ListOpenInvoicesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listOpenInvoices>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListOpenInvoicesQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listOpenInvoices>>
+  > = ({ signal }) => listOpenInvoices(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listOpenInvoices>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListOpenInvoicesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listOpenInvoices>>
+>;
+export type ListOpenInvoicesQueryError = ErrorType<void>;
+
+/**
+ * @summary List open invoices for a provider/practice (Receive Payments)
+ */
+
+export function useListOpenInvoices<
+  TData = Awaited<ReturnType<typeof listOpenInvoices>>,
+  TError = ErrorType<void>,
+>(
+  params: ListOpenInvoicesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listOpenInvoices>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListOpenInvoicesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * QuickBooks-style "Receive Payments" — record one payment from a
+provider, distribute it across one or more open invoices, and post
+the combined deposit to a bank account in a single database
+transaction. Requires a billing role on `labOrganizationId`.
+
+ * @summary Apply a single payment across multiple open invoices
+ */
+export const getReceiveInvoicePaymentsUrl = () => {
+  return `/api/invoices/receive-payments`;
+};
+
+export const receiveInvoicePayments = async (
+  receivePaymentsInput: ReceivePaymentsInput,
+  options?: RequestInit,
+): Promise<ReceivePaymentsResult> => {
+  return customFetch<ReceivePaymentsResult>(getReceiveInvoicePaymentsUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(receivePaymentsInput),
+  });
+};
+
+export const getReceiveInvoicePaymentsMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof receiveInvoicePayments>>,
+    TError,
+    { data: BodyType<ReceivePaymentsInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof receiveInvoicePayments>>,
+  TError,
+  { data: BodyType<ReceivePaymentsInput> },
+  TContext
+> => {
+  const mutationKey = ["receiveInvoicePayments"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof receiveInvoicePayments>>,
+    { data: BodyType<ReceivePaymentsInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return receiveInvoicePayments(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ReceiveInvoicePaymentsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof receiveInvoicePayments>>
+>;
+export type ReceiveInvoicePaymentsMutationBody = BodyType<ReceivePaymentsInput>;
+export type ReceiveInvoicePaymentsMutationError = ErrorType<void>;
+
+/**
+ * @summary Apply a single payment across multiple open invoices
+ */
+export const useReceiveInvoicePayments = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof receiveInvoicePayments>>,
+    TError,
+    { data: BodyType<ReceivePaymentsInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof receiveInvoicePayments>>,
+  TError,
+  { data: BodyType<ReceivePaymentsInput> },
+  TContext
+> => {
+  return useMutation(getReceiveInvoicePaymentsMutationOptions(options));
 };

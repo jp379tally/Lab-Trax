@@ -134,6 +134,83 @@ export interface IteroImportResult {
   data?: IteroImportResultData;
 }
 
+export interface OpenInvoice {
+  id: string;
+  invoiceNumber: string;
+  /** open | partially_paid | overdue */
+  status: string;
+  /** Decimal string */
+  total: string;
+  /** Decimal string */
+  balanceDue: string;
+  issuedAt?: string | null;
+  dueAt?: string | null;
+  ageDays?: number | null;
+  labOrganizationId: string;
+  providerOrganizationId: string;
+}
+
+export interface OpenInvoiceListResult {
+  ok?: boolean;
+  data?: OpenInvoice[];
+}
+
+export interface PaymentApplication {
+  invoiceId: string;
+  /** @minimum 0.01 */
+  amount: number;
+}
+
+export type ReceivePaymentsInputPaymentMethod =
+  (typeof ReceivePaymentsInputPaymentMethod)[keyof typeof ReceivePaymentsInputPaymentMethod];
+
+export const ReceivePaymentsInputPaymentMethod = {
+  card: "card",
+  ach: "ach",
+  check: "check",
+  cash: "cash",
+  other: "other",
+} as const;
+
+export interface ReceivePaymentsInput {
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  paymentMethod: ReceivePaymentsInputPaymentMethod;
+  referenceNumber?: string | null;
+  paymentDate?: string;
+  depositBankAccountId: string;
+  memo?: string | null;
+  /**
+   * @minItems 1
+   * @maxItems 500
+   */
+  applications: PaymentApplication[];
+}
+
+export type ReceivePaymentsResultDataPaymentsItem = {
+  id: string;
+  invoiceId: string;
+  amount: string;
+};
+
+export type ReceivePaymentsResultDataInvoicesItem = {
+  id: string;
+  status: string;
+  balanceDue: string;
+};
+
+export type ReceivePaymentsResultData = {
+  payments: ReceivePaymentsResultDataPaymentsItem[];
+  invoices: ReceivePaymentsResultDataInvoicesItem[];
+  depositTransactionId: string;
+  totalApplied: string;
+};
+
+export interface ReceivePaymentsResult {
+  ok?: boolean;
+  data?: ReceivePaymentsResultData;
+}
+
 export type ImportCaseFromIteroRxBody = {
   /** Rx PDF or image (binary upload) */
   file: string;
@@ -179,4 +256,15 @@ export type AcknowledgeAiReview200Data = {
 export type AcknowledgeAiReview200 = {
   ok?: boolean;
   data?: AcknowledgeAiReview200Data;
+};
+
+export type ListOpenInvoicesParams = {
+  /**
+   * Lab organization to scope the invoices to.
+   */
+  labOrganizationId: string;
+  /**
+   * Provider/practice to filter open invoices for.
+   */
+  providerOrganizationId: string;
 };

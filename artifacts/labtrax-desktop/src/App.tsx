@@ -23,6 +23,8 @@ import RegisterPage from "@/pages/finance/register";
 import ReconcilePage from "@/pages/finance/reconcile";
 import CashFlowPage from "@/pages/finance/cash-flow";
 import RecurringPage from "@/pages/finance/recurring";
+import ReceivePaymentsPage from "@/pages/finance/receive-payments";
+import { canReceivePayments } from "@/components/finance/FinanceShell";
 import DownloadPage from "@/pages/download";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/AppLayout";
@@ -71,11 +73,20 @@ function AppLayoutWithUploads() {
         <Route path="/finance/reconcile" component={ReconcilePage} />
         <Route path="/finance/cash-flow" component={CashFlowPage} />
         <Route path="/finance/recurring" component={RecurringPage} />
+        <Route path="/finance/receive-payments" component={ReceivePaymentsGuard} />
         <Route path="/download" component={DownloadPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>
   );
+}
+
+function ReceivePaymentsGuard() {
+  const { user } = useAuth();
+  if (!canReceivePayments(user)) {
+    return <Redirect to="/finance/register" />;
+  }
+  return <ReceivePaymentsPage />;
 }
 
 function AuthRestoreBanner() {

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, lte, or, sql, sum } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, or, sql, sum } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -954,6 +954,281 @@ function toMobileInvoice(lc: any, parsed: any, localInvoiceId: string) {
   };
 }
 
+// ─────────────────────────── Receive Payments ───────────────────────────
+//
+// These two routes MUST be registered before the dynamic `GET /:invoiceId`
+// below, otherwise Express captures `/open` and `/receive-payments` as
+// `:invoiceId` and the handlers are never reached.
+
+// Open invoices for a single provider (oldest-first) within a specific lab.
+// Both query params are required so we can hard-enforce billing-role
+// authorization on the target lab (no implicit cross-lab fallback).
+router.get(
+  "/open",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const query = z
+      .object({
+        providerOrganizationId: z.string().min(1),
+        labOrganizationId: z.string().min(1),
+      })
+      .parse(req.query);
+
+    // Strict 403 for any caller who is not an active billing/admin/owner
+    // member of the target lab. Provider users and viewers cannot list a
+    // lab's open invoices through this endpoint.
+    await requireAnyRole(callerId, query.labOrganizationId, BILLING_ROLES);
+
+    const rows = await db.query.invoices.findMany({
+      where: and(
+        isNull(invoices.deletedAt),
+        eq(invoices.providerOrganizationId, query.providerOrganizationId),
+        eq(invoices.labOrganizationId, query.labOrganizationId),
+        inArray(invoices.status, ["open", "partially_paid", "overdue"])
+      ),
+      orderBy: [asc(invoices.issuedAt), asc(invoices.createdAt)],
+    });
+
+    const open = rows
+      .filter((r: any) => Number(r.balanceDue) > 0)
+      .map((r: any) => {
+        const issued = r.issuedAt
+          ? new Date(r.issuedAt)
+          : r.createdAt
+          ? new Date(r.createdAt)
+          : null;
+        const ageDays = issued
+          ? Math.max(0, Math.floor((Date.now() - issued.getTime()) / 86400000))
+          : null;
+        return {
+          id: r.id,
+          invoiceNumber: r.invoiceNumber,
+          labOrganizationId: r.labOrganizationId,
+          providerOrganizationId: r.providerOrganizationId,
+          status: r.status,
+          total: r.total,
+          balanceDue: r.balanceDue,
+          issuedAt: r.issuedAt,
+          dueAt: r.dueAt,
+          ageDays,
+        };
+      });
+    return ok(res, open);
+  })
+);
+
+const receivePaymentsSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  providerOrganizationId: z.string().min(1),
+  paymentDate: z.string().optional(),
+  paymentMethod: z.enum(["card", "ach", "check", "cash", "other"]),
+  referenceNumber: z.string().optional().nullable(),
+  memo: z.string().optional().nullable(),
+  // Mandatory: every Receive Payments batch posts a single combined deposit
+  // to a real bank account so the register reflects the cash inflow.
+  depositBankAccountId: z.string().min(1),
+  applications: z
+    .array(
+      z.object({
+        invoiceId: z.string().min(1),
+        amount: z.coerce.number().positive(),
+      })
+    )
+    .min(1)
+    .max(500),
+});
+
+// Apply a single batch of payments across multiple open invoices for one
+// provider, then post a single combined deposit to the chosen bank account
+// (linked to every paid invoice via bank_transaction_invoices). Mirrors the
+// QuickBooks "Receive Payment" workflow. Bypasses ensureInvoiceDeposit so the
+// existing per-invoice auto-deposit path can't double-post.
+router.post(
+  "/receive-payments",
+  asyncHandler(async (req, res) => {
+    const callerId = (req as any).auth.userId as string;
+    const input = receivePaymentsSchema.parse(req.body);
+    await requireAnyRole(callerId, input.labOrganizationId, BILLING_ROLES);
+
+    const totalToApply = input.applications.reduce(
+      (s, a) => s + Number(a.amount || 0),
+      0
+    );
+    if (!(totalToApply > 0)) {
+      throw new HttpError(400, "Total payment amount must be greater than zero.");
+    }
+
+    const txnDate = input.paymentDate ? new Date(input.paymentDate) : new Date();
+    if (Number.isNaN(txnDate.getTime())) {
+      throw new HttpError(400, "Invalid payment date.");
+    }
+
+    const depositAccount = await db.query.bankAccounts.findFirst({
+      where: eq(bankAccounts.id, input.depositBankAccountId),
+    });
+    if (
+      !depositAccount ||
+      depositAccount.labOrganizationId !== input.labOrganizationId ||
+      depositAccount.isArchived
+    ) {
+      throw new HttpError(
+        400,
+        "Deposit account must belong to this lab and be active."
+      );
+    }
+
+    const result = await db.transaction(async (tx) => {
+      const invoiceIds = input.applications.map((a) => a.invoiceId);
+      const invRows = await tx
+        .select()
+        .from(invoices)
+        .where(
+          and(
+            inArray(invoices.id, invoiceIds),
+            isNull(invoices.deletedAt)
+          )
+        )
+        .for("update");
+      if (invRows.length !== invoiceIds.length) {
+        throw new HttpError(404, "One or more invoices were not found.");
+      }
+      const ALLOWED_RECEIVE_STATUSES = new Set([
+        "open",
+        "partially_paid",
+        "overdue",
+      ]);
+      for (const inv of invRows) {
+        if (inv.labOrganizationId !== input.labOrganizationId) {
+          throw new HttpError(
+            400,
+            `Invoice ${inv.invoiceNumber} does not belong to this lab.`
+          );
+        }
+        if (inv.providerOrganizationId !== input.providerOrganizationId) {
+          throw new HttpError(
+            400,
+            `Invoice ${inv.invoiceNumber} does not belong to this provider.`
+          );
+        }
+        if (!ALLOWED_RECEIVE_STATUSES.has(inv.status)) {
+          throw new HttpError(
+            400,
+            `Invoice ${inv.invoiceNumber} is ${inv.status} and cannot accept payments.`
+          );
+        }
+      }
+
+      const updatedInvoices: any[] = [];
+      const insertedPayments: any[] = [];
+      for (const app of input.applications) {
+        const inv = invRows.find((i: any) => i.id === app.invoiceId)!;
+        const balance = Number(inv.balanceDue);
+        const apply = Number(app.amount);
+        if (apply > balance + 0.005) {
+          throw new HttpError(
+            400,
+            `Payment of ${apply.toFixed(2)} exceeds balance ${balance.toFixed(2)} on invoice ${inv.invoiceNumber}.`
+          );
+        }
+        const [p] = await tx
+          .insert(payments)
+          .values({
+            invoiceId: inv.id,
+            amount: apply.toFixed(2),
+            paymentMethod: input.paymentMethod,
+            referenceNumber: input.referenceNumber ?? null,
+            paidAt: txnDate,
+            recordedByUserId: callerId,
+          })
+          .returning();
+        insertedPayments.push(p);
+
+        const newBalance = Math.max(0, balance - apply);
+        const newStatus = newBalance < 0.005 ? "paid" : "partially_paid";
+        const [updated] = await tx
+          .update(invoices)
+          .set({
+            balanceDue: newBalance.toFixed(2),
+            status: newStatus,
+            updatedByUserId: callerId,
+          })
+          .where(eq(invoices.id, inv.id))
+          .returning();
+        updatedInvoices.push(updated);
+      }
+
+      const refLabel = input.referenceNumber
+        ? ` (#${input.referenceNumber})`
+        : "";
+      const [deposit] = await tx
+        .insert(bankTransactions)
+        .values({
+          labOrganizationId: input.labOrganizationId,
+          bankAccountId: depositAccount.id,
+          txnDate,
+          type: "deposit",
+          payee: `Customer payment${refLabel}`,
+          memo:
+            input.memo ||
+            `Payment applied to ${updatedInvoices.length} invoice${
+              updatedInvoices.length === 1 ? "" : "s"
+            }`,
+          debitAmount: "0.00",
+          creditAmount: totalToApply.toFixed(2),
+          netAmount: totalToApply.toFixed(2),
+          cleared: false,
+          status: "posted",
+          source: "invoice",
+          createdByUserId: callerId,
+        })
+        .returning();
+      for (const inv of updatedInvoices) {
+        await tx.insert(bankTransactionInvoices).values({
+          bankTransactionId: deposit.id,
+          invoiceId: inv.id,
+        });
+      }
+
+      return {
+        payments: insertedPayments,
+        invoices: updatedInvoices,
+        depositTransactionId: deposit.id,
+        totalApplied: totalToApply.toFixed(2),
+      };
+    });
+
+    // case_events for paid invoices, outside the txn for simplicity
+    for (const inv of result.invoices) {
+      const original = await db.query.invoices.findFirst({
+        where: eq(invoices.id, inv.id),
+      });
+      if (!original?.caseId) continue;
+      const matchingPayment = result.payments.find(
+        (p: any) => p.invoiceId === inv.id
+      );
+      try {
+        await db.insert(caseEvents).values({
+          caseId: original.caseId,
+          eventType: "payment_received",
+          actorUserId: callerId,
+          actorOrganizationId: inv.labOrganizationId,
+          actorInitials: "SYS",
+          metadataJson: {
+            invoiceId: inv.id,
+            paymentId: matchingPayment?.id ?? null,
+            amount: matchingPayment?.amount ?? null,
+            batch: true,
+          },
+        });
+      } catch (err) {
+        req.log.warn({ err, invoiceId: inv.id }, "case_event insert failed");
+      }
+    }
+
+    return ok(res, result, 201);
+  })
+);
+
 router.get(
   "/:invoiceId",
   asyncHandler(async (req, res) => {
@@ -1290,6 +1565,7 @@ router.post(
     return ok(res, { payment, invoice: updatedInvoice }, 201);
   })
 );
+
 
 router.get(
   "/reports/sales",

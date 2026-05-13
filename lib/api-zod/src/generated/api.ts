@@ -304,3 +304,72 @@ export const AcknowledgeAiReviewResponse = zod.object({
     })
     .optional(),
 });
+
+/**
+ * Returns the open (issued or partially-paid) invoices the lab can
+currently receive payments against. Requires the caller to have a
+billing role (owner, admin, or billing) in `labOrganizationId`.
+
+ * @summary List open invoices for a provider/practice (Receive Payments)
+ */
+export const ListOpenInvoicesQueryParams = zod.object({
+  labOrganizationId: zod.coerce
+    .string()
+    .describe("Lab organization to scope the invoices to."),
+  providerOrganizationId: zod.coerce
+    .string()
+    .describe("Provider\/practice to filter open invoices for."),
+});
+
+export const ListOpenInvoicesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .array(
+      zod.object({
+        id: zod.string(),
+        invoiceNumber: zod.string(),
+        status: zod.string().describe("open | partially_paid | overdue"),
+        total: zod.string().describe("Decimal string"),
+        balanceDue: zod.string().describe("Decimal string"),
+        issuedAt: zod.coerce.date().nullish(),
+        dueAt: zod.coerce.date().nullish(),
+        ageDays: zod.number().nullish(),
+        labOrganizationId: zod.string(),
+        providerOrganizationId: zod.string(),
+      }),
+    )
+    .optional(),
+});
+
+/**
+ * QuickBooks-style "Receive Payments" — record one payment from a
+provider, distribute it across one or more open invoices, and post
+the combined deposit to a bank account in a single database
+transaction. Requires a billing role on `labOrganizationId`.
+
+ * @summary Apply a single payment across multiple open invoices
+ */
+export const receiveInvoicePaymentsBodyApplicationsItemAmountMin = 0.01;
+
+export const receiveInvoicePaymentsBodyApplicationsMax = 500;
+
+export const ReceiveInvoicePaymentsBody = zod.object({
+  labOrganizationId: zod.string(),
+  providerOrganizationId: zod.string(),
+  paymentMethod: zod.enum(["card", "ach", "check", "cash", "other"]),
+  referenceNumber: zod.string().nullish(),
+  paymentDate: zod.coerce.date().optional(),
+  depositBankAccountId: zod.string(),
+  memo: zod.string().nullish(),
+  applications: zod
+    .array(
+      zod.object({
+        invoiceId: zod.string(),
+        amount: zod
+          .number()
+          .min(receiveInvoicePaymentsBodyApplicationsItemAmountMin),
+      }),
+    )
+    .min(1)
+    .max(receiveInvoicePaymentsBodyApplicationsMax),
+});

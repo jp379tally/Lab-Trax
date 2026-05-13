@@ -1,8 +1,9 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Plus, Settings2, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import {
   useBankAccounts,
   useLabOrganizations,
@@ -12,12 +13,22 @@ import {
 import type { BankAccount, TransactionCategory } from "@/lib/types";
 import { formatMoney } from "@/lib/format";
 
-const TABS = [
-  { path: "/finance/register", label: "Register" },
-  { path: "/finance/reconcile", label: "Reconcile" },
-  { path: "/finance/cash-flow", label: "Cash Flow" },
-  { path: "/finance/recurring", label: "Recurring" },
+const ALL_TABS = [
+  { path: "/finance/register", label: "Register", billingOnly: false },
+  { path: "/finance/receive-payments", label: "Receive Payments", billingOnly: true },
+  { path: "/finance/reconcile", label: "Reconcile", billingOnly: false },
+  { path: "/finance/cash-flow", label: "Cash Flow", billingOnly: false },
+  { path: "/finance/recurring", label: "Recurring", billingOnly: false },
 ];
+
+export function canReceivePayments(user: {
+  userType?: string | null;
+  role?: string | null;
+} | null): boolean {
+  if (!user) return false;
+  if (user.userType !== "lab") return false;
+  return user.role === "admin" || user.role === "billing";
+}
 
 type Props = {
   children: (ctx: {
@@ -30,6 +41,9 @@ type Props = {
 
 export function FinanceShell({ children, requireAccount }: Props) {
   const [location] = useLocation();
+  const { user } = useAuth();
+  const billingAllowed = canReceivePayments(user);
+  const TABS = ALL_TABS.filter((t) => !t.billingOnly || billingAllowed);
   const orgs = useLabOrganizations();
   const [orgId, setOrgId] = useSelectedOrg();
   const accounts = useBankAccounts(orgId);
