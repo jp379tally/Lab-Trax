@@ -235,13 +235,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Runs the vitest suite for the Electron desktop client. Currently
-      # exercises the pure helpers extracted from the iTero Lab-Review poller
-      # (electron/itero-helpers.cjs) — interval clamping, login-page sniffing,
-      # status-token normalisation, and Lab-Review status detection across all
-      # tenant-specific field-name spellings. Add new tests under
-      # artifacts/labtrax-desktop/electron/__tests__/ as more main-process
-      # logic is extracted into pure helpers.
+      # Runs the vitest suite for the Electron desktop client. Covers:
+      #   * pure helpers extracted from the iTero Lab-Review poller
+      #     (electron/itero-helpers.cjs) — interval clamping, login-page
+      #     sniffing, status-token normalisation, Lab-Review status detection.
+      #   * encrypted credential round-trip in electron/auth-store.cjs (with
+      #     safeStorage and userData mocked).
+      #   * auto-updater event wiring in electron/main.cjs — releaseNotes
+      #     normalisation across string/array/object shapes, download-progress
+      #     forwarding, install-update / get-app-version IPC handlers.
+      #   * IPC startup smoke test — main.cjs loads without throwing and
+      #     registers every expected IPC channel exactly once.
+      # Add new tests under artifacts/labtrax-desktop/electron/__tests__/.
       - name: Run desktop client tests
         run: pnpm --filter @workspace/labtrax-desktop run test
 
