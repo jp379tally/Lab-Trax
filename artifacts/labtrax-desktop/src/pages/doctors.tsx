@@ -1,19 +1,69 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  CheckSquare,
   ChevronDown,
   ChevronUp,
   GitMerge,
   Loader2,
   Search,
+  Square,
   Stethoscope,
+  Undo2,
   X,
 } from "lucide-react";
+import {
+  useMergeDoctors,
+  usePreviewDoctorMerge,
+  useUndoDoctorMerge,
+  type DoctorMergeRequest,
+  type DoctorSearchEntry,
+  searchDoctors,
+} from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Invoice, LabCase, Organization } from "@/lib/types";
+import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatDate, formatMoney, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+
+interface MergeSourceInput {
+  doctorName: string;
+  providerOrganizationId: string | null;
+  practiceName: string;
+}
+
+interface UndoToast {
+  auditLogIds: string[];
+  message: string;
+  expiresAt: number;
+}
+
+function normalizeForCompare(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\bdr\.?\b/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function bigramSimilarity(a: string, b: string): number {
+  const an = normalizeForCompare(a);
+  const bn = normalizeForCompare(b);
+  if (!an || !bn) return 0;
+  if (an === bn) return 1;
+  const grams = (s: string) => {
+    const set = new Set<string>();
+    const padded = ` ${s} `;
+    for (let i = 0; i < padded.length - 1; i++) set.add(padded.slice(i, i + 2));
+    return set;
+  };
+  const A = grams(an);
+  const B = grams(bn);
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
 
 interface DoctorRow {
   key: string;
@@ -68,12 +118,54 @@ export default function DoctorsPage() {
     queryKey: ["organizations"],
     queryFn: () => apiFetch<Organization[]>("/organizations"),
   });
+  const meQuery = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: () => apiFetch<MeResponse>("/auth/me"),
+  });
+  const adminLabIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of meQuery.data?.memberships ?? []) {
+      if (m.status !== "active") continue;
+      if (!ADMIN_ROLES.has(m.role)) continue;
+      if (m.organization?.type === "lab") set.add(m.organizationId);
+    }
+    return set;
+  }, [meQuery.data]);
 
   const [search, setSearch] = useState("");
   const [practiceFilter, setPracticeFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("totalCases");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<DoctorRow | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [mergeDialog, setMergeDialog] = useState<{
+    sources: MergeSourceInput[];
+    labOrganizationId: string;
+  } | null>(null);
+  const [undoToast, setUndoToast] = useState<UndoToast | null>(null);
+  const queryClientPage = useQueryClient();
+
+  const undoMutation = useUndoDoctorMerge({
+    mutation: {
+      onSuccess: () => {
+        queryClientPage.invalidateQueries({ queryKey: ["cases"] });
+        queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
+        setUndoToast(null);
+      },
+    },
+  });
+
+  // Drop expired undo toasts so the button doesn't 409 the user.
+  useEffect(() => {
+    if (!undoToast) return;
+    const remaining = undoToast.expiresAt - Date.now();
+    if (remaining <= 0) {
+      setUndoToast(null);
+      return;
+    }
+    const t = window.setTimeout(() => setUndoToast(null), remaining);
+    return () => window.clearTimeout(t);
+  }, [undoToast]);
 
   const cases = casesQuery.data ?? [];
   const invoices = invoicesQuery.data ?? [];
@@ -223,12 +315,49 @@ export default function DoctorsPage() {
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
+          {picked.size > 0 && (
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">
+                {picked.size} selected
+              </span>
+              <button
+                type="button"
+                onClick={() => setPicked(new Set())}
+                className="h-9 px-3 rounded-md text-sm hover:bg-secondary"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const sources: MergeSourceInput[] = [];
+                  let labId = "";
+                  for (const r of rows) {
+                    if (!picked.has(r.key)) continue;
+                    if (!labId) labId = r.labOrganizationId;
+                    sources.push({
+                      doctorName: r.doctorName,
+                      providerOrganizationId: r.practiceId || null,
+                      practiceName: r.practiceName,
+                    });
+                  }
+                  if (!labId || sources.length === 0) return;
+                  setMergeDialog({ sources, labOrganizationId: labId });
+                }}
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90"
+              >
+                <GitMerge size={14} />
+                Merge selected
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-secondary/40">
+                <th className="w-9 px-3 py-2.5"></th>
                 <th className="text-left px-5 py-2.5"><SortHeader k="doctorName">Doctor</SortHeader></th>
                 <th className="text-left py-2.5"><SortHeader k="practiceName">Practice</SortHeader></th>
                 <th className="text-right py-2.5"><SortHeader k="totalCases" align="right">Cases</SortHeader></th>
@@ -241,7 +370,7 @@ export default function DoctorsPage() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={8} className="px-5 py-12 text-center text-muted-foreground">
                     <Loader2 size={16} className="inline animate-spin mr-2" />
                     Loading doctors…
                   </td>
@@ -249,24 +378,63 @@ export default function DoctorsPage() {
               )}
               {error && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-destructive">
+                  <td colSpan={8} className="px-5 py-12 text-center text-destructive">
                     {error.message}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-muted-foreground">
+                  <td colSpan={8} className="px-5 py-12 text-center text-muted-foreground">
                     No doctors yet. Doctors appear here as soon as cases reference them.
                   </td>
                 </tr>
               )}
-              {filtered.map((r) => (
+              {filtered.map((r) => {
+                const canSelect = adminLabIds.has(r.labOrganizationId);
+                const isPicked = picked.has(r.key);
+                return (
                 <tr
                   key={r.key}
                   onClick={() => setSelected(r)}
                   className="border-t border-border cursor-pointer hover:bg-secondary/40"
                 >
+                  <td
+                    className="px-3 py-3"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!canSelect) return;
+                      setPicked((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(r.key)) {
+                          next.delete(r.key);
+                          return next;
+                        }
+                        // Merge runs against a single lab; if the user
+                        // tries to mix labs, drop the prior selection
+                        // rather than silently failing server-side.
+                        const firstPickedLab = rows.find(
+                          (x) => prev.has(x.key),
+                        )?.labOrganizationId;
+                        if (
+                          firstPickedLab &&
+                          firstPickedLab !== r.labOrganizationId
+                        ) {
+                          next.clear();
+                        }
+                        next.add(r.key);
+                        return next;
+                      });
+                    }}
+                  >
+                    {canSelect ? (
+                      isPicked ? (
+                        <CheckSquare size={15} className="text-primary" />
+                      ) : (
+                        <Square size={15} className="text-muted-foreground" />
+                      )
+                    ) : null}
+                  </td>
                   <td className="px-5 py-3">
                     <div className="flex items-center gap-2.5">
                       <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center">
@@ -288,7 +456,8 @@ export default function DoctorsPage() {
                   <td className="py-3 text-right tabular-nums font-medium">{formatMoney(r.totalBilled)}</td>
                   <td className="px-5 py-3 text-muted-foreground">{relativeTime(r.lastCaseAt)}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -300,7 +469,66 @@ export default function DoctorsPage() {
           allDoctors={rows}
           cases={cases.filter((c) => (c.doctorName || "").toLowerCase() === selected.doctorName.toLowerCase() && c.providerOrganizationId === selected.practiceId)}
           onClose={() => setSelected(null)}
+          onMergeFromDrawer={(d) => {
+            setMergeDialog({
+              labOrganizationId: d.labOrganizationId,
+              sources: [
+                {
+                  doctorName: d.doctorName,
+                  providerOrganizationId: d.practiceId || null,
+                  practiceName: d.practiceName,
+                },
+              ],
+            });
+          }}
         />
+      )}
+
+      {mergeDialog && (
+        <MergeDialog
+          labOrganizationId={mergeDialog.labOrganizationId}
+          initialSources={mergeDialog.sources}
+          onClose={() => setMergeDialog(null)}
+          onMerged={(result) => {
+            queryClientPage.invalidateQueries({ queryKey: ["cases"] });
+            queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
+            setPicked(new Set());
+            setSelected(null);
+            setMergeDialog(null);
+            setUndoToast({
+              auditLogIds: result.auditLogIds,
+              message: result.message,
+              expiresAt: Date.now() + result.undoWindowMs,
+            });
+          }}
+        />
+      )}
+
+      {undoToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[70] bg-foreground text-background rounded-lg shadow-xl px-4 py-3 flex items-center gap-3 max-w-xl">
+          <div className="text-sm">{undoToast.message}</div>
+          <button
+            type="button"
+            disabled={undoMutation.isPending}
+            onClick={() => {
+              for (const id of undoToast.auditLogIds) {
+                undoMutation.mutate({ auditLogId: id });
+              }
+            }}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-background/10 text-sm font-semibold hover:bg-background/20 disabled:opacity-60"
+          >
+            <Undo2 size={13} />
+            {undoMutation.isPending ? "Undoing…" : "Undo"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setUndoToast(null)}
+            className="h-8 w-8 rounded-md hover:bg-background/10 flex items-center justify-center"
+            aria-label="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        </div>
       )}
     </div>
   );
@@ -320,14 +548,15 @@ interface PracticeFields {
 
 function DoctorDrawer({
   doctor,
-  allDoctors,
   cases,
   onClose,
+  onMergeFromDrawer,
 }: {
   doctor: DoctorRow;
   allDoctors: DoctorRow[];
   cases: LabCase[];
   onClose: () => void;
+  onMergeFromDrawer: (d: DoctorRow) => void;
 }) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -384,15 +613,28 @@ function DoctorDrawer({
           )}
 
           {isLabAdmin && (
-            <MergeDoctorSection
-              source={doctor}
-              candidates={allDoctors.filter((d) => d.key !== doctor.key && d.labOrganizationId === doctor.labOrganizationId)}
-              onMerged={() => {
-                queryClient.invalidateQueries({ queryKey: ["cases"] });
-                queryClient.invalidateQueries({ queryKey: ["invoices"] });
-                onClose();
-              }}
-            />
+            <section className="border border-border rounded-md p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    Merge into another doctor
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Move every case and pricing override from this doctor onto
+                    a target. You'll see a preview before anything changes and
+                    have 10 minutes to undo it.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onMergeFromDrawer(doctor)}
+                  className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-sm hover:bg-secondary shrink-0"
+                >
+                  <GitMerge size={14} />
+                  Merge
+                </button>
+              </div>
+            </section>
           )}
 
           <section>
@@ -559,205 +801,606 @@ function EditPracticeSection({
   );
 }
 
-function MergeDoctorSection({
-  source,
-  candidates,
+interface MergeDialogResult {
+  auditLogIds: string[];
+  message: string;
+  undoWindowMs: number;
+}
+
+function MergeDialog({
+  labOrganizationId,
+  initialSources,
+  onClose,
   onMerged,
 }: {
-  source: DoctorRow;
-  candidates: DoctorRow[];
-  onMerged: () => void;
+  labOrganizationId: string;
+  initialSources: MergeSourceInput[];
+  onClose: () => void;
+  onMerged: (r: MergeDialogResult) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const [target, setTarget] = useState<DoctorRow | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [sources, setSources] = useState<MergeSourceInput[]>(initialSources);
+  const [targetMode, setTargetMode] = useState<"existing" | "new">("existing");
+  const [targetName, setTargetName] = useState<string>(
+    initialSources[0]?.doctorName ?? "",
+  );
+  const [targetProviderId, setTargetProviderId] = useState<string | null>(
+    initialSources[0]?.providerOrganizationId ?? null,
+  );
+  const [targetPracticeName, setTargetPracticeName] = useState<string>(
+    initialSources[0]?.practiceName ?? "",
+  );
+  const [includeSoftDeleted, setIncludeSoftDeleted] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const SEARCH_PAGE_SIZE = 100;
+  const [searchOffset, setSearchOffset] = useState(0);
+  const [searchAccumulated, setSearchAccumulated] = useState<DoctorSearchEntry[]>([]);
+  const [searchTotal, setSearchTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return candidates.slice(0, 50);
-    return candidates
-      .filter(
-        (d) =>
-          d.doctorName.toLowerCase().includes(q) ||
-          d.practiceName.toLowerCase().includes(q),
-      )
-      .slice(0, 50);
-  }, [candidates, search]);
+  // Practices in this lab — used as the target practice picker for both
+  // "new target" mode and to assign a practice to an existing target that
+  // currently has none (practice-less doctors created from imports).
+  const labPracticesQuery = useQuery({
+    queryKey: ["organizations", "practices", labOrganizationId],
+    queryFn: async () => {
+      const all = await apiFetch<Organization[]>("/organizations");
+      return all.filter(
+        (o) =>
+          o.type === "provider" &&
+          o.parentLabOrganizationId === labOrganizationId,
+      );
+    },
+  });
+  const labPractices = labPracticesQuery.data ?? [];
 
-  const mergeMutation = useMutation({
-    mutationFn: () => {
-      if (!target) throw new Error("Pick a target doctor first.");
-      const labOrganizationId =
-        source.labOrganizationId || target.labOrganizationId;
-      if (!labOrganizationId) {
-        throw new Error(
-          "Missing lab for these doctors. Refresh and try again.",
-        );
-      }
-      return apiFetch<{ casesMoved: number }>(`/doctors/merge`, {
-        method: "POST",
-        body: JSON.stringify({
-          sourceDoctorName: source.doctorName,
-          sourceProviderOrganizationId: source.practiceId || null,
-          targetDoctorName: target.doctorName,
-          targetProviderOrganizationId: target.practiceId || null,
-          labOrganizationId,
-        }),
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(searchInput.trim()), 200);
+    return () => window.clearTimeout(t);
+  }, [searchInput]);
+
+  // Reset paging when the search query changes.
+  useEffect(() => {
+    setSearchOffset(0);
+    setSearchAccumulated([]);
+    setSearchTotal(null);
+  }, [debouncedSearch]);
+
+  function setTargetPracticeId(id: string | null) {
+    setTargetProviderId(id);
+    if (!id) {
+      setTargetPracticeName("");
+      return;
+    }
+    const p = labPractices.find((x) => x.id === id);
+    setTargetPracticeName(p?.displayName || p?.name || "");
+  }
+
+  // Server-backed search ranked by similarity to the first source name so
+  // the picker surfaces likely duplicates first.
+  const searchQuery = useQuery({
+    queryKey: [
+      "doctors",
+      "search",
+      labOrganizationId,
+      debouncedSearch,
+      sources[0]?.doctorName ?? "",
+      searchOffset,
+    ],
+    queryFn: async () => {
+      const res = await searchDoctors({
+        labOrganizationId,
+        ...(debouncedSearch ? { q: debouncedSearch } : {}),
+        ...(sources[0]?.doctorName ? { like: sources[0].doctorName } : {}),
+        limit: SEARCH_PAGE_SIZE,
+        offset: searchOffset,
       });
+      return {
+        entries: res.data?.entries ?? [],
+        total: res.data?.total ?? null,
+      };
     },
-    onSuccess: () => {
-      setError(null);
-      setConfirming(false);
-      setOpen(false);
-      onMerged();
-    },
-    onError: (err: Error) => setError(err.message || "Merge failed."),
+    enabled: !!labOrganizationId,
   });
 
+  // Accumulate paged results so "Show more" appends instead of replacing.
+  useEffect(() => {
+    const data = searchQuery.data;
+    if (!data) return;
+    if (typeof data.total === "number") setSearchTotal(data.total);
+    if (searchOffset === 0) {
+      setSearchAccumulated(data.entries);
+    } else {
+      setSearchAccumulated((prev) => {
+        const seen = new Set(
+          prev.map(
+            (e) =>
+              `${(e.doctorName ?? "").toLowerCase()}|${e.providerOrganizationId ?? ""}`,
+          ),
+        );
+        const fresh = data.entries.filter(
+          (e) =>
+            !seen.has(
+              `${(e.doctorName ?? "").toLowerCase()}|${e.providerOrganizationId ?? ""}`,
+            ),
+        );
+        return [...prev, ...fresh];
+      });
+    }
+  }, [searchQuery.data, searchOffset]);
+
+  const sourceKeys = useMemo(() => {
+    return new Set(
+      sources.map(
+        (s) =>
+          `${s.doctorName.toLowerCase()}|${s.providerOrganizationId ?? ""}`,
+      ),
+    );
+  }, [sources]);
+
+  const previewBody = useMemo<DoctorMergeRequest>(
+    () => ({
+      labOrganizationId,
+      sources: sources.map((s) => ({
+        doctorName: s.doctorName,
+        providerOrganizationId: s.providerOrganizationId,
+      })),
+      targetDoctorName: targetName.trim(),
+      targetProviderOrganizationId: targetProviderId,
+      includeSoftDeleted,
+    }),
+    [labOrganizationId, sources, targetName, targetProviderId, includeSoftDeleted],
+  );
+
+  const previewMutation = usePreviewDoctorMerge();
+  useEffect(() => {
+    if (!targetName.trim()) return;
+    previewMutation.mutate({ data: previewBody });
+    // Re-run when the body shape changes; mutation is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewBody]);
+  const preview = previewMutation.data?.data;
+
+  const mergeMutation = useMergeDoctors({
+    mutation: {
+      onSuccess: (res) => {
+        const data = res.data;
+        if (!data) {
+          setError("Merge succeeded but the server returned no payload.");
+          return;
+        }
+        const ids = (data.entries ?? [])
+          .map((e) => e.auditLogId)
+          .filter((x): x is string => !!x);
+        const moved = data.casesMoved ?? 0;
+        const ovMoved = (data.overridesMoved ?? 0) + (data.overridesCollapsed ?? 0);
+        const parts = [`${moved} case${moved === 1 ? "" : "s"} merged`];
+        if (ovMoved > 0) parts.push(`${ovMoved} pricing override${ovMoved === 1 ? "" : "s"}`);
+        onMerged({
+          auditLogIds: ids,
+          message: `${parts.join(" + ")} into ${data.targetDoctorName ?? targetName}.`,
+          // Server-driven undo window (DOCTOR_MERGE_UNDO_WINDOW_MINUTES);
+          // falls back to 10 min if the server didn't send one.
+          undoWindowMs:
+            typeof data.undoWindowMs === "number" && data.undoWindowMs > 0
+              ? data.undoWindowMs
+              : 10 * 60 * 1000,
+        });
+      },
+      onError: (err: unknown) => {
+        const msg =
+          (err as { message?: string })?.message ?? "Merge failed.";
+        setError(msg);
+      },
+    },
+  });
+
+  function addSource(entry: DoctorSearchEntry) {
+    const name = entry.doctorName ?? "";
+    if (!name) return;
+    const key = `${name.toLowerCase()}|${entry.providerOrganizationId ?? ""}`;
+    if (sourceKeys.has(key)) return;
+    setSources((prev) => [
+      ...prev,
+      {
+        doctorName: name,
+        providerOrganizationId: entry.providerOrganizationId ?? null,
+        practiceName: entry.practiceName ?? "",
+      },
+    ]);
+  }
+
+  function removeSource(idx: number) {
+    setSources((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function pickAsTarget(entry: DoctorSearchEntry) {
+    const name = entry.doctorName ?? "";
+    if (!name) return;
+    setTargetName(name);
+    setTargetProviderId(entry.providerOrganizationId ?? null);
+    setTargetPracticeName(entry.practiceName ?? "");
+  }
+
+  const targetSelfMerge = sources.some(
+    (s) =>
+      s.doctorName.trim().toLowerCase() === targetName.trim().toLowerCase() &&
+      (s.providerOrganizationId ?? null) === (targetProviderId ?? null),
+  );
+
+  const canMerge =
+    !!targetName.trim() &&
+    !!targetProviderId &&
+    sources.length > 0 &&
+    !targetSelfMerge &&
+    !mergeMutation.isPending;
+
   return (
-    <section className="border border-border rounded-md p-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
-            Merge into another doctor
-          </h3>
-          <p className="text-xs text-muted-foreground mt-1">
-            Combine duplicate spellings of the same doctor. Every case moves to the
-            target; this doctor disappears from the list.
-          </p>
-        </div>
-        {!open && (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40 p-4">
+      <div className="bg-card border border-border rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <header className="px-6 py-4 border-b border-border flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Merge doctors</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              All cases and pricing overrides from the sources will be moved
+              onto the target. You'll have 10 minutes to undo.
+            </p>
+          </div>
           <button
             type="button"
-            onClick={() => setOpen(true)}
-            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-sm hover:bg-secondary"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+            aria-label="Close"
           >
-            <GitMerge size={14} />
-            Merge
+            <X size={16} />
           </button>
-        )}
-      </div>
+        </header>
 
-      {open && (
-        <div className="mt-3 space-y-3">
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          <section>
+            <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
+              Sources ({sources.length})
+            </div>
+            {sources.length === 0 ? (
+              <div className="text-sm text-muted-foreground border border-dashed border-border rounded-md px-3 py-3">
+                Add at least one source from the picker below.
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {sources.map((s, i) => (
+                  <li
+                    key={`${s.doctorName}|${s.providerOrganizationId ?? ""}`}
+                    className="flex items-center justify-between gap-2 border border-border rounded-md px-3 py-2 text-sm"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium truncate">{s.doctorName}</div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {s.practiceName || "(no practice)"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeSource(i)}
+                      className="h-7 w-7 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                      aria-label="Remove source"
+                    >
+                      <X size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                Target
+              </div>
+              <div className="flex items-center rounded-md border border-border text-xs overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setTargetMode("existing")}
+                  className={`px-2 py-1 ${targetMode === "existing" ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-secondary/40"}`}
+                >
+                  Pick existing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTargetMode("new");
+                    setTargetName("");
+                    setTargetPracticeId(null);
+                  }}
+                  className={`px-2 py-1 border-l border-border ${targetMode === "new" ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-secondary/40"}`}
+                >
+                  Create new
+                </button>
+              </div>
+            </div>
+
+            {targetMode === "existing" ? (
+              <div className="border border-border rounded-md px-3 py-2 text-sm space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">
+                      {targetName.trim() || "— pick a target from the list below —"}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {targetPracticeName ||
+                        (targetProviderId
+                          ? ""
+                          : targetName.trim()
+                            ? "(no practice on file — assign one below)"
+                            : "")}
+                    </div>
+                  </div>
+                  {targetSelfMerge && (
+                    <span className="text-xs text-destructive ml-2 shrink-0">
+                      Same as a source
+                    </span>
+                  )}
+                </div>
+                {targetName.trim() && !targetProviderId && (
+                  <div>
+                    <label className="text-xs text-muted-foreground block mb-1">
+                      Assign a practice for this target doctor
+                    </label>
+                    <select
+                      className="w-full h-8 px-2 rounded-md bg-secondary text-sm border border-transparent focus:border-primary focus:outline-none"
+                      value=""
+                      onChange={(e) =>
+                        setTargetPracticeId(e.target.value || null)
+                      }
+                    >
+                      <option value="">— choose a practice —</option>
+                      {labPractices.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.displayName || p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="border border-border rounded-md px-3 py-2 text-sm space-y-2">
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">
+                    New doctor name
+                  </label>
+                  <input
+                    type="text"
+                    value={targetName}
+                    onChange={(e) => setTargetName(e.target.value)}
+                    placeholder="e.g. Dr. Jane Smith"
+                    className="w-full h-8 px-2 rounded-md bg-secondary text-sm border border-transparent focus:border-primary focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">
+                    Practice <span className="text-destructive">*</span>
+                  </label>
+                  <select
+                    className="w-full h-8 px-2 rounded-md bg-secondary text-sm border border-transparent focus:border-primary focus:outline-none"
+                    value={targetProviderId ?? ""}
+                    onChange={(e) =>
+                      setTargetPracticeId(e.target.value || null)
+                    }
+                  >
+                    <option value="">— choose a practice —</option>
+                    {labPractices.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.displayName || p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {targetSelfMerge && (
+                  <div className="text-xs text-destructive">
+                    Same as a source — pick a different name or practice.
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          <section>
+            <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
+              Find a doctor
+            </div>
+            <div className="relative mb-2">
+              <Search
+                size={14}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              />
+              <input
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Search doctor or practice…"
+                className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+              />
+            </div>
+            <div className="max-h-64 overflow-y-auto border border-border rounded-md divide-y divide-border">
+              {searchQuery.isLoading && (
+                <div className="px-3 py-4 text-sm text-muted-foreground text-center">
+                  <Loader2 size={14} className="inline animate-spin mr-2" />
+                  Searching…
+                </div>
+              )}
+              {!searchQuery.isLoading && searchAccumulated.length === 0 && (
+                <div className="px-3 py-4 text-sm text-muted-foreground text-center">
+                  No matches.
+                </div>
+              )}
+              {searchAccumulated.map((e, i) => {
+                const k = `${(e.doctorName ?? "").toLowerCase()}|${e.providerOrganizationId ?? ""}`;
+                const inSources = sourceKeys.has(k);
+                const isTarget =
+                  (e.doctorName ?? "").toLowerCase() ===
+                    targetName.trim().toLowerCase() &&
+                  (e.providerOrganizationId ?? null) === targetProviderId;
+                return (
+                  <div
+                    key={`${k}-${i}`}
+                    className="px-3 py-2 text-sm flex items-center gap-2 hover:bg-secondary/40"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">
+                        {e.doctorName}{" "}
+                        {(e.similarity ?? 0) > 0.6 && (
+                          <span className="text-[10px] uppercase tracking-wide text-amber-600 ml-1">
+                            likely match
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {e.practiceName || "(no practice)"} ·{" "}
+                        {e.totalCases ?? 0} case
+                        {(e.totalCases ?? 0) === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => addSource(e)}
+                      disabled={inSources || isTarget}
+                      className="h-7 px-2 rounded-md text-xs hover:bg-secondary disabled:opacity-40"
+                    >
+                      {inSources ? "Source" : "+ Source"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => pickAsTarget(e)}
+                      disabled={inSources}
+                      className={`h-7 px-2 rounded-md text-xs disabled:opacity-40 ${isTarget ? "bg-primary/10 text-primary" : "hover:bg-secondary"}`}
+                    >
+                      {isTarget ? "Target ✓" : "Set target"}
+                    </button>
+                  </div>
+                );
+              })}
+              {searchTotal !== null && searchAccumulated.length < searchTotal && (
+                <button
+                  type="button"
+                  disabled={searchQuery.isFetching}
+                  onClick={() => setSearchOffset(searchAccumulated.length)}
+                  className="w-full px-3 py-2 text-xs text-muted-foreground hover:bg-secondary/40 disabled:opacity-60"
+                >
+                  {searchQuery.isFetching
+                    ? "Loading…"
+                    : `Show more (${searchAccumulated.length} of ${searchTotal})`}
+                </button>
+              )}
+            </div>
+          </section>
+
+          <section>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={includeSoftDeleted}
+                onChange={(e) => setIncludeSoftDeleted(e.target.checked)}
+              />
+              Also remap soft-deleted cases under each source
+            </label>
+          </section>
+
+          <section className="border border-border rounded-md p-4 bg-secondary/20">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
+              Preview
+            </div>
+            {previewMutation.isPending && !preview && (
+              <div className="text-sm text-muted-foreground">
+                <Loader2 size={14} className="inline animate-spin mr-2" />
+                Computing…
+              </div>
+            )}
+            {preview && (
+              <div className="text-sm space-y-2">
+                <div>
+                  <span className="font-medium">{preview.totalCases ?? 0}</span>{" "}
+                  case{(preview.totalCases ?? 0) === 1 ? "" : "s"} and{" "}
+                  <span className="font-medium">
+                    {preview.totalOverrides ?? 0}
+                  </span>{" "}
+                  pricing override
+                  {(preview.totalOverrides ?? 0) === 1 ? "" : "s"} will move to{" "}
+                  <span className="font-medium">{targetName}</span>{" "}
+                  ({targetPracticeName || "—"}).
+                  {preview.targetExists ? (
+                    <span className="text-muted-foreground">
+                      {" "}Target already has{" "}
+                      <span className="font-medium">{preview.targetCases ?? 0}</span>{" "}
+                      case{(preview.targetCases ?? 0) === 1 ? "" : "s"}.
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      {" "}Target doesn't exist yet — it'll be created on
+                      first matching case.
+                    </span>
+                  )}
+                </div>
+                <ul className="text-xs text-muted-foreground space-y-1">
+                  {(preview.sources ?? []).map((s, i) => (
+                    <li key={`${s.doctorName}-${i}`}>
+                      <span className="font-medium text-foreground">
+                        {s.doctorName}
+                      </span>{" "}
+                      ({s.practiceName || "—"}) · {s.totalCases ?? 0} case
+                      {(s.totalCases ?? 0) === 1 ? "" : "s"}
+                      {(s.overridesCount ?? 0) > 0 &&
+                        `, ${s.overridesCount} override${s.overridesCount === 1 ? "" : "s"}`}
+                      {s.firstCaseAt && s.lastCaseAt && (
+                        <>
+                          {" "}· {formatDate(s.firstCaseAt)} →{" "}
+                          {formatDate(s.lastCaseAt)}
+                        </>
+                      )}
+                      {(s.recentCaseNumbers ?? []).length > 0 && (
+                        <>
+                          {" "}· recent: {(s.recentCaseNumbers ?? []).join(", ")}
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+
           {error && (
             <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
               {error}
             </div>
           )}
-          <div className="relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setTarget(null);
-              }}
-              placeholder="Search doctor or practice…"
-              className="w-full h-9 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
-            />
-          </div>
-
-          <div className="max-h-64 overflow-y-auto border border-border rounded-md divide-y divide-border">
-            {filtered.length === 0 && (
-              <div className="px-3 py-4 text-sm text-muted-foreground text-center">
-                No other doctors in this lab.
-              </div>
-            )}
-            {filtered.map((d) => (
-              <button
-                type="button"
-                key={d.key}
-                onClick={() => setTarget(d)}
-                className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between hover:bg-secondary/60 ${target?.key === d.key ? "bg-secondary" : ""}`}
-              >
-                <div className="min-w-0">
-                  <div className="font-medium truncate">{d.doctorName}</div>
-                  <div className="text-xs text-muted-foreground truncate">{d.practiceName}</div>
-                </div>
-                <div className="text-xs text-muted-foreground tabular-nums ml-2 shrink-0">
-                  {d.totalCases} case{d.totalCases === 1 ? "" : "s"}
-                </div>
-              </button>
-            ))}
-          </div>
-
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                setSearch("");
-                setTarget(null);
-                setError(null);
-              }}
-              className="h-9 px-3 rounded-md text-sm hover:bg-secondary"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={!target}
-              onClick={() => {
-                setError(null);
-                setConfirming(true);
-              }}
-              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
-            >
-              Continue
-            </button>
-          </div>
         </div>
-      )}
 
-      {confirming && target && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/40">
-          <div className="bg-card border border-border rounded-lg shadow-xl max-w-md w-full p-6">
-            <h4 className="text-base font-semibold">Merge doctors?</h4>
-            <p className="text-sm text-muted-foreground mt-2">
-              Move <span className="font-medium text-foreground">{source.totalCases}</span>{" "}
-              case{source.totalCases === 1 ? "" : "s"} from{" "}
-              <span className="font-medium text-foreground">{source.doctorName}</span>{" "}
-              ({source.practiceName}) to{" "}
-              <span className="font-medium text-foreground">{target.doctorName}</span>{" "}
-              ({target.practiceName}).
-            </p>
-            <p className="text-xs text-muted-foreground mt-2">
-              The source doctor will disappear from the doctors list. This action is
-              recorded in the audit log but cannot be undone in one click.
-            </p>
-            {error && (
-              <div className="mt-3 text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-                {error}
-              </div>
-            )}
-            <div className="flex justify-end gap-2 mt-5">
-              <button
-                type="button"
-                onClick={() => setConfirming(false)}
-                disabled={mergeMutation.isPending}
-                className="h-9 px-3 rounded-md text-sm hover:bg-secondary"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => mergeMutation.mutate()}
-                disabled={mergeMutation.isPending}
-                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
-              >
-                {mergeMutation.isPending ? "Merging…" : "Merge doctors"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
+        <footer className="px-6 py-4 border-t border-border flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm hover:bg-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!canMerge}
+            onClick={() => {
+              setError(null);
+              mergeMutation.mutate({ data: previewBody });
+            }}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+          >
+            {mergeMutation.isPending ? "Merging…" : "Merge"}
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
+
 
 function FormField({ label, children, full }: { label: string; children: React.ReactNode; full?: boolean }) {
   return (

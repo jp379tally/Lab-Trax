@@ -9,17 +9,115 @@ export interface HealthStatus {
   status: string;
 }
 
+export interface DoctorMergeSource {
+  doctorName: string;
+  /** May be `null` for legacy cases that were created without a
+practice attached.
+ */
+  providerOrganizationId?: string | null;
+}
+
+export interface DoctorMergeRequest {
+  /** @minItems 1 */
+  sources: DoctorMergeSource[];
+  targetDoctorName: string;
+  /** Practice that will own the target doctor's cases. Must be
+supplied — even if the target had no cases before the merge —
+so the merge can resolve practice-less targets in one call.
+ */
+  targetProviderOrganizationId?: string | null;
+  labOrganizationId: string;
+  /** When true, soft-deleted cases under each source group are
+also remapped to the target.
+ */
+  includeSoftDeleted?: boolean;
+}
+
+export interface DoctorMergeAuditEntry {
+  auditLogId?: string;
+  sourceDoctorName?: string;
+  sourceProviderOrganizationId?: string | null;
+  casesMoved?: number;
+  overridesMoved?: number;
+  overridesCollapsed?: number;
+}
+
 export type DoctorMergeResultData = {
   casesMoved?: number;
-  sourceDoctorName?: string;
-  sourceProviderOrganizationId?: string;
+  overridesMoved?: number;
+  overridesCollapsed?: number;
   targetDoctorName?: string;
-  targetProviderOrganizationId?: string;
+  targetProviderOrganizationId?: string | null;
+  /** How many milliseconds the undo button should remain
+actionable, mirroring the server's configured window
+(`DOCTOR_MERGE_UNDO_WINDOW_MINUTES`).
+ */
+  undoWindowMs?: number;
+  entries?: DoctorMergeAuditEntry[];
 };
 
 export interface DoctorMergeResult {
   ok?: boolean;
   data?: DoctorMergeResultData;
+}
+
+export interface DoctorMergePreviewSource {
+  doctorName?: string;
+  providerOrganizationId?: string | null;
+  practiceName?: string | null;
+  totalCases?: number;
+  firstCaseAt?: string | null;
+  lastCaseAt?: string | null;
+  recentCaseNumbers?: string[];
+  overridesCount?: number;
+}
+
+export type DoctorMergePreviewData = {
+  totalCases?: number;
+  totalOverrides?: number;
+  sources?: DoctorMergePreviewSource[];
+  targetExists?: boolean;
+  targetCases?: number;
+};
+
+export interface DoctorMergePreview {
+  ok?: boolean;
+  data?: DoctorMergePreviewData;
+}
+
+export type DoctorMergeUndoResultData = {
+  casesReverted?: number;
+  overridesReverted?: number;
+  sourceDoctorName?: string;
+  sourceProviderOrganizationId?: string | null;
+};
+
+export interface DoctorMergeUndoResult {
+  ok?: boolean;
+  data?: DoctorMergeUndoResultData;
+}
+
+export interface DoctorSearchEntry {
+  doctorName?: string;
+  providerOrganizationId?: string | null;
+  practiceName?: string | null;
+  totalCases?: number;
+  /** 0..1 similarity to the `like` query parameter, or 0 when
+`like` was not supplied.
+ */
+  similarity?: number;
+}
+
+export type DoctorSearchResultData = {
+  entries?: DoctorSearchEntry[];
+  total?: number;
+  offset?: number;
+  limit?: number;
+};
+
+export interface DoctorSearchResult {
+  ok?: boolean;
+  data?: DoctorSearchResultData;
 }
 
 export type IteroImportResultData = {
@@ -47,11 +145,30 @@ export type ImportCaseFromIteroRxBody = {
   patientLastNameHint?: string;
 };
 
-export type MergeDoctorsBody = {
-  sourceDoctorName: string;
-  sourceProviderOrganizationId: string;
-  targetDoctorName: string;
-  targetProviderOrganizationId: string;
+export type SearchDoctorsParams = {
+  labOrganizationId: string;
+  /**
+   * Free-text search across doctor + practice names.
+   */
+  q?: string;
+  /**
+ * Optional reference doctor name; when provided, results are
+ranked by similarity to this name so likely duplicates float
+to the top.
+
+ */
+  like?: string;
+  /**
+   * @minimum 1
+   * @maximum 500
+   */
+  limit?: number;
+  /**
+ * Page offset for cursoring through every doctor in a large lab.
+
+ * @minimum 0
+ */
+  offset?: number;
 };
 
 export type AcknowledgeAiReview200Data = {

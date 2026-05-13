@@ -12,6 +12,8 @@ tags:
     description: Health operations
   - name: cases
     description: Case operations (LabTrax)
+  - name: doctors
+    description: Doctor / merge operations (LabTrax)
 paths:
   /healthz:
     get:
@@ -87,35 +89,96 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IteroImportResult"
-  /doctors/merge:
-    post:
-      operationId: mergeDoctors
-      tags: [cases]
-      summary: Merge two doctor entries into one
+  /doctors/search:
+    get:
+      operationId: searchDoctors
+      tags: [doctors]
+      summary: Search doctor groups in a lab, ranked by similarity
       description: |
-        Reassign every non-soft-deleted case from the source doctor
-        (identified by `(sourceDoctorName, sourceProviderOrganizationId)`)
-        to the target doctor (identified by
-        `(targetDoctorName, targetProviderOrganizationId)`). Both provider
-        practices must belong to the same parent lab and the caller must be
-        an admin of that lab. Idempotent: if the source group is already
-        empty the call still succeeds with `casesMoved: 0`.
+        Lists distinct (doctorName, providerOrganizationId) groups in the
+        given lab, ranked by similarity to the optional `q` / `like`
+        parameters using normalized name comparison (trim, lowercase,
+        strip "Dr."/punctuation). Used by the desktop merge picker so it
+        can search every doctor in the lab without a 50-row cap.
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: q
+          required: false
+          schema: { type: string }
+          description: Free-text search across doctor + practice names.
+        - in: query
+          name: like
+          required: false
+          schema: { type: string }
+          description: |
+            Optional reference doctor name; when provided, results are
+            ranked by similarity to this name so likely duplicates float
+            to the top.
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, default: 100, minimum: 1, maximum: 500 }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer, default: 0, minimum: 0 }
+          description: |
+            Page offset for cursoring through every doctor in a large lab.
+      responses:
+        "200":
+          description: Doctor list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorSearchResult"
+  /doctors/merge/preview:
+    post:
+      operationId: previewDoctorMerge
+      tags: [doctors]
+      summary: Preview a doctor merge before committing
+      description: |
+        Returns aggregate counts for what a merge would move: per-source
+        case count + date range + last few case numbers + count of
+        pricing overrides that would follow. Includes soft-deleted cases
+        when `includeSoftDeleted` is true.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - sourceDoctorName
-                - sourceProviderOrganizationId
-                - targetDoctorName
-                - targetProviderOrganizationId
-              properties:
-                sourceDoctorName: { type: string }
-                sourceProviderOrganizationId: { type: string }
-                targetDoctorName: { type: string }
-                targetProviderOrganizationId: { type: string }
+              $ref: "#/components/schemas/DoctorMergeRequest"
+      responses:
+        "200":
+          description: Preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorMergePreview"
+  /doctors/merge:
+    post:
+      operationId: mergeDoctors
+      tags: [doctors]
+      summary: Merge one or more source doctors into a single target
+      description: |
+        Reassigns every (optionally including soft-deleted) case from each
+        source `(doctorName, providerOrganizationId)` group to the target
+        `(targetDoctorName, targetProviderOrganizationId)`. Per-doctor
+        pricing overrides keyed on `(labOrganizationId, doctorName)` are
+        also remapped, collapsing onto an existing target override
+        (instead of violating its unique index). Source
+        `providerOrganizationId` may be `null`. The target may be a
+        brand-new doctor — it does not need any pre-existing cases. The
+        caller must be a lab admin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DoctorMergeRequest"
       responses:
         "200":
           description: Merge complete
@@ -123,6 +186,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DoctorMergeResult"
+  /doctors/merge/{auditLogId}/undo:
+    post:
+      operationId: undoDoctorMerge
+      tags: [doctors]
+      summary: Undo a recent doctor merge
+      description: |
+        Within a configurable time window (default 10 minutes), reverses
+        the rename described by a `doctor_merged` audit-log row by
+        re-applying the inverse rename to matching cases + pricing
+        overrides. Refused if the window has passed, the row is not a
+        `doctor_merged` action, or the inverse would clobber doctors
+        that have since been edited. Admin-only, same lab as the
+        original merge.
+      parameters:
+        - in: path
+          name: auditLogId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Undo complete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorMergeUndoResult"
   /cases/{caseId}/ai-review:
     patch:
       operationId: acknowledgeAiReview
@@ -156,6 +244,56 @@ components:
           type: string
       required:
         - status
+    DoctorMergeSource:
+      type: object
+      required:
+        - doctorName
+      properties:
+        doctorName: { type: string }
+        providerOrganizationId:
+          type: string
+          nullable: true
+          description: |
+            May be `null` for legacy cases that were created without a
+            practice attached.
+    DoctorMergeRequest:
+      type: object
+      required:
+        - sources
+        - targetDoctorName
+        - labOrganizationId
+      properties:
+        sources:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/DoctorMergeSource"
+        targetDoctorName: { type: string }
+        targetProviderOrganizationId:
+          type: string
+          nullable: true
+          description: |
+            Practice that will own the target doctor's cases. Must be
+            supplied — even if the target had no cases before the merge —
+            so the merge can resolve practice-less targets in one call.
+        labOrganizationId: { type: string }
+        includeSoftDeleted:
+          type: boolean
+          default: false
+          description: |
+            When true, soft-deleted cases under each source group are
+            also remapped to the target.
+    DoctorMergeAuditEntry:
+      type: object
+      properties:
+        auditLogId: { type: string }
+        sourceDoctorName: { type: string }
+        sourceProviderOrganizationId:
+          type: string
+          nullable: true
+        casesMoved: { type: integer }
+        overridesMoved: { type: integer }
+        overridesCollapsed: { type: integer }
     DoctorMergeResult:
       type: object
       properties:
@@ -164,10 +302,101 @@ components:
           type: object
           properties:
             casesMoved: { type: integer }
-            sourceDoctorName: { type: string }
-            sourceProviderOrganizationId: { type: string }
+            overridesMoved: { type: integer }
+            overridesCollapsed: { type: integer }
             targetDoctorName: { type: string }
-            targetProviderOrganizationId: { type: string }
+            targetProviderOrganizationId:
+              type: string
+              nullable: true
+            undoWindowMs:
+              type: integer
+              description: |
+                How many milliseconds the undo button should remain
+                actionable, mirroring the server's configured window
+                (`DOCTOR_MERGE_UNDO_WINDOW_MINUTES`).
+            entries:
+              type: array
+              items:
+                $ref: "#/components/schemas/DoctorMergeAuditEntry"
+    DoctorMergePreviewSource:
+      type: object
+      properties:
+        doctorName: { type: string }
+        providerOrganizationId:
+          type: string
+          nullable: true
+        practiceName:
+          type: string
+          nullable: true
+        totalCases: { type: integer }
+        firstCaseAt:
+          type: string
+          nullable: true
+        lastCaseAt:
+          type: string
+          nullable: true
+        recentCaseNumbers:
+          type: array
+          items: { type: string }
+        overridesCount: { type: integer }
+    DoctorMergePreview:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            totalCases: { type: integer }
+            totalOverrides: { type: integer }
+            sources:
+              type: array
+              items:
+                $ref: "#/components/schemas/DoctorMergePreviewSource"
+            targetExists: { type: boolean }
+            targetCases: { type: integer }
+    DoctorMergeUndoResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            casesReverted: { type: integer }
+            overridesReverted: { type: integer }
+            sourceDoctorName: { type: string }
+            sourceProviderOrganizationId:
+              type: string
+              nullable: true
+    DoctorSearchEntry:
+      type: object
+      properties:
+        doctorName: { type: string }
+        providerOrganizationId:
+          type: string
+          nullable: true
+        practiceName:
+          type: string
+          nullable: true
+        totalCases: { type: integer }
+        similarity:
+          type: number
+          description: |
+            0..1 similarity to the `like` query parameter, or 0 when
+            `like` was not supplied.
+    DoctorSearchResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            entries:
+              type: array
+              items:
+                $ref: "#/components/schemas/DoctorSearchEntry"
+            total: { type: integer }
+            offset: { type: integer }
+            limit: { type: integer }
     IteroImportResult:
       type: object
       properties:
@@ -181,4 +410,3 @@ components:
             needsAiReview: { type: boolean }
             attachmentId: { type: string, nullable: true }
             iteroOrderId: { type: string }
-

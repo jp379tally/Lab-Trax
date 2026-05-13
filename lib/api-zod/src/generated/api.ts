@@ -50,21 +50,184 @@ export const ImportCaseFromIteroRxResponse = zod.object({
 });
 
 /**
- * Reassign every non-soft-deleted case from the source doctor
-(identified by `(sourceDoctorName, sourceProviderOrganizationId)`)
-to the target doctor (identified by
-`(targetDoctorName, targetProviderOrganizationId)`). Both provider
-practices must belong to the same parent lab and the caller must be
-an admin of that lab. Idempotent: if the source group is already
-empty the call still succeeds with `casesMoved: 0`.
+ * Lists distinct (doctorName, providerOrganizationId) groups in the
+given lab, ranked by similarity to the optional `q` / `like`
+parameters using normalized name comparison (trim, lowercase,
+strip "Dr."/punctuation). Used by the desktop merge picker so it
+can search every doctor in the lab without a 50-row cap.
 
- * @summary Merge two doctor entries into one
+ * @summary Search doctor groups in a lab, ranked by similarity
  */
-export const MergeDoctorsBody = zod.object({
-  sourceDoctorName: zod.string(),
-  sourceProviderOrganizationId: zod.string(),
+export const searchDoctorsQueryLimitDefault = 100;
+export const searchDoctorsQueryLimitMax = 500;
+
+export const searchDoctorsQueryOffsetDefault = 0;
+export const searchDoctorsQueryOffsetMin = 0;
+
+export const SearchDoctorsQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+  q: zod.coerce
+    .string()
+    .optional()
+    .describe("Free-text search across doctor + practice names."),
+  like: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "Optional reference doctor name; when provided, results are\nranked by similarity to this name so likely duplicates float\nto the top.\n",
+    ),
+  limit: zod.coerce
+    .number()
+    .min(1)
+    .max(searchDoctorsQueryLimitMax)
+    .default(searchDoctorsQueryLimitDefault),
+  offset: zod.coerce
+    .number()
+    .min(searchDoctorsQueryOffsetMin)
+    .default(searchDoctorsQueryOffsetDefault)
+    .describe(
+      "Page offset for cursoring through every doctor in a large lab.\n",
+    ),
+});
+
+export const SearchDoctorsResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      entries: zod
+        .array(
+          zod.object({
+            doctorName: zod.string().optional(),
+            providerOrganizationId: zod.string().nullish(),
+            practiceName: zod.string().nullish(),
+            totalCases: zod.number().optional(),
+            similarity: zod
+              .number()
+              .optional()
+              .describe(
+                "0..1 similarity to the `like` query parameter, or 0 when\n`like` was not supplied.\n",
+              ),
+          }),
+        )
+        .optional(),
+      total: zod.number().optional(),
+      offset: zod.number().optional(),
+      limit: zod.number().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * Returns aggregate counts for what a merge would move: per-source
+case count + date range + last few case numbers + count of
+pricing overrides that would follow. Includes soft-deleted cases
+when `includeSoftDeleted` is true.
+
+ * @summary Preview a doctor merge before committing
+ */
+
+export const previewDoctorMergeBodyIncludeSoftDeletedDefault = false;
+
+export const PreviewDoctorMergeBody = zod.object({
+  sources: zod
+    .array(
+      zod.object({
+        doctorName: zod.string(),
+        providerOrganizationId: zod
+          .string()
+          .nullish()
+          .describe(
+            "May be `null` for legacy cases that were created without a\npractice attached.\n",
+          ),
+      }),
+    )
+    .min(1),
   targetDoctorName: zod.string(),
-  targetProviderOrganizationId: zod.string(),
+  targetProviderOrganizationId: zod
+    .string()
+    .nullish()
+    .describe(
+      "Practice that will own the target doctor's cases. Must be\nsupplied — even if the target had no cases before the merge —\nso the merge can resolve practice-less targets in one call.\n",
+    ),
+  labOrganizationId: zod.string(),
+  includeSoftDeleted: zod
+    .boolean()
+    .default(previewDoctorMergeBodyIncludeSoftDeletedDefault)
+    .describe(
+      "When true, soft-deleted cases under each source group are\nalso remapped to the target.\n",
+    ),
+});
+
+export const PreviewDoctorMergeResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      totalCases: zod.number().optional(),
+      totalOverrides: zod.number().optional(),
+      sources: zod
+        .array(
+          zod.object({
+            doctorName: zod.string().optional(),
+            providerOrganizationId: zod.string().nullish(),
+            practiceName: zod.string().nullish(),
+            totalCases: zod.number().optional(),
+            firstCaseAt: zod.string().nullish(),
+            lastCaseAt: zod.string().nullish(),
+            recentCaseNumbers: zod.array(zod.string()).optional(),
+            overridesCount: zod.number().optional(),
+          }),
+        )
+        .optional(),
+      targetExists: zod.boolean().optional(),
+      targetCases: zod.number().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * Reassigns every (optionally including soft-deleted) case from each
+source `(doctorName, providerOrganizationId)` group to the target
+`(targetDoctorName, targetProviderOrganizationId)`. Per-doctor
+pricing overrides keyed on `(labOrganizationId, doctorName)` are
+also remapped, collapsing onto an existing target override
+(instead of violating its unique index). Source
+`providerOrganizationId` may be `null`. The target may be a
+brand-new doctor — it does not need any pre-existing cases. The
+caller must be a lab admin.
+
+ * @summary Merge one or more source doctors into a single target
+ */
+
+export const mergeDoctorsBodyIncludeSoftDeletedDefault = false;
+
+export const MergeDoctorsBody = zod.object({
+  sources: zod
+    .array(
+      zod.object({
+        doctorName: zod.string(),
+        providerOrganizationId: zod
+          .string()
+          .nullish()
+          .describe(
+            "May be `null` for legacy cases that were created without a\npractice attached.\n",
+          ),
+      }),
+    )
+    .min(1),
+  targetDoctorName: zod.string(),
+  targetProviderOrganizationId: zod
+    .string()
+    .nullish()
+    .describe(
+      "Practice that will own the target doctor's cases. Must be\nsupplied — even if the target had no cases before the merge —\nso the merge can resolve practice-less targets in one call.\n",
+    ),
+  labOrganizationId: zod.string(),
+  includeSoftDeleted: zod
+    .boolean()
+    .default(mergeDoctorsBodyIncludeSoftDeletedDefault)
+    .describe(
+      "When true, soft-deleted cases under each source group are\nalso remapped to the target.\n",
+    ),
 });
 
 export const MergeDoctorsResponse = zod.object({
@@ -72,10 +235,55 @@ export const MergeDoctorsResponse = zod.object({
   data: zod
     .object({
       casesMoved: zod.number().optional(),
-      sourceDoctorName: zod.string().optional(),
-      sourceProviderOrganizationId: zod.string().optional(),
+      overridesMoved: zod.number().optional(),
+      overridesCollapsed: zod.number().optional(),
       targetDoctorName: zod.string().optional(),
-      targetProviderOrganizationId: zod.string().optional(),
+      targetProviderOrganizationId: zod.string().nullish(),
+      undoWindowMs: zod
+        .number()
+        .optional()
+        .describe(
+          "How many milliseconds the undo button should remain\nactionable, mirroring the server's configured window\n(`DOCTOR_MERGE_UNDO_WINDOW_MINUTES`).\n",
+        ),
+      entries: zod
+        .array(
+          zod.object({
+            auditLogId: zod.string().optional(),
+            sourceDoctorName: zod.string().optional(),
+            sourceProviderOrganizationId: zod.string().nullish(),
+            casesMoved: zod.number().optional(),
+            overridesMoved: zod.number().optional(),
+            overridesCollapsed: zod.number().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+
+/**
+ * Within a configurable time window (default 10 minutes), reverses
+the rename described by a `doctor_merged` audit-log row by
+re-applying the inverse rename to matching cases + pricing
+overrides. Refused if the window has passed, the row is not a
+`doctor_merged` action, or the inverse would clobber doctors
+that have since been edited. Admin-only, same lab as the
+original merge.
+
+ * @summary Undo a recent doctor merge
+ */
+export const UndoDoctorMergeParams = zod.object({
+  auditLogId: zod.coerce.string(),
+});
+
+export const UndoDoctorMergeResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      casesReverted: zod.number().optional(),
+      overridesReverted: zod.number().optional(),
+      sourceDoctorName: zod.string().optional(),
+      sourceProviderOrganizationId: zod.string().nullish(),
     })
     .optional(),
 });

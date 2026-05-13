@@ -1,6 +1,11 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  setBaseUrl as setApiClientBaseUrl,
+  setAuthTokenGetter as setApiClientAuthTokenGetter,
+} from "@workspace/api-client-react";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { getApiOrigin, getAccessToken } from "@/lib/api";
 import { describeAuthRestoreStatus } from "@/lib/auth-restore-status";
 import { UploadsProvider } from "@/lib/uploads-context";
 import LoginPage from "@/pages/login";
@@ -21,6 +26,13 @@ import RecurringPage from "@/pages/finance/recurring";
 import DownloadPage from "@/pages/download";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/AppLayout";
+
+// Wire the generated react-query hooks (`@workspace/api-client-react`) up
+// to the same bearer-token + base-URL machinery the legacy `apiFetch`
+// helper uses, so call sites that opt into the generated hooks (e.g.
+// `useMergeDoctors` on the doctors page) authenticate correctly.
+setApiClientBaseUrl(getApiOrigin() || null);
+setApiClientAuthTokenGetter(() => getAccessToken());
 
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -5,11 +5,18 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { DoctorMergeAuditEntry } from "./doctorMergeAuditEntry";
 
 export type DoctorMergeResultData = {
   casesMoved?: number;
-  sourceDoctorName?: string;
-  sourceProviderOrganizationId?: string;
+  overridesMoved?: number;
+  overridesCollapsed?: number;
   targetDoctorName?: string;
-  targetProviderOrganizationId?: string;
+  targetProviderOrganizationId?: string | null;
+  /** How many milliseconds the undo button should remain
+actionable, mirroring the server's configured window
+(`DOCTOR_MERGE_UNDO_WINDOW_MINUTES`).
+ */
+  undoWindowMs?: number;
+  entries?: DoctorMergeAuditEntry[];
 };

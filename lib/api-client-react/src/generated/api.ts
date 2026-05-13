@@ -18,11 +18,15 @@ import type {
 
 import type {
   AcknowledgeAiReview200,
+  DoctorMergePreview,
+  DoctorMergeRequest,
   DoctorMergeResult,
+  DoctorMergeUndoResult,
+  DoctorSearchResult,
   HealthStatus,
   ImportCaseFromIteroRxBody,
   IteroImportResult,
-  MergeDoctorsBody,
+  SearchDoctorsParams,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -231,29 +235,222 @@ export const useImportCaseFromIteroRx = <
 };
 
 /**
- * Reassign every non-soft-deleted case from the source doctor
-(identified by `(sourceDoctorName, sourceProviderOrganizationId)`)
-to the target doctor (identified by
-`(targetDoctorName, targetProviderOrganizationId)`). Both provider
-practices must belong to the same parent lab and the caller must be
-an admin of that lab. Idempotent: if the source group is already
-empty the call still succeeds with `casesMoved: 0`.
+ * Lists distinct (doctorName, providerOrganizationId) groups in the
+given lab, ranked by similarity to the optional `q` / `like`
+parameters using normalized name comparison (trim, lowercase,
+strip "Dr."/punctuation). Used by the desktop merge picker so it
+can search every doctor in the lab without a 50-row cap.
 
- * @summary Merge two doctor entries into one
+ * @summary Search doctor groups in a lab, ranked by similarity
+ */
+export const getSearchDoctorsUrl = (params: SearchDoctorsParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/doctors/search?${stringifiedParams}`
+    : `/api/doctors/search`;
+};
+
+export const searchDoctors = async (
+  params: SearchDoctorsParams,
+  options?: RequestInit,
+): Promise<DoctorSearchResult> => {
+  return customFetch<DoctorSearchResult>(getSearchDoctorsUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getSearchDoctorsQueryKey = (params?: SearchDoctorsParams) => {
+  return [`/api/doctors/search`, ...(params ? [params] : [])] as const;
+};
+
+export const getSearchDoctorsQueryOptions = <
+  TData = Awaited<ReturnType<typeof searchDoctors>>,
+  TError = ErrorType<unknown>,
+>(
+  params: SearchDoctorsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof searchDoctors>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getSearchDoctorsQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof searchDoctors>>> = ({
+    signal,
+  }) => searchDoctors(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof searchDoctors>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type SearchDoctorsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof searchDoctors>>
+>;
+export type SearchDoctorsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Search doctor groups in a lab, ranked by similarity
+ */
+
+export function useSearchDoctors<
+  TData = Awaited<ReturnType<typeof searchDoctors>>,
+  TError = ErrorType<unknown>,
+>(
+  params: SearchDoctorsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof searchDoctors>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getSearchDoctorsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Returns aggregate counts for what a merge would move: per-source
+case count + date range + last few case numbers + count of
+pricing overrides that would follow. Includes soft-deleted cases
+when `includeSoftDeleted` is true.
+
+ * @summary Preview a doctor merge before committing
+ */
+export const getPreviewDoctorMergeUrl = () => {
+  return `/api/doctors/merge/preview`;
+};
+
+export const previewDoctorMerge = async (
+  doctorMergeRequest: DoctorMergeRequest,
+  options?: RequestInit,
+): Promise<DoctorMergePreview> => {
+  return customFetch<DoctorMergePreview>(getPreviewDoctorMergeUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(doctorMergeRequest),
+  });
+};
+
+export const getPreviewDoctorMergeMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof previewDoctorMerge>>,
+    TError,
+    { data: BodyType<DoctorMergeRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof previewDoctorMerge>>,
+  TError,
+  { data: BodyType<DoctorMergeRequest> },
+  TContext
+> => {
+  const mutationKey = ["previewDoctorMerge"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof previewDoctorMerge>>,
+    { data: BodyType<DoctorMergeRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return previewDoctorMerge(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type PreviewDoctorMergeMutationResult = NonNullable<
+  Awaited<ReturnType<typeof previewDoctorMerge>>
+>;
+export type PreviewDoctorMergeMutationBody = BodyType<DoctorMergeRequest>;
+export type PreviewDoctorMergeMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Preview a doctor merge before committing
+ */
+export const usePreviewDoctorMerge = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof previewDoctorMerge>>,
+    TError,
+    { data: BodyType<DoctorMergeRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof previewDoctorMerge>>,
+  TError,
+  { data: BodyType<DoctorMergeRequest> },
+  TContext
+> => {
+  return useMutation(getPreviewDoctorMergeMutationOptions(options));
+};
+
+/**
+ * Reassigns every (optionally including soft-deleted) case from each
+source `(doctorName, providerOrganizationId)` group to the target
+`(targetDoctorName, targetProviderOrganizationId)`. Per-doctor
+pricing overrides keyed on `(labOrganizationId, doctorName)` are
+also remapped, collapsing onto an existing target override
+(instead of violating its unique index). Source
+`providerOrganizationId` may be `null`. The target may be a
+brand-new doctor — it does not need any pre-existing cases. The
+caller must be a lab admin.
+
+ * @summary Merge one or more source doctors into a single target
  */
 export const getMergeDoctorsUrl = () => {
   return `/api/doctors/merge`;
 };
 
 export const mergeDoctors = async (
-  mergeDoctorsBody: MergeDoctorsBody,
+  doctorMergeRequest: DoctorMergeRequest,
   options?: RequestInit,
 ): Promise<DoctorMergeResult> => {
   return customFetch<DoctorMergeResult>(getMergeDoctorsUrl(), {
     ...options,
     method: "POST",
     headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(mergeDoctorsBody),
+    body: JSON.stringify(doctorMergeRequest),
   });
 };
 
@@ -264,14 +461,14 @@ export const getMergeDoctorsMutationOptions = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof mergeDoctors>>,
     TError,
-    { data: BodyType<MergeDoctorsBody> },
+    { data: BodyType<DoctorMergeRequest> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof mergeDoctors>>,
   TError,
-  { data: BodyType<MergeDoctorsBody> },
+  { data: BodyType<DoctorMergeRequest> },
   TContext
 > => {
   const mutationKey = ["mergeDoctors"];
@@ -285,7 +482,7 @@ export const getMergeDoctorsMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof mergeDoctors>>,
-    { data: BodyType<MergeDoctorsBody> }
+    { data: BodyType<DoctorMergeRequest> }
   > = (props) => {
     const { data } = props ?? {};
 
@@ -298,11 +495,11 @@ export const getMergeDoctorsMutationOptions = <
 export type MergeDoctorsMutationResult = NonNullable<
   Awaited<ReturnType<typeof mergeDoctors>>
 >;
-export type MergeDoctorsMutationBody = BodyType<MergeDoctorsBody>;
+export type MergeDoctorsMutationBody = BodyType<DoctorMergeRequest>;
 export type MergeDoctorsMutationError = ErrorType<unknown>;
 
 /**
- * @summary Merge two doctor entries into one
+ * @summary Merge one or more source doctors into a single target
  */
 export const useMergeDoctors = <
   TError = ErrorType<unknown>,
@@ -311,17 +508,109 @@ export const useMergeDoctors = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof mergeDoctors>>,
     TError,
-    { data: BodyType<MergeDoctorsBody> },
+    { data: BodyType<DoctorMergeRequest> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
   Awaited<ReturnType<typeof mergeDoctors>>,
   TError,
-  { data: BodyType<MergeDoctorsBody> },
+  { data: BodyType<DoctorMergeRequest> },
   TContext
 > => {
   return useMutation(getMergeDoctorsMutationOptions(options));
+};
+
+/**
+ * Within a configurable time window (default 10 minutes), reverses
+the rename described by a `doctor_merged` audit-log row by
+re-applying the inverse rename to matching cases + pricing
+overrides. Refused if the window has passed, the row is not a
+`doctor_merged` action, or the inverse would clobber doctors
+that have since been edited. Admin-only, same lab as the
+original merge.
+
+ * @summary Undo a recent doctor merge
+ */
+export const getUndoDoctorMergeUrl = (auditLogId: string) => {
+  return `/api/doctors/merge/${auditLogId}/undo`;
+};
+
+export const undoDoctorMerge = async (
+  auditLogId: string,
+  options?: RequestInit,
+): Promise<DoctorMergeUndoResult> => {
+  return customFetch<DoctorMergeUndoResult>(getUndoDoctorMergeUrl(auditLogId), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getUndoDoctorMergeMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof undoDoctorMerge>>,
+    TError,
+    { auditLogId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof undoDoctorMerge>>,
+  TError,
+  { auditLogId: string },
+  TContext
+> => {
+  const mutationKey = ["undoDoctorMerge"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof undoDoctorMerge>>,
+    { auditLogId: string }
+  > = (props) => {
+    const { auditLogId } = props ?? {};
+
+    return undoDoctorMerge(auditLogId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UndoDoctorMergeMutationResult = NonNullable<
+  Awaited<ReturnType<typeof undoDoctorMerge>>
+>;
+
+export type UndoDoctorMergeMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Undo a recent doctor merge
+ */
+export const useUndoDoctorMerge = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof undoDoctorMerge>>,
+    TError,
+    { auditLogId: string },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof undoDoctorMerge>>,
+  TError,
+  { auditLogId: string },
+  TContext
+> => {
+  return useMutation(getUndoDoctorMergeMutationOptions(options));
 };
 
 /**
