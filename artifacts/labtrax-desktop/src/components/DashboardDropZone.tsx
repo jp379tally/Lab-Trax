@@ -9,6 +9,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   CheckCircle2,
+  FileText,
   Loader2,
   Sparkles,
   Upload,
@@ -1361,6 +1362,25 @@ export function DashboardDropZone() {
           />
           Mark as rush
         </label>
+        <button
+          type="button"
+          onClick={() => {
+            const url = URL.createObjectURL(phase.file);
+            const w = window.open(url, "_blank", "noopener,noreferrer");
+            // Revoke after a delay so the new tab has time to load it.
+            setTimeout(() => URL.revokeObjectURL(url), 60_000);
+            if (!w) {
+              window.alert(
+                "Couldn't open a preview window — check your pop-up blocker.",
+              );
+            }
+          }}
+          className="w-full h-8 px-3 rounded-md border border-border bg-secondary/60 text-xs font-medium text-foreground hover:bg-secondary inline-flex items-center justify-center gap-1.5 transition-colors"
+          title="Open the uploaded file in a new tab to audit the AI's reading"
+        >
+          <FileText size={13} />
+          Preview document ({phase.file.name})
+        </button>
         <div className="flex flex-wrap gap-2 pt-1">
           <button
             type="button"
