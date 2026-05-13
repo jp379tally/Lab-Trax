@@ -7,9 +7,11 @@ import {
   CheckCircle2,
   CreditCard,
   Download,
+  Eye,
   Loader2,
   Mail,
   Plus,
+  Printer,
   Search,
   Trash2,
   TrendingUp,
@@ -22,6 +24,8 @@ import { StatusBadge } from "@/components/StatusBadge";
 import {
   buildInvoicePdf,
   downloadInvoicePdf,
+  previewInvoicePdf,
+  printInvoicePdf,
   type InvoicePdfOptions,
 } from "@/lib/export";
 
@@ -533,6 +537,14 @@ export function InvoiceEditor({
     downloadInvoicePdf(buildPdfOptions());
   }
 
+  function handlePreviewPdf() {
+    previewInvoicePdf(buildPdfOptions());
+  }
+
+  function handlePrintPdf() {
+    printInvoicePdf(buildPdfOptions());
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-foreground/30">
       <div className="w-full max-w-3xl bg-card border-l border-border h-full overflow-y-auto scrollbar-thin">
@@ -542,6 +554,24 @@ export function InvoiceEditor({
             <div className="font-mono text-sm font-semibold">{invoice.invoiceNumber}</div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePreviewPdf}
+              disabled={detailQuery.isLoading}
+              title="Preview the invoice without saving"
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              <Eye size={14} /> Preview
+            </button>
+            <button
+              type="button"
+              onClick={handlePrintPdf}
+              disabled={detailQuery.isLoading}
+              title="Print the invoice"
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary disabled:opacity-50"
+            >
+              <Printer size={14} /> Print
+            </button>
             <button
               type="button"
               onClick={handleDownloadPdf}

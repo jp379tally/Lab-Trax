@@ -155,6 +155,60 @@ export function downloadInvoicePdf(opts: InvoicePdfOptions) {
   triggerDownload(built.blob, built.filename);
 }
 
+// Open the PDF in a new browser tab/window so the user can review
+// what the invoice will look like without saving or downloading
+// anything. The blob URL is revoked a few seconds later so we don't
+// leak memory; by then the new tab has already loaded the bytes.
+export function previewInvoicePdf(opts: InvoicePdfOptions) {
+  const built = buildInvoicePdf(opts);
+  const url = URL.createObjectURL(built.blob);
+  const win = window.open(url, "_blank", "noopener,noreferrer");
+  // Pop-up blocked → fall back to a same-tab navigation so the user
+  // still sees the preview.
+  if (!win) {
+    window.location.href = url;
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+// Open the PDF in a hidden iframe and immediately trigger the
+// browser's print dialog. Avoids opening a visible tab the user
+// then has to close. Iframe is removed after the print dialog
+// closes (or after a generous timeout as a safety net).
+export function printInvoicePdf(opts: InvoicePdfOptions) {
+  const built = buildInvoicePdf(opts);
+  const url = URL.createObjectURL(built.blob);
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+  iframe.src = url;
+  const cleanup = () => {
+    URL.revokeObjectURL(url);
+    if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+  };
+  iframe.onload = () => {
+    try {
+      const w = iframe.contentWindow;
+      if (!w) {
+        cleanup();
+        return;
+      }
+      w.focus();
+      w.print();
+      // Some browsers block until print dialog closes; others return
+      // immediately. Either way, clean up after a delay.
+      setTimeout(cleanup, 60_000);
+    } catch {
+      cleanup();
+    }
+  };
+  document.body.appendChild(iframe);
+}
+
 function buildInvoiceDoc(opts: InvoicePdfOptions) {
   const doc = new jsPDF({ unit: "pt", format: "letter" });
   const pageWidth = doc.internal.pageSize.getWidth();
