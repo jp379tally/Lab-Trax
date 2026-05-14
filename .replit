@@ -20,6 +20,10 @@ author = "agent"
 task = "workflow.run"
 args = "api-server-tests"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "EAS iOS Submit"
+
 [[workflows.workflow]]
 name = "api-server-tests"
 author = "agent"
@@ -30,6 +34,17 @@ args = "pnpm --filter @workspace/api-server run test"
 
 [workflows.workflow.metadata]
 isValidation = true
+
+[[workflows.workflow]]
+name = "EAS iOS Submit"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd /home/runner/workspace/artifacts/labtrax && EAS_BUILD_NO_EXPO_GO_WARNING=true eas submit --platform ios --latest --non-interactive"
 
 [agent]
 stack = "PNPM_WORKSPACE"
