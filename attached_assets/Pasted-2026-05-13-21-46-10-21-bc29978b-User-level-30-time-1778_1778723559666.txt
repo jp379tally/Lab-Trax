@@ -1,0 +1,144 @@
+2026-05-13 21:46:10.21
+bc29978b
+User
+{"level":30,"time":1778723170214,"pid":20,"hostname":"localhost","req":{"id":19,"method":"GET","url":"/api"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-13 21:46:50.73
+bc29978b
+User
+{"level":30,"time":1778723210733,"pid":20,"hostname":"localhost","req":{"id":20,"method":"GET","url":"/uploads"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-13 21:46:50.73
+bc29978b
+User
+{"level":30,"time":1778723210735,"pid":20,"hostname":"localhost","req":{"id":21,"method":"GET","url":"/api"},"res":{"statusCode":404},"responseTime":1,"msg":"request completed"}
+2026-05-13 21:46:50.73
+bc29978b
+User
+{"level":30,"time":1778723210736,"pid":20,"hostname":"localhost","req":{"id":22,"method":"GET","url":"/downloads"},"res":{"statusCode":404},"responseTime":2,"msg":"request completed"}
+2026-05-13 21:50:40.82
+bc29978b
+System
+received signal, shutting down artifact processes signal=terminated
+2026-05-13 21:50:40.82
+bc29978b
+System
+sending SIGTERM to artifact process artifact=artifacts/api-server
+2026-05-13 21:50:40.82
+bc29978b
+System
+sending SIGTERM to artifact process artifact=artifacts/labtrax
+2026-05-13 21:50:40.82
+bc29978b
+User
+{"level":30,"time":1778723440824,"pid":20,"hostname":"localhost","signal":"SIGTERM","msg":"Received shutdown signal, closing server"}
+2026-05-13 21:50:40.82
+bc29978b
+User
+{"level":30,"time":1778723440825,"pid":20,"hostname":"localhost","msg":"HTTP server closed"}
+2026-05-13 21:50:40.83
+bc29978b
+System
+artifact process exited normally artifact=artifacts/api-server
+2026-05-13 21:50:40.85
+bc29978b
+User
+/home/runner/workspace/artifacts/labtrax:
+2026-05-13 21:50:40.85
+bc29978b
+User
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/labtrax@0.0.0 serve: `node server/serve.js`
+2026-05-13 21:50:40.85
+bc29978b
+User
+Command failed with signal "SIGTERM"
+2026-05-13 21:50:48.35
+bc29978b
+System
+artifact mode enabled static=1 runnable=2
+2026-05-13 21:50:48.35
+bc29978b
+System
+starting up user application
+2026-05-13 21:50:48.35
+bc29978b
+System
+starting artifact processes for monorepo deployment
+2026-05-13 21:50:48.35
+bc29978b
+System
+registered static handler for artifact path=/desktop/ publicDir=artifacts/labtrax-desktop/dist/public
+2026-05-13 21:50:48.35
+bc29978b
+System
+forwarding local port 0 to external port 80 (mapped as 1104)
+2026-05-13 21:50:48.35
+bc29978b
+System
+waiting for runnable artifact ports ports=[8080 19134]
+2026-05-13 21:50:48.35
+bc29978b
+System
+metasidecar: loaded enterprise status from environment is_enterprise=false
+2026-05-13 21:50:48.35
+bc29978b
+System
+baseline ports snapshot before artifact start ports=[1105 1104]
+2026-05-13 21:50:48.36
+bc29978b
+System
+starting artifact processes count=2
+2026-05-13 21:50:48.36
+bc29978b
+System
+starting artifact process artifact=artifacts/labtrax args=[pnpm --filter @workspace/labtrax run serve] port=19134
+2026-05-13 21:50:48.36
+bc29978b
+System
+starting artifact process artifact=artifacts/api-server args=[node --max-old-space-size=512 artifacts/api-server/dist/index.mjs] port=8080
+2026-05-13 21:50:48.37
+bc29978b
+System
+artifact process started artifact=artifacts/labtrax pid=20
+2026-05-13 21:50:48.37
+bc29978b
+System
+artifact process started pid=19 artifact=artifacts/api-server
+2026-05-13 21:50:49.51
+bc29978b
+User
+> node server/serve.js
+2026-05-13 21:50:49.51
+bc29978b
+User
+> @workspace/labtrax@0.0.0 serve /home/runner/workspace/artifacts/labtrax
+2026-05-13 21:50:49.63
+bc29978b
+System
+artifact port detected port=19134 detected=1 expected=2
+2026-05-13 21:50:49.63
+bc29978b
+User
+Serving static Expo build on port 19134
+2026-05-13 21:50:50.12
+bc29978b
+User
+{"level":30,"time":1778723450122,"pid":19,"hostname":"localhost","hourUtc":8,"firstRunInMin":374,"msg":"Monthly statement scheduler armed"}
+2026-05-13 21:50:50.12
+bc29978b
+System
+artifact processes running, waiting for signal or process exit
+2026-05-13 21:50:50.12
+bc29978b
+System
+artifact port detected expected=2 port=8080 detected=2
+2026-05-13 21:51:50.55
+bc29978b
+User
+{"level":30,"time":1778723510550,"pid":19,"hostname":"localhost","req":{"id":5,"method":"GET","url":"/downloads"},"res":{"statusCode":404},"responseTime":3,"msg":"request completed"}
+2026-05-13 21:51:50.55
+bc29978b
+User
+{"level":30,"time":1778723510549,"pid":19,"hostname":"localhost","req":{"id":4,"method":"GET","url":"/api"},"res":{"statusCode":404},"responseTime":4,"msg":"request completed"}
+2026-05-13 21:51:50.55
+bc29978b
+User
+{"level":30,"time":1778723510551,"pid":19,"hostname":"localhost","req":{"id":6,"method":"GET","url":"/uploads"},"res":{"statusCode":404},"responseTime":0,"msg":"request completed"}
