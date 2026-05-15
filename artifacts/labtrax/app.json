@@ -16,8 +16,8 @@
     },
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "108",
-      "bundleIdentifier": "com.allieddl.labtrax",
+      "buildNumber": "109",
+      "bundleIdentifier": "app.replit.labtrax",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture photos of dental cases and scans for case tracking, documentation, and communication with the dental lab.",
         "NSPhotoLibraryUsageDescription": "This app accesses your photo library to attach images of dental cases, prescriptions, and documents for case tracking and communication.",
