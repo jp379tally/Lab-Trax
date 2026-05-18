@@ -88,13 +88,14 @@
             "NSExtensionActivationSupportsMovieWithMaxCount": 5,
             "NSExtensionActivationSupportsFileWithMaxCount": 10
           },
+          "iosShareExtensionName": "LabTraxShare",
           "androidIntentFilters": [
             "image/*"
           ],
           "androidMultiIntentFilters": [
             "image/*"
           ],
-          "iosShareExtensionName": "LabTraxShare"
+          "disableIOS": true
         }
       ]
     ],
