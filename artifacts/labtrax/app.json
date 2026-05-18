@@ -1,4 +1,3 @@
-
 {
   "expo": {
     "name": "LabTrax",
@@ -16,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "109",
+      "buildNumber": "111",
       "bundleIdentifier": "app.replit.labtrax",
       "infoPlist": {
         "NSCameraUsageDescription": "This app uses the camera to capture photos of dental cases and scans for case tracking, documentation, and communication with the dental lab.",
