@@ -188,12 +188,50 @@ async function refreshAccessToken(): Promise<string | null> {
   return _refreshPromise;
 }
 
+function getCsrfToken(): string | null {
+  if (Platform.OS !== "web" || typeof document === "undefined") return null;
+  const match = document.cookie.match(/(?:^|; )lt_csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function refreshAccessTokenViaCookie(): Promise<boolean> {
+  try {
+    const apiUrl = getApiUrl();
+    const url = new URL("/api/auth/refresh", apiUrl).toString();
+    const csrfToken = getCsrfToken();
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+      },
+      credentials: "include",
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return !!(data?.refreshed || data?.accessToken);
+  } catch {
+    return false;
+  }
+}
+
 function injectAuthHeaders(options?: RequestInit): RequestInit {
   const headers = new Headers(options?.headers || {});
   if (_accessToken) {
     headers.set("Authorization", `Bearer ${_accessToken}`);
   }
-  return { ...options, headers };
+  if (Platform.OS === "web") {
+    const csrfToken = getCsrfToken();
+    if (csrfToken) {
+      headers.set("x-csrf-token", csrfToken);
+    }
+  }
+  const result: RequestInit = { ...options, headers };
+  if (Platform.OS === "web") {
+    result.credentials = "include";
+  }
+  return result;
 }
 
 async function resilientFetch(
@@ -207,12 +245,19 @@ async function resilientFetch(
   try {
     let res = await fetch(primaryFullUrl, authedOptions);
 
-    if (res.status === 401 && _refreshToken) {
-      const newToken = await refreshAccessToken();
-      if (newToken) {
-        const retryHeaders = new Headers(authedOptions.headers || {});
-        retryHeaders.set("Authorization", `Bearer ${newToken}`);
-        res = await fetch(primaryFullUrl, { ...authedOptions, headers: retryHeaders });
+    if (res.status === 401) {
+      if (_refreshToken) {
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          const retryHeaders = new Headers(authedOptions.headers || {});
+          retryHeaders.set("Authorization", `Bearer ${newToken}`);
+          res = await fetch(primaryFullUrl, { ...authedOptions, headers: retryHeaders });
+        }
+      } else if (Platform.OS === "web") {
+        const refreshed = await refreshAccessTokenViaCookie();
+        if (refreshed) {
+          res = await fetch(primaryFullUrl, authedOptions);
+        }
       }
     }
 

@@ -316,7 +316,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await resilientFetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, clientType: Platform.OS === "web" ? "web" : "mobile" }),
       });
 
       const data = await res.json();
@@ -378,7 +378,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await resilientFetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ ...data, clientType: Platform.OS === "web" ? "web" : "mobile" }),
       });
 
       const result = await res.json();
@@ -433,6 +433,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setProfilePicUriState(null);
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
     await removeSensitiveItem(AUTH_PASSWORD_KEY);
+    await removeSensitiveItem(BIOMETRIC_USER_KEY);
     await AsyncStorage.removeItem(AUTH_KEY);
     // Clear all locally cached business data so the next user signing in on
     // this device does not see prior-tenant data before the server reconciles.
