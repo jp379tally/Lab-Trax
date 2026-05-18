@@ -970,6 +970,7 @@ export default function ScanScreen() {
   async function processWebFilesAsAttachments(files: FileList | File[]) {
     const fileArray = Array.from(files);
     const newUris: string[] = [];
+    const skippedFiles: string[] = [];
     for (const file of fileArray) {
       const validTypes = ["image/", "application/pdf"];
       const validExts = [".jpg", ".jpeg", ".png", ".heic", ".heif", ".bmp", ".tiff", ".webp", ".pdf"];
@@ -983,10 +984,18 @@ export default function ScanScreen() {
           reader.readAsDataURL(file);
         });
         newUris.push(dataUri);
-      } catch {}
+      } catch {
+        skippedFiles.push(file.name);
+      }
     }
     if (newUris.length > 0) {
       setCasePhotos((prev) => [...prev, ...newUris]);
+    }
+    if (skippedFiles.length > 0) {
+      Alert.alert(
+        "Some files could not be attached",
+        `The following file${skippedFiles.length > 1 ? "s" : ""} could not be read:\n${skippedFiles.join("\n")}`,
+      );
     }
   }
 
@@ -2292,7 +2301,7 @@ export default function ScanScreen() {
           [
             { text: "Print Label", onPress: () => { setLabelData(savedLabel); setLabelModalVisible(true); } },
             { text: "Done", onPress: () => {
-              if (isDuplicate) {
+              if (isDuplicate && !overrides?.isRemake) {
                 startRemakeCheck(newCase.id, savedPatientName);
               } else {
                 resetForm();

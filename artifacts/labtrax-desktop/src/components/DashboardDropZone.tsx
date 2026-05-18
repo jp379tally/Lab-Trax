@@ -969,6 +969,7 @@ export function DashboardDropZone() {
 
       // 5. Upload the Rx file and attach it as a case_attachment so
       //    it shows up in the Files tab and writes a case_event.
+      let rxAttached = false;
       try {
         const fd = new FormData();
         fd.append("file", file);
@@ -992,13 +993,13 @@ export function DashboardDropZone() {
               visibility: "shared_with_provider",
             }),
           });
+          rxAttached = true;
         }
       } catch (e: any) {
-        // Non-fatal: case is created; warn in the success message.
         console.warn("Rx attachment upload failed:", e);
       }
 
-      // 5. Invoice auto-generation is handled server-side inside
+      // 6. Invoice auto-generation is handled server-side inside
       //    POST /api/cases (creates a draft invoice + invoice_generated
       //    case event). No client-side call needed — issuing a second
       //    /generate-invoice request would create duplicate History
@@ -1009,7 +1010,9 @@ export function DashboardDropZone() {
       qc.invalidateQueries({ queryKey: ["invoices"] });
       setPhase({
         kind: "done",
-        message: `Case ${created.caseNumber} created · Rx attached · draft invoice ready.`,
+        message: rxAttached
+          ? `Case ${created.caseNumber} created · Rx attached · draft invoice ready.`
+          : `Case ${created.caseNumber} created · draft invoice ready. (Rx file could not be attached — please add it manually in the Files tab.)`,
       });
       window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
     } catch (e: any) {

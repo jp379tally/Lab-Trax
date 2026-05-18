@@ -1,0 +1,16 @@
+
+Findings
+
+[P0] A real App Store Connect private key is committed in the archive at Lab-Trax/artifacts/labtrax/AuthKey_7D584VZNJD.p8. I verified it begins with a valid BEGIN PRIVATE KEY header. That key should be treated as compromised and rotated/revoked immediately.
+
+[P0] The archive also contains likely production/customer artifacts, including PHI-bearing PDFs and media, for example Lab-Trax/artifacts/api-server/uploads/case-media/.trash/2026-05-13T08-00-00-464Z__1778255447844-0e2e24bc-in-45359-Dennis-Culligan-3za2-lf.pdf and Lab-Trax/artifacts/labtrax/attached_assets/Statement1_from_Southern_Dental_Restoration15596_1775304263849.pdf. That is a serious data-handling problem even before we get to code quality.
+
+[P1] The web auth flow is not actually using the safer cookie-only path. The client logs in with only { username, password } and registers with raw data, never sending clientType: "web" in auth-context.tsx (line 314) and auth-context.tsx (line 376). The server only suppresses token echo when clientType === "web" in auth.ts (line 490) and auth.ts (line 594), so the web app receives bearer tokens and stores them in AsyncStorage on web in query-client.ts (line 57) and query-client.ts (line 128). That makes access and refresh tokens readable by any XSS, which the server comments explicitly say it is trying to avoid in auth.ts (line 608).
+
+[P1] Logging out does not clear saved biometric credentials. logout() removes tokens and the cached password, but it never deletes BIOMETRIC_USER_KEY in auth-context.tsx (line 421), even though biometric login later reads that key in auth-context.tsx (line 363). deleteAccount() does remove it in auth-context.tsx (line 473), which makes the omission in normal logout look accidental. On a shared device, the next person can still “biometric login” as the prior user after sign-out.
+
+[P3] The forgot-username dev fallback is wired on the client but missing on the server. The UI expects data.demoUsername in LoginScreen.tsx (line 283), but the API never returns it in labtrax-routes.ts (line 2636). In no-SMTP dev environments that makes the flow look implemented while remaining unusable.
+
+I reviewed the core Expo app, API server, and shared libs from the zip. I did not run pnpm/vitest because this was a static archive review without installed dependencies.
+
+If you want, I can do the next pass as a cleanup plan: fix the auth bugs first, then give you a secret-rotation and repo-sanitization checklist.

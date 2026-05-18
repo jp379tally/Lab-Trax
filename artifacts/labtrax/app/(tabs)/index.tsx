@@ -7732,13 +7732,8 @@ function AdminDashboard() {
       ? labPortalUsers.filter(u => u.username.toLowerCase().includes(labUserSearchQuery.toLowerCase()) || (u.email && u.email.toLowerCase().includes(labUserSearchQuery.toLowerCase())))
       : labPortalUsers;
 
-    function handleAddUserToGroup(username: string, groupId: string) {
-      const user = registeredUsers.find(u => u.username === username);
-      const role = user?.role || "user";
-      console.warn("[TODO] addUserToGroup not implemented:", groupId, username, role);
-      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Added", `${username} has been added to the lab.`);
-      setSelectedLabGroup(null);
+    function handleAddUserToGroup(_username: string, _groupId: string) {
+      Alert.alert("Not Available", "Group assignment from the mobile app is not yet supported.");
     }
 
     return (

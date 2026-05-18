@@ -2021,6 +2021,10 @@ export default function CaseDetailScreen() {
                         message: `View the 3D design for patient ${caseItem.patientName} (Case ${caseItem.caseNumber}):\n${caseItem.exocadWebviewUrl}`,
                         title: "ExoCAD WebView Design",
                       });
+                    } catch {
+                      return;
+                    }
+                    try {
                       const entry = {
                         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
                         type: "exocad_shared" as const,
@@ -2032,7 +2036,9 @@ export default function CaseDetailScreen() {
                         activityLog: [...(caseItem.activityLog || []), entry],
                       });
                       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    } catch {}
+                    } catch {
+                      Alert.alert("Activity Log Error", "The design was shared but the activity log could not be updated.");
+                    }
                   }}
                   style={({ pressed }) => [exoStyles.exocadActionBtn, { backgroundColor: "#0EA5E9" }, pressed && { opacity: 0.85 }]}
                 >
