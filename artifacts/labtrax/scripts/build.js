@@ -568,10 +568,26 @@ async function main() {
     if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true });
     const webBuild = spawn("npx", ["expo", "export", "--platform", "web", "--output-dir", webTmpDir], {
       stdio: "inherit",
-      env: { ...process.env, EXPO_PUBLIC_DOMAIN: domain },
+      env: {
+        ...process.env,
+        EXPO_PUBLIC_DOMAIN: domain,
+        NODE_OPTIONS: "--max-old-space-size=3072",
+      },
     });
-    await new Promise((resolve, reject) => {
-      webBuild.on("close", (code) => {
+    const WEB_EXPORT_TIMEOUT_MS = 4 * 60 * 1000;
+    await new Promise((resolve) => {
+      const killTimer = setTimeout(() => {
+        console.warn("Web export timed out after 4 minutes — killing and skipping web app");
+        webBuild.kill("SIGTERM");
+        setTimeout(() => {
+          try { webBuild.kill("SIGKILL"); } catch {}
+        }, 5000);
+        if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true, force: true });
+        resolve();
+      }, WEB_EXPORT_TIMEOUT_MS);
+
+      webBuild.on("close", (code, signal) => {
+        clearTimeout(killTimer);
         if (code === 0) {
           const copyRecursive = (src, dest) => {
             if (!fs.existsSync(src)) return;
@@ -591,12 +607,14 @@ async function main() {
           fs.rmSync(webTmpDir, { recursive: true, force: true });
           console.log("Web export merged into static-build!");
         } else {
-          console.warn("Web export failed (code " + code + "), skipping web app");
+          const reason = signal ? `signal ${signal}` : `code ${code}`;
+          console.warn(`Web export failed (${reason}), skipping web app`);
           if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true, force: true });
         }
         resolve();
       });
       webBuild.on("error", (err) => {
+        clearTimeout(killTimer);
         console.warn("Web export error:", err.message);
         if (fs.existsSync(webTmpDir)) fs.rmSync(webTmpDir, { recursive: true, force: true });
         resolve();
