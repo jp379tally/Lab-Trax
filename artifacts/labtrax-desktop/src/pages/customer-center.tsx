@@ -620,7 +620,10 @@ export default function CustomerCenterPage() {
                   <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
                     <th className="text-left font-medium px-5 py-2.5">Num</th>
                     <th className="text-left font-medium py-2.5">Date</th>
+                    <th className="text-left font-medium py-2.5">Patient</th>
+                    <th className="text-left font-medium py-2.5">Line Item</th>
                     <th className="text-left font-medium py-2.5">Due Date</th>
+                    <th className="text-left font-medium py-2.5">Case Completed</th>
                     <th className="text-left font-medium py-2.5">Status</th>
                     <th className="text-right font-medium py-2.5">Aging</th>
                     <th className="text-right font-medium py-2.5">Amount</th>
@@ -633,7 +636,7 @@ export default function CustomerCenterPage() {
                   {practiceInvoicesQuery.isLoading && (
                     <tr>
                       <td
-                        colSpan={7}
+                        colSpan={10}
                         className="px-5 py-12 text-center text-muted-foreground"
                       >
                         <Loader2
@@ -647,7 +650,7 @@ export default function CustomerCenterPage() {
                   {!practiceInvoicesQuery.isLoading && practiceInvoices.length === 0 && (
                     <tr>
                       <td
-                        colSpan={7}
+                        colSpan={10}
                         className="px-5 py-12 text-center text-muted-foreground"
                       >
                         No transactions match the current filters.
@@ -656,6 +659,24 @@ export default function CustomerCenterPage() {
                   )}
                   {practiceInvoices.map((inv) => {
                     const aging = agingDays(inv);
+                    const patientName =
+                      inv.displayMetadata?.patientName ??
+                      inv.displayMetadataJson?.patientName ??
+                      null;
+                    const lineItem =
+                      inv.items?.[0]?.description ??
+                      inv.displayMetadata?.lineItems?.[0]?.description ??
+                      inv.displayMetadataJson?.lineItems?.[0]?.description ??
+                      null;
+                    const caseCompletedAt = inv.caseCompletedAt
+                      ? new Date(inv.caseCompletedAt).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })
+                      : null;
                     return (
                       <tr
                         key={inv.id}
@@ -670,7 +691,20 @@ export default function CustomerCenterPage() {
                           {formatDate(inv.issuedAt)}
                         </td>
                         <td className="py-2.5 text-muted-foreground">
+                          {patientName ?? <span className="text-muted-foreground/50">—</span>}
+                        </td>
+                        <td className="py-2.5 text-muted-foreground max-w-[160px]">
+                          {lineItem ? (
+                            <span className="truncate block" title={lineItem}>{lineItem}</span>
+                          ) : (
+                            <span className="text-muted-foreground/50">—</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 text-muted-foreground">
                           {formatDate(inv.dueAt ?? inv.dueDate)}
+                        </td>
+                        <td className="py-2.5 text-muted-foreground">
+                          {caseCompletedAt ?? <span className="text-muted-foreground/50">—</span>}
                         </td>
                         <td className="py-2.5">
                           <StatusBadge status={inv.status} />

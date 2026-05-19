@@ -1227,6 +1227,27 @@ router.get(
       );
     }
 
+    const caseCompletedAtMap = new Map<string, string | null>();
+    for (const lc of mobileCaseRows as any[]) {
+      try {
+        const parsed =
+          typeof lc.caseData === "string" ? JSON.parse(lc.caseData) : lc.caseData;
+        if (!parsed || typeof parsed !== "object") continue;
+        const routeHistory: Array<{ station: string; timestamp: number }> =
+          Array.isArray(parsed.routeHistory) ? parsed.routeHistory : [];
+        const completeEntries = routeHistory.filter((e) => e.station === "COMPLETE");
+        if (completeEntries.length === 0) {
+          caseCompletedAtMap.set(lc.id, null);
+          continue;
+        }
+        const lastEntry = completeEntries[completeEntries.length - 1];
+        const d = new Date(lastEntry.timestamp);
+        caseCompletedAtMap.set(lc.id, Number.isNaN(d.getTime()) ? null : d.toISOString());
+      } catch {
+        caseCompletedAtMap.set(lc.id, null);
+      }
+    }
+
     const orgIdsToFetch = Array.from(
       new Set([
         ...rows.flatMap((r: any) => [r.providerOrganizationId, r.labOrganizationId]),
@@ -1239,6 +1260,7 @@ router.get(
     const orgsById = new Map(orgRows.map((o: any) => [o.id, o]));
     const enrich = (r: any) => ({
       ...r,
+      caseCompletedAt: r.caseId ? (caseCompletedAtMap.get(r.caseId) ?? null) : null,
       providerOrganization: r.providerOrganizationId && orgsById.get(r.providerOrganizationId)
         ? {
             id: r.providerOrganizationId,
@@ -1805,11 +1827,33 @@ router.get(
         eq(bankAccounts.id, bankTransactions.bankAccountId)
       )
       .where(eq(bankTransactionInvoices.invoiceId, invoice.id));
+    let caseCompletedAt: string | null = null;
+    if (invoice.caseId) {
+      const lc = await db.query.labCases.findFirst({
+        where: eq(labCases.id, invoice.caseId),
+      }).catch(() => null);
+      if (lc) {
+        try {
+          const parsed =
+            typeof lc.caseData === "string" ? JSON.parse(lc.caseData) : lc.caseData;
+          const routeHistory: Array<{ station: string; timestamp: number }> =
+            Array.isArray(parsed?.routeHistory) ? parsed.routeHistory : [];
+          const completeEntries = routeHistory.filter((e) => e.station === "COMPLETE");
+          if (completeEntries.length > 0) {
+            const d = new Date(completeEntries[completeEntries.length - 1].timestamp);
+            caseCompletedAt = Number.isNaN(d.getTime()) ? null : d.toISOString();
+          }
+        } catch {
+          /* no-op */
+        }
+      }
+    }
     return ok(res, {
       ...invoice,
       items,
       payments: safePaymentRows,
       linkedTransactions: labMember ? linkedTxns : [],
+      caseCompletedAt,
     });
   })
 );

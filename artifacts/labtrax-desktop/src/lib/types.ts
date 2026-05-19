@@ -260,6 +260,7 @@ export interface Invoice {
   voidReason?: string | null;
   voidKind?: "void" | "writeoff" | null;
   sourceInvoiceId?: string | null;
+  caseCompletedAt?: string | null;
 }
 
 export interface InvoiceAttachment {
