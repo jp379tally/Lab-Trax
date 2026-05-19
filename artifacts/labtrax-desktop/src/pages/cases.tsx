@@ -23,7 +23,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getApiOrigin } from "@/lib/api";
 import type {
   CaseAttachment,
   CaseEvent,
@@ -2733,16 +2733,20 @@ export function CaseDrawer({
                           Photos & Images ({images.length})
                         </p>
                         <div className="grid grid-cols-3 gap-2">
-                          {images.map((a) => (
+                          {images.map((a) => {
+                            const imgUrl = a.id
+                              ? `${getApiOrigin()}/api/cases/${labCase.id}/attachments/${a.id}/file`
+                              : a.storageKey;
+                            return (
                             <div key={a.id} className="relative group">
                               <button
                                 type="button"
-                                onClick={() => setLightboxUrl(a.storageKey)}
+                                onClick={() => setLightboxUrl(imgUrl)}
                                 className="relative w-full aspect-square rounded-lg overflow-hidden bg-secondary block"
                                 title={a.fileName}
                               >
                                 <img
-                                  src={a.storageKey}
+                                  src={imgUrl}
                                   alt={a.fileName}
                                   className="w-full h-full object-cover"
                                   loading="lazy"
@@ -2755,7 +2759,8 @@ export function CaseDrawer({
                                 {a.fileName}
                               </p>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -3390,7 +3395,12 @@ function AttachmentRow({
   });
 
   const isImage = (attachment.fileType || "").startsWith("image/");
-  const href = attachment.storageKey;
+  // Always use the canonical authenticated file endpoint rather than the raw
+  // storageKey URL, which is a host-specific URL saved at upload time and may
+  // be stale after a domain change or redeployment.
+  const href = attachment.id
+    ? `${getApiOrigin()}/api/cases/${caseId}/attachments/${attachment.id}/file`
+    : attachment.storageKey;
 
   function onDelete() {
     if (deleteMutation.isPending) return;
