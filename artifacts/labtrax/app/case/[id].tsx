@@ -48,6 +48,7 @@ import { deriveDisplayInitials } from "@/lib/display-initials";
 import { resolveCaseInvoice } from "@/lib/case-detail/draft-invoice";
 import { LabSlipModal } from "@/components/case/LabSlipModal";
 import { EditCaseModal } from "@/components/case/EditCaseModal";
+import StlViewerModal from "@/components/StlViewerModal";
 import { QuickEditModal } from "@/components/case/QuickEditModal";
 import { CaseBarcodeScannerModal } from "@/components/case/CaseBarcodeScannerModal";
 import { AddItemModal } from "@/components/case/AddItemModal";
@@ -225,6 +226,7 @@ export default function CaseDetailScreen() {
     }
   };
   const [showLabSlipModal, setShowLabSlipModal] = useState(false);
+  const [stlViewerState, setStlViewerState] = useState<{ url: string; fileName: string } | null>(null);
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
   const [photoNotes, setPhotoNotes] = useState("");
   const [showPhotoNotes, setShowPhotoNotes] = useState(false);
@@ -1838,6 +1840,14 @@ export default function CaseDetailScreen() {
                       const fullUrl = fileUrl.startsWith("http")
                         ? fileUrl
                         : new URL(fileUrl, getApiUrl()).toString();
+
+                      // For STL files, open the in-app 3D viewer
+                      if (ext === "stl") {
+                        setStlViewerState({ url: fullUrl, fileName: att.fileName });
+                        return;
+                      }
+
+                      // For other 3D formats, fall through to the share sheet
                       const cacheDir = FileSystem.Paths.cache.uri;
                       const localUri = cacheDir.endsWith("/") ? cacheDir + att.fileName : cacheDir + "/" + att.fileName;
                       setDownloadingAttachmentId(att.id);
@@ -3360,6 +3370,48 @@ export default function CaseDetailScreen() {
         onClose={() => setShowLabSlipModal(false)}
         caseItem={caseItem}
         customStationLabels={customStationLabels}
+      />
+
+      <StlViewerModal
+        visible={stlViewerState != null}
+        fileUrl={stlViewerState?.url ?? ""}
+        fileName={stlViewerState?.fileName ?? ""}
+        authToken={getAccessToken()}
+        onClose={() => setStlViewerState(null)}
+        onFallback={async () => {
+          if (!stlViewerState) return;
+          const { url, fileName: fn } = stlViewerState;
+          setStlViewerState(null);
+          const cacheDir = FileSystem.Paths.cache.uri;
+          const safeName = fn.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const localUri = cacheDir.endsWith("/") ? cacheDir + safeName : cacheDir + "/" + safeName;
+          try {
+            const token = getAccessToken();
+            const downloadRes = await FileSystem.downloadAsync(
+              url,
+              localUri,
+              token ? { headers: { Authorization: `Bearer ${token}` } } : {},
+            );
+            if (downloadRes.status !== 200) {
+              Alert.alert("Download failed", "Could not download the scan file.");
+              return;
+            }
+            const canShare = await Sharing.isAvailableAsync();
+            if (canShare) {
+              await Sharing.shareAsync(downloadRes.uri, {
+                mimeType: "model/stl",
+                dialogTitle: fn,
+              });
+            } else {
+              Alert.alert(
+                "Sharing not available",
+                "Install a 3D viewer app (e.g. Formlabs, Meshmixer) to open STL files.",
+              );
+            }
+          } catch {
+            Alert.alert("Unable to open", "Could not download or share this scan file.");
+          }
+        }}
       />
 
       <CaseBarcodeScannerModal
