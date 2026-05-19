@@ -72,6 +72,15 @@ import {
   buildApplianceLineItems,
 } from "@/lib/case-detail/add-item";
 
+const SCAN_MIME_TYPES = new Set([
+  "model/stl",
+  "model/obj",
+  "model/ply",
+  "application/sla",
+  "application/dicom",
+]);
+const SCAN_EXTENSIONS = new Set(["stl", "obj", "ply", "dcm", "3ds", "dae"]);
+
 export default function CaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { cases, updateCaseStatus, addCasePhoto, addCaseNote, addCasePhotosWithNote, addTrackingNumber, addCaseItem, role, adminUnlocked, users, invoices, updateInvoice, addInvoice, updateCase, clients, pricingTiers, sendCourtesyText, respondToCourtesyText, proposeDeliveryDate, respondToProposedDate, assignBarcodeToCase, findCaseByBarcode, customStationLabels, addNotification, hardRefresh, hydrateInvoiceFromServer } = useApp();
@@ -1804,7 +1813,8 @@ export default function CaseDetailScreen() {
             {serverAttachments.map((att) => {
               const isImage = (att.fileType || "").startsWith("image/");
               const ext = att.fileName.split(".").pop()?.toLowerCase() ?? "";
-              const is3D = ["stl", "obj", "ply"].includes(ext);
+              const is3D = SCAN_MIME_TYPES.has(att.fileType || "") || SCAN_EXTENSIONS.has(ext);
+              const fileTypeLabel = is3D ? "3D Scan" : isImage ? "Image" : att.fileType || "File";
               const iconName: ComponentProps<typeof Ionicons>["name"] = isImage
                 ? "image-outline"
                 : att.fileType === "application/pdf"
@@ -1841,18 +1851,17 @@ export default function CaseDetailScreen() {
                     <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>
                       {att.fileName}
                     </Text>
-                    {att.uploaderName || att.createdAt ? (
-                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
-                        {[
-                          att.uploaderName,
-                          att.createdAt
-                            ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-                            : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </Text>
-                    ) : null}
+                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                      {[
+                        fileTypeLabel,
+                        att.uploaderName,
+                        att.createdAt
+                          ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </Text>
                   </View>
                   <Ionicons name="open-outline" size={16} color={Colors.light.textTertiary} />
                 </Pressable>
