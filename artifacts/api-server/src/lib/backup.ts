@@ -44,6 +44,7 @@ export const SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES = "backup_schedule_interva
 export const SETTING_BACKUP_SCHEDULE_DESTINATION = "backup_schedule_destination";
 export const SETTING_BACKUP_SCHEDULE_PATH = "backup_schedule_path";
 export const SETTING_BACKUP_SCHEDULE_ENABLED = "backup_schedule_enabled";
+export const SETTING_BACKUP_LAST_SUCCESSFUL_AT = "backup_last_successful_at";
 export const SETTING_ROLLING_BACKUP_ENABLED = "rolling_backup_enabled";
 export const SETTING_ROLLING_BACKUP_LAST_RUN_AT = "rolling_backup_last_run_at";
 export const SETTING_ROLLING_BACKUP_LAST_ERROR = "rolling_backup_last_error";
@@ -271,6 +272,33 @@ async function runSftpBackup(
   };
 }
 
+async function recordSuccessfulBackup(): Promise<void> {
+  const now = new Date().toISOString();
+  try {
+    await db
+      .insert(systemSettings)
+      .values({ key: SETTING_BACKUP_LAST_SUCCESSFUL_AT, value: now })
+      .onConflictDoUpdate({
+        target: systemSettings.key,
+        set: { value: now, updatedAt: new Date() },
+      });
+  } catch {
+    // Non-fatal — don't let a DB write failure prevent the backup result being returned.
+  }
+}
+
+export async function getLastSuccessfulBackupAt(): Promise<string | null> {
+  try {
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_BACKUP_LAST_SUCCESSFUL_AT));
+    return rows[0]?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runBackup(
   triggeredBy: string,
   destination: BackupDestination,
@@ -279,24 +307,29 @@ export async function runBackup(
   if (destination === "onedrive") {
     const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
     const result = await uploadToOneDrive(buffer, fileName, "LabTrax Backups");
-    return {
+    const runResult: BackupRunResult = {
       size: result.size,
       completedAt: new Date().toISOString(),
       fileName: result.name,
       destination: "onedrive",
     };
+    await recordSuccessfulBackup();
+    return runResult;
   }
   if (destination === "local") {
     if (!destPath) throw new Error("A destination path is required for local backups.");
-    return runLocalBackup(triggeredBy, destPath);
+    const runResult = await runLocalBackup(triggeredBy, destPath);
+    await recordSuccessfulBackup();
+    return runResult;
   }
   if (destination === "network") {
     if (!destPath) throw new Error("A network path or sftp:// URL is required for network backups.");
     // sftp:// → SFTP transport; anything else → local filesystem (mounted UNC/NFS share)
-    if (destPath.startsWith("sftp://")) {
-      return runSftpBackup(triggeredBy, destPath);
-    }
-    return runLocalBackup(triggeredBy, destPath);
+    const runResult = destPath.startsWith("sftp://")
+      ? await runSftpBackup(triggeredBy, destPath)
+      : await runLocalBackup(triggeredBy, destPath);
+    await recordSuccessfulBackup();
+    return runResult;
   }
   throw new Error(`Unknown backup destination: ${destination}`);
 }
@@ -542,6 +575,54 @@ async function fireScheduledBackup() {
       );
     }
   }
+}
+
+// ── 15-minute rolling OneDrive backup ────────────────────────────────────────
+// Fires every 15 minutes when the OneDrive connector is available and
+// rolling backup is enabled (default: enabled). Results and errors are stored
+// in system_settings under the SETTING_ROLLING_BACKUP_* keys so the admin
+// Settings → Backup panel can surface the last run status.
+
+const ROLLING_BACKUP_INTERVAL_MS = 15 * 60 * 1000;
+let _rollingBackupTimer: ReturnType<typeof setInterval> | null = null;
+
+async function fireRollingBackup(): Promise<void> {
+  try {
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
+    const enabledRaw = rows[0]?.value ?? null;
+    const enabled = enabledRaw === null ? true : enabledRaw !== "false";
+    if (!enabled) return;
+
+    logger.info({ startedAt: new Date().toISOString() }, "Rolling 15-min backup starting");
+    await runOneDriveBackup("scheduler:rolling");
+    const now = new Date().toISOString();
+    await db
+      .insert(systemSettings)
+      .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: now })
+      .onConflictDoUpdate({ target: systemSettings.key, set: { value: now, updatedAt: new Date() } });
+    await db.delete(systemSettings).where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_LAST_ERROR));
+    logger.info({ completedAt: now }, "Rolling 15-min backup OK");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error({ err: msg }, "Rolling 15-min backup FAILED");
+    try {
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: msg })
+        .onConflictDoUpdate({ target: systemSettings.key, set: { value: msg, updatedAt: new Date() } });
+    } catch {
+      // ignore secondary DB error
+    }
+  }
+}
+
+export function start15MinRollingBackup(): void {
+  if (_rollingBackupTimer !== null) return;
+  logger.info({ intervalMinutes: 15 }, "Rolling 15-min OneDrive backup scheduler started");
+  _rollingBackupTimer = setInterval(() => { void fireRollingBackup(); }, ROLLING_BACKUP_INTERVAL_MS);
 }
 
 export async function restartScheduledBackupJob(): Promise<void> {

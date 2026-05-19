@@ -12,7 +12,7 @@ import {
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
-import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, ALL_SCHEDULE_SETTINGS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, type BackupDestination } from "../lib/backup";
+import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -3612,6 +3612,7 @@ Important rules:
         SETTING_ROLLING_BACKUP_ENABLED,
         SETTING_ROLLING_BACKUP_LAST_RUN_AT,
         SETTING_ROLLING_BACKUP_LAST_ERROR,
+        SETTING_BACKUP_LAST_SUCCESSFUL_AT,
       ];
       const rows = await db
         .select()
@@ -3629,6 +3630,7 @@ Important rules:
       const rollingBackupEnabled = rollingEnabledRaw === null ? true : rollingEnabledRaw !== "false";
       const rollingBackupLastRunAt = rowMap[SETTING_ROLLING_BACKUP_LAST_RUN_AT] ?? null;
       const rollingBackupLastError = rowMap[SETTING_ROLLING_BACKUP_LAST_ERROR] ?? null;
+      const lastSuccessfulBackupAt = rowMap[SETTING_BACKUP_LAST_SUCCESSFUL_AT] ?? null;
 
       return res.json({
         hourUtc,
@@ -3637,6 +3639,7 @@ Important rules:
         rollingBackupEnabled,
         rollingBackupLastRunAt,
         rollingBackupLastError,
+        lastSuccessfulBackupAt,
       });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to fetch backup schedule settings." });
@@ -4542,7 +4545,10 @@ Important rules:
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
-      const config = await getBackupScheduleConfig();
+      const [config, lastSuccessfulBackupAt] = await Promise.all([
+        getBackupScheduleConfig(),
+        getLastSuccessfulBackupAt(),
+      ]);
       const { interval, unit } = fromIntervalMinutes(config.intervalMinutes);
       return res.json({
         ok: true,
@@ -4551,6 +4557,7 @@ Important rules:
         destination: config.destination,
         path: config.path,
         enabled: config.enabled,
+        lastSuccessfulBackupAt,
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to fetch backup schedule.";

@@ -788,6 +788,16 @@ interface BackupScheduleData {
   destination: BackupDestinationType | null;
   path: string | null;
   enabled: boolean;
+  lastSuccessfulBackupAt: string | null;
+}
+
+const BACKUP_STALE_DAYS = 7;
+
+function isBackupStale(lastSuccessfulBackupAt: string | null): boolean {
+  if (!lastSuccessfulBackupAt) return true;
+  const last = new Date(lastSuccessfulBackupAt).getTime();
+  if (Number.isNaN(last)) return true;
+  return Date.now() - last > BACKUP_STALE_DAYS * 24 * 60 * 60 * 1000;
 }
 
 const INTERVAL_OPTIONS: Array<{ interval: number; unit: BackupIntervalUnit; label: string }> = [
@@ -922,9 +932,28 @@ function BackupPanel() {
 
   const needsPath = (d: BackupDestinationType) => d === "local" || d === "network";
 
+  const stale = isBackupStale(scheduleQuery.data?.lastSuccessfulBackupAt ?? null);
+  const lastBackupAt = scheduleQuery.data?.lastSuccessfulBackupAt ?? null;
+
   return (
     <PanelShell title="Backup" subtitle="Back up all LabTrax data to keep your records safe.">
       {gate.blocked && <PlatformAdminSetupNotice />}
+
+      {!gate.blocked && !scheduleQuery.isLoading && stale && (
+        <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <div className="text-xs leading-snug space-y-0.5">
+            <p className="font-semibold">
+              {lastBackupAt ? "Backup overdue" : "No backup on record"}
+            </p>
+            <p className="text-amber-700 dark:text-amber-400">
+              {lastBackupAt
+                ? `Last successful backup was ${Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / (24 * 60 * 60 * 1000))} day(s) ago. Run a backup now or enable automatic scheduling to protect your data.`
+                : "No successful backup has been recorded. Run a backup now or enable automatic scheduling to protect your data."}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Back up now ── */}
       <div className="border border-border rounded-lg p-4 space-y-4">

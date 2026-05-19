@@ -61,6 +61,16 @@ interface CleanupScheduleSettings {
 
 interface BackupScheduleSettings {
   hourUtc: number;
+  lastSuccessfulBackupAt?: string | null;
+}
+
+const BACKUP_STALE_DAYS = 7;
+
+function isBackupStale(lastSuccessfulBackupAt: string | null | undefined): boolean {
+  if (!lastSuccessfulBackupAt) return true;
+  const last = new Date(lastSuccessfulBackupAt).getTime();
+  if (Number.isNaN(last)) return true;
+  return Date.now() - last > BACKUP_STALE_DAYS * 24 * 60 * 60 * 1000;
 }
 
 interface RunNowResult {
@@ -688,6 +698,28 @@ function MediaCleanupCard() {
                 <RunHistoryTable runs={allRuns} />
               </div>
             )}
+          </div>
+        )}
+
+        {backupScheduleQuery.isSuccess && isBackupStale(backupScheduleQuery.data?.lastSuccessfulBackupAt) && !gate.blocked && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2.5 text-amber-800 dark:text-amber-300">
+            <AlertTriangle size={13} className="shrink-0 mt-px" />
+            <div className="text-xs leading-snug">
+              <span className="font-semibold">
+                {backupScheduleQuery.data?.lastSuccessfulBackupAt ? "Backup overdue — " : "No backup on record — "}
+              </span>
+              {backupScheduleQuery.data?.lastSuccessfulBackupAt
+                ? `last successful backup was ${Math.floor((Date.now() - new Date(backupScheduleQuery.data.lastSuccessfulBackupAt).getTime()) / (24 * 60 * 60 * 1000))} day(s) ago.`
+                : "no successful backup has been recorded."}
+              {" "}
+              <a
+                href="#settings-backup"
+                onClick={(e) => { e.preventDefault(); window.location.hash = ""; window.location.assign("/settings?tab=backup"); }}
+                className="underline underline-offset-2 hover:opacity-80"
+              >
+                Go to Backup settings
+              </a>
+            </div>
           </div>
         )}
 
