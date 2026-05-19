@@ -48,7 +48,7 @@ import { deriveDisplayInitials } from "@/lib/display-initials";
 import { resolveCaseInvoice } from "@/lib/case-detail/draft-invoice";
 import { LabSlipModal } from "@/components/case/LabSlipModal";
 import { EditCaseModal } from "@/components/case/EditCaseModal";
-import StlViewerModal from "@/components/StlViewerModal";
+import ScanViewerModal, { type ScanFormat } from "@/components/ScanViewerModal";
 import { QuickEditModal } from "@/components/case/QuickEditModal";
 import { CaseBarcodeScannerModal } from "@/components/case/CaseBarcodeScannerModal";
 import { AddItemModal } from "@/components/case/AddItemModal";
@@ -229,7 +229,7 @@ export default function CaseDetailScreen() {
     }
   };
   const [showLabSlipModal, setShowLabSlipModal] = useState(false);
-  const [stlViewerState, setStlViewerState] = useState<{ url: string; fileName: string } | null>(null);
+  const [stlViewerState, setStlViewerState] = useState<{ url: string; fileName: string; format: ScanFormat } | null>(null);
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
   const [photoNotes, setPhotoNotes] = useState("");
   const [showPhotoNotes, setShowPhotoNotes] = useState(false);
@@ -1844,9 +1844,9 @@ export default function CaseDetailScreen() {
                         ? fileUrl
                         : new URL(fileUrl, getApiUrl()).toString();
 
-                      // For STL files, open the in-app 3D viewer
-                      if (ext === "stl") {
-                        setStlViewerState({ url: fullUrl, fileName: att.fileName });
+                      // For STL/OBJ/PLY files, open the in-app 3D viewer
+                      if (ext === "stl" || ext === "obj" || ext === "ply") {
+                        setStlViewerState({ url: fullUrl, fileName: att.fileName, format: ext as ScanFormat });
                         return;
                       }
 
@@ -3499,16 +3499,19 @@ export default function CaseDetailScreen() {
         customStationLabels={customStationLabels}
       />
 
-      <StlViewerModal
+      <ScanViewerModal
         visible={stlViewerState != null}
         fileUrl={stlViewerState?.url ?? ""}
         fileName={stlViewerState?.fileName ?? ""}
+        format={stlViewerState?.format ?? "stl"}
         authToken={getAccessToken()}
         onClose={() => setStlViewerState(null)}
         onFallback={async () => {
           if (!stlViewerState) return;
-          const { url, fileName: fn } = stlViewerState;
+          const { url, fileName: fn, format: fmt } = stlViewerState;
           setStlViewerState(null);
+          const mimeByFormat: Record<string, string> = { stl: "model/stl", obj: "model/obj", ply: "model/ply" };
+          const mimeType = mimeByFormat[fmt] ?? "application/octet-stream";
           const cacheDir = FileSystem.Paths.cache.uri;
           const safeName = fn.replace(/[^a-zA-Z0-9._-]/g, "_");
           const localUri = cacheDir.endsWith("/") ? cacheDir + safeName : cacheDir + "/" + safeName;
@@ -3526,13 +3529,13 @@ export default function CaseDetailScreen() {
             const canShare = await Sharing.isAvailableAsync();
             if (canShare) {
               await Sharing.shareAsync(downloadRes.uri, {
-                mimeType: "model/stl",
+                mimeType,
                 dialogTitle: fn,
               });
             } else {
               Alert.alert(
                 "Sharing not available",
-                "Install a 3D viewer app (e.g. Formlabs, Meshmixer) to open STL files.",
+                "Install a 3D viewer app (e.g. Formlabs, Meshmixer) to open scan files.",
               );
             }
           } catch {
