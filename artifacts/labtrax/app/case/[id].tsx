@@ -28,7 +28,8 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useApp } from "@/lib/app-context";
-import { resilientFetch } from "@/lib/query-client";
+import { resilientFetch, getAccessToken, getApiUrl } from "@/lib/query-client";
+import * as FileSystem from "expo-file-system";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { getStationInfo, STATIONS, CaseStatus, ToothType, MATERIAL_PRICES, CaseTypeValue, Invoice, SHADE_OPTIONS, cleanDoctorDisplay, formatInvNum, ActivityEntry } from "@/lib/data";
@@ -1826,12 +1827,46 @@ export default function CaseDetailScreen() {
               return (
                 <Pressable
                   key={att.id}
-                  onPress={() => {
-                    if (fileUrl) {
-                      Linking.openURL(fileUrl).catch(() => {
-                        Alert.alert("Unable to open", "Could not open this file.");
-                      });
+                  onPress={async () => {
+                    if (!fileUrl) return;
+                    if (is3D) {
+                      const mimeType = att.fileType || "application/octet-stream";
+                      const fullUrl = fileUrl.startsWith("http")
+                        ? fileUrl
+                        : new URL(fileUrl, getApiUrl()).toString();
+                      const cacheDir = FileSystem.Paths.cache.uri;
+                      const localUri = cacheDir.endsWith("/") ? cacheDir + att.fileName : cacheDir + "/" + att.fileName;
+                      try {
+                        const token = getAccessToken();
+                        const downloadRes = await FileSystem.downloadAsync(
+                          fullUrl,
+                          localUri,
+                          token ? { headers: { Authorization: `Bearer ${token}` } } : {},
+                        );
+                        if (downloadRes.status !== 200) {
+                          Alert.alert("Download failed", "Could not download the scan file.");
+                          return;
+                        }
+                        const canShare = await Sharing.isAvailableAsync();
+                        if (canShare) {
+                          await Sharing.shareAsync(downloadRes.uri, {
+                            mimeType,
+                            dialogTitle: att.fileName,
+                          });
+                        } else {
+                          Alert.alert(
+                            "Sharing not available",
+                            "Install a 3D viewer app (e.g. Formlabs, Meshmixer) to open .stl and other scan files.",
+                          );
+                        }
+                      } catch {
+                        Alert.alert("Unable to open", "Could not download or share this scan file.");
+                      }
+                      return;
                     }
+                    Linking.openURL(fileUrl).catch(() => {
+                      Alert.alert("Unable to open", "Could not open this file.");
+                    });
                   }}
                   style={({ pressed }) => ({
                     flexDirection: "row" as const,
@@ -1863,7 +1898,7 @@ export default function CaseDetailScreen() {
                         .join(" · ")}
                     </Text>
                   </View>
-                  <Ionicons name="open-outline" size={16} color={Colors.light.textTertiary} />
+                  <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={Colors.light.textTertiary} />
                 </Pressable>
               );
             })}
