@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Box,
   Check,
   ChevronDown,
   ChevronUp,
@@ -3829,6 +3830,18 @@ function AttachmentRow({
   });
 
   const isImage = (attachment.fileType || "").startsWith("image/");
+
+  const SCAN_MIME_TYPES = new Set(["model/stl", "model/obj", "model/ply", "application/sla"]);
+  const SCAN_EXTENSIONS = new Set([".stl", ".obj", ".ply", ".dcm", ".3ds", ".dae"]);
+  function is3dScan(mimeType: string, fileName?: string): boolean {
+    if (SCAN_MIME_TYPES.has(mimeType)) return true;
+    if (fileName) {
+      const ext = fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
+      if (SCAN_EXTENSIONS.has(ext)) return true;
+    }
+    return false;
+  }
+  const isScan = is3dScan(attachment.fileType || "", attachment.fileName);
   // Always use the canonical authenticated file endpoint rather than the raw
   // storageKey URL, which is a host-specific URL saved at upload time and may
   // be stale after a domain change or redeployment.
@@ -3850,7 +3863,7 @@ function AttachmentRow({
   const rowBody = (
     <>
       <div className="mt-0.5 text-muted-foreground">
-        <Paperclip size={14} />
+        {isScan ? <Box size={14} /> : <Paperclip size={14} />}
       </div>
       <div className="min-w-0 flex-1 text-left">
         <div className="font-medium truncate flex items-center gap-2" title={attachment.fileName}>
@@ -3873,7 +3886,7 @@ function AttachmentRow({
           </span>
         </div>
         <div className="text-xs text-muted-foreground mt-0.5">
-          {isImage ? "Image" : attachment.fileType || "File"}
+          {isScan ? "3D Scan" : isImage ? "Image" : attachment.fileType || "File"}
           {attachment.uploaderName ? ` · ${attachment.uploaderName}` : ""}
           {attachment.createdAt ? ` · ${relativeTime(attachment.createdAt)}` : ""}
         </div>

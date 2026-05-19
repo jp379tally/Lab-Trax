@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle, FileText, Film, Image, RotateCw, Upload, X, XCircle } from "lucide-react";
+import { Box, CheckCircle, FileText, Film, Image, RotateCw, Upload, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads, type FileWithHandle, type UploadRejection } from "@/lib/uploads-context";
@@ -20,7 +20,25 @@ const PICKER_TYPES = [
   },
 ];
 
-function FileTypeIcon({ mimeType, className }: { mimeType: string; className?: string }) {
+const SCAN_MIME_TYPES = new Set([
+  "model/stl",
+  "model/obj",
+  "model/ply",
+  "application/sla",
+]);
+const SCAN_EXTENSIONS = new Set([".stl", ".obj", ".ply", ".dcm", ".3ds", ".dae"]);
+
+function is3dScan(mimeType: string, fileName?: string): boolean {
+  if (SCAN_MIME_TYPES.has(mimeType)) return true;
+  if (fileName) {
+    const ext = fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
+    if (SCAN_EXTENSIONS.has(ext)) return true;
+  }
+  return false;
+}
+
+function FileTypeIcon({ mimeType, fileName, className }: { mimeType: string; fileName?: string; className?: string }) {
+  if (is3dScan(mimeType, fileName)) return <Box size={16} className={className} />;
   if (mimeType === "application/pdf") return <FileText size={16} className={className} />;
   if (mimeType.startsWith("video/")) return <Film size={16} className={className} />;
   return <Image size={16} className={className} />;
@@ -273,7 +291,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                 ].join(" ")}
               >
                 <div className="mt-0.5 shrink-0 text-muted-foreground">
-                  <FileTypeIcon mimeType={entry.mimeType} />
+                  <FileTypeIcon mimeType={entry.mimeType} fileName={entry.fileName} />
                 </div>
 
                 <div className="min-w-0 flex-1 space-y-1.5">
