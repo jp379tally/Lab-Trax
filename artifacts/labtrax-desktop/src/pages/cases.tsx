@@ -842,6 +842,31 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+const CASES_FILTER_STORAGE_KEY = "cases_filters_v1";
+const CASES_SCROLL_STORAGE_KEY = "cases_scroll_v1";
+
+function readCasesFilters(): {
+  search: string;
+  statusFilter: string;
+  priorityFilter: string;
+  yearFilter: string;
+  sortKey: SortKey;
+  sortDir: "asc" | "desc";
+} {
+  try {
+    const raw = sessionStorage.getItem(CASES_FILTER_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {
+    search: "",
+    statusFilter: "all",
+    priorityFilter: "all",
+    yearFilter: "all",
+    sortKey: "createdAt",
+    sortDir: "desc",
+  };
+}
+
 export default function CasesPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["cases"],
@@ -850,14 +875,18 @@ export default function CasesPage() {
     refetchOnWindowFocus: true,
   });
 
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [priorityFilter, setPriorityFilter] = useState<string>("all");
-  const [yearFilter, setYearFilter] = useState<string>("all");
-  const [sortKey, setSortKey] = useState<SortKey>("createdAt");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const initialFilters = useRef(readCasesFilters());
+
+  const [search, setSearch] = useState(initialFilters.current.search);
+  const [statusFilter, setStatusFilter] = useState<string>(initialFilters.current.statusFilter);
+  const [priorityFilter, setPriorityFilter] = useState<string>(initialFilters.current.priorityFilter);
+  const [yearFilter, setYearFilter] = useState<string>(initialFilters.current.yearFilter);
+  const [sortKey, setSortKey] = useState<SortKey>(initialFilters.current.sortKey);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">(initialFilters.current.sortDir);
   const [selected, setSelected] = useState<LabCase | null>(null);
   const [showNewCase, setShowNewCase] = useState(false);
+  const pageRef = useRef<HTMLDivElement>(null);
+  const scrollRestoredRef = useRef(false);
 
   const availableYears = useMemo(() => {
     const years = new Set<number>();
@@ -868,6 +897,50 @@ export default function CasesPage() {
     }
     return Array.from(years).sort((a, b) => b - a);
   }, [data]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        CASES_FILTER_STORAGE_KEY,
+        JSON.stringify({ search, statusFilter, priorityFilter, yearFilter, sortKey, sortDir }),
+      );
+    } catch {}
+  }, [search, statusFilter, priorityFilter, yearFilter, sortKey, sortDir]);
+
+  useEffect(() => {
+    const el = pageRef.current?.closest("main") as HTMLElement | null;
+    if (!el) return;
+
+    const raw = sessionStorage.getItem(CASES_SCROLL_STORAGE_KEY);
+    const target = raw !== null ? Number(raw) : NaN;
+    if (Number.isFinite(target) && target > 0) {
+      el.scrollTop = target;
+      scrollRestoredRef.current = el.scrollTop >= target - 1;
+    } else {
+      scrollRestoredRef.current = true;
+    }
+
+    function handleScroll() {
+      try {
+        sessionStorage.setItem(CASES_SCROLL_STORAGE_KEY, String(el!.scrollTop));
+      } catch {}
+    }
+
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    if (isLoading || scrollRestoredRef.current) return;
+    const el = pageRef.current?.closest("main") as HTMLElement | null;
+    if (!el) return;
+    const raw = sessionStorage.getItem(CASES_SCROLL_STORAGE_KEY);
+    const target = raw !== null ? Number(raw) : NaN;
+    if (Number.isFinite(target) && target > 0) {
+      el.scrollTop = target;
+    }
+    scrollRestoredRef.current = true;
+  }, [isLoading]);
 
   const filtered = useMemo(() => {
     const rows = data ?? [];
@@ -940,7 +1013,7 @@ export default function CasesPage() {
   }
 
   return (
-    <div className="px-8 py-7">
+    <div ref={pageRef} className="px-8 py-7">
       <div className="flex items-start justify-between mb-6">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Cases</h1>
