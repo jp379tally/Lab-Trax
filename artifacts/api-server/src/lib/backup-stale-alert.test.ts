@@ -76,11 +76,17 @@ describe("checkAndAlertBackupStaleness — compare-and-swap claim", () => {
   /**
    * Helper that wires up db.select() to return:
    *   - first call  → backup_last_successful_at row (stale)
-   *   - second call → backup_stale_alert_last_sent_at row (lastSentRaw)
-   *   - third call  → admin emails
+   *   - second call → stale-alert settings rows (empty → uses defaults)
+   *   - third call  → backup_stale_alert_last_sent_at row (lastSentRaw)
+   *   - fourth call → admin emails
+   *
+   * The second call exists because checkAndAlertBackupStaleness() uses
+   * Promise.all([getLastSuccessfulBackupAt(), getBackupStaleAlertSettings()])
+   * which issues two concurrent DB selects before the rate-limit check.
    */
   function setupSelectMocks(lastSentRaw: string | null) {
     const staleRow = [{ key: "backup_last_successful_at", value: staleBackupAt() }];
+    const settingsRow: never[] = []; // empty → getBackupStaleAlertSettings uses defaults
     const alertRow = lastSentRaw
       ? [{ key: SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT, value: lastSentRaw }]
       : [];
@@ -95,7 +101,8 @@ describe("checkAndAlertBackupStaleness — compare-and-swap claim", () => {
           where: () =>
             Promise.resolve(
               call === 1 ? staleRow :
-              call === 2 ? alertRow :
+              call === 2 ? settingsRow :
+              call === 3 ? alertRow :
               adminRow,
             ),
         }),
@@ -224,18 +231,20 @@ describe("checkAndAlertBackupStaleness — compare-and-swap claim", () => {
     // Both concurrent calls read the same DB state before either writes.
     //
     // JavaScript is single-threaded. With Promise.resolve() mocks the
-    // microtask interleaving is deterministic:
+    // microtask interleaving is deterministic. Each instance issues 4 selects:
     //   select 1 → instance A: backup_last_successful_at (stale)
-    //   select 2 → instance B: backup_last_successful_at (stale)
-    //   select 3 → instance A: backup_stale_alert_last_sent_at (none)
-    //   select 4 → instance B: backup_stale_alert_last_sent_at (none)
-    //   select 5 → instance A: admin emails
-    //   select 6 → instance B: admin emails
+    //   select 2 → instance A: stale-alert settings (empty → defaults)
+    //   select 3 → instance B: backup_last_successful_at (stale)
+    //   select 4 → instance B: stale-alert settings (empty → defaults)
+    //   select 5 → instance A: backup_stale_alert_last_sent_at (none)
+    //   select 6 → instance B: backup_stale_alert_last_sent_at (none)
+    //   select 7 → instance A: admin emails
+    //   select 8 → instance B: admin emails
     const staleRow = [{ key: "backup_last_successful_at", value: staleBackupAt() }];
     const alertRow: never[] = [];
     const adminRow = [{ email: "admin@lab.com" }];
 
-    const responses = [staleRow, staleRow, alertRow, alertRow, adminRow, adminRow];
+    const responses = [staleRow, [], staleRow, [], alertRow, alertRow, adminRow, adminRow];
     let selectCallCount = 0;
     (db.select as Mock).mockImplementation(() => {
       const response = responses[selectCallCount++] ?? adminRow;
@@ -270,19 +279,21 @@ describe("checkAndAlertBackupStaleness — compare-and-swap claim", () => {
 
   it("simulates two concurrent calls (prior row exists) — only one sends the email", async () => {
     // Both instances read the same old alert timestamp before either writes.
-    // Interleaving with 2 instances × 3 selects each:
+    // Interleaving with 2 instances × 4 selects each:
     //   select 1 → A: stale backup
-    //   select 2 → B: stale backup
-    //   select 3 → A: old alert timestamp
-    //   select 4 → B: old alert timestamp
-    //   select 5 → A: admin emails
-    //   select 6 → B: admin emails
+    //   select 2 → A: stale-alert settings (empty → defaults)
+    //   select 3 → B: stale backup
+    //   select 4 → B: stale-alert settings (empty → defaults)
+    //   select 5 → A: old alert timestamp
+    //   select 6 → B: old alert timestamp
+    //   select 7 → A: admin emails
+    //   select 8 → B: admin emails
     const staleRow = [{ key: "backup_last_successful_at", value: staleBackupAt() }];
     const oldAlert = oldAlertAt();
     const alertRow = [{ key: SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT, value: oldAlert }];
     const adminRow = [{ email: "admin@lab.com" }];
 
-    const responses = [staleRow, staleRow, alertRow, alertRow, adminRow, adminRow];
+    const responses = [staleRow, [], staleRow, [], alertRow, alertRow, adminRow, adminRow];
     let selectCallCount = 0;
     (db.select as Mock).mockImplementation(() => {
       const response = responses[selectCallCount++] ?? adminRow;

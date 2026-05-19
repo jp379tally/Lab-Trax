@@ -917,14 +917,102 @@ export async function restartScheduledBackupJob(): Promise<void> {
   _scheduledIntervalTimer = setInterval(fireScheduledBackup, intervalMs);
 }
 
+// ── 15-minute rolling OneDrive backup scheduler ──────────────────────────────
+// Keeps a single rolling backup on OneDrive by uploading every 15 minutes,
+// replacing the previous file each time. Skips ticks when disabled via the
+// rolling_backup_enabled system_settings row. Outcomes are written to
+// rolling_backup_last_run_at and rolling_backup_last_error.
 
-/**
- * No-op stub for the rolling backup scheduler.
- * The recurring backup is driven by `restartScheduledBackupJob` which reads
- * the interval from system settings. This export satisfies the import in
- * app.ts and is intentionally a no-op — rolling backup is configured via
- * the admin settings panel, not a hard-coded 15-minute interval.
- */
-export async function start15MinRollingBackup(): Promise<void> {
-  // Rolling backup scheduling is handled by restartScheduledBackupJob().
+let _rollingBackupScheduled = false;
+
+const ROLLING_BACKUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+
+export function start15MinRollingBackup(): void {
+  if (_rollingBackupScheduled) return;
+  _rollingBackupScheduled = true;
+
+  logger.info("[backup] 15-minute rolling OneDrive backup scheduler armed");
+
+  const tick = async () => {
+    try {
+      const rows = await db
+        .select()
+        .from(systemSettings)
+        .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
+      const enabledRaw = rows[0]?.value ?? null;
+      const enabled = enabledRaw === null ? true : enabledRaw !== "false";
+      if (!enabled) {
+        return;
+      }
+    } catch (dbErr: unknown) {
+      logger.warn(
+        { err: dbErr instanceof Error ? dbErr.message : String(dbErr) },
+        "[backup] Rolling backup: failed to read enabled setting; skipping tick",
+      );
+      return;
+    }
+
+    const runAt = new Date().toISOString();
+    try {
+      logger.info({ startedAt: runAt }, "[backup] Rolling OneDrive backup starting");
+      const { buffer } = await buildBackupZipBuffer("scheduler:rolling");
+      const uploaded = await uploadToOneDrive(
+        buffer,
+        "labtrax-rolling-backup.zip.enc",
+        "LabTrax Backups",
+        "replace",
+      );
+      logger.info(
+        { fileName: uploaded.name, size: uploaded.size },
+        "[backup] Rolling OneDrive backup OK",
+      );
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: runAt })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: runAt, updatedAt: new Date() },
+        });
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: "" })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: "", updatedAt: new Date() },
+        });
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.error({ err: errMsg }, "[backup] Rolling OneDrive backup FAILED");
+      try {
+        await db
+          .insert(systemSettings)
+          .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: runAt })
+          .onConflictDoUpdate({
+            target: systemSettings.key,
+            set: { value: runAt, updatedAt: new Date() },
+          });
+        await db
+          .insert(systemSettings)
+          .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: errMsg })
+          .onConflictDoUpdate({
+            target: systemSettings.key,
+            set: { value: errMsg, updatedAt: new Date() },
+          });
+      } catch (writeErr: unknown) {
+        logger.warn(
+          { err: writeErr instanceof Error ? writeErr.message : String(writeErr) },
+          "[backup] Rolling backup: failed to write error to settings",
+        );
+      }
+    }
+  };
+
+  setInterval(() => {
+    tick().catch((err: unknown) => {
+      logger.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "[backup] Rolling backup tick threw unexpectedly",
+      );
+    });
+  }, ROLLING_BACKUP_INTERVAL_MS);
 }

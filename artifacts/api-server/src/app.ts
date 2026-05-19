@@ -269,6 +269,7 @@ startBillingJobs();
 // OneDrive backup schedulers — only active when the connector is available.
 if (process.env.REPLIT_CONNECTORS_HOSTNAME) {
   startDailyOneDriveBackup();
+  start15MinRollingBackup();
 }
 // Dynamic recurring backup scheduler — reads persisted settings from DB and
 // starts the interval timer. Runs at startup so saved schedules survive restarts.
