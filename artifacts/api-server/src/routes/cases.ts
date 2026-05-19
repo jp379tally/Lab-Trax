@@ -2399,6 +2399,46 @@ router.patch(
   })
 );
 
+// ---------------------------------------------------------------------------
+// Bridge-span helpers used by the restoration POST handler.
+// These mirror the connector parsing in invoice-sync.ts but are kept local
+// to avoid a circular import between the routes and the sync lib.
+// ---------------------------------------------------------------------------
+
+/** Parse "13-14,14-15" → Set of normalised "lo-hi" pair keys. */
+function _parseBridgeConnectorStr(value: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!value) return out;
+  for (const part of value.split(",")) {
+    const [a, b] = part.trim().split("-").map((s) => s.trim());
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb) && na > 0 && nb > 0) {
+      out.add(na < nb ? `${na}-${nb}` : `${nb}-${na}`);
+    }
+  }
+  return out;
+}
+
+/** BFS: return all tooth numbers reachable from toothNum via connectors. */
+function _findBridgeSpan(toothNum: number, connectors: Set<string>): Set<number> {
+  const span = new Set<number>();
+  const toVisit: number[] = [toothNum];
+  while (toVisit.length > 0) {
+    const curr = toVisit.pop()!;
+    if (span.has(curr)) continue;
+    span.add(curr);
+    for (const pair of connectors) {
+      const [as, bs] = pair.split("-");
+      const a = Number(as);
+      const b = Number(bs);
+      if (a === curr && !span.has(b)) toVisit.push(b);
+      if (b === curr && !span.has(a)) toVisit.push(a);
+    }
+  }
+  return span;
+}
+
 router.post(
   "/:caseId/restorations",
   asyncHandler(async (req, res) => {
@@ -2422,6 +2462,34 @@ router.post(
       })
       .parse(req.body);
 
+    // ── Step 1: Infer pontic material from existing bridge-span abutments ──
+    // When a pontic is added without a material, look at the case's existing
+    // restorations that share the same bridge span and use the first non-pontic
+    // abutment's material so the price resolves correctly.
+    let effectiveMaterial = input.material ?? null;
+    const bridgeConnectorStr = (found as any).bridgeConnectors as string | null ?? null;
+    if (
+      /pontic/i.test(input.restorationType) &&
+      !effectiveMaterial &&
+      bridgeConnectorStr
+    ) {
+      const ponticTooth = Number(input.toothNumber.trim());
+      if (Number.isInteger(ponticTooth) && ponticTooth >= 1 && ponticTooth <= 32) {
+        const connectors = _parseBridgeConnectorStr(bridgeConnectorStr);
+        const span = _findBridgeSpan(ponticTooth, connectors);
+        if (span.size > 1) {
+          const existingRestorations = await db.query.caseRestorations.findMany({
+            where: eq(caseRestorations.caseId, found.id),
+          });
+          const abutment = existingRestorations.find((r) => {
+            const rTooth = Number(r.toothNumber.trim());
+            return span.has(rTooth) && !/pontic/i.test(r.restorationType) && r.material;
+          });
+          if (abutment?.material) effectiveMaterial = abutment.material;
+        }
+      }
+    }
+
     let unit = input.unitPrice;
     const userSupplied = Number.isFinite(unit) && unit > 0;
     let priceSource: string | null = userSupplied ? "manual" : null;
@@ -2435,7 +2503,7 @@ router.post(
           doctorName: found.doctorName,
           providerOrganizationId: found.providerOrganizationId,
         },
-        input.material,
+        effectiveMaterial,
         input.restorationType
       );
       if (fallback) {
@@ -2453,7 +2521,7 @@ router.post(
         caseId: found.id,
         toothNumber: input.toothNumber,
         restorationType: input.restorationType,
-        material: input.material ?? null,
+        material: effectiveMaterial,
         shade: input.shade ?? null,
         notes: input.notes ?? null,
         quantity: input.quantity,
@@ -2482,6 +2550,76 @@ router.post(
         unitPrice: restoration.unitPrice,
       },
     });
+
+    // ── Step 2: Re-price all non-manually-priced restorations in the same
+    // bridge span so pontics added before their abutments get corrected
+    // when the abutment arrives (and vice-versa).
+    if (bridgeConnectorStr) {
+      const insertedTooth = Number(input.toothNumber.trim());
+      if (Number.isInteger(insertedTooth) && insertedTooth >= 1 && insertedTooth <= 32) {
+        const connectors = _parseBridgeConnectorStr(bridgeConnectorStr);
+        const span = _findBridgeSpan(insertedTooth, connectors);
+        if (span.size > 1) {
+          // Fetch all other restorations in this case so we can filter to
+          // the span and find the abutment material.
+          const allOtherRestorations = await db.query.caseRestorations.findMany({
+            where: and(
+              eq(caseRestorations.caseId, found.id),
+              ne(caseRestorations.id, restoration.id),
+            ),
+          });
+
+          // Determine the authoritative abutment material for the span
+          // (include the newly inserted restoration in the search pool).
+          const allSpanRestorations = [
+            ...allOtherRestorations.filter((r) => span.has(Number(r.toothNumber.trim()))),
+            restoration,
+          ];
+          const spanAbutment = allSpanRestorations.find(
+            (r) => !/pontic/i.test(r.restorationType) && r.material,
+          );
+          const spanMaterial = spanAbutment?.material ?? null;
+
+          // Re-price each other non-manually-priced restoration in the span.
+          const spanOthers = allOtherRestorations.filter((r) => {
+            const rTooth = Number(r.toothNumber.trim());
+            return span.has(rTooth) && r.priceSource !== "manual";
+          });
+
+          for (const spanRest of spanOthers) {
+            // Pontic without material → inherit the span's abutment material.
+            const matForRest =
+              /pontic/i.test(spanRest.restorationType) && !spanRest.material && spanMaterial
+                ? spanMaterial
+                : (spanRest.material ?? null);
+
+            const repriced = await resolveServerPriceWithSource(
+              {
+                labOrganizationId: found.labOrganizationId,
+                doctorName: found.doctorName,
+                providerOrganizationId: found.providerOrganizationId,
+              },
+              matForRest,
+              spanRest.restorationType,
+            );
+
+            if (repriced) {
+              await db
+                .update(caseRestorations)
+                .set({
+                  material: matForRest ?? spanRest.material,
+                  unitPrice: repriced.amount.toFixed(2),
+                  priceSource: repriced.source,
+                  priceSourceId: repriced.sourceId,
+                  priceSourceName: repriced.sourceName,
+                  priceKey: repriced.key,
+                })
+                .where(eq(caseRestorations.id, spanRest.id));
+            }
+          }
+        }
+      }
+    }
 
     // Keep the case's invoice in sync with the restoration set so the
     // user doesn't have to also open the Invoice tab and regenerate by

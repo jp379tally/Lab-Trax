@@ -1771,12 +1771,49 @@ export function CaseDrawer({
           }),
         });
       } else if (payload.kind === "add_pontic") {
+        // Infer material from the nearest abutment crown in the same bridge
+        // span so the price resolves immediately rather than showing $0.00.
+        let inferredMaterial: string | undefined;
+        const ponticTooth = Number(payload.toothId);
+        if (
+          Number.isInteger(ponticTooth) &&
+          ponticTooth >= 1 &&
+          ponticTooth <= 32 &&
+          connectedPairs.size > 0
+        ) {
+          // BFS through connectedPairs to find all teeth in the same span.
+          const span = new Set<number>();
+          const toVisit: number[] = [ponticTooth];
+          while (toVisit.length > 0) {
+            const curr = toVisit.pop()!;
+            if (span.has(curr)) continue;
+            span.add(curr);
+            for (const pair of connectedPairs) {
+              const [as, bs] = pair.split("-");
+              const a = Number(as);
+              const b = Number(bs);
+              if (a === curr && !span.has(b)) toVisit.push(b);
+              if (b === curr && !span.has(a)) toVisit.push(a);
+            }
+          }
+          // Find the first non-pontic restoration in the span with a material.
+          const abutment = (data?.restorations ?? []).find((r) => {
+            const rTooth = Number((r.toothNumber ?? "").trim());
+            return (
+              span.has(rTooth) &&
+              !/pontic/i.test(r.restorationType) &&
+              r.material
+            );
+          });
+          inferredMaterial = abutment?.material ?? undefined;
+        }
         await apiFetch(`/cases/${labCase.id}/restorations`, {
           method: "POST",
           body: JSON.stringify({
             toothNumber: payload.toothId,
             restorationType: "Pontic",
             quantity: 1,
+            ...(inferredMaterial ? { material: inferredMaterial } : {}),
           }),
         });
       } else if (payload.kind === "mark_missing") {
