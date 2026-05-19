@@ -62,15 +62,16 @@ interface CleanupScheduleSettings {
 interface BackupScheduleSettings {
   hourUtc: number;
   lastSuccessfulBackupAt?: string | null;
+  staleAfterDays?: number;
 }
 
-const BACKUP_STALE_DAYS = 7;
+const DEFAULT_BACKUP_STALE_DAYS = 7;
 
-function isBackupStale(lastSuccessfulBackupAt: string | null | undefined): boolean {
+function isBackupStale(lastSuccessfulBackupAt: string | null | undefined, staleDays: number = DEFAULT_BACKUP_STALE_DAYS): boolean {
   if (!lastSuccessfulBackupAt) return true;
   const last = new Date(lastSuccessfulBackupAt).getTime();
   if (Number.isNaN(last)) return true;
-  return Date.now() - last > BACKUP_STALE_DAYS * 24 * 60 * 60 * 1000;
+  return Date.now() - last > staleDays * 24 * 60 * 60 * 1000;
 }
 
 interface RunNowResult {
@@ -701,7 +702,7 @@ function MediaCleanupCard() {
           </div>
         )}
 
-        {backupScheduleQuery.isSuccess && isBackupStale(backupScheduleQuery.data?.lastSuccessfulBackupAt) && !gate.blocked && (
+        {backupScheduleQuery.isSuccess && isBackupStale(backupScheduleQuery.data?.lastSuccessfulBackupAt, backupScheduleQuery.data?.staleAfterDays) && !gate.blocked && (
           <div className="flex items-start gap-2 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2.5 text-amber-800 dark:text-amber-300">
             <AlertTriangle size={13} className="shrink-0 mt-px" />
             <div className="text-xs leading-snug">
@@ -723,7 +724,7 @@ function MediaCleanupCard() {
           </div>
         )}
 
-        {(nextRunLabel || nextBackupLabel || (backupScheduleQuery.isSuccess && backupScheduleQuery.data?.lastSuccessfulBackupAt && !isBackupStale(backupScheduleQuery.data.lastSuccessfulBackupAt))) && (
+        {(nextRunLabel || nextBackupLabel || (backupScheduleQuery.isSuccess && backupScheduleQuery.data?.lastSuccessfulBackupAt && !isBackupStale(backupScheduleQuery.data.lastSuccessfulBackupAt, backupScheduleQuery.data?.staleAfterDays))) && (
           <div className="pt-1 border-t border-border/60 space-y-1">
             {nextRunLabel && (
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -737,7 +738,7 @@ function MediaCleanupCard() {
                 Next backup: <span className="text-foreground font-medium">{nextBackupLabel}</span>
               </div>
             )}
-            {backupScheduleQuery.isSuccess && backupScheduleQuery.data?.lastSuccessfulBackupAt && !isBackupStale(backupScheduleQuery.data.lastSuccessfulBackupAt) && (
+            {backupScheduleQuery.isSuccess && backupScheduleQuery.data?.lastSuccessfulBackupAt && !isBackupStale(backupScheduleQuery.data.lastSuccessfulBackupAt, backupScheduleQuery.data?.staleAfterDays) && (
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <CheckCircle2 size={11} className="shrink-0 text-green-600 dark:text-green-400" />
                 Last backup: <span className="text-foreground font-medium">{relativeTime(backupScheduleQuery.data.lastSuccessfulBackupAt)}</span>

@@ -53,6 +53,8 @@ export const SETTING_ROLLING_BACKUP_LAST_ERROR = "rolling_backup_last_error";
 export const SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT = "backup_stale_alert_last_sent_at";
 export const SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS = "backup_stale_alert_threshold_days";
 export const SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS = "backup_stale_alert_rate_limit_days";
+export const SETTING_BACKUP_STALE_DAYS = "backup_stale_days";
+export const DEFAULT_BACKUP_STALE_DAYS = 7;
 
 export const ALL_SCHEDULE_SETTINGS = [
   SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,

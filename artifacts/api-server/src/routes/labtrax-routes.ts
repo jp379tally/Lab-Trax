@@ -12,7 +12,7 @@ import {
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
-import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, type BackupDestination } from "../lib/backup";
+import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, SETTING_BACKUP_STALE_DAYS, DEFAULT_BACKUP_STALE_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -3613,6 +3613,7 @@ Important rules:
         SETTING_ROLLING_BACKUP_LAST_RUN_AT,
         SETTING_ROLLING_BACKUP_LAST_ERROR,
         SETTING_BACKUP_LAST_SUCCESSFUL_AT,
+        SETTING_BACKUP_STALE_DAYS,
       ];
       const rows = await db
         .select()
@@ -3631,6 +3632,11 @@ Important rules:
       const rollingBackupLastRunAt = rowMap[SETTING_ROLLING_BACKUP_LAST_RUN_AT] ?? null;
       const rollingBackupLastError = rowMap[SETTING_ROLLING_BACKUP_LAST_ERROR] ?? null;
       const lastSuccessfulBackupAt = rowMap[SETTING_BACKUP_LAST_SUCCESSFUL_AT] ?? null;
+      const staleDaysRaw = rowMap[SETTING_BACKUP_STALE_DAYS] ?? null;
+      const staleAfterDays =
+        staleDaysRaw !== null && Number.isFinite(parseInt(staleDaysRaw, 10))
+          ? parseInt(staleDaysRaw, 10)
+          : DEFAULT_BACKUP_STALE_DAYS;
 
       return res.json({
         hourUtc,
@@ -3640,6 +3646,7 @@ Important rules:
         rollingBackupLastRunAt,
         rollingBackupLastError,
         lastSuccessfulBackupAt,
+        staleAfterDays,
       });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to fetch backup schedule settings." });
@@ -4545,12 +4552,15 @@ Important rules:
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
-      const [config, lastSuccessfulBackupAt, staleAlertSettings] = await Promise.all([
+      const [config, lastSuccessfulBackupAt, staleAlertSettings, staleDaysRow] = await Promise.all([
         getBackupScheduleConfig(),
         getLastSuccessfulBackupAt(),
         getBackupStaleAlertSettings(),
+        db.select().from(systemSettings).where(eq(systemSettings.key, SETTING_BACKUP_STALE_DAYS)).limit(1),
       ]);
       const { interval, unit } = fromIntervalMinutes(config.intervalMinutes);
+      const staleDaysRaw = staleDaysRow[0]?.value ?? null;
+      const staleAfterDays = staleDaysRaw !== null ? parseInt(staleDaysRaw, 10) : DEFAULT_BACKUP_STALE_DAYS;
       return res.json({
         ok: true,
         interval,
@@ -4561,6 +4571,7 @@ Important rules:
         lastSuccessfulBackupAt,
         staleAlertThresholdDays: staleAlertSettings.thresholdDays,
         staleAlertRateLimitDays: staleAlertSettings.rateLimitDays,
+        staleAfterDays: Number.isFinite(staleAfterDays) ? staleAfterDays : DEFAULT_BACKUP_STALE_DAYS,
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to fetch backup schedule.";
@@ -4579,6 +4590,9 @@ Important rules:
     const destination = body.destination as BackupDestination | undefined;
     const destPath = typeof body.path === "string" ? body.path.trim() || null : null;
     const enabled = body.enabled === true || body.enabled === "true";
+    const staleAfterDaysRaw = body.staleAfterDays !== undefined
+      ? (typeof body.staleAfterDays === "number" ? body.staleAfterDays : parseInt(String(body.staleAfterDays), 10))
+      : null;
 
     const staleThresholdRaw =
       typeof body.staleAlertThresholdDays === "number"
@@ -4598,6 +4612,9 @@ Important rules:
     }
     if (unit !== "minutes" && unit !== "hours") {
       return res.status(400).json({ error: "unit must be 'minutes' or 'hours'." });
+    }
+    if (staleAfterDaysRaw !== null && (!Number.isInteger(staleAfterDaysRaw) || staleAfterDaysRaw < 1 || staleAfterDaysRaw > 365)) {
+      return res.status(400).json({ error: "staleAfterDays must be an integer between 1 and 365." });
     }
     const intervalMinutes = toIntervalMinutes(intervalRaw, unit);
     const VALID_INTERVALS = [15, 30, 60, 120, 240, 480, 1440];
@@ -4657,11 +4674,14 @@ Important rules:
       if (staleRateLimitRaw !== null) {
         await upsert(SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, String(staleRateLimitRaw));
       }
+      if (staleAfterDaysRaw !== null && Number.isFinite(staleAfterDaysRaw) && staleAfterDaysRaw >= 1) {
+        await upsert(SETTING_BACKUP_STALE_DAYS, String(staleAfterDaysRaw));
+      }
 
       // Restart the in-process recurring job with the new settings.
       void restartScheduledBackupJob();
 
-      return res.json({ ok: true, interval: intervalRaw, unit, destination, path: destPath, enabled });
+      return res.json({ ok: true, interval: intervalRaw, unit, destination, path: destPath, enabled, staleAfterDays: staleAfterDaysRaw ?? DEFAULT_BACKUP_STALE_DAYS });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to save backup schedule.";
       return res.status(500).json({ error: msg });
