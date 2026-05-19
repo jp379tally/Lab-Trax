@@ -917,3 +917,14 @@ export async function restartScheduledBackupJob(): Promise<void> {
   _scheduledIntervalTimer = setInterval(fireScheduledBackup, intervalMs);
 }
 
+
+/**
+ * No-op stub for the rolling backup scheduler.
+ * The recurring backup is driven by `restartScheduledBackupJob` which reads
+ * the interval from system settings. This export satisfies the import in
+ * app.ts and is intentionally a no-op — rolling backup is configured via
+ * the admin settings panel, not a hard-coded 15-minute interval.
+ */
+export async function start15MinRollingBackup(): Promise<void> {
+  // Rolling backup scheduling is handled by restartScheduledBackupJob().
+}

@@ -565,6 +565,62 @@ paths:
                   enabled: { type: boolean }
         "403":
           description: Admin access required
+  /rx-practice-aliases:
+    get:
+      operationId: getRxPracticeAlias
+      tags: [cases]
+      summary: Look up a saved Rx-name → practice alias for a lab
+      description: |
+        Returns the saved provider organization ID for the given
+        (labOrganizationId, rxName) pair if one exists. The rxName is
+        matched case-insensitively (normalized to lowercase). Returns
+        `found: false` when no alias is stored. Lab-member auth required.
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: rxName
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Alias lookup result (found or not found)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RxPracticeAliasResult"
+        "400":
+          description: Missing required query parameters
+        "403":
+          description: Caller is not a member of the lab
+    post:
+      operationId: upsertRxPracticeAlias
+      tags: [cases]
+      summary: Save or update an Rx-name → practice alias for a lab
+      description: |
+        Upserts an alias that maps a normalized Rx doctor/practice name to a
+        specific provider organization for the given lab. On conflict
+        (same lab + rxName) the providerOrganizationId is updated in place.
+        Lab-member auth required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RxPracticeAliasInput"
+      responses:
+        "200":
+          description: Alias saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RxPracticeAliasResult"
+        "400":
+          description: Missing or invalid fields
+        "403":
+          description: Caller is not a member of the lab
   /invoices/receive-payments:
     post:
       operationId: receiveInvoicePayments
@@ -1031,6 +1087,24 @@ components:
           maxItems: 500
           items: { type: string }
           description: null or omitted = send to all; non-empty = only these practice IDs
+    RxPracticeAliasResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            found: { type: boolean }
+            providerOrganizationId:
+              type: string
+              nullable: true
+    RxPracticeAliasInput:
+      type: object
+      required: [labOrganizationId, rxName, providerOrganizationId]
+      properties:
+        labOrganizationId: { type: string }
+        rxName: { type: string }
+        providerOrganizationId: { type: string }
     ReceivePaymentsResult:
       type: object
       properties:

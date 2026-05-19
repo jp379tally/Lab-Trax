@@ -419,6 +419,22 @@ export interface StatementScheduleInput {
   includedOrgIds?: string[] | null;
 }
 
+export type RxPracticeAliasResultData = {
+  found?: boolean;
+  providerOrganizationId?: string | null;
+};
+
+export interface RxPracticeAliasResult {
+  ok?: boolean;
+  data?: RxPracticeAliasResultData;
+}
+
+export interface RxPracticeAliasInput {
+  labOrganizationId: string;
+  rxName: string;
+  providerOrganizationId: string;
+}
+
 export type ReceivePaymentsResultDataPaymentsItem = {
   id: string;
   invoiceId: string;
@@ -552,4 +568,9 @@ export type ListOpenInvoicesParams = {
 export type DisableBackupSchedule200 = {
   ok?: boolean;
   enabled?: boolean;
+};
+
+export type GetRxPracticeAliasParams = {
+  labOrganizationId: string;
+  rxName: string;
 };

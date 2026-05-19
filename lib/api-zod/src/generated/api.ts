@@ -734,6 +734,53 @@ export const DisableBackupScheduleResponse = zod.object({
 });
 
 /**
+ * Returns the saved provider organization ID for the given
+(labOrganizationId, rxName) pair if one exists. The rxName is
+matched case-insensitively (normalized to lowercase). Returns
+`found: false` when no alias is stored. Lab-member auth required.
+
+ * @summary Look up a saved Rx-name → practice alias for a lab
+ */
+export const GetRxPracticeAliasQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+  rxName: zod.coerce.string(),
+});
+
+export const GetRxPracticeAliasResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      found: zod.boolean().optional(),
+      providerOrganizationId: zod.string().nullish(),
+    })
+    .optional(),
+});
+
+/**
+ * Upserts an alias that maps a normalized Rx doctor/practice name to a
+specific provider organization for the given lab. On conflict
+(same lab + rxName) the providerOrganizationId is updated in place.
+Lab-member auth required.
+
+ * @summary Save or update an Rx-name → practice alias for a lab
+ */
+export const UpsertRxPracticeAliasBody = zod.object({
+  labOrganizationId: zod.string(),
+  rxName: zod.string(),
+  providerOrganizationId: zod.string(),
+});
+
+export const UpsertRxPracticeAliasResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      found: zod.boolean().optional(),
+      providerOrganizationId: zod.string().nullish(),
+    })
+    .optional(),
+});
+
+/**
  * QuickBooks-style "Receive Payments" — record one payment from a
 provider, distribute it across one or more open invoices, and post
 the combined deposit to a bank account in a single database

@@ -29,6 +29,7 @@ import type {
   DoctorMergeUndoResult,
   DoctorSearchResult,
   GetItemLabelsParams,
+  GetRxPracticeAliasParams,
   HealthStatus,
   ImportCaseFromIteroRxBody,
   ItemLabelsInput,
@@ -42,6 +43,8 @@ import type {
   OpenInvoiceListResult,
   ReceivePaymentsInput,
   ReceivePaymentsResult,
+  RxPracticeAliasInput,
+  RxPracticeAliasResult,
   SearchDoctorsParams,
   StatementScheduleInput,
   StatementScheduleResult,
@@ -1882,6 +1885,199 @@ export const useDisableBackupSchedule = <
   TContext
 > => {
   return useMutation(getDisableBackupScheduleMutationOptions(options));
+};
+
+/**
+ * Returns the saved provider organization ID for the given
+(labOrganizationId, rxName) pair if one exists. The rxName is
+matched case-insensitively (normalized to lowercase). Returns
+`found: false` when no alias is stored. Lab-member auth required.
+
+ * @summary Look up a saved Rx-name → practice alias for a lab
+ */
+export const getGetRxPracticeAliasUrl = (params: GetRxPracticeAliasParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/rx-practice-aliases?${stringifiedParams}`
+    : `/api/rx-practice-aliases`;
+};
+
+export const getRxPracticeAlias = async (
+  params: GetRxPracticeAliasParams,
+  options?: RequestInit,
+): Promise<RxPracticeAliasResult> => {
+  return customFetch<RxPracticeAliasResult>(getGetRxPracticeAliasUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetRxPracticeAliasQueryKey = (
+  params?: GetRxPracticeAliasParams,
+) => {
+  return [`/api/rx-practice-aliases`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetRxPracticeAliasQueryOptions = <
+  TData = Awaited<ReturnType<typeof getRxPracticeAlias>>,
+  TError = ErrorType<void>,
+>(
+  params: GetRxPracticeAliasParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getRxPracticeAlias>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetRxPracticeAliasQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getRxPracticeAlias>>
+  > = ({ signal }) => getRxPracticeAlias(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getRxPracticeAlias>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetRxPracticeAliasQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getRxPracticeAlias>>
+>;
+export type GetRxPracticeAliasQueryError = ErrorType<void>;
+
+/**
+ * @summary Look up a saved Rx-name → practice alias for a lab
+ */
+
+export function useGetRxPracticeAlias<
+  TData = Awaited<ReturnType<typeof getRxPracticeAlias>>,
+  TError = ErrorType<void>,
+>(
+  params: GetRxPracticeAliasParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getRxPracticeAlias>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetRxPracticeAliasQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Upserts an alias that maps a normalized Rx doctor/practice name to a
+specific provider organization for the given lab. On conflict
+(same lab + rxName) the providerOrganizationId is updated in place.
+Lab-member auth required.
+
+ * @summary Save or update an Rx-name → practice alias for a lab
+ */
+export const getUpsertRxPracticeAliasUrl = () => {
+  return `/api/rx-practice-aliases`;
+};
+
+export const upsertRxPracticeAlias = async (
+  rxPracticeAliasInput: RxPracticeAliasInput,
+  options?: RequestInit,
+): Promise<RxPracticeAliasResult> => {
+  return customFetch<RxPracticeAliasResult>(getUpsertRxPracticeAliasUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(rxPracticeAliasInput),
+  });
+};
+
+export const getUpsertRxPracticeAliasMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof upsertRxPracticeAlias>>,
+    TError,
+    { data: BodyType<RxPracticeAliasInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof upsertRxPracticeAlias>>,
+  TError,
+  { data: BodyType<RxPracticeAliasInput> },
+  TContext
+> => {
+  const mutationKey = ["upsertRxPracticeAlias"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof upsertRxPracticeAlias>>,
+    { data: BodyType<RxPracticeAliasInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return upsertRxPracticeAlias(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpsertRxPracticeAliasMutationResult = NonNullable<
+  Awaited<ReturnType<typeof upsertRxPracticeAlias>>
+>;
+export type UpsertRxPracticeAliasMutationBody = BodyType<RxPracticeAliasInput>;
+export type UpsertRxPracticeAliasMutationError = ErrorType<void>;
+
+/**
+ * @summary Save or update an Rx-name → practice alias for a lab
+ */
+export const useUpsertRxPracticeAlias = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof upsertRxPracticeAlias>>,
+    TError,
+    { data: BodyType<RxPracticeAliasInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof upsertRxPracticeAlias>>,
+  TError,
+  { data: BodyType<RxPracticeAliasInput> },
+  TContext
+> => {
+  return useMutation(getUpsertRxPracticeAliasMutationOptions(options));
 };
 
 /**

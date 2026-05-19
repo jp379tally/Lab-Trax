@@ -526,6 +526,16 @@ export function DashboardDropZone() {
     useState<NewPracticeDraft | null>(null);
   const [creatingPractice, setCreatingPractice] = useState(false);
   const [newPracticeError, setNewPracticeError] = useState<string | null>(null);
+  // Alias-mapping state. `aliasExistedForRxName` tracks whether the server
+  // already had a saved alias when the AI analysis ran (null = not yet checked
+  // or no AI practiceName). When it's false and the user manually picks a
+  // practice that doesn't fuzzy-match the Rx name, we show a one-time prompt
+  // asking them to save the mapping for future Rxes.
+  const [aliasExistedForRxName, setAliasExistedForRxName] = useState<
+    boolean | null
+  >(null);
+  const [showAliasSavePrompt, setShowAliasSavePrompt] = useState(false);
+  const [savingAlias, setSavingAlias] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
 
@@ -689,18 +699,52 @@ export function DashboardDropZone() {
           practiceAddress: rx.practiceAddress ?? "",
           practicePhone: rx.practicePhone ?? "",
         });
-        // Pre-select lab + try to match a practice from the AI-detected
-        // practiceName so the user can confirm in one click in the common
-        // case where the practice already exists.
+        // Pre-select lab + resolve practice via alias first (takes priority),
+        // then fall back to the existing fuzzy-name match.
+        const effectiveLabOrgId = rxLabOrgId || labOrg?.id || "";
         if (!rxLabOrgId && labOrg?.id) setRxLabOrgId(labOrg.id);
-        if (rx.practiceName) {
+
+        // Reset alias prompt state for this new Rx.
+        setAliasExistedForRxName(null);
+        setShowAliasSavePrompt(false);
+
+        if (!rxProviderOrgId && rx.practiceName && effectiveLabOrgId) {
           const needle = rx.practiceName.trim().toLowerCase();
-          const match = providerOrgs.find((p) =>
-            (p.displayName || p.name || "").toLowerCase().includes(needle),
-          );
-          if (match) setRxProviderOrgId(match.id);
-          else setRxProviderSearch(rx.practiceName);
+
+          // 1. Check saved alias (highest priority).
+          let aliasOrgId: string | null = null;
+          try {
+            const aliasResp = await apiFetch<{
+              data?: { found?: boolean; providerOrganizationId?: string | null };
+            }>(
+              `/rx-practice-aliases?labOrganizationId=${encodeURIComponent(effectiveLabOrgId)}&rxName=${encodeURIComponent(needle)}`,
+            );
+            const d = (aliasResp as any)?.data;
+            if (d?.found && d?.providerOrganizationId) {
+              aliasOrgId = d.providerOrganizationId;
+            }
+          } catch {
+            /* non-blocking — fall through to fuzzy match */
+          }
+
+          if (aliasOrgId) {
+            setRxProviderOrgId(aliasOrgId);
+            setAliasExistedForRxName(true);
+          } else {
+            // Record that no alias existed so we can offer to save one later.
+            setAliasExistedForRxName(false);
+            // 2. Fall back to fuzzy name match.
+            const match = providerOrgs.find((p) =>
+              (p.displayName || p.name || "").toLowerCase().includes(needle),
+            );
+            if (match) setRxProviderOrgId(match.id);
+            else setRxProviderSearch(rx.practiceName);
+          }
+        } else if (!rx.practiceName) {
+          // No AI name to alias — mark as n/a.
+          setAliasExistedForRxName(null);
         }
+
         setPhase({ kind: "rxConfirm", file, caseNumber });
       } catch (e: any) {
         setPhase({
@@ -1105,7 +1149,32 @@ export function DashboardDropZone() {
                     openAddPracticeForm();
                     return;
                   }
-                  setRxProviderOrgId(e.target.value);
+                  const newOrgId = e.target.value;
+                  setRxProviderOrgId(newOrgId);
+                  // Dismiss any existing alias prompt whenever the selection changes.
+                  setShowAliasSavePrompt(false);
+                  // Show the alias save prompt when:
+                  //  1. A non-empty practice was selected
+                  //  2. The AI extracted a practiceName
+                  //  3. No alias existed for that name yet
+                  //  4. The selected practice name doesn't already fuzzy-match the Rx name
+                  if (
+                    newOrgId &&
+                    r.practiceName &&
+                    aliasExistedForRxName === false
+                  ) {
+                    const needle = r.practiceName.trim().toLowerCase();
+                    const selected = providerOrgs.find((p) => p.id === newOrgId);
+                    const selectedName = (
+                      selected?.displayName ||
+                      selected?.name ||
+                      ""
+                    ).toLowerCase();
+                    const alreadyMatches = selectedName.includes(needle) || needle.includes(selectedName);
+                    if (!alreadyMatches) {
+                      setShowAliasSavePrompt(true);
+                    }
+                  }
                 }}
               >
                 <option value="">Select a practice…</option>
@@ -1147,6 +1216,62 @@ export function DashboardDropZone() {
             )}
           </label>
         )}
+        {showAliasSavePrompt && rxProviderOrgId && r.practiceName && (() => {
+          const selectedPractice = providerOrgs.find((p) => p.id === rxProviderOrgId);
+          const practiceName = selectedPractice?.displayName || selectedPractice?.name || "this practice";
+          const rxNameDisplay = r.practiceName.trim();
+          return (
+            <div className="rounded-md border border-amber-400/50 bg-amber-50 dark:bg-amber-950/20 p-2.5 space-y-1.5">
+              <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
+                Save this mapping for next time?
+              </p>
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                Next time an Rx shows "{rxNameDisplay}", automatically select{" "}
+                <span className="font-medium">{practiceName}</span>?
+              </p>
+              <div className="flex gap-2 pt-0.5">
+                <button
+                  type="button"
+                  disabled={savingAlias}
+                  onClick={async () => {
+                    setSavingAlias(true);
+                    try {
+                      await apiFetch("/rx-practice-aliases", {
+                        method: "POST",
+                        body: JSON.stringify({
+                          labOrganizationId: rxLabOrgId,
+                          rxName: rxNameDisplay.toLowerCase(),
+                          providerOrganizationId: rxProviderOrgId,
+                        }),
+                      });
+                      setAliasExistedForRxName(true);
+                    } catch {
+                      /* best-effort; dismiss anyway */
+                    } finally {
+                      setSavingAlias(false);
+                      setShowAliasSavePrompt(false);
+                    }
+                  }}
+                  className="h-7 px-3 rounded-md bg-amber-600 text-white text-[11px] font-medium hover:bg-amber-700 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                >
+                  {savingAlias ? (
+                    <><Loader2 size={11} className="animate-spin" /> Saving…</>
+                  ) : (
+                    "Yes, remember this"
+                  )}
+                </button>
+                <button
+                  type="button"
+                  disabled={savingAlias}
+                  onClick={() => setShowAliasSavePrompt(false)}
+                  className="h-7 px-3 rounded-md bg-secondary text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                >
+                  No thanks
+                </button>
+              </div>
+            </div>
+          );
+        })()}
         {newPracticeDraft && (
           <div className="rounded-md border border-primary/30 bg-primary/5 p-2.5 space-y-2">
             <div className="flex items-center justify-between">

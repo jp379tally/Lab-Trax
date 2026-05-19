@@ -1694,6 +1694,44 @@ export const backupRuns = pgTable(
   })
 );
 
+/**
+ * Per-lab alias mapping: when a user manually picks a practice after the AI
+ * extracted a doctor/practice name that didn't match, they can teach the
+ * system to auto-select that practice the next time the same Rx name appears.
+ *
+ * `rx_name` is stored normalized (trimmed + lowercased) so lookups are
+ * case-insensitive. The unique index on (lab_organization_id, rx_name)
+ * enforces one mapping per Rx name per lab and enables efficient upserts.
+ */
+export const rxPracticeNameAliases = pgTable(
+  "rx_practice_name_aliases",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    rxName: text("rx_name").notNull(),
+    providerOrganizationId: varchar("provider_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+    createdByUserId: varchar("created_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+  },
+  (table) => ({
+    labRxNameUnique: uniqueIndex(
+      "rx_practice_name_aliases_lab_rx_name_unique"
+    ).on(table.labOrganizationId, table.rxName),
+    labIdx: index("rx_practice_name_aliases_lab_idx").on(
+      table.labOrganizationId
+    ),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

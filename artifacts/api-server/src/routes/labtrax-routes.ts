@@ -20,7 +20,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns, rxPracticeNameAliases } from "@workspace/db";
 import { notDeleted } from "../lib/soft-delete";
 import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
@@ -4740,6 +4740,110 @@ Important rules:
       const msg = e instanceof Error ? e.message : "Failed to fetch backup history retention settings.";
       return res.status(500).json({ error: msg });
     }
+  });
+
+  // ── Rx Practice Name Aliases ─────────────────────────────────────────────
+  // GET /rx-practice-aliases?labOrganizationId=&rxName=
+  router.get("/rx-practice-aliases", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const { labOrganizationId, rxName } = req.query as Record<string, unknown>;
+    if (typeof labOrganizationId !== "string" || !labOrganizationId.trim()) {
+      return res.status(400).json({ error: "labOrganizationId is required" });
+    }
+    if (typeof rxName !== "string" || !rxName.trim()) {
+      return res.status(400).json({ error: "rxName is required" });
+    }
+
+    // Verify caller is an active member of this lab.
+    const membership = await db
+      .select({ id: organizationMemberships.id })
+      .from(organizationMemberships)
+      .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+      .where(
+        and(
+          eq(organizationMemberships.userId, reqUser.id),
+          eq(organizationMemberships.labId, labOrganizationId.trim()),
+          eq(organizationMemberships.status, "active"),
+          eq(organizations.type, "lab")
+        )
+      )
+      .limit(1);
+    if (membership.length === 0) {
+      return res.status(403).json({ error: "Not a member of this lab" });
+    }
+
+    const normalizedRxName = rxName.trim().toLowerCase();
+    const row = await db
+      .select({ providerOrganizationId: rxPracticeNameAliases.providerOrganizationId })
+      .from(rxPracticeNameAliases)
+      .where(
+        and(
+          eq(rxPracticeNameAliases.labOrganizationId, labOrganizationId.trim()),
+          eq(rxPracticeNameAliases.rxName, normalizedRxName)
+        )
+      )
+      .limit(1);
+
+    if (row.length === 0) {
+      return res.json({ ok: true, data: { found: false, providerOrganizationId: null } });
+    }
+    return res.json({ ok: true, data: { found: true, providerOrganizationId: row[0].providerOrganizationId } });
+  });
+
+  // POST /rx-practice-aliases — upsert an alias
+  router.post("/rx-practice-aliases", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser?.id) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const { labOrganizationId, rxName, providerOrganizationId } = body;
+    if (typeof labOrganizationId !== "string" || !labOrganizationId.trim()) {
+      return res.status(400).json({ error: "labOrganizationId is required" });
+    }
+    if (typeof rxName !== "string" || !rxName.trim()) {
+      return res.status(400).json({ error: "rxName is required" });
+    }
+    if (typeof providerOrganizationId !== "string" || !providerOrganizationId.trim()) {
+      return res.status(400).json({ error: "providerOrganizationId is required" });
+    }
+
+    // Verify caller is an active member of this lab.
+    const membership = await db
+      .select({ id: organizationMemberships.id })
+      .from(organizationMemberships)
+      .innerJoin(organizations, eq(organizations.id, organizationMemberships.labId))
+      .where(
+        and(
+          eq(organizationMemberships.userId, reqUser.id),
+          eq(organizationMemberships.labId, labOrganizationId.trim()),
+          eq(organizationMemberships.status, "active"),
+          eq(organizations.type, "lab")
+        )
+      )
+      .limit(1);
+    if (membership.length === 0) {
+      return res.status(403).json({ error: "Not a member of this lab" });
+    }
+
+    const normalizedRxName = rxName.trim().toLowerCase();
+    await db
+      .insert(rxPracticeNameAliases)
+      .values({
+        labOrganizationId: labOrganizationId.trim(),
+        rxName: normalizedRxName,
+        providerOrganizationId: providerOrganizationId.trim(),
+        createdByUserId: reqUser.id,
+      })
+      .onConflictDoUpdate({
+        target: [rxPracticeNameAliases.labOrganizationId, rxPracticeNameAliases.rxName],
+        set: { providerOrganizationId: providerOrganizationId.trim() },
+      });
+
+    return res.json({ ok: true, data: { found: true, providerOrganizationId: providerOrganizationId.trim() } });
   });
 
   // ── Admin Backup: history retention settings (PUT) ────────────────────────
