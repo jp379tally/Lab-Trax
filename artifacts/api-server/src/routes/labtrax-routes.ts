@@ -2821,7 +2821,23 @@ export async function registerRoutes(): Promise<IRouter> {
 
       const { imageBase64, additionalImages } = req.body;
       if (!imageBase64) return res.status(400).json({ success: false, error: "No image provided" });
-      console.log("AI analyze-prescription: received, primary image length:", imageBase64.length, "additional pages:", Array.isArray(additionalImages) ? additionalImages.length : 0);
+
+      // Strip the data URI prefix to measure the raw base64 payload.
+      const commaIdx = (imageBase64 as string).indexOf(",");
+      const rawB64 = commaIdx >= 0 ? (imageBase64 as string).substring(commaIdx + 1) : (imageBase64 as string);
+      console.log("AI analyze-prescription: received, primary image length:", imageBase64.length, "raw b64 length:", rawB64.length, "additional pages:", Array.isArray(additionalImages) ? additionalImages.length : 0);
+
+      // A real prescription photo JPEG is always well above 3 KB. Fewer than
+      // 5 000 raw-base64 chars (~3.75 KB) indicates a corrupted / partial read
+      // on the client — fail fast with a helpful message rather than burning an
+      // OpenAI call that will always return "unsupported image".
+      if (rawB64.length < 5000) {
+        return res.status(400).json({
+          success: false,
+          error: "IMAGE_TOO_SMALL",
+          message: "The photo appears to be corrupted or incomplete. Please retake it and try again.",
+        });
+      }
 
       const isHEIC = imageBase64.includes("data:image/heic") || imageBase64.includes("data:image/heif");
       if (isHEIC) return res.status(400).json({ success: false, error: "HEIC format is not supported. Please convert to JPEG or PNG first." });

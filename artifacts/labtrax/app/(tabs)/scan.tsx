@@ -595,12 +595,16 @@ export default function ScanScreen() {
           mediaTypes: ["images"],
           allowsEditing: false,
           quality: 1,
-          base64: false,
+          base64: true,
         });
         if (!result.canceled && result.assets[0]) {
           const asset = result.assets[0];
-          const normalized = await normalizePrescriptionImage(asset.uri);
-          imagePickerUri = normalized.uri;
+          if (asset.base64 && asset.base64.length > 5000) {
+            imagePickerUri = `data:image/jpeg;base64,${asset.base64}`;
+          } else {
+            const normalized = await normalizePrescriptionImage(asset.uri);
+            imagePickerUri = normalized.uri;
+          }
         }
       } catch (e: any) {
         console.log("ImagePicker.launchCameraAsync failed:", e?.message || e);
@@ -1045,10 +1049,14 @@ export default function ScanScreen() {
       const b64Len = commaIdx >= 0 ? uri.length - commaIdx - 1 : uri.length;
       console.log("AI compress: URI is already a data URI, base64 payload length:", b64Len);
       if (b64Len < 5000) {
-        console.log("AI compress: data URI suspiciously small, may be corrupted");
+        console.log("AI compress: data URI suspiciously small, attempting enhancement");
         const enhanced = await ensureHighQualityBase64(uri);
-        if (enhanced !== uri && enhanced.length > uri.length) return enhanced;
-        return uri;
+        const enhancedComma = enhanced.indexOf(",");
+        const enhancedB64Len = enhancedComma >= 0 ? enhanced.length - enhancedComma - 1 : enhanced.length;
+        if (enhancedB64Len >= 5000) return enhanced;
+        // Still too small — throw so the caller tries the file-system fallback
+        // rather than sending garbage to the AI.
+        throw new Error(`Image data too small after enhancement (${enhancedB64Len} chars) — likely a corrupted read`);
       }
       // Large data URI (full-res camera photo) — resize before sending to
       // avoid hitting the AI proxy's payload limits. Write to a temp file,
@@ -1278,9 +1286,14 @@ export default function ScanScreen() {
           if (errJson.error && errJson.error.includes("HEIC")) {
             return { success: false, error: errJson.error };
           }
+          if (errJson.error === "IMAGE_TOO_SMALL") {
+            return { success: false, error: errJson.message || "Photo was corrupted during capture. Please retake it." };
+          }
           if (errJson.detail) {
             console.log("AI error detail:", errJson.detail);
             parsedDetail = String(errJson.detail).substring(0, 200);
+          } else if (errJson.message) {
+            parsedDetail = String(errJson.message).substring(0, 200);
           } else if (errJson.error) {
             parsedDetail = String(errJson.error).substring(0, 200);
           }
@@ -2085,9 +2098,16 @@ export default function ScanScreen() {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ["images"],
         quality: 0.8,
+        base64: true,
       });
       if (!result.canceled && result.assets[0]) {
-        capturedPhotoUri = result.assets[0].uri;
+        const asset = result.assets[0];
+        // Prefer the inline base64 so we skip the file-system read entirely.
+        if (asset.base64 && asset.base64.length > 5000) {
+          capturedPhotoUri = `data:image/jpeg;base64,${asset.base64}`;
+        } else {
+          capturedPhotoUri = asset.uri;
+        }
       }
     }
 
