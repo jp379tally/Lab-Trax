@@ -49,6 +49,8 @@ export const SETTING_ROLLING_BACKUP_ENABLED = "rolling_backup_enabled";
 export const SETTING_ROLLING_BACKUP_LAST_RUN_AT = "rolling_backup_last_run_at";
 export const SETTING_ROLLING_BACKUP_LAST_ERROR = "rolling_backup_last_error";
 export const SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT = "backup_stale_alert_last_sent_at";
+export const SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS = "backup_stale_alert_threshold_days";
+export const SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS = "backup_stale_alert_rate_limit_days";
 
 export const ALL_SCHEDULE_SETTINGS = [
   SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
@@ -455,17 +457,58 @@ async function getAdminEmails(): Promise<string[]> {
   }
 }
 
-const BACKUP_STALE_THRESHOLD_DAYS = 7;
-const BACKUP_STALE_ALERT_RATE_LIMIT_DAYS = 3;
+const DEFAULT_BACKUP_STALE_THRESHOLD_DAYS = 7;
+const DEFAULT_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS = 3;
+
+export interface BackupStaleAlertSettings {
+  thresholdDays: number;
+  rateLimitDays: number;
+}
+
+export async function getBackupStaleAlertSettings(): Promise<BackupStaleAlertSettings> {
+  try {
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(
+        sql`${systemSettings.key} in (${SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS}, ${SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS})`,
+      );
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    const thresholdRaw = byKey[SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS] ?? null;
+    const rateLimitRaw = byKey[SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS] ?? null;
+    const thresholdDays =
+      thresholdRaw !== null && Number.isFinite(parseInt(thresholdRaw, 10))
+        ? Math.max(1, Math.min(365, parseInt(thresholdRaw, 10)))
+        : DEFAULT_BACKUP_STALE_THRESHOLD_DAYS;
+    const rateLimitDays =
+      rateLimitRaw !== null && Number.isFinite(parseInt(rateLimitRaw, 10))
+        ? Math.max(1, Math.min(365, parseInt(rateLimitRaw, 10)))
+        : DEFAULT_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS;
+    return { thresholdDays, rateLimitDays };
+  } catch {
+    return {
+      thresholdDays: DEFAULT_BACKUP_STALE_THRESHOLD_DAYS,
+      rateLimitDays: DEFAULT_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS,
+    };
+  }
+}
 
 /**
- * Check whether the last successful backup is stale (null or older than 7 days).
- * If so, and if we haven't sent an alert within the past 3 days, send an alert
- * email to all admin users and record the send time in system_settings.
+ * Check whether the last successful backup is stale (null or older than the
+ * configured threshold). If so, and if we haven't sent an alert within the
+ * configured rate-limit window, send an alert email to all admin users and
+ * record the send time in system_settings.
+ *
+ * Both thresholds are configurable via system_settings:
+ *   backup_stale_alert_threshold_days  (default 7)
+ *   backup_stale_alert_rate_limit_days (default 3)
  */
 export async function checkAndAlertBackupStaleness(): Promise<void> {
   try {
-    const lastSuccessfulAt = await getLastSuccessfulBackupAt();
+    const [lastSuccessfulAt, { thresholdDays, rateLimitDays }] = await Promise.all([
+      getLastSuccessfulBackupAt(),
+      getBackupStaleAlertSettings(),
+    ]);
     const now = Date.now();
 
     let daysSince: number;
@@ -480,7 +523,7 @@ export async function checkAndAlertBackupStaleness(): Promise<void> {
       }
     }
 
-    if (daysSince < BACKUP_STALE_THRESHOLD_DAYS) {
+    if (daysSince < thresholdDays) {
       return;
     }
 
@@ -494,9 +537,9 @@ export async function checkAndAlertBackupStaleness(): Promise<void> {
       const lastSentMs = new Date(lastSentRaw).getTime();
       if (!isNaN(lastSentMs)) {
         const daysSinceAlert = (now - lastSentMs) / (1000 * 60 * 60 * 24);
-        if (daysSinceAlert < BACKUP_STALE_ALERT_RATE_LIMIT_DAYS) {
+        if (daysSinceAlert < rateLimitDays) {
           logger.info(
-            { daysSinceAlert: daysSinceAlert.toFixed(1), rateLimitDays: BACKUP_STALE_ALERT_RATE_LIMIT_DAYS },
+            { daysSinceAlert: daysSinceAlert.toFixed(1), rateLimitDays },
             "[backup] Stale backup alert suppressed by rate limit",
           );
           return;
@@ -781,61 +824,3 @@ export async function restartScheduledBackupJob(): Promise<void> {
   _scheduledIntervalTimer = setInterval(fireScheduledBackup, intervalMs);
 }
 
-// ── 15-minute rolling OneDrive backup ────────────────────────────────────────
-// Persists last-run timestamp and any error to system_settings so the admin
-// panel can surface freshness and failures without querying logs.
-
-let _rollingBackupScheduled = false;
-const ROLLING_BACKUP_INTERVAL_MS = 15 * 60 * 1000;
-
-async function persistRollingBackupStatus(error?: string | null) {
-  const now = new Date().toISOString();
-  const upsert = async (key: string, value: string) => {
-    await db
-      .insert(systemSettings)
-      .values({ key, value })
-      .onConflictDoUpdate({
-        target: systemSettings.key,
-        set: { value, updatedAt: new Date() },
-      });
-  };
-  await upsert(SETTING_ROLLING_BACKUP_LAST_RUN_AT, now);
-  await upsert(SETTING_ROLLING_BACKUP_LAST_ERROR, error ?? "");
-}
-
-export async function start15MinRollingBackup() {
-  if (_rollingBackupScheduled) return;
-  _rollingBackupScheduled = true;
-
-  logger.info(
-    { intervalMs: ROLLING_BACKUP_INTERVAL_MS },
-    "15-min rolling OneDrive backup scheduled",
-  );
-
-  const tick = async () => {
-    // Honour the admin toggle — default on when the setting is absent.
-    try {
-      const rows = await db
-        .select()
-        .from(systemSettings)
-        .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
-      const raw = rows[0]?.value ?? null;
-      const enabled = raw === null ? true : raw !== "false";
-      if (!enabled) return;
-    } catch {
-      // If we can't read the setting, proceed with the backup to be safe.
-    }
-
-    try {
-      const result = await runOneDriveBackup("scheduler:rolling-15min");
-      logger.info({ fileName: result.fileName, size: result.size }, "15-min rolling OneDrive backup OK");
-      await persistRollingBackupStatus(null);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error({ err: msg }, "15-min rolling OneDrive backup FAILED");
-      try { await persistRollingBackupStatus(msg); } catch { /* swallow */ }
-    }
-  };
-
-  setInterval(tick, ROLLING_BACKUP_INTERVAL_MS);
-}

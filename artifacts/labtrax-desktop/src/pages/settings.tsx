@@ -789,15 +789,15 @@ interface BackupScheduleData {
   path: string | null;
   enabled: boolean;
   lastSuccessfulBackupAt: string | null;
+  staleAlertThresholdDays: number;
+  staleAlertRateLimitDays: number;
 }
 
-const BACKUP_STALE_DAYS = 7;
-
-function isBackupStale(lastSuccessfulBackupAt: string | null): boolean {
+function isBackupStale(lastSuccessfulBackupAt: string | null, thresholdDays = 7): boolean {
   if (!lastSuccessfulBackupAt) return true;
   const last = new Date(lastSuccessfulBackupAt).getTime();
   if (Number.isNaN(last)) return true;
-  return Date.now() - last > BACKUP_STALE_DAYS * 24 * 60 * 60 * 1000;
+  return Date.now() - last > thresholdDays * 24 * 60 * 60 * 1000;
 }
 
 const INTERVAL_OPTIONS: Array<{ interval: number; unit: BackupIntervalUnit; label: string }> = [
@@ -851,6 +851,8 @@ function BackupPanel() {
   const [schedDest, setSchedDest] = useState<BackupDestinationType>("onedrive");
   const [schedPath, setSchedPath] = useState("");
   const [schedEnabled, setSchedEnabled] = useState(false);
+  const [staleThresholdDays, setStaleThresholdDays] = useState(7);
+  const [staleRateLimitDays, setStaleRateLimitDays] = useState(3);
   const [schedError, setSchedError] = useState<string | null>(null);
   const [schedSuccess, setSchedSuccess] = useState(false);
 
@@ -874,6 +876,8 @@ function BackupPanel() {
       setSchedDest((scheduleQuery.data.destination as BackupDestinationType | null) ?? "onedrive");
       setSchedPath(scheduleQuery.data.path ?? "");
       setSchedEnabled(scheduleQuery.data.enabled);
+      setStaleThresholdDays(scheduleQuery.data.staleAlertThresholdDays ?? 7);
+      setStaleRateLimitDays(scheduleQuery.data.staleAlertRateLimitDays ?? 3);
     }
   }, [scheduleQuery.data]);
 
@@ -907,6 +911,8 @@ function BackupPanel() {
           destination: schedDest,
           path: schedPath.trim() || null,
           enabled: schedEnabled,
+          staleAlertThresholdDays: staleThresholdDays,
+          staleAlertRateLimitDays: staleRateLimitDays,
         }),
       });
     },
@@ -953,7 +959,7 @@ function BackupPanel() {
 
   const needsPath = (d: BackupDestinationType) => d === "local" || d === "network";
 
-  const stale = isBackupStale(scheduleQuery.data?.lastSuccessfulBackupAt ?? null);
+  const stale = isBackupStale(scheduleQuery.data?.lastSuccessfulBackupAt ?? null, scheduleQuery.data?.staleAlertThresholdDays ?? 7);
   const lastBackupAt = scheduleQuery.data?.lastSuccessfulBackupAt ?? null;
 
   return (
@@ -1144,6 +1150,29 @@ function BackupPanel() {
                 )}
               </div>
             )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Alert after (days without backup)">
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={staleThresholdDays}
+                  onChange={(e) => setStaleThresholdDays(Math.max(1, Math.min(365, parseInt(e.target.value, 10) || 7)))}
+                  className={inputCls}
+                />
+              </Field>
+              <Field label="Re-alert at most every (days)">
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={staleRateLimitDays}
+                  onChange={(e) => setStaleRateLimitDays(Math.max(1, Math.min(365, parseInt(e.target.value, 10) || 3)))}
+                  className={inputCls}
+                />
+              </Field>
+            </div>
 
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input

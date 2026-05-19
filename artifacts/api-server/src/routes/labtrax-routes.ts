@@ -12,7 +12,7 @@ import {
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
-import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, type BackupDestination } from "../lib/backup";
+import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -4545,9 +4545,10 @@ Important rules:
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
-      const [config, lastSuccessfulBackupAt] = await Promise.all([
+      const [config, lastSuccessfulBackupAt, staleAlertSettings] = await Promise.all([
         getBackupScheduleConfig(),
         getLastSuccessfulBackupAt(),
+        getBackupStaleAlertSettings(),
       ]);
       const { interval, unit } = fromIntervalMinutes(config.intervalMinutes);
       return res.json({
@@ -4558,6 +4559,8 @@ Important rules:
         path: config.path,
         enabled: config.enabled,
         lastSuccessfulBackupAt,
+        staleAlertThresholdDays: staleAlertSettings.thresholdDays,
+        staleAlertRateLimitDays: staleAlertSettings.rateLimitDays,
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to fetch backup schedule.";
@@ -4576,6 +4579,19 @@ Important rules:
     const destination = body.destination as BackupDestination | undefined;
     const destPath = typeof body.path === "string" ? body.path.trim() || null : null;
     const enabled = body.enabled === true || body.enabled === "true";
+
+    const staleThresholdRaw =
+      typeof body.staleAlertThresholdDays === "number"
+        ? body.staleAlertThresholdDays
+        : typeof body.staleAlertThresholdDays === "string"
+          ? parseInt(body.staleAlertThresholdDays, 10)
+          : null;
+    const staleRateLimitRaw =
+      typeof body.staleAlertRateLimitDays === "number"
+        ? body.staleAlertRateLimitDays
+        : typeof body.staleAlertRateLimitDays === "string"
+          ? parseInt(body.staleAlertRateLimitDays, 10)
+          : null;
 
     if (!Number.isFinite(intervalRaw) || intervalRaw <= 0) {
       return res.status(400).json({ error: "interval must be a positive integer." });
@@ -4613,6 +4629,12 @@ Important rules:
         return res.status(400).json({ error: "Invalid SFTP URL." });
       }
     }
+    if (staleThresholdRaw !== null && (!Number.isFinite(staleThresholdRaw) || !Number.isInteger(staleThresholdRaw) || staleThresholdRaw < 1 || staleThresholdRaw > 365)) {
+      return res.status(400).json({ error: "staleAlertThresholdDays must be an integer between 1 and 365." });
+    }
+    if (staleRateLimitRaw !== null && (!Number.isFinite(staleRateLimitRaw) || !Number.isInteger(staleRateLimitRaw) || staleRateLimitRaw < 1 || staleRateLimitRaw > 365)) {
+      return res.status(400).json({ error: "staleAlertRateLimitDays must be an integer between 1 and 365." });
+    }
 
     try {
       const upsert = async (key: string, value: string | null) => {
@@ -4629,6 +4651,12 @@ Important rules:
       await upsert(SETTING_BACKUP_SCHEDULE_DESTINATION, destination);
       await upsert(SETTING_BACKUP_SCHEDULE_PATH, destPath);
       await upsert(SETTING_BACKUP_SCHEDULE_ENABLED, enabled ? "true" : "false");
+      if (staleThresholdRaw !== null) {
+        await upsert(SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, String(staleThresholdRaw));
+      }
+      if (staleRateLimitRaw !== null) {
+        await upsert(SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, String(staleRateLimitRaw));
+      }
 
       // Restart the in-process recurring job with the new settings.
       void restartScheduledBackupJob();
