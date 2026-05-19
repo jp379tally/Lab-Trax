@@ -405,6 +405,8 @@ export interface BackupFailureNotificationParams {
   success: false;
   errorMessage: string;
   destination?: string | null;
+  /** ISO timestamp from the backup_runs row — used verbatim in the alert email. */
+  failedAt?: string;
 }
 
 export type BackupEmailParams =
@@ -491,7 +493,8 @@ export async function sendBackupNotificationEmail(
       await sendMail({ to: email, subject, html, text });
     }
   } else {
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const failedAt = params.failedAt ?? new Date().toISOString();
+    const dateStr = failedAt.slice(0, 10);
     const destLabel = params.destination
       ? formatDestinationLabel(params.destination)
       : "unknown";
@@ -509,7 +512,7 @@ export async function sendBackupNotificationEmail(
       <table style="border-collapse: collapse; width: 100%; font-size: 14px; margin-bottom: 16px;">
         <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Triggered by</td><td style="padding:8px 12px;">${escapeHtml(triggeredByLabel)}</td></tr>
         <tr><td style="padding:8px 12px;font-weight:bold;">Destination</td><td style="padding:8px 12px;">${escapeHtml(destLabel)}</td></tr>
-        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Failed at</td><td style="padding:8px 12px;">${escapeHtml(new Date().toISOString())}</td></tr>
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Failed at</td><td style="padding:8px 12px;">${escapeHtml(failedAt)}</td></tr>
       </table>
       <h3 style="color:#c0392b;margin-top:0;">Error</h3>
       <pre style="background:#1e1e1e;color:#f5f5f5;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(params.errorMessage)}</pre>
@@ -517,7 +520,7 @@ export async function sendBackupNotificationEmail(
     </div>
   </div>`;
 
-    const text = `LabTrax Backup FAILED\n\nTriggered by: ${triggeredByLabel}\nDestination: ${destLabel}\nFailed at: ${new Date().toISOString()}\n\nError:\n${params.errorMessage}\n\nReview backup settings: ${settingsUrl}`;
+    const text = `LabTrax Backup FAILED\n\nTriggered by: ${triggeredByLabel}\nDestination: ${destLabel}\nFailed at: ${failedAt}\n\nError:\n${params.errorMessage}\n\nReview backup settings: ${settingsUrl}`;
 
     for (const email of params.adminEmails) {
       await sendMail({ to: email, subject, html, text });

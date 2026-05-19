@@ -326,7 +326,8 @@ async function recordBackupError(
   destination: BackupDestination,
   destPath: string | undefined,
   error: string,
-): Promise<void> {
+): Promise<string> {
+  const failedAt = new Date();
   try {
     await db.insert(backupRuns).values({
       triggeredBy,
@@ -336,11 +337,12 @@ async function recordBackupError(
       sizeBytes: null,
       status: "error",
       error,
-      completedAt: new Date(),
+      completedAt: failedAt,
     });
   } catch (err) {
     logger.warn({ err }, "Failed to record backup error in DB");
   }
+  return failedAt.toISOString();
 }
 
 export async function runBackup(
@@ -372,8 +374,10 @@ export async function runBackup(
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await recordBackupError(triggeredBy, destination, destPath, errMsg);
-    throw err;
+    const failedAt = await recordBackupError(triggeredBy, destination, destPath, errMsg);
+    const outErr = err instanceof Error ? err : new Error(errMsg);
+    (outErr as Error & { backupRunFailedAt?: string }).backupRunFailedAt = failedAt;
+    throw outErr;
   }
   await recordSuccessfulBackup();
   await recordBackupRun({ ...result, triggeredBy });
@@ -784,8 +788,11 @@ async function fireScheduledBackup() {
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    const failedAt =
+      (err as Error & { backupRunFailedAt?: string }).backupRunFailedAt ??
+      new Date().toISOString();
     logger.error(
-      { err: errMsg },
+      { err: errMsg, destination: config.destination, failedAt },
       "Scheduled interval backup FAILED",
     );
     try {
@@ -795,6 +802,7 @@ async function fireScheduledBackup() {
         triggeredBy: "scheduler:interval",
         success: false,
         errorMessage: errMsg,
+        failedAt,
         destination: config.destination,
       });
     } catch (mailErr: unknown) {
