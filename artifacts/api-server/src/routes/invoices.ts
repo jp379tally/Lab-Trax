@@ -203,6 +203,105 @@ router.post(
   }),
 );
 
+const smsStatementSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  practiceOrganizationId: z.string().min(1),
+  invoiceIds: z.array(z.string().min(1)).min(1).max(500),
+  to: z.string().min(7).max(40).optional(),
+  message: z.string().min(1).max(1500),
+});
+
+router.post(
+  "/statements/sms",
+  asyncHandler(async (req, res) => {
+    const input = smsStatementSchema.parse(req.body);
+    await requireAnyRole(
+      (req as any).auth.userId,
+      input.labOrganizationId,
+      BILLING_ROLES,
+    );
+
+    const practice = await db.query.organizations.findFirst({
+      where: eq(organizations.id, input.practiceOrganizationId),
+    });
+    if (!practice) throw new HttpError(404, "Practice not found.");
+
+    const recipient = (input.to ?? (practice as any).phone ?? "").trim();
+    if (!recipient) {
+      throw new HttpError(
+        400,
+        "This practice has no phone number on file. Add one first or enter a number.",
+      );
+    }
+
+    const invoiceRows = await db.query.invoices.findMany({
+      where: and(
+        inArray(invoices.id, input.invoiceIds),
+        eq(invoices.labOrganizationId, input.labOrganizationId),
+        eq(invoices.providerOrganizationId, input.practiceOrganizationId),
+      ),
+    });
+    if (invoiceRows.length === 0) {
+      throw new HttpError(404, "None of the selected invoices belong to this practice.");
+    }
+
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    const from = process.env.TWILIO_PHONE_NUMBER;
+    if (!sid || !token || !from) {
+      throw new HttpError(503, "SMS is not configured on the server.");
+    }
+
+    const params = new URLSearchParams();
+    params.set("From", from);
+    params.set("To", recipient);
+    params.set("Body", input.message);
+
+    let twilioError: string | null = null;
+    try {
+      const r = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: params.toString(),
+        },
+      );
+      if (!r.ok) {
+        twilioError = `Twilio HTTP ${r.status}`;
+      }
+    } catch (err: any) {
+      twilioError = err?.message || "SMS failed.";
+    }
+
+    if (twilioError) {
+      throw new HttpError(502, twilioError);
+    }
+
+    const sentAt = new Date();
+    await writeAuditLog({
+      req,
+      organizationId: input.labOrganizationId,
+      action: "statement_texted",
+      entityType: "organization",
+      entityId: practice.id,
+      metadataJson: {
+        practiceOrganizationId: practice.id,
+        practiceName: practice.displayName || practice.name,
+        to: recipient,
+        invoiceIds: invoiceRows.map((i: any) => i.id),
+        invoiceNumbers: invoiceRows.map((i: any) => i.invoiceNumber),
+        sentAt: sentAt.toISOString(),
+      },
+    });
+
+    return ok(res, { sentAt: sentAt.toISOString(), to: recipient, invoiceCount: invoiceRows.length });
+  }),
+);
+
 const emailInvoiceSchema = z.object({
   to: z.string().email().optional(),
   cc: z.array(z.string().email()).max(10).optional(),

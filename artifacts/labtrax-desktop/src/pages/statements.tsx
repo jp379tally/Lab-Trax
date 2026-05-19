@@ -1,13 +1,14 @@
 import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, ChevronDown, ChevronUp, Download, History, Loader2, Mail, Receipt, Search, Send, X } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, Search, Send, X } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
 import { useLabOrganizations, useSelectedOrg } from "@/lib/finance";
 import type { Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TriggeredByBadge } from "@/components/TriggeredByBadge";
-import { buildStatementPdf, downloadCsv, downloadStatementPdf, safeFilename } from "@/lib/export";
+import { buildInvoicePdf, buildStatementPdf, downloadCsv, downloadStatementPdf, printInvoicePdf, safeFilename, type InvoicePdfOptions } from "@/lib/export";
+import { InvoiceEditor } from "@/pages/invoices";
 
 interface StatementSchedule {
   id: string;
@@ -826,8 +827,20 @@ function describeFilters({ search, agingFilter }: { search: string; agingFilter:
   return `Filters: ${parts.join(" · ")}`;
 }
 
-function Stat({ label, value, tone }: { label: string; value: string; tone: "primary" | "success" | "warning" | "neutral" }) {
-  const cls =
+function Stat({
+  label,
+  value,
+  tone,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  tone: "primary" | "success" | "warning" | "neutral";
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const iconCls =
     tone === "success"
       ? "bg-success/15 text-success"
       : tone === "warning"
@@ -836,17 +849,25 @@ function Stat({ label, value, tone }: { label: string; value: string; tone: "pri
           ? "bg-primary/10 text-primary"
           : "bg-secondary text-foreground";
   return (
-    <div className="bg-card border border-border rounded-xl p-4">
+    <button
+      type="button"
+      onClick={onClick}
+      className={`bg-card border rounded-xl p-4 text-left w-full transition-all ${
+        active
+          ? "border-primary ring-1 ring-primary/30"
+          : "border-border hover:border-primary/40"
+      } ${onClick ? "cursor-pointer" : "cursor-default"}`}
+    >
       <div className="flex items-start justify-between">
         <div>
           <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium">{label}</div>
           <div className="mt-1.5 text-xl font-semibold tabular-nums">{value}</div>
         </div>
-        <div className={`h-8 w-8 rounded-md flex items-center justify-center ${cls}`}>
+        <div className={`h-8 w-8 rounded-md flex items-center justify-center ${iconCls}`}>
           <Receipt size={14} />
         </div>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -863,8 +884,40 @@ function StatementDrawer({
   filtersDescription?: string;
   onClose: () => void;
 }) {
-  const sorted = [...invoices].sort((a, b) => (b.issuedAt || b.createdAt || "").localeCompare(a.issuedAt || a.createdAt || ""));
+  const [orgId] = useSelectedOrg();
+  const labOrgsQuery = useLabOrganizations();
+  const labOrg = labOrgsQuery.data?.find((o) => o.id === orgId);
+  const labName = (labOrg as any)?.displayName || (labOrg as any)?.name || "";
+
+  const sorted = [...invoices].sort((a, b) =>
+    (b.issuedAt || b.createdAt || "").localeCompare(a.issuedAt || a.createdAt || ""),
+  );
+
   const [emailOpen, setEmailOpen] = useState(false);
+  const [textOpen, setTextOpen] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<"all" | "open" | "paid" | "overdue">("all");
+  const [expandedInvId, setExpandedInvId] = useState<string | null>(null);
+  const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
+  const [emailingInvoice, setEmailingInvoice] = useState<Invoice | null>(null);
+  const [printingInvId, setPrintingInvId] = useState<string | null>(null);
+
+  const filteredInvoices = useMemo(() => {
+    switch (activeFilter) {
+      case "open":
+        return sorted.filter((i) => ["open", "partially_paid", "draft"].includes(i.status));
+      case "paid":
+        return sorted.filter((i) => i.status === "paid");
+      case "overdue":
+        return sorted.filter((i) => isOverdue(i));
+      default:
+        return sorted;
+    }
+  }, [sorted, activeFilter]);
+
+  function toggleFilter(f: typeof activeFilter) {
+    setActiveFilter((prev) => (prev === f ? "all" : f));
+    setExpandedInvId(null);
+  }
 
   function buildPdfOptions() {
     return {
@@ -878,11 +931,11 @@ function StatementDrawer({
         overdue: row.overdueBalance,
       },
       invoices: sorted.map((i) => {
-        const meta = i.displayMetadata ?? i.displayMetadataJson ?? null;
+        const meta = (i as any).displayMetadata ?? (i as any).displayMetadataJson ?? null;
         return {
           invoiceNumber: i.invoiceNumber,
           issuedAt: formatDate(i.issuedAt),
-          dueAt: formatDate(i.dueAt ?? i.dueDate),
+          dueAt: formatDate((i as any).dueAt ?? (i as any).dueDate),
           status: statusLabel(i.status),
           total: String(i.total ?? 0),
           balanceDue: String(i.balanceDue ?? 0),
@@ -891,6 +944,53 @@ function StatementDrawer({
         };
       }),
     };
+  }
+
+  async function handlePrintInvoice(inv: Invoice) {
+    setPrintingInvId(inv.id);
+    try {
+      const detail = await apiFetch<any>(`/invoices/${inv.id}`);
+      const meta = detail.displayMetadata ?? detail.displayMetadataJson ?? null;
+      const lineItems: Array<any> = detail.lineItems ?? detail.items ?? [];
+      const subtotal = lineItems.reduce(
+        (s: number, it: any) =>
+          s + Number(it.quantity || 0) * Number(it.unitPrice ?? it.unit_price ?? 0),
+        0,
+      );
+      printInvoicePdf({
+        invoiceNumber: detail.invoiceNumber,
+        labName,
+        practiceName: row.practiceName,
+        patientName: meta?.patientName ?? null,
+        billTo: meta?.billTo ?? null,
+        teeth: meta?.teeth ?? null,
+        shade: meta?.shade ?? null,
+        caseNotes: meta?.caseNotes ?? null,
+        issuedAt: detail.issuedAt ?? null,
+        dueAt: detail.dueAt ?? detail.dueDate ?? null,
+        status: statusLabel(detail.status),
+        items: lineItems.map((it: any) => ({
+          item: it.item ?? it.description ?? "",
+          description: it.description ?? "",
+          quantity: Number(it.quantity || 0),
+          unitPrice: Number(it.unitPrice ?? it.unit_price ?? 0),
+          lineTotal:
+            Number(it.quantity || 0) * Number(it.unitPrice ?? it.unit_price ?? 0),
+        })),
+        subtotal,
+        tax: detail.tax ?? null,
+        discount: detail.discount ?? null,
+        credits: detail.credits ?? null,
+        total: detail.total ?? 0,
+        balanceDue: detail.balanceDue ?? null,
+        notes: detail.notes ?? null,
+        generatedAt: new Date(),
+      });
+    } catch {
+      // silently ignore — user will see no print dialog
+    } finally {
+      setPrintingInvId(null);
+    }
   }
 
   function exportPdf() {
@@ -904,7 +1004,7 @@ function StatementDrawer({
       sorted.map((i) => ({
         Invoice: i.invoiceNumber,
         Issued: formatDate(i.issuedAt),
-        Due: formatDate(i.dueAt ?? i.dueDate),
+        Due: formatDate((i as any).dueAt ?? (i as any).dueDate),
         Status: statusLabel(i.status),
         Total: Number(i.total ?? 0).toFixed(2),
         "Balance due": Number(i.balanceDue ?? 0).toFixed(2),
@@ -913,6 +1013,15 @@ function StatementDrawer({
       })),
     );
   }
+
+  const filterLabel =
+    activeFilter === "open"
+      ? "Open"
+      : activeFilter === "paid"
+        ? "Paid"
+        : activeFilter === "overdue"
+          ? "Overdue"
+          : null;
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -923,7 +1032,7 @@ function StatementDrawer({
             <div className="text-xs text-muted-foreground">Statement</div>
             <div className="text-sm font-semibold">{row.practiceName}</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             <button
               type="button"
               onClick={exportCsv}
@@ -942,55 +1051,171 @@ function StatementDrawer({
             </button>
             <button
               type="button"
+              onClick={() => setTextOpen(true)}
+              disabled={sorted.length === 0}
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium hover:bg-secondary border border-border disabled:opacity-50"
+            >
+              <MessageSquare size={13} /> Text statement
+            </button>
+            <button
+              type="button"
               onClick={() => setEmailOpen(true)}
               disabled={sorted.length === 0}
               className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               <Mail size={13} /> Email statement
             </button>
-            <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+            >
               <X size={16} />
             </button>
           </div>
         </header>
+
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+          {/* Summary cards — click to filter invoice list */}
           <div className="grid grid-cols-2 gap-3">
-            <Stat label="Billed" value={formatMoney(row.totalBilled)} tone="neutral" />
-            <Stat label="Open" value={formatMoney(row.openBalance)} tone="primary" />
-            <Stat label="Paid" value={formatMoney(row.totalPaid)} tone="success" />
-            <Stat label="Overdue" value={formatMoney(row.overdueBalance)} tone={row.overdueBalance > 0 ? "warning" : "neutral"} />
+            <Stat
+              label="Billed"
+              value={formatMoney(row.totalBilled)}
+              tone="neutral"
+              active={activeFilter === "all"}
+              onClick={() => toggleFilter("all")}
+            />
+            <Stat
+              label="Open"
+              value={formatMoney(row.openBalance)}
+              tone="primary"
+              active={activeFilter === "open"}
+              onClick={() => toggleFilter("open")}
+            />
+            <Stat
+              label="Paid"
+              value={formatMoney(row.totalPaid)}
+              tone="success"
+              active={activeFilter === "paid"}
+              onClick={() => toggleFilter("paid")}
+            />
+            <Stat
+              label="Overdue"
+              value={formatMoney(row.overdueBalance)}
+              tone={row.overdueBalance > 0 ? "warning" : "neutral"}
+              active={activeFilter === "overdue"}
+              onClick={() => toggleFilter("overdue")}
+            />
           </div>
+
+          {/* Invoice list */}
           <section>
-            <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">Invoices</h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                Invoices
+                {filterLabel && (
+                  <span className="ml-1.5 normal-case font-normal text-foreground/60">
+                    — {filterLabel} only
+                  </span>
+                )}
+              </h3>
+              {filterLabel && (
+                <button
+                  type="button"
+                  onClick={() => toggleFilter("all")}
+                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+                >
+                  <X size={11} /> Clear filter
+                </button>
+              )}
+            </div>
             <div className="border border-border rounded-md divide-y divide-border">
-              {sorted.map((i) => (
-                <div key={i.id} className="px-3 py-2 flex items-center justify-between text-sm">
-                  <div className="min-w-0">
-                    <div className="font-mono text-xs">{i.invoiceNumber}</div>
-                    <div className="text-xs text-muted-foreground">
-                      Issued {formatDate(i.issuedAt)} · Due {formatDate(i.dueAt ?? i.dueDate)}
+              {filteredInvoices.map((inv) => (
+                <div key={inv.id}>
+                  {/* Clickable invoice row */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedInvId((prev) => (prev === inv.id ? null : inv.id))
+                    }
+                    className="w-full px-3 py-2.5 flex items-center justify-between text-sm hover:bg-secondary/40 transition-colors text-left"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-mono text-xs font-medium">{inv.invoiceNumber}</div>
+                      <div className="text-xs text-muted-foreground">
+                        Issued {formatDate(inv.issuedAt)} · Due{" "}
+                        {formatDate((inv as any).dueAt ?? (inv as any).dueDate)}
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <StatusBadge status={i.status} />
-                    <div className="text-right">
-                      <div className="font-medium tabular-nums">{formatMoney(i.total)}</div>
-                      {Number(i.balanceDue ?? 0) > 0 && (
-                        <div className="text-xs text-muted-foreground tabular-nums">
-                          {formatMoney(i.balanceDue)} open
-                        </div>
-                      )}
+                    <div className="flex items-center gap-3">
+                      <StatusBadge status={inv.status} />
+                      <div className="text-right">
+                        <div className="font-medium tabular-nums">{formatMoney(inv.total)}</div>
+                        {Number(inv.balanceDue ?? 0) > 0 && (
+                          <div className="text-xs text-muted-foreground tabular-nums">
+                            {formatMoney(inv.balanceDue)} open
+                          </div>
+                        )}
+                      </div>
+                      <ChevronDown
+                        size={14}
+                        className={`text-muted-foreground shrink-0 transition-transform duration-150 ${
+                          expandedInvId === inv.id ? "rotate-180" : ""
+                        }`}
+                      />
                     </div>
-                  </div>
+                  </button>
+
+                  {/* Inline action bar */}
+                  {expandedInvId === inv.id && (
+                    <div className="px-3 py-2.5 bg-secondary/30 border-t border-border flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingInvoice(inv);
+                          setExpandedInvId(null);
+                        }}
+                        className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium hover:bg-secondary border border-border bg-card"
+                      >
+                        <Eye size={12} /> View / Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handlePrintInvoice(inv)}
+                        disabled={printingInvId === inv.id}
+                        className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium hover:bg-secondary border border-border bg-card disabled:opacity-50"
+                      >
+                        {printingInvId === inv.id ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <Printer size={12} />
+                        )}
+                        Print
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEmailingInvoice(inv);
+                          setExpandedInvId(null);
+                        }}
+                        className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium hover:bg-secondary border border-border bg-card"
+                      >
+                        <Mail size={12} /> Email
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
-              {sorted.length === 0 && (
-                <div className="px-3 py-6 text-center text-sm text-muted-foreground">No invoices.</div>
+              {filteredInvoices.length === 0 && (
+                <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  {sorted.length === 0 ? "No invoices." : "No invoices match this filter."}
+                </div>
               )}
             </div>
           </section>
         </div>
       </aside>
+
       {emailOpen && (
         <EmailStatementDialog
           row={row}
@@ -998,6 +1223,29 @@ function StatementDrawer({
           practice={practice}
           buildPdfOptions={buildPdfOptions}
           onClose={() => setEmailOpen(false)}
+        />
+      )}
+      {textOpen && (
+        <TextStatementDialog
+          row={row}
+          invoices={sorted}
+          practice={practice}
+          onClose={() => setTextOpen(false)}
+        />
+      )}
+      {editingInvoice && (
+        <InvoiceEditor
+          invoice={editingInvoice}
+          onClose={() => setEditingInvoice(null)}
+        />
+      )}
+      {emailingInvoice && (
+        <SendInvoiceFromStatementDialog
+          invoice={emailingInvoice}
+          practiceName={row.practiceName}
+          practice={practice}
+          labName={labName}
+          onClose={() => setEmailingInvoice(null)}
         />
       )}
     </div>
@@ -1150,6 +1398,341 @@ function EmailStatementDialog({
             >
               {sending ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
               {sending ? "Sending…" : "Send email"}
+            </button>
+          )}
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function TextStatementDialog({
+  row,
+  invoices,
+  practice,
+  onClose,
+}: {
+  row: StatementRow;
+  invoices: Invoice[];
+  practice: Organization | null;
+  onClose: () => void;
+}) {
+  const labOrganizationId = invoices[0]?.labOrganizationId ?? "";
+  const defaultPhone = ((practice as any)?.phone ?? "").trim();
+  const [to, setTo] = useState(defaultPhone);
+  const defaultMessage = [
+    `Statement for ${row.practiceName}`,
+    `Date: ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`,
+    `Billed: ${formatMoney(row.totalBilled)} | Open: ${formatMoney(row.openBalance)}${row.overdueBalance > 0 ? ` | Overdue: ${formatMoney(row.overdueBalance)}` : ""}`,
+    `${invoices.length} invoice${invoices.length === 1 ? "" : "s"} — please contact us with any questions.`,
+  ].join("\n");
+  const [message, setMessage] = useState(defaultMessage);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sentAt, setSentAt] = useState<string | null>(null);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+
+  async function send() {
+    setError(null);
+    if (!labOrganizationId) {
+      setError("Could not determine your lab organization.");
+      return;
+    }
+    setSending(true);
+    try {
+      const res = await apiFetch<{ sentAt: string; to: string; invoiceCount: number }>(
+        "/invoices/statements/sms",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            labOrganizationId,
+            practiceOrganizationId: row.practiceId,
+            invoiceIds: invoices.map((i) => i.id),
+            ...(to.trim() ? { to: to.trim() } : {}),
+            message,
+          }),
+        },
+      );
+      setSentAt(res.sentAt);
+      setSentTo(res.to);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError ? e.message : (e as Error)?.message || "Failed to send.";
+      setError(msg);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-foreground/40">
+      <div className="w-full max-w-lg bg-card border border-border rounded-xl shadow-xl flex flex-col max-h-[90vh]">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Text statement</div>
+            <div className="text-sm font-semibold">{row.practiceName}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          {sentAt ? (
+            <div className="rounded-md border border-success/40 bg-success/10 px-3 py-3 text-sm">
+              <div className="font-medium text-success">Text message sent.</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Delivered to {sentTo} at {new Date(sentAt).toLocaleString("en-US")}.
+              </div>
+            </div>
+          ) : (
+            <>
+              <Field label="To (phone number)">
+                <input
+                  type="tel"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  placeholder={defaultPhone || "Enter phone number (e.g. +15551234567)"}
+                  className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                />
+                {defaultPhone && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Pre-filled from this practice's phone number on file. Edit to override.
+                  </p>
+                )}
+              </Field>
+              <Field label="Message">
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  rows={7}
+                  maxLength={1500}
+                  className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  {message.length} / 1500 characters
+                </p>
+              </Field>
+              <div className="text-xs text-muted-foreground">
+                The statement summary is sent as a text message. To send the full PDF, use Email statement instead.
+              </div>
+              {error && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            {sentAt ? "Close" : "Cancel"}
+          </button>
+          {!sentAt && (
+            <button
+              type="button"
+              onClick={send}
+              disabled={sending}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {sending ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <MessageSquare size={14} />
+              )}
+              {sending ? "Sending…" : "Send text"}
+            </button>
+          )}
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function SendInvoiceFromStatementDialog({
+  invoice,
+  practiceName,
+  practice,
+  labName,
+  onClose,
+}: {
+  invoice: Invoice;
+  practiceName: string;
+  practice: Organization | null;
+  labName: string;
+  onClose: () => void;
+}) {
+  const detailQuery = useQuery({
+    queryKey: ["invoice", invoice.id],
+    queryFn: () => apiFetch<any>(`/invoices/${invoice.id}`),
+  });
+
+  const defaultEmail = ((practice as any)?.billingEmail ?? "").trim();
+  const [to, setTo] = useState(defaultEmail);
+  const [subject, setSubject] = useState(`Invoice ${invoice.invoiceNumber}`);
+  const [message, setMessage] = useState(
+    `Hi ${practiceName},\n\nPlease find invoice ${invoice.invoiceNumber} attached.\n\nThank you,`,
+  );
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sentAt, setSentAt] = useState<string | null>(null);
+
+  function buildOpts(detail: any): InvoicePdfOptions {
+    const meta = detail.displayMetadata ?? detail.displayMetadataJson ?? null;
+    const lineItems: Array<any> = detail.lineItems ?? detail.items ?? [];
+    const subtotal = lineItems.reduce(
+      (s: number, it: any) =>
+        s + Number(it.quantity || 0) * Number(it.unitPrice ?? it.unit_price ?? 0),
+      0,
+    );
+    return {
+      invoiceNumber: detail.invoiceNumber,
+      labName,
+      practiceName,
+      patientName: meta?.patientName ?? null,
+      billTo: meta?.billTo ?? null,
+      teeth: meta?.teeth ?? null,
+      shade: meta?.shade ?? null,
+      caseNotes: meta?.caseNotes ?? null,
+      issuedAt: detail.issuedAt ?? null,
+      dueAt: detail.dueAt ?? detail.dueDate ?? null,
+      status: statusLabel(detail.status),
+      items: lineItems.map((it: any) => ({
+        item: it.item ?? it.description ?? "",
+        description: it.description ?? "",
+        quantity: Number(it.quantity || 0),
+        unitPrice: Number(it.unitPrice ?? it.unit_price ?? 0),
+        lineTotal:
+          Number(it.quantity || 0) * Number(it.unitPrice ?? it.unit_price ?? 0),
+      })),
+      subtotal,
+      tax: detail.tax ?? null,
+      discount: detail.discount ?? null,
+      credits: detail.credits ?? null,
+      total: detail.total ?? 0,
+      balanceDue: detail.balanceDue ?? null,
+      notes: detail.notes ?? null,
+      generatedAt: new Date(),
+    };
+  }
+
+  async function send() {
+    setError(null);
+    setSending(true);
+    try {
+      const detail = detailQuery.data ?? invoice;
+      const built = buildInvoicePdf(buildOpts(detail));
+      const trimmedTo = to.trim();
+      const res = await apiFetch<{ sentAt: string; to: string }>(
+        `/invoices/${invoice.id}/email`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ...(trimmedTo ? { to: trimmedTo } : {}),
+            subject: subject.trim(),
+            message,
+            filename: built.filename,
+            pdfBase64: built.base64,
+          }),
+        },
+      );
+      setSentAt(res.sentAt);
+      setTo(res.to);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError ? e.message : (e as Error)?.message || "Failed to send.";
+      setError(msg);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-foreground/40">
+      <div className="w-full max-w-lg bg-card border border-border rounded-xl shadow-xl flex flex-col max-h-[90vh]">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <div>
+            <div className="text-xs text-muted-foreground">Email invoice</div>
+            <div className="text-sm font-semibold font-mono">{invoice.invoiceNumber}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          {sentAt ? (
+            <div className="rounded-md border border-success/40 bg-success/10 px-3 py-3 text-sm">
+              <div className="font-medium text-success">Invoice sent.</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Delivered to {to} at {new Date(sentAt).toLocaleString("en-US")}.
+              </div>
+            </div>
+          ) : (
+            <>
+              <Field label="To">
+                <input
+                  type="email"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  placeholder={defaultEmail || "Leave blank to use billing email on file"}
+                  className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                />
+              </Field>
+              <Field label="Subject">
+                <input
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary"
+                />
+              </Field>
+              <Field label="Message">
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  rows={6}
+                  className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y"
+                />
+              </Field>
+              <div className="text-xs text-muted-foreground">
+                The invoice PDF will be attached.
+              </div>
+              {error && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {error}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            {sentAt ? "Close" : "Cancel"}
+          </button>
+          {!sentAt && (
+            <button
+              type="button"
+              onClick={send}
+              disabled={sending || detailQuery.isLoading}
+              className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {sending ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
+              {sending ? "Sending…" : "Send invoice"}
             </button>
           )}
         </footer>
