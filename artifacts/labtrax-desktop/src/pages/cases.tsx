@@ -1368,6 +1368,8 @@ export function CaseDrawer({
 }) {
   const qc = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileDragOver, setFileDragOver] = useState(false);
+  const fileDragCounterRef = useRef(0);
 
   const [activeTab, setActiveTab] = useState<CaseTab>("overview");
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null);
@@ -1840,33 +1842,68 @@ export function CaseDrawer({
     },
   });
 
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = "";
+  async function uploadFiles(files: File[]) {
+    if (files.length === 0) return;
     setUploadingFile(true);
     setUploadError(null);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const { url } = await apiFetch<{ url: string }>("/media/upload", {
-        method: "POST",
-        body: fd,
-      });
-      await apiFetch(`/cases/${labCase.id}/attachments`, {
-        method: "POST",
-        body: JSON.stringify({
-          storageKey: url,
-          fileName: file.name,
-          fileType: file.type || "application/octet-stream",
-        }),
-      });
-      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
-    } catch (err: any) {
-      setUploadError(err?.message || "Upload failed.");
-    } finally {
-      setUploadingFile(false);
+    const errors: string[] = [];
+    for (const file of files) {
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const { url } = await apiFetch<{ url: string }>("/media/upload", {
+          method: "POST",
+          body: fd,
+        });
+        await apiFetch(`/cases/${labCase.id}/attachments`, {
+          method: "POST",
+          body: JSON.stringify({
+            storageKey: url,
+            fileName: file.name,
+            fileType: file.type || "application/octet-stream",
+          }),
+        });
+      } catch (err: any) {
+        errors.push(`${file.name}: ${err?.message || "Upload failed."}`);
+      }
     }
+    qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+    if (errors.length > 0) setUploadError(errors.join(" · "));
+    setUploadingFile(false);
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    await uploadFiles(files);
+  }
+
+  function handleFileDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDragCounterRef.current += 1;
+    if (fileDragCounterRef.current === 1) setFileDragOver(true);
+  }
+
+  function handleFileDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDragCounterRef.current -= 1;
+    if (fileDragCounterRef.current === 0) setFileDragOver(false);
+  }
+
+  function handleFileDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function handleFileDrop(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    fileDragCounterRef.current = 0;
+    setFileDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) void uploadFiles(files);
   }
 
   async function handleGenerateInvoice() {
@@ -3052,7 +3089,19 @@ export function CaseDrawer({
 
           {/* ── FILES ── */}
           {activeTab === "files" && (
-            <div className="px-5 py-5 space-y-4">
+            <div
+              className="relative px-5 py-5 space-y-4"
+              onDragEnter={handleFileDragEnter}
+              onDragLeave={handleFileDragLeave}
+              onDragOver={handleFileDragOver}
+              onDrop={handleFileDrop}
+            >
+              {fileDragOver && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-primary bg-primary/8 pointer-events-none">
+                  <FileUp size={24} className="text-primary" />
+                  <p className="text-sm font-medium text-primary">Drop to attach files</p>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium">
                   Attachments
@@ -3086,7 +3135,7 @@ export function CaseDrawer({
                   </button>
                 </div>
               </div>
-              <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
+              <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileChange} />
               {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
               {!isLoading && fileCount === 0 && !uploadingFile && (

@@ -7,11 +7,15 @@ import { supportsDropHandles, supportsFilePicker } from "@/lib/upload-handles";
 
 const PICKER_TYPES = [
   {
-    description: "Images, videos, and PDFs",
+    description: "Images, videos, PDFs, and 3D scans",
     accept: {
       "image/*": [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"],
       "video/*": [".mp4", ".mov", ".webm", ".avi"],
       "application/pdf": [".pdf"],
+      "model/stl": [".stl"],
+      "model/obj": [".obj"],
+      "model/ply": [".ply"],
+      "application/octet-stream": [".stl", ".obj", ".ply", ".dcm", ".3ds", ".dae"],
     },
   },
 ];
@@ -224,7 +228,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                 {dragOver ? "Release to upload" : "Drop files or click to browse"}
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Images, videos, PDFs &mdash; up to 10 MB each
+                Images, videos, PDFs, and 3D scans &mdash; up to 10 MB each
               </p>
             </div>
           </div>
@@ -234,7 +238,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/*,video/*,application/pdf"
+          accept="image/*,video/*,application/pdf,.stl,.obj,.ply,.dcm,.3ds,.dae"
           className="hidden"
           onChange={handleInputChange}
           disabled={disabled}
@@ -394,7 +398,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                             else resumeInputsRef.current.delete(entry.id);
                           }}
                           type="file"
-                          accept="image/*,video/*,application/pdf"
+                          accept="image/*,video/*,application/pdf,.stl,.obj,.ply,.dcm,.3ds,.dae"
                           className="hidden"
                           onChange={(e) => handleResumeChange(entry.id, e)}
                         />

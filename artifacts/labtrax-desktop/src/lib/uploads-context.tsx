@@ -40,6 +40,13 @@ const ACCEPTED_MIME_TYPES = new Set([
   "video/webm",
   "video/x-msvideo",
   "application/pdf",
+  // 3D scan formats
+  "model/stl",
+  "model/obj",
+  "model/ply",
+  "application/octet-stream",
+  "application/sla",
+  "application/vnd.ms-pki.stl",
 ]);
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
@@ -136,9 +143,12 @@ interface UploadsContextValue {
 const UploadsContext = createContext<UploadsContextValue | null>(null);
 
 function isAcceptedType(mime: string): boolean {
+  // Accept files with no MIME type (common for .stl / .obj on Windows)
+  if (!mime || mime === "") return true;
   if (ACCEPTED_MIME_TYPES.has(mime)) return true;
   if (mime.startsWith("image/")) return true;
   if (mime.startsWith("video/")) return true;
+  if (mime.startsWith("model/")) return true;
   return false;
 }
 
@@ -150,7 +160,7 @@ function formatBytes(bytes: number): string {
 
 function validateFile(file: File): string | null {
   if (!isAcceptedType(file.type)) {
-    return "File type not accepted. Please upload images, videos, or PDFs.";
+    return "File type not accepted. Please upload images, videos, PDFs, or 3D scans.";
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
     return `File is too large (${formatBytes(file.size)}). Maximum size is 10 MB.`;
