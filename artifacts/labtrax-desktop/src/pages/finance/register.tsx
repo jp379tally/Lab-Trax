@@ -373,6 +373,7 @@ function RegisterTable({
               <InlineBlankRows
                 accountId={accountId}
                 organizationId={organizationId}
+                accounts={accounts}
                 rowCount={3}
                 categories={cats.data || []}
                 onSaved={() =>
@@ -790,14 +791,16 @@ function MakeRecurringDialog({
 function InlineBlankRows({
   accountId,
   organizationId,
+  accounts,
   rowCount,
   categories,
   onSaved,
 }: {
   accountId: string;
   organizationId: string;
+  accounts: BankAccount[];
   rowCount: number;
-  categories: Array<{ id: string; name: string }>;
+  categories: TransactionCategory[];
   onSaved: () => void;
 }) {
   const [keys, setKeys] = useState<number[]>(() =>
@@ -817,6 +820,7 @@ function InlineBlankRows({
           key={k}
           accountId={accountId}
           organizationId={organizationId}
+          accounts={accounts}
           categories={categories}
           onSaved={handleSaved}
         />
@@ -828,14 +832,17 @@ function InlineBlankRows({
 function BlankRow({
   accountId,
   organizationId,
+  accounts,
   categories,
   onSaved,
 }: {
   accountId: string;
   organizationId: string;
-  categories: Array<{ id: string; name: string }>;
+  accounts: BankAccount[];
+  categories: TransactionCategory[];
   onSaved: () => void;
 }) {
+  const qc = useQueryClient();
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [payee, setPayee] = useState("");
   const [memo, setMemo] = useState("");
@@ -845,6 +852,7 @@ function BlankRow({
   const [saving, setSaving] = useState(false);
   const [savedOnce, setSavedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recurringOpen, setRecurringOpen] = useState(false);
 
   const hasAmount =
     (Number(payment) || 0) > 0 || (Number(deposit) || 0) > 0;
@@ -976,20 +984,33 @@ function BlankRow({
         <td className="py-1.5"></td>
         <td className="px-4 py-1.5"></td>
         <td className="px-2 py-1.5">
-          <button
-            type="button"
-            onClick={save}
-            disabled={!ready || saving || savedOnce}
-            className="h-7 px-2 rounded bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-40 inline-flex items-center gap-1"
-            aria-label="Save row"
-            title={savedOnce ? "Saved" : "Save row"}
-          >
-            {saving ? (
-              <Loader2 size={11} className="animate-spin" />
-            ) : (
-              <CheckCircle2 size={11} />
+          <div className="flex items-center gap-1">
+            {ready && !savedOnce && (
+              <button
+                type="button"
+                onClick={() => setRecurringOpen(true)}
+                className="h-7 w-7 rounded inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary"
+                aria-label="Make recurring"
+                title="Make recurring"
+              >
+                <Repeat size={13} />
+              </button>
             )}
-          </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={!ready || saving || savedOnce}
+              className="h-7 px-2 rounded bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-40 inline-flex items-center gap-1"
+              aria-label="Save row"
+              title={savedOnce ? "Saved" : "Save row"}
+            >
+              {saving ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : (
+                <CheckCircle2 size={11} />
+              )}
+            </button>
+          </div>
         </td>
       </tr>
       {error && (
@@ -998,6 +1019,27 @@ function BlankRow({
             {error}
           </td>
         </tr>
+      )}
+      {recurringOpen && (
+        <MakeRecurringDialog
+          organizationId={organizationId}
+          accounts={accounts}
+          categories={categories}
+          source={{
+            payee: payee.trim() || null,
+            memo: memo.trim() || null,
+            categoryId: categoryId || null,
+            bankAccountId: accountId,
+            txnDate: new Date(date).toISOString(),
+            debitAmount: Number(payment) || 0,
+            creditAmount: Number(deposit) || 0,
+          }}
+          onClose={() => setRecurringOpen(false)}
+          onComplete={() => {
+            setRecurringOpen(false);
+            qc.invalidateQueries({ queryKey: ["finance"] });
+          }}
+        />
       )}
     </>
   );
