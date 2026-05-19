@@ -4,6 +4,7 @@ import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Sea
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { VendorCombobox } from "@/components/finance/VendorCombobox";
+import { CategorySelect } from "@/components/finance/CategorySelect";
 import type { BankAccount, BankTransaction, Invoice, TransactionCategory } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 
@@ -555,18 +556,12 @@ function MakeRecurringDialog({
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Category</label>
-              <select
+              <CategorySelect
+                organizationId={organizationId}
                 value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value)}
+                onChange={setCategoryId}
                 className={`${inputCls} w-full`}
-              >
-                <option value="">—</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+              />
             </div>
           </div>
           <div>
@@ -852,20 +847,14 @@ function BlankRow({
           />
         </td>
         <td className="py-1.5">
-          <select
+          <CategorySelect
+            organizationId={organizationId}
             value={categoryId}
-            onChange={(e) => setCategoryId(e.target.value)}
+            onChange={setCategoryId}
             onKeyDown={onKeyDown}
             disabled={savedOnce}
             className={inputCls}
-          >
-            <option value="">—</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
+          />
         </td>
         <td className="py-1.5">
           <input
@@ -1284,18 +1273,12 @@ function TxnEditor({
             />
           </Field>
           <Field label="Category">
-            <select
+            <CategorySelect
+              organizationId={organizationId}
               value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value)}
+              onChange={setCategoryId}
               className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-            >
-              <option value="">— None —</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Payment">
