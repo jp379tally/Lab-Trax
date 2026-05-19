@@ -97,6 +97,22 @@ export default function StatementsPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [orgId] = useSelectedOrg();
 
+  const scheduleQuery = useQuery({
+    queryKey: ["statement-schedule", orgId],
+    queryFn: () => apiFetch<StatementSchedule>(`/lab-orgs/${orgId}/statement-schedule`),
+    enabled: !!orgId,
+  });
+
+  const practiceCountForOrg = useMemo(() => {
+    const orgs = organizationsQuery.data ?? [];
+    return orgs.filter((o) => o.parentLabOrganizationId === orgId).length;
+  }, [organizationsQuery.data, orgId]);
+
+  const scheduleFilterCount =
+    scheduleQuery.data?.includedOrgIds && scheduleQuery.data.includedOrgIds.length > 0
+      ? scheduleQuery.data.includedOrgIds.length
+      : null;
+
   const invoices = invoicesQuery.data ?? [];
 
   const rows = useMemo<StatementRow[]>(() => {
@@ -227,7 +243,15 @@ export default function StatementsPage() {
             disabled={!orgId}
             className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
           >
-            <CalendarClock size={14} /> Auto-send
+            <CalendarClock size={14} />
+            <span className="flex flex-col items-start leading-tight">
+              <span>Auto-send</span>
+              {scheduleFilterCount !== null && (
+                <span className="text-[10px] font-normal text-primary leading-none">
+                  {scheduleFilterCount} of {practiceCountForOrg || scheduleFilterCount} practice{scheduleFilterCount === 1 ? "" : "s"}
+                </span>
+              )}
+            </span>
           </button>
           <button
             type="button"
@@ -521,6 +545,16 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
           <div>
             <div className="text-xs text-muted-foreground">Auto-send statements</div>
             <div className="text-sm font-semibold">{orgName}</div>
+            {(() => {
+              const ids = sched?.includedOrgIds;
+              if (!ids || ids.length === 0) return null;
+              const total = practicesQuery.data?.length ?? 0;
+              return (
+                <div className="text-xs text-primary mt-0.5">
+                  Sending to {ids.length} of {total || ids.length} practice{ids.length === 1 ? "" : "s"}
+                </div>
+              );
+            })()}
           </div>
           <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center">
             <X size={16} />
