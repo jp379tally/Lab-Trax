@@ -438,6 +438,12 @@ export function InvoiceEditor({
     queryFn: () => apiFetch<Invoice>(`/invoices/${invoice.id}`),
   });
 
+  const orgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+  });
+  const practiceOrgs = (orgsQuery.data ?? []).filter((o) => o.type === "provider");
+
   // Per-doctor priced item catalog used by the "Item" dropdown so
   // picking "Zirconia Crown" auto-fills its description and the
   // doctor-specific unit price. Only loaded for invoices linked to a
@@ -572,6 +578,7 @@ export function InvoiceEditor({
         tax,
         discount,
         notes: notes.trim() ? notes.trim() : null,
+        providerOrganizationId: providerId,
         displayMetadata,
         items: trimmedItems.map((it, idx) => ({
           description: it.description,
@@ -955,20 +962,25 @@ export function InvoiceEditor({
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                 Client / Provider
               </label>
-              <input
-                type="text"
-                value={
-                  detailQuery.data?.providerOrganization?.name ||
-                  invoice.providerOrganization?.name ||
-                  providerId
-                }
-                disabled
-                readOnly
-                className="w-full h-9 px-2.5 rounded-md bg-secondary/40 border border-input text-sm text-muted-foreground cursor-not-allowed"
-              />
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                Provider is set on the originating case and cannot be changed here.
-              </p>
+              <select
+                value={providerId}
+                onChange={(e) => setProviderId(e.target.value)}
+                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                disabled={orgsQuery.isLoading}
+              >
+                {practiceOrgs.length === 0 && (
+                  <option value={providerId}>
+                    {detailQuery.data?.providerOrganization?.name ||
+                      invoice.providerOrganization?.name ||
+                      providerId}
+                  </option>
+                )}
+                {practiceOrgs.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.displayName || o.name}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">

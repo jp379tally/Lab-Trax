@@ -1597,6 +1597,7 @@ router.patch(
         issuedAt: z.string().datetime().nullable().optional(),
         invoiceNumber: z.string().min(1).optional(),
         notes: z.string().nullable().optional(),
+        providerOrganizationId: z.string().min(1).optional(),
         items: z
           .array(
             z.object({
@@ -1611,6 +1612,24 @@ router.patch(
         displayMetadata: z.record(z.any()).nullable().optional(),
       })
       .parse(req.body);
+
+    if (input.providerOrganizationId) {
+      const newOrg = await db.query.organizations.findFirst({
+        where: eq(organizations.id, input.providerOrganizationId),
+      });
+      if (!newOrg || newOrg.type !== "provider") {
+        throw new HttpError(400, "Invalid provider organization.");
+      }
+      if (
+        newOrg.parentLabOrganizationId !== invoice.labOrganizationId &&
+        newOrg.id !== invoice.labOrganizationId
+      ) {
+        throw new HttpError(
+          403,
+          "Provider does not belong to this lab."
+        );
+      }
+    }
 
     const updated = await db.transaction(async (tx) => {
       if (input.items) {
@@ -1693,6 +1712,8 @@ router.patch(
           invoiceNumber: input.invoiceNumber ?? invoice.invoiceNumber,
           notes:
             input.notes === undefined ? invoice.notes : input.notes,
+          providerOrganizationId:
+            input.providerOrganizationId ?? invoice.providerOrganizationId,
           displayMetadataJson:
             input.displayMetadata === undefined
               ? invoice.displayMetadataJson
