@@ -29,6 +29,8 @@ import { PracticeEditor, AddPracticeDialog } from "@/pages/practices";
 
 const EXPANDED_STORAGE_KEY = "accounts_expanded_v1";
 const SCROLL_STORAGE_KEY = "accounts_scroll_v1";
+const SEARCH_STORAGE_KEY = "accounts_search_v1";
+const SHOW_ARCHIVED_STORAGE_KEY = "accounts_show_archived_v1";
 
 const OPEN_STATUSES = new Set([
   "received",
@@ -66,8 +68,20 @@ export default function AccountsPage() {
     queryFn: () => apiFetch<MeResponse>("/auth/me"),
   });
 
-  const [search, setSearch] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
+  const [search, setSearch] = useState(() => {
+    try {
+      return sessionStorage.getItem(SEARCH_STORAGE_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [showArchived, setShowArchived] = useState(() => {
+    try {
+      return sessionStorage.getItem(SHOW_ARCHIVED_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
   const [openCasesOnly, setOpenCasesOnly] = useState(false);
   const [doctorSortKey, setDoctorSortKey] = useState<"totalCases" | "openCases" | "totalBilled" | "lastCaseAt">("totalCases");
   const [doctorSortDir, setDoctorSortDir] = useState<"asc" | "desc">("desc");
@@ -131,6 +145,18 @@ export default function AccountsPage() {
       sessionStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify(Array.from(expanded)));
     } catch {}
   }, [expanded]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SEARCH_STORAGE_KEY, search);
+    } catch {}
+  }, [search]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SHOW_ARCHIVED_STORAGE_KEY, String(showArchived));
+    } catch {}
+  }, [showArchived]);
 
   const scrollRestoredRef = useRef(false);
 

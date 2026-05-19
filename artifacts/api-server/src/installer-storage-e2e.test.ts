@@ -175,6 +175,8 @@ vi.mock("@workspace/db", () => {
     mediaCleanupRuns: T,
     statementSchedules: T,
     statementSendRuns: T,
+    // Billing
+    subscriptions: T,
   };
 });
 
