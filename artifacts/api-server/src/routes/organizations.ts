@@ -6,10 +6,11 @@ import {
   openLabLogoStream,
   uploadLabLogo,
 } from "../lib/lab-logo-storage";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
+  cases,
   labCases,
   organizationConnections,
   organizationInvites,
@@ -675,72 +676,115 @@ router.get(
     const eligibleUsers = allProviderUsers.filter(
       (u) => !currentMemberIds.has(u.id)
     );
-    if (eligibleUsers.length === 0) return ok(res, []);
 
     // Annotate each candidate with the practice(s) they're currently at
     // so the picker can show "Dr. Jane Smith — at Smile Dental" etc.
     // We only label sibling practices (under this lab's parent) by name;
     // memberships at other labs are surfaced as a generic
     // "another lab" badge so we don't leak unrelated practice names.
-    const eligibleIds = eligibleUsers.map((u) => u.id);
-    const allMemberships = await db
-      .select({
-        labId: organizationMemberships.labId,
-        userId: organizationMemberships.userId,
-      })
-      .from(organizationMemberships)
-      .where(
-        and(
-          inArray(organizationMemberships.userId, eligibleIds),
-          eq(organizationMemberships.status, "active"),
-          notDeleted(organizationMemberships)
-        )
-      );
-    const referencedLabIds = Array.from(
-      new Set(allMemberships.map((m) => m.labId))
-    );
-    const referencedOrgs = referencedLabIds.length
-      ? await db
-          .select({
-            id: organizations.id,
-            name: organizations.name,
-            displayName: organizations.displayName,
-            parentLabOrganizationId: organizations.parentLabOrganizationId,
-            type: organizations.type,
-          })
-          .from(organizations)
-          .where(inArray(organizations.id, referencedLabIds))
-      : [];
-    const orgMap = new Map(referencedOrgs.map((o) => [o.id, o]));
     const userToPractices = new Map<string, string[]>();
-    for (const m of allMemberships) {
-      if (m.labId === organizationId) continue;
-      const pr = orgMap.get(m.labId);
-      if (!pr) continue;
-      const isSibling =
-        pr.type === "provider" &&
-        pr.parentLabOrganizationId === practice.parentLabOrganizationId;
-      const label = isSibling
-        ? pr.displayName || pr.name
-        : "another lab";
-      const arr = userToPractices.get(m.userId) ?? [];
-      if (!arr.includes(label)) arr.push(label);
-      userToPractices.set(m.userId, arr);
+    if (eligibleUsers.length > 0) {
+      const eligibleIds = eligibleUsers.map((u) => u.id);
+      const allMemberships = await db
+        .select({
+          labId: organizationMemberships.labId,
+          userId: organizationMemberships.userId,
+        })
+        .from(organizationMemberships)
+        .where(
+          and(
+            inArray(organizationMemberships.userId, eligibleIds),
+            eq(organizationMemberships.status, "active"),
+            notDeleted(organizationMemberships)
+          )
+        );
+      const referencedLabIds = Array.from(
+        new Set(allMemberships.map((m) => m.labId))
+      );
+      const referencedOrgs = referencedLabIds.length
+        ? await db
+            .select({
+              id: organizations.id,
+              name: organizations.name,
+              displayName: organizations.displayName,
+              parentLabOrganizationId: organizations.parentLabOrganizationId,
+              type: organizations.type,
+            })
+            .from(organizations)
+            .where(inArray(organizations.id, referencedLabIds))
+        : [];
+      const orgMap = new Map(referencedOrgs.map((o) => [o.id, o]));
+      for (const m of allMemberships) {
+        if (m.labId === organizationId) continue;
+        const pr = orgMap.get(m.labId);
+        if (!pr) continue;
+        const isSibling =
+          pr.type === "provider" &&
+          pr.parentLabOrganizationId === practice.parentLabOrganizationId;
+        const label = isSibling
+          ? pr.displayName || pr.name
+          : "another lab";
+        const arr = userToPractices.get(m.userId) ?? [];
+        if (!arr.includes(label)) arr.push(label);
+        userToPractices.set(m.userId, arr);
+      }
     }
 
-    return ok(
-      res,
-      eligibleUsers
-        .map((u) => ({
-          ...u,
-          currentPractices: userToPractices.get(u.id) ?? [],
-        }))
-        .sort((a, b) => {
-          const an = `${a.lastName ?? ""} ${a.firstName ?? ""}`.trim().toLowerCase();
-          const bn = `${b.lastName ?? ""} ${b.firstName ?? ""}`.trim().toLowerCase();
-          return an.localeCompare(bn);
-        })
+    const realDoctors = eligibleUsers
+      .map((u) => ({
+        ...u,
+        currentPractices: userToPractices.get(u.id) ?? [],
+        virtual: false as const,
+        doctorName: null as string | null,
+      }))
+      .sort((a, b) => {
+        const an = `${a.lastName ?? ""} ${a.firstName ?? ""}`.trim().toLowerCase();
+        const bn = `${b.lastName ?? ""} ${b.firstName ?? ""}`.trim().toLowerCase();
+        return an.localeCompare(bn);
+      });
+
+    // Virtual doctors: unique doctorName values from this lab's cases that
+    // don't already have a formal provider account. Shown in the picker so
+    // the lab admin can formally create an account without leaving the dialog.
+    const caseDoctorRows = await db
+      .selectDistinct({ doctorName: cases.doctorName })
+      .from(cases)
+      .where(
+        and(
+          eq(cases.labOrganizationId, practice.parentLabOrganizationId),
+          isNotNull(cases.doctorName),
+          notDeleted(cases)
+        )
+      );
+
+    const existingProviderNames = new Set(
+      allProviderUsers.map((u) =>
+        `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim().toLowerCase()
+      )
     );
+    const virtualDoctors = caseDoctorRows
+      .filter(
+        (c) =>
+          c.doctorName &&
+          c.doctorName.trim() &&
+          !existingProviderNames.has(c.doctorName.trim().toLowerCase())
+      )
+      .map((c) => ({
+        id: `virtual:${c.doctorName}`,
+        username: c.doctorName as string,
+        email: null as string | null,
+        phone: null as string | null,
+        firstName: null as string | null,
+        lastName: null as string | null,
+        userType: "provider" as const,
+        platformAccountNumber: null as string | null,
+        currentPractices: [] as string[],
+        virtual: true as const,
+        doctorName: c.doctorName as string,
+      }))
+      .sort((a, b) => a.doctorName.localeCompare(b.doctorName));
+
+    return ok(res, [...realDoctors, ...virtualDoctors]);
   })
 );
 

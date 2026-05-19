@@ -1051,8 +1051,10 @@ interface EligibleDoctor {
   phone?: string | null;
   firstName?: string | null;
   lastName?: string | null;
+  doctorName?: string | null;
   platformAccountNumber?: string | null;
   currentPractices: string[];
+  virtual?: boolean;
 }
 
 function AddDoctorToPracticeDialog({
@@ -1146,6 +1148,42 @@ function AddDoctorToPracticeDialog({
     onError: (err: Error) => setError(err.message || "Could not link doctor."),
   });
 
+  // Used when the user picks a "virtual" case-history doctor who has no
+  // account yet — creates the account and links them in one step.
+  const createFromCaseMutation = useMutation({
+    mutationFn: (doc: EligibleDoctor) => {
+      const raw = (doc.doctorName || doc.username || "").trim();
+      // Strip common "Dr." prefix so the name fields aren't polluted.
+      const stripped = raw.replace(/^dr\.?\s+/i, "").trim();
+      const parts = stripped.split(/\s+/);
+      const fName = parts[0] || "Doctor";
+      const lName = parts.slice(1).join(" ") || undefined;
+      return apiFetch<{
+        created: Array<{ firstName?: string | null; lastName?: string | null }>;
+        skipped: Array<{ index: number; reason: string }>;
+      }>(`/organizations/${org.id}/doctors`, {
+        method: "POST",
+        body: JSON.stringify({
+          doctors: [{ firstName: fName, lastName: lName }],
+        }),
+      });
+    },
+    onSuccess: (res) => {
+      const skipped = res.skipped?.[0];
+      if (skipped) {
+        setError(skipped.reason || "Could not create doctor account.");
+        return;
+      }
+      const d = res.created?.[0];
+      const name = [d?.firstName, d?.lastName].filter(Boolean).join(" ") || "Doctor";
+      setSuccess(`${name} added to ${org.displayName || org.name}.`);
+      setError(null);
+      setSelectedUserId("");
+      invalidateAll();
+    },
+    onError: (err: Error) => setError(err.message || "Could not create doctor."),
+  });
+
   const eligible = eligibleQuery.data ?? [];
   const filteredEligible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1176,11 +1214,19 @@ function AddDoctorToPracticeDialog({
         setError("Pick a doctor from the list first.");
         return;
       }
-      linkMutation.mutate();
+      const selectedDoc = eligible.find((u) => u.id === selectedUserId);
+      if (selectedDoc?.virtual) {
+        createFromCaseMutation.mutate(selectedDoc);
+      } else {
+        linkMutation.mutate();
+      }
     }
   }
 
-  const submitting = createMutation.isPending || linkMutation.isPending;
+  const submitting =
+    createMutation.isPending ||
+    linkMutation.isPending ||
+    createFromCaseMutation.isPending;
 
   return (
     <div
@@ -1335,9 +1381,9 @@ function AddDoctorToPracticeDialog({
                   )}
                 {filteredEligible.map((u) => {
                   const checked = selectedUserId === u.id;
-                  const name =
-                    [u.firstName, u.lastName].filter(Boolean).join(" ") ||
-                    u.username;
+                  const name = u.virtual
+                    ? (u.doctorName || u.username)
+                    : ([u.firstName, u.lastName].filter(Boolean).join(" ") || u.username);
                   return (
                     <label
                       key={u.id}
@@ -1353,18 +1399,25 @@ function AddDoctorToPracticeDialog({
                         onChange={() => setSelectedUserId(u.id)}
                       />
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium truncate">
+                        <div className="text-sm font-medium truncate flex items-center gap-1.5">
                           {name}
-                          {u.platformAccountNumber && (
-                            <span className="ml-2 text-[10px] font-mono bg-primary/10 text-primary rounded px-1.5 py-0.5">
+                          {u.virtual && (
+                            <span className="text-[10px] bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 rounded px-1.5 py-0.5 shrink-0">
+                              no account yet
+                            </span>
+                          )}
+                          {!u.virtual && u.platformAccountNumber && (
+                            <span className="text-[10px] font-mono bg-primary/10 text-primary rounded px-1.5 py-0.5 shrink-0">
                               {u.platformAccountNumber}
                             </span>
                           )}
                         </div>
                         <div className="text-xs text-muted-foreground truncate">
-                          {u.email || u.phone || u.username}
+                          {u.virtual
+                            ? "From case history — will create account"
+                            : (u.email || u.phone || u.username)}
                         </div>
-                        {u.currentPractices.length > 0 && (
+                        {!u.virtual && u.currentPractices.length > 0 && (
                           <div className="text-[11px] text-muted-foreground mt-0.5">
                             Currently at: {u.currentPractices.join(", ")}
                           </div>
@@ -1375,8 +1428,9 @@ function AddDoctorToPracticeDialog({
                 })}
               </div>
               <div className="text-[11px] text-muted-foreground">
-                Links any existing doctor on the platform to this practice
-                without creating a duplicate account.
+                {eligible.some((u) => u.virtual)
+                  ? "Doctors with accounts can be linked instantly. Doctors from case history will get a new account created."
+                  : "Links any existing doctor on the platform to this practice without creating a duplicate account."}
               </div>
             </div>
           )}
@@ -1399,7 +1453,11 @@ function AddDoctorToPracticeDialog({
             className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
           >
             {submitting && <Loader2 size={14} className="animate-spin" />}
-            {mode === "new" ? "Add doctor" : "Link doctor"}
+            {mode === "new"
+              ? "Add doctor"
+              : eligible.find((u) => u.id === selectedUserId)?.virtual
+                ? "Create & link doctor"
+                : "Link doctor"}
           </button>
         </footer>
       </form>
