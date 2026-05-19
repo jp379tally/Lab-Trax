@@ -15,17 +15,22 @@ function ClassicTabLayout() {
   const isWeb = Platform.OS === "web";
   const isIOS = Platform.OS === "ios";
   const { role, setRole, setAdminUnlocked } = useApp();
-  const { userType, isAuthenticated } = useAuth();
+  const { userType, isAuthenticated, currentUserId } = useAuth();
   const isProvider = userType === "provider";
   const filteredNotifs = useProviderFilteredNotifications();
   const unreadCount = filteredNotifs.filter(n => !n.read).length;
 
-  const { entitlement, refresh: refreshEntitlement } = useEntitlement(isAuthenticated);
+  const { entitlement, startAggressivePoll } = useEntitlement(isAuthenticated);
   const [paywallDismissed, setPaywallDismissed] = useState(false);
   const [optimisticallyClosed, setOptimisticallyClosed] = useState(false);
   const prevAccessLevelRef = useRef(entitlement?.accessLevel);
 
   const accessLevel = entitlement?.accessLevel;
+
+  useEffect(() => {
+    setPaywallDismissed(false);
+    setOptimisticallyClosed(false);
+  }, [currentUserId]);
 
   useEffect(() => {
     const prev = prevAccessLevelRef.current;
@@ -45,7 +50,7 @@ function ClassicTabLayout() {
 
   function handleSubscribed() {
     setOptimisticallyClosed(true);
-    refreshEntitlement().then(() => {
+    startAggressivePoll().then(() => {
       setOptimisticallyClosed(false);
     });
   }
