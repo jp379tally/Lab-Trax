@@ -19,14 +19,43 @@ import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
 import { ChatButton } from "@/components/ChatButton";
+import { useEntitlement, type SubscriptionStatus } from "@/lib/useEntitlement";
 
 type WorkStatus = "available" | "break" | "out_of_office";
+
+function entitlementConfig(status: SubscriptionStatus): {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  color: string;
+  bg: string;
+  borderColor: string;
+} {
+  switch (status) {
+    case "trialing":
+      return { label: "Trial", icon: "time-outline", color: "#7C3AED", bg: "#EDE9FE", borderColor: "#C4B5FD" };
+    case "active":
+      return { label: "Active", icon: "checkmark-circle", color: Colors.light.success, bg: Colors.light.successLight, borderColor: "#6EE7B7" };
+    case "past_due":
+      return { label: "Payment Issue", icon: "warning", color: Colors.light.warning, bg: Colors.light.warningLight, borderColor: "#FCD34D" };
+    case "grace":
+      return { label: "Grace Period", icon: "alert-circle", color: "#EA580C", bg: "#FFF7ED", borderColor: "#FDBA74" };
+    case "locked":
+      return { label: "Locked", icon: "lock-closed", color: Colors.light.error, bg: Colors.light.errorLight, borderColor: "#FCA5A5" };
+    case "canceled":
+      return { label: "Canceled", icon: "close-circle", color: Colors.light.error, bg: Colors.light.errorLight, borderColor: "#FCA5A5" };
+    case "legacy_free":
+      return { label: "Legacy Free", icon: "star", color: Colors.light.tint, bg: Colors.light.tintLight, borderColor: "#93C5FD" };
+    default:
+      return { label: status, icon: "ellipse-outline", color: Colors.light.textSecondary, bg: Colors.light.surfaceSecondary, borderColor: Colors.light.border };
+  }
+}
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { role, setRole, adminUnlocked, setAdminUnlocked, updateWorkStatus, hardRefresh } = useApp();
-  const { logout, currentUser, profilePicUri, changePassword, registeredUsers } = useAuth();
+  const { logout, currentUser, profilePicUri, changePassword, registeredUsers, isAuthenticated } = useAuth();
   const insets = useSafeAreaInsets();
+  const { entitlement } = useEntitlement(isAuthenticated);
   const [refreshing, setRefreshing] = useState(false);
   const [workStatus, setWorkStatus] = useState<WorkStatus>("available");
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -164,6 +193,42 @@ export default function ProfileScreen() {
         </Text>
         <Text style={styles.profileRole}>{role === "user" ? "User" : "Administrator"}</Text>
       </View>
+
+      {entitlement && (() => {
+        const cfg = entitlementConfig(entitlement.status);
+        const daysLabel =
+          entitlement.status === "trialing" && entitlement.trialDaysRemaining !== null
+            ? `${entitlement.trialDaysRemaining} day${entitlement.trialDaysRemaining === 1 ? "" : "s"} left in trial`
+            : entitlement.status === "grace" && entitlement.graceDaysRemaining !== null
+            ? `${entitlement.graceDaysRemaining} day${entitlement.graceDaysRemaining === 1 ? "" : "s"} remaining`
+            : entitlement.status === "past_due"
+            ? "Update payment to keep access"
+            : entitlement.status === "locked" || entitlement.status === "canceled"
+            ? "Subscribe to restore access"
+            : null;
+
+        return (
+          <View style={[styles.subscriptionCard, { borderColor: cfg.borderColor }]}>
+            <View style={[styles.subscriptionBadge, { backgroundColor: cfg.bg }]}>
+              <Ionicons name={cfg.icon} size={14} color={cfg.color} />
+              <Text style={[styles.subscriptionBadgeText, { color: cfg.color }]}>{cfg.label}</Text>
+            </View>
+            <View style={styles.subscriptionBody}>
+              {daysLabel ? (
+                <Text style={styles.subscriptionDays}>{daysLabel}</Text>
+              ) : null}
+            </View>
+            <Pressable
+              onPress={() => router.push("/subscription")}
+              style={({ pressed }) => [styles.subscriptionManageBtn, pressed && { opacity: 0.7 }]}
+              testID="subscription-manage-shortcut"
+            >
+              <Text style={styles.subscriptionManageText}>Manage subscription</Text>
+              <Ionicons name="chevron-forward" size={14} color={cfg.color} />
+            </Pressable>
+          </View>
+        );
+      })()}
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>STATUS</Text>
@@ -581,6 +646,48 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_700Bold",
     color: Colors.light.error,
+  },
+  subscriptionCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: 20,
+    marginBottom: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: Colors.light.surface,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    gap: 10,
+  },
+  subscriptionBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  subscriptionBadgeText: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+  },
+  subscriptionBody: {
+    flex: 1,
+  },
+  subscriptionDays: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: Colors.light.textSecondary,
+  },
+  subscriptionManageBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+  },
+  subscriptionManageText: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    color: Colors.light.tint,
   },
   modalBackdrop: {
     flex: 1,
