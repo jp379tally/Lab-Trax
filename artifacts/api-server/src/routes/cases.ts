@@ -36,7 +36,12 @@ import { notDeleted, softDeleteById } from "../lib/soft-delete";
 import { caseMediaDir, extractMediaFileName } from "../lib/case-media";
 import { deleteFromOneDrive } from "../lib/onedrive";
 import { HttpError, ok } from "../lib/http";
-import { resolveServerPriceWithSource } from "../lib/pricing";
+import {
+  buildLineItemDescription,
+  materialToPriceKey,
+  resolveItemLabel,
+  resolveServerPriceWithSource,
+} from "../lib/pricing";
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
@@ -1002,20 +1007,32 @@ router.post(
         .returning();
       if (newInvoice) {
         if (hasLines) {
+          const labelMap: Record<string, string> = {};
+          for (const r of restorationsForInvoice) {
+            const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
+            if (!(pk in labelMap)) {
+              labelMap[pk] = await resolveItemLabel(createdCase.labOrganizationId, pk);
+            }
+          }
           await db.insert(invoiceLineItems).values(
-            restorationsForInvoice.map((r, idx) => ({
-              invoiceId: newInvoice.id,
-              caseRestorationId: r.id,
-              description: noChargeRemake
-                ? `${r.restorationType} - Tooth ${r.toothNumber} (no-charge remake)`
-                : `${r.restorationType} - Tooth ${r.toothNumber}`,
-              quantity: r.quantity,
-              unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
-              lineTotal: noChargeRemake
-                ? "0.00"
-                : calculateLineTotal(r.quantity, r.unitPrice),
-              sortOrder: idx,
-            }))
+            restorationsForInvoice.map((r, idx) => {
+              const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
+              const baseLabel = labelMap[pk] ?? r.restorationType;
+              const baseDesc = buildLineItemDescription(r.toothNumber, baseLabel);
+              return {
+                invoiceId: newInvoice.id,
+                caseRestorationId: r.id,
+                description: noChargeRemake
+                  ? `${baseDesc} (no-charge remake)`
+                  : baseDesc,
+                quantity: r.quantity,
+                unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
+                lineTotal: noChargeRemake
+                  ? "0.00"
+                  : calculateLineTotal(r.quantity, r.unitPrice),
+                sortOrder: idx,
+              };
+            })
           );
         }
         const items = await db.query.invoiceLineItems.findMany({
@@ -2891,15 +2908,34 @@ router.post(
           .returning();
 
         if (autoInvoice) {
+          // Pre-fetch resolved labels to avoid N+1 queries per restoration
+          const iteroLabelCache: Record<string, string> = {};
+          if (hasRestorations) {
+            for (const restoration of restorationRowsForInvoice) {
+              const pk =
+                materialToPriceKey(restoration.material, restoration.restorationType) ??
+                restoration.restorationType;
+              if (!(pk in iteroLabelCache)) {
+                iteroLabelCache[pk] = await resolveItemLabel(
+                  createdCase.labOrganizationId,
+                  pk,
+                );
+              }
+            }
+          }
           const itemsToInsert = hasRestorations
             ? restorationRowsForInvoice.map(
                 (restoration: any, index: number) => {
                   const qty = Number(restoration.quantity ?? 1);
                   const unit = Number(restoration.unitPrice ?? 0);
+                  const pk =
+                    materialToPriceKey(restoration.material, restoration.restorationType) ??
+                    restoration.restorationType;
+                  const label = iteroLabelCache[pk] ?? restoration.restorationType;
                   return {
                     invoiceId: autoInvoice.id,
                     caseRestorationId: restoration.id,
-                    description: `${restoration.restorationType} - Tooth ${restoration.toothNumber}`,
+                    description: buildLineItemDescription(restoration.toothNumber, label),
                     quantity: restoration.quantity,
                     unitPrice: restoration.unitPrice,
                     lineTotal: (qty * unit).toFixed(2),

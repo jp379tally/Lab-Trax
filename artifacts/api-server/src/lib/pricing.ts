@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
+  labItemLabels,
   organizationConnections,
   pricingOverrides,
   pricingTiers,
@@ -16,6 +17,83 @@ export {
   DEFAULT_TIER_KEYS,
   materialToPriceKey,
 } from "./material-mapping.js";
+
+/**
+ * Resolve the admin-configured display label for a price key in a given lab.
+ * Falls back to the static default label from DEFAULT_TIER_ITEMS when no
+ * custom row exists for that (labOrganizationId, priceKey) pair.
+ */
+export async function resolveItemLabel(
+  labOrganizationId: string,
+  priceKey: string,
+): Promise<string> {
+  const row = await db.query.labItemLabels.findFirst({
+    where: and(
+      eq(labItemLabels.labOrganizationId, labOrganizationId),
+      eq(labItemLabels.priceKey, priceKey),
+    ),
+  });
+  if (row?.label) return row.label;
+  // Fall back to static default
+  const defaultItem = DEFAULT_TIER_ITEMS.find((i) => i.key === priceKey);
+  return defaultItem?.label ?? priceKey.replace(/_/g, " ").replace(/\b\w/g, (s) => s.toUpperCase());
+}
+
+/**
+ * Fetch all configured labels for a lab as a map. Keys present in the map
+ * are admin-set; keys absent should still resolve via static defaults.
+ */
+export async function fetchLabItemLabels(
+  labOrganizationId: string,
+): Promise<Record<string, string>> {
+  const rows = await db.query.labItemLabels.findMany({
+    where: eq(labItemLabels.labOrganizationId, labOrganizationId),
+  });
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    out[row.priceKey] = row.label;
+  }
+  return out;
+}
+
+/**
+ * Upsert a complete label map for a lab. Each entry in `labels` becomes a
+ * row in `lab_item_labels` (insert or update). Entries not present in the
+ * map are left untouched (partial updates are allowed).
+ */
+export async function saveLabItemLabels(
+  labOrganizationId: string,
+  labels: Record<string, string>,
+): Promise<void> {
+  const entries = Object.entries(labels).filter(([, v]) => v.trim().length > 0);
+  if (entries.length === 0) return;
+  for (const [priceKey, label] of entries) {
+    await db
+      .insert(labItemLabels)
+      .values({ labOrganizationId, priceKey, label: label.trim() })
+      .onConflictDoUpdate({
+        target: [labItemLabels.labOrganizationId, labItemLabels.priceKey],
+        set: { label: label.trim(), updatedAt: new Date() },
+      });
+  }
+}
+
+/**
+ * Format an invoice line-item description using the admin-configured label.
+ *
+ * - Numeric tooth (e.g. "30")  → `#30 Zirconia Crown`
+ * - Non-numeric location token  → `Upper Denture` (arch-level)
+ * - Empty / null                → `Zirconia Crown`
+ */
+export function buildLineItemDescription(
+  toothNumber: string | null | undefined,
+  label: string,
+): string {
+  const tooth = (toothNumber ?? "").trim();
+  if (!tooth) return label;
+  if (/^\d+$/.test(tooth)) return `#${tooth} ${label}`;
+  return `${tooth} ${label}`;
+}
 
 /**
  * Strip a leading "Dr." (any casing, optional period/whitespace) and

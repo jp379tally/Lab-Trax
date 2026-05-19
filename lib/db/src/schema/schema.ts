@@ -1490,6 +1490,37 @@ export const installerUploads = pgTable(
   }),
 );
 
+/**
+ * Per-lab admin-configurable display labels for each standard price key
+ * (e.g. `zirconia_crown` → "Zirconia Crown"). When a row is present its
+ * `label` is used on every invoice line item generated for that lab;
+ * otherwise the static default label from `DEFAULT_TIER_ITEMS` is used as
+ * fallback. Kept separate from pricing tiers so the same display name
+ * applies regardless of which tier is active for a given doctor.
+ */
+export const labItemLabels = pgTable(
+  "lab_item_labels",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    priceKey: text("price_key").notNull(),
+    label: text("label").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    labPriceKeyUnique: uniqueIndex("lab_item_labels_lab_price_key_unique").on(
+      table.labOrganizationId,
+      table.priceKey
+    ),
+    labIdx: index("lab_item_labels_lab_idx").on(table.labOrganizationId),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

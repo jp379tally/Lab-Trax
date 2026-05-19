@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDown,
   ChevronUp,
+  CheckCircle2,
   History,
   Layers,
   Loader2,
@@ -13,6 +14,7 @@ import {
   Stethoscope,
   Tag,
   Trash2,
+  Type,
   X,
 } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
@@ -26,7 +28,7 @@ import {
   materialToPriceKey,
 } from "@/lib/pricing-keys";
 
-type Section = "billed" | "tiers" | "overrides";
+type Section = "billed" | "tiers" | "overrides" | "labels";
 
 interface PricingTier {
   id: string;
@@ -437,11 +439,18 @@ export default function PricingPage() {
           icon={<Stethoscope size={14} />}
           label="Per-doctor overrides"
         />
+        <SectionTab
+          active={section === "labels"}
+          onClick={() => setSection("labels")}
+          icon={<Type size={14} />}
+          label="Item labels"
+        />
       </div>
 
       {section === "billed" && <BilledSection />}
       {section === "tiers" && <TiersSection />}
       {section === "overrides" && <OverridesSection />}
+      {section === "labels" && <ItemLabelsSection />}
     </div>
   );
 }
@@ -2359,6 +2368,197 @@ function BulkPriceTools({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---- Item Labels Section ----
+
+interface ItemLabelsResponse {
+  labOrganizationId: string;
+  labels: Record<string, string>;
+}
+
+function ItemLabelsSection() {
+  const qc = useQueryClient();
+  const [draft, setDraft] = useState<Record<string, string> | null>(null);
+  const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [labOrgId, setLabOrgId] = useState<string | undefined>(undefined);
+
+  // Fetch current labels
+  const labelsQuery = useQuery({
+    queryKey: ["pricing", "item-labels", labOrgId],
+    queryFn: () =>
+      apiFetch<ItemLabelsResponse>(
+        `/pricing/item-labels${labOrgId ? `?labOrganizationId=${labOrgId}` : ""}`,
+      ),
+    staleTime: 30_000,
+  });
+
+  // When data arrives, initialize the draft with server values
+  const serverLabels = labelsQuery.data?.labels ?? {};
+  useEffect(() => {
+    if (labelsQuery.data && draft === null) {
+      setDraft({ ...labelsQuery.data.labels });
+    }
+    // Store the resolved labOrgId so subsequent saves target the same lab
+    if (labelsQuery.data?.labOrganizationId && !labOrgId) {
+      setLabOrgId(labelsQuery.data.labOrganizationId);
+    }
+  }, [labelsQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: (labels: Record<string, string>) =>
+      apiFetch<ItemLabelsResponse>("/pricing/item-labels", {
+        method: "PUT",
+        body: JSON.stringify({ labOrganizationId: labOrgId, labels }),
+      }),
+    onSuccess: (data) => {
+      qc.setQueryData(["pricing", "item-labels", labOrgId], data);
+      setDraft({ ...data.labels });
+      setToast({ ok: true, msg: "Item labels saved." });
+      setTimeout(() => setToast(null), 3000);
+    },
+    onError: (err: any) => {
+      setToast({ ok: false, msg: err?.message ?? "Failed to save labels." });
+    },
+  });
+
+  function handleLabelChange(key: string, value: string) {
+    setDraft((d) => ({ ...(d ?? {}), [key]: value }));
+  }
+
+  function handleReset(key: string) {
+    // Reset to the static default by looking up the labelFor function
+    const staticDefault = labelFor(key);
+    setDraft((d) => ({ ...(d ?? {}), [key]: staticDefault }));
+  }
+
+  function handleSave() {
+    if (!draft) return;
+    saveMutation.mutate(draft);
+  }
+
+  if (labelsQuery.isLoading) {
+    return (
+      <div className="py-10 flex items-center justify-center text-muted-foreground text-sm gap-2">
+        <Loader2 size={16} className="animate-spin" />
+        Loading item labels…
+      </div>
+    );
+  }
+
+  if (labelsQuery.error) {
+    const err = labelsQuery.error as ApiError;
+    return (
+      <div className="text-sm text-destructive bg-destructive/10 rounded-md px-4 py-3">
+        {err.message}
+      </div>
+    );
+  }
+
+  const currentDraft = draft ?? serverLabels;
+  const isDirty = Object.entries(currentDraft).some(
+    ([k, v]) => v !== serverLabels[k],
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold">Item labels</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Customize how each restoration type appears on invoices. The label
+            is combined with the tooth number to produce the line-item
+            description (e.g. "#30 Zirconia Crown" or "Upper Denture").
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={!isDirty || saveMutation.isPending}
+          onClick={handleSave}
+          className="shrink-0 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 transition-colors"
+        >
+          {saveMutation.isPending ? (
+            <span className="flex items-center gap-1.5">
+              <Loader2 size={13} className="animate-spin" />
+              Saving…
+            </span>
+          ) : (
+            "Save all changes"
+          )}
+        </button>
+      </div>
+
+      {toast && (
+        <div
+          className={`flex items-center gap-2 text-sm rounded-md px-3 py-2 ${
+            toast.ok
+              ? "bg-green-50 text-green-700 border border-green-200"
+              : "bg-destructive/10 text-destructive border border-destructive/20"
+          }`}
+        >
+          {toast.ok && <CheckCircle2 size={14} />}
+          {toast.msg}
+        </div>
+      )}
+
+      <div className="rounded-lg border border-border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border bg-secondary/40">
+              <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-xs uppercase tracking-wide w-48">
+                Price key
+              </th>
+              <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                Display label on invoices
+              </th>
+              <th className="px-3 py-2.5 w-28" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {DEFAULT_PRICE_KEYS.map((key) => {
+              const current = currentDraft[key] ?? labelFor(key);
+              const staticDefault = labelFor(key);
+              const isModified = current !== staticDefault;
+              return (
+                <tr key={key} className="group hover:bg-secondary/20">
+                  <td className="px-4 py-2 text-xs text-muted-foreground font-mono">
+                    {key}
+                  </td>
+                  <td className="px-4 py-2">
+                    <input
+                      type="text"
+                      value={current}
+                      maxLength={200}
+                      onChange={(e) => handleLabelChange(key, e.target.value)}
+                      className="w-full h-8 px-2.5 rounded-md bg-transparent border border-transparent focus:border-input focus:bg-secondary focus:outline-none focus:ring-1 focus:ring-primary text-sm"
+                    />
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    {isModified ? (
+                      <button
+                        type="button"
+                        onClick={() => handleReset(key)}
+                        title={`Reset to default: "${staticDefault}"`}
+                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <RotateCcw size={11} />
+                        Reset
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-xs text-muted-foreground">
+        Changes take effect on newly generated invoices only. Existing invoice
+        line items are not retroactively updated.
+      </p>
     </div>
   );
 }

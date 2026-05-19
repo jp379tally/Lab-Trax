@@ -23,8 +23,11 @@ import type {
   DoctorMergeResult,
   DoctorMergeUndoResult,
   DoctorSearchResult,
+  GetItemLabelsParams,
   HealthStatus,
   ImportCaseFromIteroRxBody,
+  ItemLabelsInput,
+  ItemLabelsResult,
   IteroImportResult,
   ListOpenInvoicesParams,
   OpenInvoiceListResult,
@@ -702,6 +705,196 @@ export const useAcknowledgeAiReview = <
   TContext
 > => {
   return useMutation(getAcknowledgeAiReviewMutationOptions(options));
+};
+
+/**
+ * Returns the merged label map for the caller's lab: admin-configured
+labels where set, and static defaults for the rest. Every known price
+key is always included in the response. Any active lab member may call
+this endpoint.
+
+ * @summary Get admin-configured line item labels for the caller's lab
+ */
+export const getGetItemLabelsUrl = (params?: GetItemLabelsParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/pricing/item-labels?${stringifiedParams}`
+    : `/api/pricing/item-labels`;
+};
+
+export const getItemLabels = async (
+  params?: GetItemLabelsParams,
+  options?: RequestInit,
+): Promise<ItemLabelsResult> => {
+  return customFetch<ItemLabelsResult>(getGetItemLabelsUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetItemLabelsQueryKey = (params?: GetItemLabelsParams) => {
+  return [`/api/pricing/item-labels`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetItemLabelsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getItemLabels>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetItemLabelsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getItemLabels>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetItemLabelsQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getItemLabels>>> = ({
+    signal,
+  }) => getItemLabels(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getItemLabels>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetItemLabelsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getItemLabels>>
+>;
+export type GetItemLabelsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get admin-configured line item labels for the caller's lab
+ */
+
+export function useGetItemLabels<
+  TData = Awaited<ReturnType<typeof getItemLabels>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetItemLabelsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getItemLabels>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetItemLabelsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Saves the provided label map for the caller's lab. Each key in
+`labels` must be a known standard price key (unknown keys are
+silently ignored). Restricted to lab admins. Only keys present in the
+request body are updated; omitted keys are left unchanged.
+
+ * @summary Upsert admin-configured line item labels for the caller's lab
+ */
+export const getUpdateItemLabelsUrl = () => {
+  return `/api/pricing/item-labels`;
+};
+
+export const updateItemLabels = async (
+  itemLabelsInput: ItemLabelsInput,
+  options?: RequestInit,
+): Promise<ItemLabelsResult> => {
+  return customFetch<ItemLabelsResult>(getUpdateItemLabelsUrl(), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(itemLabelsInput),
+  });
+};
+
+export const getUpdateItemLabelsMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateItemLabels>>,
+    TError,
+    { data: BodyType<ItemLabelsInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateItemLabels>>,
+  TError,
+  { data: BodyType<ItemLabelsInput> },
+  TContext
+> => {
+  const mutationKey = ["updateItemLabels"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateItemLabels>>,
+    { data: BodyType<ItemLabelsInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return updateItemLabels(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateItemLabelsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateItemLabels>>
+>;
+export type UpdateItemLabelsMutationBody = BodyType<ItemLabelsInput>;
+export type UpdateItemLabelsMutationError = ErrorType<void>;
+
+/**
+ * @summary Upsert admin-configured line item labels for the caller's lab
+ */
+export const useUpdateItemLabels = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateItemLabels>>,
+    TError,
+    { data: BodyType<ItemLabelsInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateItemLabels>>,
+  TError,
+  { data: BodyType<ItemLabelsInput> },
+  TContext
+> => {
+  return useMutation(getUpdateItemLabelsMutationOptions(options));
 };
 
 /**

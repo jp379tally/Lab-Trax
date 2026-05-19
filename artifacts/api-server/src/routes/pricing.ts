@@ -19,8 +19,11 @@ import { ADMIN_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import {
+  DEFAULT_TIER_ITEMS,
   DEFAULT_TIER_KEYS,
+  fetchLabItemLabels,
   resolveAllPricesForContext,
+  saveLabItemLabels,
 } from "../lib/pricing";
 
 const router = Router();
@@ -47,6 +50,33 @@ async function resolveLabId(req: any, requested?: string): Promise<string> {
   if (requested) {
     if (!labIds.includes(requested)) {
       throw new HttpError(403, "You don't admin that lab organization.");
+    }
+    return requested;
+  }
+  return labIds[0];
+}
+
+/**
+ * Resolve the caller's lab id. Accepts any active lab membership (not just
+ * admin) — used by read-only endpoints like GET /pricing/item-labels.
+ */
+async function resolveLabIdForMember(
+  req: any,
+  requested?: string,
+): Promise<string> {
+  const userId = (req as any).auth.userId;
+  const memberships = await db.query.organizationMemberships.findMany({
+    where: eq(organizationMemberships.userId, userId),
+  });
+  const labIds = memberships
+    .filter((m: any) => m.status === "active")
+    .map((m: any) => m.labId as string);
+  if (labIds.length === 0) {
+    throw new HttpError(403, "You are not a member of any lab.");
+  }
+  if (requested) {
+    if (!labIds.includes(requested)) {
+      throw new HttpError(403, "You don't have access to that lab organization.");
     }
     return requested;
   }
@@ -708,6 +738,75 @@ router.get(
       row.labOrganizationId
     );
     return ok(res, { entries });
+  })
+);
+
+// ---- Item Labels ----
+
+/**
+ * GET /pricing/item-labels
+ * Returns the merged label map for the caller's lab: configured labels
+ * for any keys the admin has set, with static defaults filled in for
+ * the rest.  Caller must be a lab member (not just admin).
+ */
+router.get(
+  "/item-labels",
+  asyncHandler(async (req, res) => {
+    const labOrganizationId = (req.query.labOrganizationId as string) || undefined;
+    const labId = await resolveLabIdForMember(req, labOrganizationId);
+
+    const configured = await fetchLabItemLabels(labId);
+
+    // Merge with static defaults so the response always contains every key
+    const merged: Record<string, string> = {};
+    for (const item of DEFAULT_TIER_ITEMS) {
+      merged[item.key] = configured[item.key] ?? item.label;
+    }
+
+    return ok(res, { labOrganizationId: labId, labels: merged });
+  })
+);
+
+/**
+ * PUT /pricing/item-labels
+ * Upsert the label map for the caller's lab. Admin-only.
+ * Body: { labOrganizationId?, labels: { [priceKey]: string } }
+ */
+router.put(
+  "/item-labels",
+  asyncHandler(async (req, res) => {
+    const schema = z.object({
+      labOrganizationId: z.string().optional(),
+      labels: z.record(z.string(), z.string().max(200)),
+    });
+    const input = schema.parse(req.body);
+    const labId = await resolveLabId(req, input.labOrganizationId);
+
+    // Only allow saving labels for known price keys
+    const knownKeys = new Set<string>(DEFAULT_TIER_ITEMS.map((i) => i.key));
+    const filteredLabels: Record<string, string> = {};
+    for (const [k, v] of Object.entries(input.labels)) {
+      if (knownKeys.has(k)) filteredLabels[k] = v;
+    }
+
+    await saveLabItemLabels(labId, filteredLabels);
+
+    await writeAuditLog({
+      req,
+      organizationId: labId,
+      action: "item_labels_updated",
+      entityType: "organization",
+      entityId: labId,
+      metadataJson: { labels: filteredLabels },
+    });
+
+    const configured = await fetchLabItemLabels(labId);
+    const merged: Record<string, string> = {};
+    for (const item of DEFAULT_TIER_ITEMS) {
+      merged[item.key] = configured[item.key] ?? item.label;
+    }
+
+    return ok(res, { labOrganizationId: labId, labels: merged });
   })
 );
 

@@ -306,6 +306,69 @@ export const AcknowledgeAiReviewResponse = zod.object({
 });
 
 /**
+ * Returns the merged label map for the caller's lab: admin-configured
+labels where set, and static defaults for the rest. Every known price
+key is always included in the response. Any active lab member may call
+this endpoint.
+
+ * @summary Get admin-configured line item labels for the caller's lab
+ */
+export const GetItemLabelsQueryParams = zod.object({
+  labOrganizationId: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "Lab org to fetch labels for. Defaults to the caller's first active lab.",
+    ),
+});
+
+export const GetItemLabelsResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      labOrganizationId: zod.string(),
+      labels: zod
+        .record(zod.string(), zod.string())
+        .describe(
+          "Map of priceKey → display label (all known keys always included)",
+        ),
+    })
+    .optional(),
+});
+
+/**
+ * Saves the provided label map for the caller's lab. Each key in
+`labels` must be a known standard price key (unknown keys are
+silently ignored). Restricted to lab admins. Only keys present in the
+request body are updated; omitted keys are left unchanged.
+
+ * @summary Upsert admin-configured line item labels for the caller's lab
+ */
+export const UpdateItemLabelsBody = zod.object({
+  labOrganizationId: zod
+    .string()
+    .optional()
+    .describe("Lab org to update. Defaults to the caller's first admin lab."),
+  labels: zod
+    .record(zod.string(), zod.string())
+    .describe("Partial map of priceKey → display label to upsert."),
+});
+
+export const UpdateItemLabelsResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      labOrganizationId: zod.string(),
+      labels: zod
+        .record(zod.string(), zod.string())
+        .describe(
+          "Map of priceKey → display label (all known keys always included)",
+        ),
+    })
+    .optional(),
+});
+
+/**
  * Returns the open (issued or partially-paid) invoices the lab can
 currently receive payments against. Requires the caller to have a
 billing role (owner, admin, or billing) in `labOrganizationId`.

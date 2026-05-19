@@ -40,6 +40,11 @@ import {
 import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
+import {
+  buildLineItemDescription,
+  materialToPriceKey,
+  resolveItemLabel,
+} from "../lib/pricing";
 
 const router = Router();
 router.use(requireAuth);
@@ -571,18 +576,29 @@ router.post(
         continue;
       }
 
-      const itemsToInsert = restorations.map((restoration, index) => ({
-        invoiceId: invoice.id,
-        caseRestorationId: restoration.id,
-        description: `${restoration.restorationType} - Tooth ${restoration.toothNumber}`,
-        quantity: restoration.quantity,
-        unitPrice: restoration.unitPrice,
-        lineTotal: calculateLineTotal(
-          restoration.quantity,
-          restoration.unitPrice
-        ),
-        sortOrder: index,
-      }));
+      const backfillLabelCache: Record<string, string> = {};
+      for (const r of restorations) {
+        const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
+        if (!(pk in backfillLabelCache)) {
+          backfillLabelCache[pk] = await resolveItemLabel(found.labOrganizationId, pk);
+        }
+      }
+      const itemsToInsert = restorations.map((restoration, index) => {
+        const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
+        const label = backfillLabelCache[pk] ?? restoration.restorationType;
+        return {
+          invoiceId: invoice.id,
+          caseRestorationId: restoration.id,
+          description: buildLineItemDescription(restoration.toothNumber, label),
+          quantity: restoration.quantity,
+          unitPrice: restoration.unitPrice,
+          lineTotal: calculateLineTotal(
+            restoration.quantity,
+            restoration.unitPrice
+          ),
+          sortOrder: index,
+        };
+      });
       await db.insert(invoiceLineItems).values(itemsToInsert);
 
       const subtotal = sumMoney(itemsToInsert.map((item) => item.lineTotal));
@@ -708,18 +724,29 @@ router.post(
       throw new HttpError(500, "Invoice could not be generated.");
 
     if (invoice && hasRestorations) {
-      const itemsToInsert = restorations.map((restoration, index) => ({
-        invoiceId: targetInvoice.id,
-        caseRestorationId: restoration.id,
-        description: `${restoration.restorationType} - Tooth ${restoration.toothNumber}`,
-        quantity: restoration.quantity,
-        unitPrice: restoration.unitPrice,
-        lineTotal: calculateLineTotal(
-          restoration.quantity,
-          restoration.unitPrice
-        ),
-        sortOrder: index,
-      }));
+      const genLabelCache: Record<string, string> = {};
+      for (const r of restorations) {
+        const pk = materialToPriceKey(r.material, r.restorationType) ?? r.restorationType;
+        if (!(pk in genLabelCache)) {
+          genLabelCache[pk] = await resolveItemLabel(found.labOrganizationId, pk);
+        }
+      }
+      const itemsToInsert = restorations.map((restoration, index) => {
+        const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
+        const label = genLabelCache[pk] ?? restoration.restorationType;
+        return {
+          invoiceId: targetInvoice.id,
+          caseRestorationId: restoration.id,
+          description: buildLineItemDescription(restoration.toothNumber, label),
+          quantity: restoration.quantity,
+          unitPrice: restoration.unitPrice,
+          lineTotal: calculateLineTotal(
+            restoration.quantity,
+            restoration.unitPrice
+          ),
+          sortOrder: index,
+        };
+      });
       await db.insert(invoiceLineItems).values(itemsToInsert);
     }
 

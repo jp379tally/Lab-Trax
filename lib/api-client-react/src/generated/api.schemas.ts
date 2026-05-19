@@ -5,6 +5,34 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+/**
+ * Map of priceKey → display label (all known keys always included)
+ */
+export type ItemLabelsResultDataLabels = { [key: string]: string };
+
+export type ItemLabelsResultData = {
+  labOrganizationId: string;
+  /** Map of priceKey → display label (all known keys always included) */
+  labels: ItemLabelsResultDataLabels;
+};
+
+export interface ItemLabelsResult {
+  ok?: boolean;
+  data?: ItemLabelsResultData;
+}
+
+/**
+ * Partial map of priceKey → display label to upsert.
+ */
+export type ItemLabelsInputLabels = { [key: string]: string };
+
+export interface ItemLabelsInput {
+  /** Lab org to update. Defaults to the caller's first admin lab. */
+  labOrganizationId?: string;
+  /** Partial map of priceKey → display label to upsert. */
+  labels: ItemLabelsInputLabels;
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -256,6 +284,13 @@ export type AcknowledgeAiReview200Data = {
 export type AcknowledgeAiReview200 = {
   ok?: boolean;
   data?: AcknowledgeAiReview200Data;
+};
+
+export type GetItemLabelsParams = {
+  /**
+   * Lab org to fetch labels for. Defaults to the caller's first active lab.
+   */
+  labOrganizationId?: string;
 };
 
 export type ListOpenInvoicesParams = {

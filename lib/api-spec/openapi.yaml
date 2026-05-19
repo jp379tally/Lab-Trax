@@ -237,6 +237,53 @@ paths:
                     properties:
                       caseId: { type: string }
                       needsAiReview: { type: boolean }
+  /pricing/item-labels:
+    get:
+      operationId: getItemLabels
+      tags: [invoices]
+      summary: Get admin-configured line item labels for the caller's lab
+      description: |
+        Returns the merged label map for the caller's lab: admin-configured
+        labels where set, and static defaults for the rest. Every known price
+        key is always included in the response. Any active lab member may call
+        this endpoint.
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: false
+          schema: { type: string }
+          description: Lab org to fetch labels for. Defaults to the caller's first active lab.
+      responses:
+        "200":
+          description: Label map
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemLabelsResult"
+    put:
+      operationId: updateItemLabels
+      tags: [invoices]
+      summary: Upsert admin-configured line item labels for the caller's lab
+      description: |
+        Saves the provided label map for the caller's lab. Each key in
+        `labels` must be a known standard price key (unknown keys are
+        silently ignored). Restricted to lab admins. Only keys present in the
+        request body are updated; omitted keys are left unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ItemLabelsInput"
+      responses:
+        "200":
+          description: Updated label map (merged with static defaults)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemLabelsResult"
+        "403":
+          description: Caller is not a lab administrator.
   /invoices/open:
     get:
       operationId: listOpenInvoices
@@ -295,6 +342,30 @@ paths:
           description: Caller lacks a billing role on the lab.
 components:
   schemas:
+    ItemLabelsResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [labOrganizationId, labels]
+          properties:
+            labOrganizationId: { type: string }
+            labels:
+              type: object
+              description: Map of priceKey → display label (all known keys always included)
+              additionalProperties: { type: string }
+    ItemLabelsInput:
+      type: object
+      required: [labels]
+      properties:
+        labOrganizationId:
+          type: string
+          description: Lab org to update. Defaults to the caller's first admin lab.
+        labels:
+          type: object
+          description: Partial map of priceKey → display label to upsert.
+          additionalProperties: { type: string }
     HealthStatus:
       type: object
       properties:
