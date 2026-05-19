@@ -6,6 +6,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  FileDown,
   Loader2,
   Mail,
   Phone,
@@ -16,6 +17,7 @@ import type { Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { InvoiceEditor } from "./invoices";
+import { downloadStatementPdf } from "@/lib/export";
 
 const today = () => new Date();
 
@@ -224,6 +226,74 @@ export default function CustomerCenterPage() {
 
   const isLoading = orgsQuery.isLoading || openInvoicesQuery.isLoading;
 
+  function handleExportStatementPdf() {
+    if (!selected) return;
+
+    // Summary totals come from the full unfiltered invoice list so the account
+    // summary on the PDF always reflects the practice's true account position,
+    // regardless of which date range or status filter is active in the UI.
+    const allInvoices = selectedPracticeInvoices;
+    const billed = allInvoices.reduce((s, i) => s + Number(i.total ?? 0), 0);
+    const paid = allInvoices.reduce(
+      (s, i) => s + Math.max(0, Number(i.total ?? 0) - Number(i.balanceDue ?? i.total ?? 0)),
+      0
+    );
+    const open = allInvoices.reduce(
+      (s, i) =>
+        i.status === "open" || i.status === "partially_paid"
+          ? s + Number(i.balanceDue ?? i.total ?? 0)
+          : s,
+      0
+    );
+    const overdue = allInvoices.reduce((s, i) => {
+      const ag = agingDays(i);
+      return ag != null ? s + Number(i.balanceDue ?? i.total ?? 0) : s;
+    }, 0);
+
+    const filterParts: string[] = [];
+    if (filterBy !== "all") {
+      filterParts.push(
+        filterBy === "open"
+          ? "Open invoices"
+          : filterBy === "overdue"
+          ? "Overdue invoices"
+          : "Paid invoices"
+      );
+    }
+    if (dateRange !== "all") {
+      const labels: Record<string, string> = {
+        this_month: "This month",
+        last_month: "Last month",
+        this_quarter: "This quarter",
+        last_quarter: "Last quarter",
+        this_year: "This year",
+        custom: customFrom || customTo
+          ? `${customFrom || "…"} – ${customTo || "…"}`
+          : "Custom range",
+      };
+      filterParts.push(labels[dateRange] ?? dateRange);
+    }
+
+    downloadStatementPdf({
+      practiceName: selected.displayName || selected.name,
+      generatedAt: new Date(),
+      filtersDescription: filterParts.length > 0 ? filterParts.join(" · ") : undefined,
+      totals: { billed, paid, open, overdue },
+      invoices: practiceInvoices.map((inv) => ({
+        invoiceNumber: inv.invoiceNumber ?? String(inv.id),
+        issuedAt: inv.issuedAt ? new Date(inv.issuedAt).toLocaleDateString("en-US") : "—",
+        dueAt: inv.dueAt ?? inv.dueDate
+          ? new Date((inv.dueAt ?? inv.dueDate)!).toLocaleDateString("en-US")
+          : "—",
+        status: inv.status,
+        total: String(inv.total ?? 0),
+        balanceDue: String(inv.balanceDue ?? 0),
+        patientName: inv.displayMetadata?.patientName ?? inv.displayMetadataJson?.patientName,
+        billTo: inv.displayMetadata?.billTo ?? inv.displayMetadataJson?.billTo,
+      })),
+    });
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Left pane */}
@@ -339,19 +409,35 @@ export default function CustomerCenterPage() {
                     </p>
                   )}
                 </div>
-                <div className="text-right shrink-0">
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
-                    Open balance
+                <div className="flex items-start gap-4 shrink-0">
+                  <div className="text-right">
+                    <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
+                      Open balance
+                    </div>
+                    <div
+                      className={`text-xl font-semibold tabular-nums ${
+                        (practiceOpenBalance.get(selected.id) ?? 0) > 0
+                          ? "text-warning"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {formatMoney(practiceOpenBalance.get(selected.id) ?? 0)}
+                    </div>
                   </div>
-                  <div
-                    className={`text-xl font-semibold tabular-nums ${
-                      (practiceOpenBalance.get(selected.id) ?? 0) > 0
-                        ? "text-warning"
-                        : "text-muted-foreground"
-                    }`}
+                  <button
+                    type="button"
+                    onClick={handleExportStatementPdf}
+                    disabled={practiceInvoicesQuery.isLoading}
+                    title={practiceInvoicesQuery.isLoading ? "Loading transactions…" : "Export statement as PDF"}
+                    className="mt-0.5 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {formatMoney(practiceOpenBalance.get(selected.id) ?? 0)}
-                  </div>
+                    {practiceInvoicesQuery.isLoading ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <FileDown size={13} />
+                    )}
+                    Export PDF
+                  </button>
                 </div>
               </div>
 
