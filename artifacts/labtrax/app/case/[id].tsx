@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, type ComponentProps } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import {
@@ -112,7 +112,20 @@ export default function CaseDetailScreen() {
     remakeChildren?: RemakeRef[];
     [key: string]: unknown;
   };
+  type CaseAttachment = {
+    id: string;
+    caseId: string;
+    fileName: string;
+    fileType: string | null;
+    storageKey: string;
+    visibility: string;
+    createdAt: string | null;
+    uploaderName?: string | null;
+  };
   const [fullCaseData, setFullCaseData] = useState<FullCaseData | null>(null);
+  const [serverAttachments, setServerAttachments] = useState<CaseAttachment[]>([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [attachmentsFetchError, setAttachmentsFetchError] = useState(false);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [showAddSomethingModal, setShowAddSomethingModal] = useState(false);
@@ -228,6 +241,93 @@ export default function CaseDetailScreen() {
     }
   }, [id]);
 
+  async function fetchServerAttachments() {
+    setAttachmentsFetchError(false);
+    try {
+      const res = await resilientFetch(`/api/cases/${encodeURIComponent(String(id))}/attachments`);
+      if (res.ok) {
+        const data = await res.json();
+        setServerAttachments(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+      } else if (res.status === 404 || res.status === 403) {
+        // Expected for legacy lab_cases that are not in the `cases` table — ignore.
+      } else {
+        if (__DEV__) {
+          console.warn(`[LabTrax] fetchServerAttachments: unexpected status ${res.status} for case ${id}`);
+        }
+        setAttachmentsFetchError(true);
+      }
+    } catch (err: unknown) {
+      if (__DEV__) {
+        console.warn("[LabTrax] fetchServerAttachments: network error", err);
+      }
+      setAttachmentsFetchError(true);
+    }
+  }
+
+  type ApiErrorBody = { error?: string };
+
+  /**
+   * Models React Native's runtime extension of the FormData API, which
+   * additionally accepts a native file descriptor `{ uri, name, type }`
+   * instead of a standard `Blob`. TypeScript's built-in FormData type
+   * does not include this overload, so we model it as a standalone
+   * interface and narrow to it only on the native code path.
+   */
+  interface RNFormDataNativeAppend {
+    append(name: string, value: { uri: string; name: string; type: string }): void;
+  }
+
+  async function uploadAttachment(uri: string, name: string, mimeType: string) {
+    setUploadingAttachment(true);
+    try {
+      const formData = new FormData();
+      if (Platform.OS === "web") {
+        // On web, uri may be a data URL (from FileReader) — convert to Blob
+        // so standard FormData.append(name, Blob, filename) is used.
+        const blob = await globalThis.fetch(uri).then((r) => r.blob());
+        formData.append("file", blob, name);
+      } else {
+        // React Native's FormData runtime accepts { uri, name, type } for
+        // native file uploads. We narrow to the typed interface that models
+        // this platform-specific overload.
+        (formData as unknown as RNFormDataNativeAppend).append("file", { uri, name, type: mimeType });
+      }
+      const uploadRes = await resilientFetch("/api/media/upload", {
+        method: "POST",
+        body: formData,
+      });
+      if (!uploadRes.ok) {
+        const err: ApiErrorBody = await uploadRes.json().catch(() => ({}));
+        throw new Error(err.error || "Upload failed");
+      }
+      const { url } = await uploadRes.json();
+
+      const attachRes = await resilientFetch(`/api/cases/${encodeURIComponent(String(id))}/attachments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          storageKey: url,
+          fileName: name,
+          fileType: mimeType,
+        }),
+      });
+      if (!attachRes.ok) {
+        const err: ApiErrorBody = await attachRes.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to register attachment");
+      }
+
+      await fetchServerAttachments();
+      if (Platform.OS !== "web") {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unable to upload file.";
+      Alert.alert("Upload Failed", msg);
+    } finally {
+      setUploadingAttachment(false);
+    }
+  }
+
   // Fetch full case data (photos + activityLog) for the detail view.
   // The list endpoint strips these large fields to keep it lean.
   React.useEffect(() => {
@@ -240,6 +340,11 @@ export default function CaseDetailScreen() {
       })
       .catch(() => {});
     return () => { cancelled = true; };
+  }, [id]);
+
+  React.useEffect(() => {
+    if (!id) return;
+    void fetchServerAttachments();
   }, [id]);
 
   if (!caseItem) {
@@ -773,7 +878,41 @@ export default function CaseDetailScreen() {
       "Choose a source",
       [
         {
-          text: "Camera Photos",
+          text: "Camera",
+          onPress: async () => {
+            if (Platform.OS === "web") {
+              try {
+                const uri = await webFilePickerForCamera();
+                if (uri) {
+                  const name = `photo_${Date.now()}.jpg`;
+                  await uploadAttachment(uri, name, "image/jpeg");
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
+              return;
+            }
+            requestCameraWithPrompt(async () => {
+              try {
+                const result = await ImagePicker.launchCameraAsync({
+                  mediaTypes: ["images"],
+                  quality: 1.0,
+                  allowsEditing: false,
+                });
+                if (!result.canceled && result.assets[0]) {
+                  const asset = result.assets[0];
+                  const name = asset.uri.split("/").pop() || `photo_${Date.now()}.jpg`;
+                  const mimeType = asset.mimeType || "image/jpeg";
+                  await uploadAttachment(asset.uri, name, mimeType);
+                }
+              } catch {
+                Alert.alert("Camera Error", "Unable to open camera.");
+              }
+            });
+          },
+        },
+        {
+          text: "Photo Library",
           onPress: async () => {
             const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
             if (status !== "granted") {
@@ -786,39 +925,55 @@ export default function CaseDetailScreen() {
               allowsMultipleSelection: true,
             });
             if (!result.canceled && result.assets.length > 0) {
-              await Promise.all(result.assets.map((asset) => addCasePhoto(caseItem!.id, asset.uri, userInitials)));
-              if (Platform.OS !== "web") {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              for (const asset of result.assets) {
+                const name = asset.uri.split("/").pop() || `photo_${Date.now()}.jpg`;
+                const mimeType = asset.mimeType || "image/jpeg";
+                await uploadAttachment(asset.uri, name, mimeType);
               }
             }
           },
         },
         {
-          text: "Take Photo",
-          onPress: () => handleTakePhoto(),
-        },
-        {
-          text: "File Explorer",
+          text: "Browse Files",
           onPress: async () => {
             try {
               const result = await DocumentPicker.getDocumentAsync({
-                type: ["image/*", "application/pdf"],
+                type: "*/*",
                 multiple: true,
+                copyToCacheDirectory: true,
               });
               if (!result.canceled && result.assets && result.assets.length > 0) {
-                await Promise.all(result.assets.map((asset) => addCasePhoto(caseItem!.id, asset.uri, userInitials)));
-                if (Platform.OS !== "web") {
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                for (const asset of result.assets) {
+                  const mimeType = asset.mimeType || inferMimeType(asset.name) || "application/octet-stream";
+                  await uploadAttachment(asset.uri, asset.name, mimeType);
                 }
               }
-            } catch (e) {
-              Alert.alert("Error", "Unable to open file explorer.");
+            } catch {
+              Alert.alert("Error", "Unable to open file browser.");
             }
           },
         },
         { text: "Cancel", style: "cancel" },
       ]
     );
+  }
+
+  function inferMimeType(fileName: string): string | null {
+    const ext = fileName.split(".").pop()?.toLowerCase();
+    const map: Record<string, string> = {
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      gif: "image/gif",
+      webp: "image/webp",
+      pdf: "application/pdf",
+      stl: "model/stl",
+      obj: "model/obj",
+      ply: "model/ply",
+      zip: "application/zip",
+      dcm: "application/dicom",
+    };
+    return ext ? (map[ext] ?? null) : null;
   }
 
   function handleFinishPhotos() {
@@ -1512,6 +1667,122 @@ export default function CaseDetailScreen() {
             </ScrollView>
           </View>
         )}
+
+        <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
+            <View style={[styles.sectionHeader, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Text style={styles.sectionTitle}>
+                  Attachments{serverAttachments.length > 0 ? ` (${serverAttachments.length})` : ""}
+                </Text>
+                {attachmentsFetchError && (
+                  <Pressable
+                    onPress={() => void fetchServerAttachments()}
+                    hitSlop={8}
+                  >
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: "#EF4444" }}>
+                      Failed · Retry
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+              <Pressable
+                onPress={handleAttachFile}
+                disabled={uploadingAttachment}
+                style={({ pressed }) => ({
+                  flexDirection: "row" as const,
+                  alignItems: "center" as const,
+                  gap: 4,
+                  paddingVertical: 6,
+                  paddingHorizontal: 10,
+                  borderRadius: 8,
+                  backgroundColor: pressed || uploadingAttachment ? "rgba(0,0,0,0.06)" : "transparent",
+                  borderWidth: 1,
+                  borderColor: Colors.light.border,
+                })}
+              >
+                <Ionicons name="attach-outline" size={16} color={Colors.light.tint} />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: Colors.light.tint }}>
+                  {uploadingAttachment ? "Uploading…" : "Attach file"}
+                </Text>
+              </Pressable>
+            </View>
+            {serverAttachments.map((att) => {
+              const isImage = (att.fileType || "").startsWith("image/");
+              const ext = att.fileName.split(".").pop()?.toLowerCase() ?? "";
+              const is3D = ["stl", "obj", "ply"].includes(ext);
+              const iconName: ComponentProps<typeof Ionicons>["name"] = isImage
+                ? "image-outline"
+                : att.fileType === "application/pdf"
+                ? "document-text-outline"
+                : is3D
+                ? "cube-outline"
+                : "document-outline";
+              const fileUrl = `${att.storageKey}`;
+              return (
+                <Pressable
+                  key={att.id}
+                  onPress={() => {
+                    if (fileUrl) {
+                      Linking.openURL(fileUrl).catch(() => {
+                        Alert.alert("Unable to open", "Could not open this file.");
+                      });
+                    }
+                  }}
+                  style={({ pressed }) => ({
+                    flexDirection: "row" as const,
+                    alignItems: "center" as const,
+                    gap: 10,
+                    paddingVertical: 10,
+                    paddingHorizontal: 12,
+                    backgroundColor: pressed ? "rgba(0,0,0,0.04)" : "#F8FAFC",
+                    borderRadius: 10,
+                    marginTop: 6,
+                    borderWidth: 1,
+                    borderColor: Colors.light.border,
+                  })}
+                >
+                  <Ionicons name={iconName} size={22} color={Colors.light.tint} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>
+                      {att.fileName}
+                    </Text>
+                    {att.uploaderName || att.createdAt ? (
+                      <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                        {[
+                          att.uploaderName,
+                          att.createdAt
+                            ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Ionicons name="open-outline" size={16} color={Colors.light.textTertiary} />
+                </Pressable>
+              );
+            })}
+            {uploadingAttachment && (
+              <View style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+                paddingVertical: 10,
+                paddingHorizontal: 12,
+                backgroundColor: "#F0F9FF",
+                borderRadius: 10,
+                marginTop: 6,
+                borderWidth: 1,
+                borderColor: "#BAE6FD",
+              }}>
+                <Ionicons name="cloud-upload-outline" size={22} color="#0EA5E9" />
+                <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: "#0369A1" }}>
+                  Uploading…
+                </Text>
+              </View>
+            )}
+          </View>
 
         <View style={[styles.sectionHeader, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
           <Text style={styles.sectionTitle}>Case History</Text>
