@@ -57,12 +57,17 @@ const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "All" },
   { value: "received", label: "Received" },
   { value: "in_design", label: "In Design" },
+  { value: "scan", label: "Scan" },
   { value: "in_milling", label: "In Milling" },
+  { value: "post_mill", label: "Post Mill" },
+  { value: "sintering_furnace", label: "Sintering Furnace" },
+  { value: "model_room", label: "Model Room" },
   { value: "in_porcelain", label: "Porcelain" },
-  { value: "qc", label: "QC" },
-  { value: "shipped", label: "Shipped" },
-  { value: "delivered", label: "Delivered" },
+  { value: "qc", label: "Quality Check" },
+  { value: "complete", label: "Complete" },
+  { value: "shipped", label: "Shipping" },
   { value: "on_hold", label: "On Hold" },
+  { value: "delivered", label: "Delivered" },
   { value: "remake", label: "Remake" },
 ];
 
@@ -1372,7 +1377,7 @@ export function CaseDrawer({
 
   const [routeStatus, setRouteStatus] = useState("");
   const [routeError, setRouteError] = useState<string | null>(null);
-  const [routeSuccess, setRouteSuccess] = useState(false);
+  const [routeSuccessMsg, setRouteSuccessMsg] = useState<string | null>(null);
 
   const [noteText, setNoteText] = useState("");
   const [shareWithProvider, setShareWithProvider] = useState(false);
@@ -1489,13 +1494,18 @@ export function CaseDrawer({
         method: "PATCH",
         body: JSON.stringify({ status }),
       }),
-    onSuccess: () => {
+    onSuccess: (_result, status) => {
+      const prevBarcode = data?.casePanBarcode ?? labCase.casePanBarcode;
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
       setRouteStatus("");
       setRouteError(null);
-      setRouteSuccess(true);
-      setTimeout(() => setRouteSuccess(false), 3000);
+      const msg =
+        status === "complete" && !!prevBarcode
+          ? "Case located successfully. Barcode released."
+          : "Case located successfully.";
+      setRouteSuccessMsg(msg);
+      setTimeout(() => setRouteSuccessMsg(null), 3000);
     },
     onError: (e: Error) => setRouteError(e.message),
   });
@@ -2221,6 +2231,14 @@ export function CaseDrawer({
                     />
                     <Field label="Due date" value={formatDate(data?.dueDate ?? labCase.dueDate)} />
                     <Field label="Created" value={formatDate(data?.createdAt ?? labCase.createdAt)} />
+                    {(data?.casePanBarcode ?? labCase.casePanBarcode) && (
+                      <div className="col-span-2">
+                        <Field
+                          label="Case pan barcode"
+                          value={data?.casePanBarcode ?? labCase.casePanBarcode ?? ""}
+                        />
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -2453,10 +2471,10 @@ export function CaseDrawer({
                 );
               })()}
 
-              {/* Route Case */}
+              {/* Locate Case */}
               <section>
                 <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">
-                  Route Case
+                  Locate Case
                 </h3>
                 <div className="flex gap-2">
                   <select
@@ -2464,7 +2482,7 @@ export function CaseDrawer({
                     onChange={(e) => { setRouteStatus(e.target.value); setRouteError(null); }}
                     className="flex-1 h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                   >
-                    <option value="">Move to station…</option>
+                    <option value="">Select station…</option>
                     {ROUTE_STATUSES.map((s) => (
                       <option key={s.value} value={s.value} disabled={s.value === currentStatus}>
                         {s.label}{s.value === currentStatus ? " (current)" : ""}
@@ -2477,12 +2495,12 @@ export function CaseDrawer({
                     onClick={() => routeMutation.mutate(routeStatus)}
                     className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
                   >
-                    {routeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : "Route"}
+                    {routeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : "Locate"}
                   </button>
                 </div>
                 {routeError && <p className="mt-1.5 text-xs text-destructive">{routeError}</p>}
-                {routeSuccess && (
-                  <p className="mt-1.5 text-xs text-green-600">Status updated successfully.</p>
+                {routeSuccessMsg && (
+                  <p className="mt-1.5 text-xs text-green-600">{routeSuccessMsg}</p>
                 )}
               </section>
             </div>

@@ -1,9 +1,14 @@
 export type CaseStatus =
   | "received"
   | "in_design"
+  | "scan"
   | "in_milling"
+  | "post_mill"
+  | "sintering_furnace"
+  | "model_room"
   | "in_porcelain"
   | "qc"
+  | "complete"
   | "shipped"
   | "delivered"
   | "on_hold"
@@ -58,6 +63,8 @@ export interface LabCase {
   suggestedProviderOrgId?: string | null;
   /** Practice display name of the suggested match (resolved by the server). */
   suggestedPracticeName?: string | null;
+  /** Barcode assigned to the case pan. Cleared when the case is located to Complete. */
+  casePanBarcode?: string | null;
 }
 
 /**

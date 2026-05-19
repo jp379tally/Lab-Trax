@@ -1264,6 +1264,7 @@ router.get(
           restorationMaterials: parsed.material ?? null,
           teeth: parsed.toothIndices ?? null,
           totalPrice: parsed.price != null ? String(parsed.price) : "0.00",
+          casePanBarcode: parsed.assignedBarcode ?? null,
           _source: "mobile",
         });
       } catch {
@@ -1762,9 +1763,14 @@ const updateCaseSchema = z.object({
     .enum([
       "received",
       "in_design",
+      "scan",
       "in_milling",
+      "post_mill",
+      "sintering_furnace",
+      "model_room",
       "in_porcelain",
       "qc",
+      "complete",
       "shipped",
       "delivered",
       "on_hold",
@@ -1785,18 +1791,87 @@ const updateCaseSchema = z.object({
 router.patch(
   "/:caseId",
   asyncHandler(async (req, res) => {
-    const found = await assertCaseAccess(
-      (req as any).auth.userId,
-      req.params.caseId
-    );
+    const input = updateCaseSchema.parse(req.body);
+
+    // Try the canonical cases table first. If not found, fall back to the
+    // mobile lab_cases table so desktop users can locate mobile-originated cases.
+    let found: any = null;
+    try {
+      found = await assertCaseAccess(
+        (req as any).auth.userId,
+        req.params.caseId
+      );
+    } catch (e: any) {
+      if (e.status !== 404) throw e;
+    }
+
+    if (!found) {
+      // Mobile case path: look up the lab_cases row and update its JSON blob.
+      const mobileRow = await db.query.labCases.findFirst({
+        where: and(
+          eq(labCases.id, req.params.caseId),
+          isNull(labCases.deletedAt)
+        ),
+      });
+      if (!mobileRow) throw new HttpError(404, "Case not found.");
+
+      if (mobileRow.organizationId) {
+        await requireMembership(
+          (req as any).auth.userId,
+          mobileRow.organizationId
+        );
+      }
+
+      if (input.status) {
+        let parsed: any = {};
+        try { parsed = JSON.parse(mobileRow.caseData); } catch { /* ignore */ }
+
+        // Map desktop station back to mobile status token.
+        const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
+          received: "INTAKE",
+          in_design: "DESIGN",
+          scan: "SCAN",
+          in_milling: "MILLING",
+          post_mill: "POST_MILL",
+          sintering_furnace: "SINTERING_FURNACE",
+          model_room: "MODEL_ROOM",
+          in_porcelain: "PORCELAIN",
+          qc: "QC",
+          complete: "COMPLETE",
+          shipped: "SHIP",
+          delivered: "COMPLETE",
+          on_hold: "HOLD",
+          remake: "REMAKE",
+        };
+        parsed.status = DESKTOP_TO_MOBILE_STATUS[input.status] ?? input.status.toUpperCase();
+
+        if (input.status === "complete") {
+          parsed.assignedBarcode = null;
+        }
+
+        await db
+          .update(labCases)
+          .set({ caseData: JSON.stringify(parsed), updatedAt: new Date() })
+          .where(eq(labCases.id, mobileRow.id));
+      }
+
+      return ok(res, {
+        id: mobileRow.id,
+        status: input.status,
+        _source: "mobile",
+      });
+    }
+
+    // Canonical cases table path.
     await requireMembership(
       (req as any).auth.userId,
       found.labOrganizationId
     );
-    const input = updateCaseSchema.parse(req.body);
 
     const updates: any = {};
     if (input.status !== undefined) updates.status = input.status;
+    // When locating to Complete, free the pan barcode atomically.
+    if (input.status === "complete") updates.casePanBarcode = null;
     if (input.priority !== undefined) updates.priority = input.priority;
     if (input.dueDate !== undefined)
       updates.dueDate = new Date(input.dueDate);

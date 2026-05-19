@@ -464,6 +464,7 @@ export const cases = pgTable(
       () => organizations.id,
       { onDelete: "set null" }
     ),
+    casePanBarcode: text("case_pan_barcode"),
   },
   (table) => ({
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(
