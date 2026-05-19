@@ -445,7 +445,9 @@ function visibleAttachmentsFor(
 }
 
 const createCaseSchema = z.object({
-  caseNumber: z.string().min(1),
+  // Optional for remake cases — server assigns the suffixed number (e.g. "26-11B").
+  // Required for non-remake cases. Empty strings are treated as omitted.
+  caseNumber: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
   labOrganizationId: z.string(),
   providerOrganizationId: z.string(),
   patientFirstName: z.string().min(1),
@@ -497,6 +499,10 @@ const createCaseSchema = z.object({
   // note on their end too.
   notes: z.string().min(1).max(8000).optional(),
 }).refine(
+  // caseNumber is required for non-remake cases; server assigns it for remakes.
+  (v) => !!v.remakeOfCaseId || (typeof v.caseNumber === "string" && v.caseNumber.trim().length > 0),
+  { message: "caseNumber is required for non-remake cases.", path: ["caseNumber"] },
+).refine(
   (v) => !v.remakeOfCaseId || (typeof v.remakeReason === "string" && v.remakeReason.trim().length > 0),
   { message: "remakeReason is required when remakeOfCaseId is set.", path: ["remakeReason"] },
 ).refine(
@@ -769,6 +775,44 @@ router.get(
   })
 );
 
+// Read-only peek endpoint used by mobile before creating a remake case locally.
+// Returns the next suffix case number (e.g. "26-11B") without inserting
+// anything — the server create (or legacy sync) is the authoritative step.
+router.get(
+  "/next-remake-suffix",
+  asyncHandler(async (req, res) => {
+    const remakeOfCaseId = String(req.query.remakeOfCaseId ?? "").trim();
+    if (!remakeOfCaseId) {
+      throw new HttpError(400, "remakeOfCaseId is required.");
+    }
+    const [original] = await db
+      .select({
+        id: cases.id,
+        caseNumber: cases.caseNumber,
+        labOrganizationId: cases.labOrganizationId,
+      })
+      .from(cases)
+      .where(and(eq(cases.id, remakeOfCaseId), notDeleted(cases)));
+    if (!original) {
+      throw new HttpError(404, "Original case not found.");
+    }
+    await requireMembership((req as any).auth.userId, original.labOrganizationId);
+    const [countRow] = await db
+      .select({ cnt: sql<number>`count(*)::int` })
+      .from(cases)
+      .where(and(eq(cases.remakeOfCaseId, original.id), notDeleted(cases)));
+    const existingCount = countRow?.cnt ?? 0;
+    if (existingCount > 23) {
+      throw new HttpError(
+        409,
+        `Too many remakes of case ${original.caseNumber} (maximum 24).`,
+      );
+    }
+    const suffixLetter = String.fromCharCode(66 + existingCount);
+    return ok(res, { caseNumber: `${original.caseNumber}${suffixLetter}` });
+  })
+);
+
 router.post(
   "/",
   asyncHandler(async (req, res) => {
@@ -797,27 +841,76 @@ router.post(
       );
     }
 
-    const [createdCase] = await db
-      .insert(cases)
-      .values({
-        caseNumber: input.caseNumber,
-        labOrganizationId: input.labOrganizationId,
-        providerOrganizationId: input.providerOrganizationId,
-        patientFirstName: input.patientFirstName,
-        patientLastName: input.patientLastName,
-        externalPatientId: input.externalPatientId ?? null,
-        doctorName: input.doctorName,
-        status: input.status,
-        priority: input.priority,
-        dueDate: input.dueDate ? new Date(input.dueDate) : null,
-        createdByUserId: (req as any).auth.userId,
-        remakeOfCaseId: remakeOriginal?.id ?? null,
-        remakeReason: remakeOriginal ? input.remakeReason ?? null : null,
-        remakeCharged: remakeOriginal
-          ? input.remakeCharged ?? null
-          : null,
-      })
-      .returning();
+    // For remake cases, compute the next letter suffix (B, C, D, …) inside
+    // a transaction so the count + insert are atomic. The UNIQUE constraint
+    // on cases.caseNumber is the ultimate guard against collisions even
+    // under concurrent creates of the same remake target.
+    const createdCase = await db.transaction(async (tx) => {
+      let resolvedCaseNumber: string;
+      if (remakeOriginal) {
+        // Acquire a transaction-scoped advisory lock keyed on the original case
+        // ID.  pg_advisory_xact_lock blocks until any other holder releases at
+        // transaction end, so two concurrent remake creates for the same
+        // original (whether canonical or legacy lab_cases) serialise here
+        // instead of both reading the same count and colliding on suffix letter.
+        // hashtext() folds the UUID string into the int4 space expected by the
+        // two-arg form; the constant first arg namespaces it away from any
+        // other advisory lock usage in the app.
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(1742068800, hashtext(${remakeOriginal.id}))`,
+        );
+
+        // Count non-deleted remakes already pointing at the same original.
+        const [countRow] = await tx
+          .select({ cnt: sql<number>`count(*)::int` })
+          .from(cases)
+          .where(
+            and(
+              eq(cases.remakeOfCaseId, remakeOriginal.id),
+              notDeleted(cases),
+            ),
+          );
+        const existingCount = countRow?.cnt ?? 0;
+        // 0 → 'B', 1 → 'C', 2 → 'D', … up to 'Z' (24 remakes, charCode 90).
+        // Reject gracefully if the limit is exceeded rather than silently
+        // producing a non-letter character.
+        if (existingCount > 23) {
+          throw new HttpError(
+            409,
+            `Too many remakes of case ${remakeOriginal.caseNumber} (maximum 24).`,
+          );
+        }
+        const suffixLetter = String.fromCharCode(66 + existingCount);
+        resolvedCaseNumber = `${remakeOriginal.caseNumber}${suffixLetter}`;
+      } else {
+        // Non-remake: client supplies the case number (validated above).
+        resolvedCaseNumber = input.caseNumber!;
+      }
+
+      const [created] = await tx
+        .insert(cases)
+        .values({
+          caseNumber: resolvedCaseNumber,
+          labOrganizationId: input.labOrganizationId,
+          providerOrganizationId: input.providerOrganizationId,
+          patientFirstName: input.patientFirstName,
+          patientLastName: input.patientLastName,
+          externalPatientId: input.externalPatientId ?? null,
+          doctorName: input.doctorName,
+          status: input.status,
+          priority: input.priority,
+          dueDate: input.dueDate ? new Date(input.dueDate) : null,
+          createdByUserId: (req as any).auth.userId,
+          remakeOfCaseId: remakeOriginal?.id ?? null,
+          remakeReason: remakeOriginal ? input.remakeReason ?? null : null,
+          remakeCharged: remakeOriginal
+            ? input.remakeCharged ?? null
+            : null,
+        })
+        .returning();
+
+      return created;
+    });
 
     if (input.restorations && input.restorations.length > 0) {
       const resolved = await Promise.all(
@@ -1309,6 +1402,15 @@ router.get(
         }),
       ]);
 
+    // Fetch original case events when this is a remake so the history tab can
+    // display the full timeline (original case history + remake history) in one view.
+    const originalCaseEvents: typeof events = found.remakeOfCaseId
+      ? await db.query.caseEvents.findMany({
+          where: eq(caseEvents.caseId, found.remakeOfCaseId),
+          orderBy: [desc(caseEvents.occurredAt)],
+        })
+      : [];
+
     // Resolve display names for both attachment uploaders and note
     // authors in a single users lookup so the Overview Rx Summary can
     // show "<author> · <relative time>" alongside each note.
@@ -1498,6 +1600,7 @@ router.get(
       notes: enrichedNotes,
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
       events,
+      originalCaseEvents,
       locations,
       remakeOriginal,
       remakeChildren,

@@ -96,7 +96,8 @@ function generateCaseNumber(): string {
 }
 
 interface NewCaseFormData {
-  caseNumber: string;
+  // Optional: server assigns the case number for remake cases.
+  caseNumber?: string;
   labOrganizationId: string;
   providerOrganizationId: string;
   patientFirstName: string;
@@ -849,7 +850,10 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
             mutation.mutate(form);
           }}
           onProceedAsRemake={(decision) => {
-            mutation.mutate({ ...form, ...decision });
+            // Omit caseNumber so the server assigns the suffixed number
+            // (e.g. "26-11B") automatically based on the original case.
+            const { caseNumber: _ignored, ...formWithoutCaseNumber } = form;
+            mutation.mutate({ ...formWithoutCaseNumber, ...decision });
           }}
         />
       )}
@@ -1284,6 +1288,8 @@ type DetailedCase = LabCase & {
   restorations: CaseRestoration[];
   notes: CaseNote[];
   events: CaseEvent[];
+  /** Events from the original case when this case is a remake. */
+  originalCaseEvents?: CaseEvent[];
   attachments: CaseAttachment[];
   viewerIsLabMember?: boolean;
   viewerCanManageAttachments?: boolean;
@@ -1954,7 +1960,7 @@ export function CaseDrawer({
     { id: "notes", label: "Notes", count: noteCount },
     { id: "files", label: "Files", count: fileCount },
     { id: "invoice", label: "Invoice" },
-    { id: "history", label: "History", count: data?.events?.length },
+    { id: "history", label: "History", count: (data?.events?.length ?? 0) + (data?.originalCaseEvents?.length ?? 0) || undefined },
   ];
 
   return (
@@ -3299,7 +3305,10 @@ export function CaseDrawer({
                 <button
                   type="button"
                   onClick={() =>
-                    printCaseHistory(data ?? labCase, data?.events ?? [])
+                    printCaseHistory(data ?? labCase, [
+                      ...(data?.originalCaseEvents ?? []),
+                      ...(data?.events ?? []),
+                    ])
                   }
                   className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
                   title="Print case history"
@@ -3309,94 +3318,135 @@ export function CaseDrawer({
                 </button>
               </div>
               {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-              {!isLoading && (data?.events?.length ?? 0) === 0 && (
+              {!isLoading && (data?.events?.length ?? 0) === 0 && (data?.originalCaseEvents?.length ?? 0) === 0 && (
                 <div className="text-sm text-muted-foreground">No activity logged yet.</div>
               )}
-              <div>
-                {[...(data?.events ?? [])]
-                  .sort((a, b) => {
-                    const ta = new Date(
-                      a.occurredAt || a.createdAt || 0,
-                    ).getTime();
-                    const tb = new Date(
-                      b.occurredAt || b.createdAt || 0,
-                    ).getTime();
-                    return ta - tb;
-                  })
-                  .map((e, idx, arr) => {
-                  const isLast = idx === arr.length - 1;
-                  const eventType = e.eventType || "";
-                  const isStatus = eventType === "status_changed";
-                  const isNote = eventType === "note_added";
-                  const isAttachment = eventType.includes("attachment");
-                  const isInvoice = eventType.includes("invoice");
-                  const isRestoration = eventType.includes("restoration");
-                  const metadata: Record<string, unknown> =
-                    e.metadataJson && typeof e.metadataJson === "object"
-                      ? (e.metadataJson as Record<string, unknown>)
-                      : {};
-                  const isBackfilledInvoice =
-                    eventType === "invoice_generated" && metadata.source === "backfill";
-                  const dotColor = isStatus
-                    ? "#3B82F6"
-                    : isNote
-                    ? "#F59E0B"
-                    : isAttachment
-                    ? "#8B5CF6"
-                    : isInvoice
-                    ? "#10B981"
-                    : isRestoration
-                    ? "#6366F1"
-                    : "#94A3B8";
+              {(() => {
+                const hasOriginalEvents = (data?.originalCaseEvents?.length ?? 0) > 0;
 
-                  return (
-                    <div key={e.id || idx} className="flex gap-3 pb-5">
-                      <div className="flex flex-col items-center shrink-0 mt-0.5">
-                        <div
-                          className="w-2.5 h-2.5 rounded-full shrink-0"
-                          style={{ backgroundColor: dotColor }}
-                        />
-                        {!isLast && <div className="w-px flex-1 bg-border mt-1.5" />}
-                      </div>
-                      <div className="flex-1 min-w-0 -mt-0.5">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="text-sm font-medium flex items-center gap-1.5">
-                            <span>{formatEventType(e.eventType)}</span>
-                            {isBackfilledInvoice && (
-                              <span
-                                title="Generated by the missing-invoice backfill"
-                                className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
-                              >
-                                Backfilled
+                type TaggedEvent = CaseEvent & { _source: "original" | "remake" };
+
+                const sortByTime = (evts: CaseEvent[]): CaseEvent[] =>
+                  [...evts].sort((a, b) => {
+                    const ta = new Date(a.occurredAt || a.createdAt || 0).getTime();
+                    const tb = new Date(b.occurredAt || b.createdAt || 0).getTime();
+                    return ta - tb;
+                  });
+
+                const originalEvents: TaggedEvent[] = sortByTime(data?.originalCaseEvents ?? []).map(
+                  (e) => ({ ...e, _source: "original" as const }),
+                );
+                const remakeEvents: TaggedEvent[] = sortByTime(data?.events ?? []).map(
+                  (e) => ({ ...e, _source: "remake" as const }),
+                );
+
+                const allEvents: TaggedEvent[] = [...originalEvents, ...remakeEvents];
+
+                return (
+                  <div>
+                    {allEvents.map((e, idx) => {
+                      const isLast = idx === allEvents.length - 1;
+                      const eventType = e.eventType || "";
+                      const isStatus = eventType === "status_changed";
+                      const isNote = eventType === "note_added";
+                      const isAttachment = eventType.includes("attachment");
+                      const isInvoice = eventType.includes("invoice");
+                      const isRestoration = eventType.includes("restoration");
+                      const metadata: Record<string, unknown> =
+                        e.metadataJson && typeof e.metadataJson === "object"
+                          ? (e.metadataJson as Record<string, unknown>)
+                          : {};
+                      const isBackfilledInvoice =
+                        eventType === "invoice_generated" && metadata.source === "backfill";
+                      const dotColor = isStatus
+                        ? "#3B82F6"
+                        : isNote
+                        ? "#F59E0B"
+                        : isAttachment
+                        ? "#8B5CF6"
+                        : isInvoice
+                        ? "#10B981"
+                        : isRestoration
+                        ? "#6366F1"
+                        : "#94A3B8";
+
+                      const isFirstRemake =
+                        hasOriginalEvents &&
+                        e._source === "remake" &&
+                        (idx === 0 || allEvents[idx - 1]?._source === "original");
+
+                      return (
+                        <div key={e.id || idx}>
+                          {isFirstRemake && (
+                            <div className="flex items-center gap-2 my-3">
+                              <div className="flex-1 h-px bg-border" />
+                              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground px-1 whitespace-nowrap">
+                                Case {data?.caseNumber}
                               </span>
-                            )}
+                              <div className="flex-1 h-px bg-border" />
+                            </div>
+                          )}
+                          <div className="flex gap-3 pb-5">
+                            <div className="flex flex-col items-center shrink-0 mt-0.5">
+                              <div
+                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                style={{
+                                  backgroundColor: dotColor,
+                                  opacity: e._source === "original" ? 0.55 : 1,
+                                }}
+                              />
+                              {!isLast && <div className="w-px flex-1 bg-border mt-1.5" />}
+                            </div>
+                            <div
+                              className="flex-1 min-w-0 -mt-0.5"
+                              style={{ opacity: e._source === "original" ? 0.7 : 1 }}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="text-sm font-medium flex items-center gap-1.5">
+                                  <span>{formatEventType(e.eventType)}</span>
+                                  {isBackfilledInvoice && (
+                                    <span
+                                      title="Generated by the missing-invoice backfill"
+                                      className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
+                                    >
+                                      Backfilled
+                                    </span>
+                                  )}
+                                  {e._source === "original" && (
+                                    <span className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 ring-1 ring-inset ring-slate-200">
+                                      {data?.remakeOriginal?.caseNumber ?? "Original"}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
+                                  {formatDateTime(e.occurredAt || e.createdAt)}
+                                </span>
+                              </div>
+                              {e.actorInitials && (
+                                <div className="text-xs text-muted-foreground mt-0.5">{e.actorInitials}</div>
+                              )}
+                              {isStatus && (e.metadataJson as any)?.fromStatus && (e.metadataJson as any)?.toStatus && (
+                                <div className="flex items-center gap-1.5 mt-1">
+                                  <StatusBadge status={String((e.metadataJson as any).fromStatus)} />
+                                  <span className="text-xs text-muted-foreground">→</span>
+                                  <StatusBadge status={String((e.metadataJson as any).toStatus)} />
+                                </div>
+                              )}
+                              {isNote && (e.metadataJson as any)?.visibility && (
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                  {(e.metadataJson as any).visibility === "internal_lab_only"
+                                    ? "Internal (lab only)"
+                                    : "Shared with provider"}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                          <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
-                            {formatDateTime(e.occurredAt || e.createdAt)}
-                          </span>
                         </div>
-                        {e.actorInitials && (
-                          <div className="text-xs text-muted-foreground mt-0.5">{e.actorInitials}</div>
-                        )}
-                        {isStatus && (e.metadataJson as any)?.fromStatus && (e.metadataJson as any)?.toStatus && (
-                          <div className="flex items-center gap-1.5 mt-1">
-                            <StatusBadge status={String((e.metadataJson as any).fromStatus)} />
-                            <span className="text-xs text-muted-foreground">→</span>
-                            <StatusBadge status={String((e.metadataJson as any).toStatus)} />
-                          </div>
-                        )}
-                        {isNote && (e.metadataJson as any)?.visibility && (
-                          <div className="text-xs text-muted-foreground mt-0.5">
-                            {(e.metadataJson as any).visibility === "internal_lab_only"
-                              ? "Internal (lab only)"
-                              : "Shared with provider"}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>

@@ -2229,7 +2229,7 @@ export default function ScanScreen() {
     }
   }
 
-  function createCase(
+  async function createCase(
     isDuplicate?: boolean,
     overrides?: {
       isRemake?: boolean;
@@ -2242,7 +2242,35 @@ export default function ScanScreen() {
   ) {
     try {
     const yy = String(new Date().getFullYear()).slice(-2);
-    const caseNumber = nextCaseNumber(yy, cases.map((c) => c.caseNumber));
+
+    // For remake cases, ask the server for the next suffix number so the
+    // label and local record always reflect the canonical server-assigned value.
+    let caseNumber: string;
+    if (overrides?.remakeOfCaseId) {
+      try {
+        const r = await resilientFetch(
+          `/api/cases/next-remake-suffix?remakeOfCaseId=${encodeURIComponent(overrides.remakeOfCaseId)}`,
+        );
+        if (!r?.ok) {
+          const body = await r?.json().catch(() => ({}));
+          throw new Error(body?.message ?? "Server error");
+        }
+        const data = await r.json();
+        if (typeof data?.caseNumber !== "string" || !data.caseNumber) {
+          throw new Error("Invalid response from server");
+        }
+        caseNumber = data.caseNumber as string;
+      } catch (fetchErr: unknown) {
+        const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        Alert.alert(
+          "Cannot Create Remake",
+          `Could not get remake case number from server: ${msg}. Please check your connection and try again.`,
+        );
+        return;
+      }
+    } else {
+      caseNumber = nextCaseNumber(yy, cases.map((c) => c.caseNumber));
+    }
 
     const toothMapEntries: ToothEntry[] = selectedTeeth.map((num) => ({
       num,
@@ -2503,7 +2531,7 @@ export default function ScanScreen() {
       }
 
       try {
-        createCase(false);
+        void createCase(false);
       } finally {
         finish();
       }
@@ -2528,7 +2556,7 @@ export default function ScanScreen() {
     // local-state convention.
     setIsSubmittingCase(true);
     try {
-      createCase(true, {
+      void createCase(true, {
         isRemake: true,
         remakeReason: reason,
         remakeCharged: charged,
@@ -2619,7 +2647,7 @@ export default function ScanScreen() {
         }}
         onNotARemake={() => {
           setDuplicatePrompt(null);
-          createCase(false);
+          void createCase(false);
         }}
         onConfirmRemake={(selectedId, reason, charged) => {
           setDuplicatePrompt(null);
