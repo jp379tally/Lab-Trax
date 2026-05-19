@@ -37,7 +37,8 @@ router.get(
 
 const updateSchema = z.object({
   enabled: z.boolean(),
-  dayOfMonth: z.coerce.number().int().min(1).max(31),
+  // 0 = "last day of month"; 1–31 = specific day (clamped to month length).
+  dayOfMonth: z.coerce.number().int().min(0).max(31),
   emailSubject: z.string().max(998).nullish(),
   emailBody: z.string().max(20000).nullish(),
   emailReplyTo: z
@@ -47,6 +48,8 @@ const updateSchema = z.object({
       message: "Reply-to must be a valid email address",
     })
     .nullish(),
+  // null / omitted = send to all practices; non-empty array = only these IDs.
+  includedOrgIds: z.array(z.string().max(128)).max(500).nullish(),
 });
 
 router.put(
@@ -57,6 +60,12 @@ router.put(
     await requireAnyRole(userId, orgId, ADMIN_ROLES);
     const input = updateSchema.parse(req.body);
     await loadOrCreateSchedule(orgId);
+    // Normalise includedOrgIds: null / undefined / empty array → null (= all)
+    const includedOrgIds =
+      input.includedOrgIds && input.includedOrgIds.length > 0
+        ? input.includedOrgIds
+        : null;
+
     const [updated] = await db
       .update(statementSchedules)
       .set({
@@ -76,6 +85,7 @@ router.put(
           input.emailReplyTo === undefined
             ? undefined
             : (input.emailReplyTo?.trim() || null),
+        includedOrgIds,
         updatedByUserId: userId,
         updatedAt: new Date(),
       })

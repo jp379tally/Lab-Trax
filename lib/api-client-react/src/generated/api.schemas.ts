@@ -288,6 +288,51 @@ export interface ReceivePaymentsInput {
   applications: PaymentApplication[];
 }
 
+export interface StatementSchedule {
+  id: string;
+  labOrganizationId: string;
+  enabled: boolean;
+  /**
+   * @minimum 0
+   * @maximum 31
+   */
+  dayOfMonth: number;
+  emailSubject?: string | null;
+  emailBody?: string | null;
+  emailReplyTo?: string | null;
+  includedOrgIds?: string[] | null;
+  lastSentForMonth?: string | null;
+  lastRunAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface StatementScheduleResult {
+  ok?: boolean;
+  data?: StatementSchedule;
+}
+
+export interface StatementScheduleInput {
+  enabled: boolean;
+  /**
+   * 0 = last day of month; 1–31 = specific numbered day
+   * @minimum 0
+   * @maximum 31
+   */
+  dayOfMonth: number;
+  /** @maxLength 998 */
+  emailSubject?: string | null;
+  /** @maxLength 20000 */
+  emailBody?: string | null;
+  /** @maxLength 320 */
+  emailReplyTo?: string | null;
+  /**
+   * null or omitted = send to all; non-empty = only these practice IDs
+   * @maxItems 500
+   */
+  includedOrgIds?: string[] | null;
+}
+
 export type ReceivePaymentsResultDataPaymentsItem = {
   id: string;
   invoiceId: string;

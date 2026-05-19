@@ -36,6 +36,8 @@ import type {
   ReceivePaymentsInput,
   ReceivePaymentsResult,
   SearchDoctorsParams,
+  StatementScheduleInput,
+  StatementScheduleResult,
   UpdateCase200,
   UpdateCaseInput,
 } from "./api.schemas";
@@ -1154,6 +1156,189 @@ export const useUpdateItemLabels = <
   TContext
 > => {
   return useMutation(getUpdateItemLabelsMutationOptions(options));
+};
+
+/**
+ * @summary Get or create the auto-send schedule for a lab
+ */
+export const getGetStatementScheduleUrl = (orgId: string) => {
+  return `/api/lab-orgs/${orgId}/statement-schedule`;
+};
+
+export const getStatementSchedule = async (
+  orgId: string,
+  options?: RequestInit,
+): Promise<StatementScheduleResult> => {
+  return customFetch<StatementScheduleResult>(
+    getGetStatementScheduleUrl(orgId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetStatementScheduleQueryKey = (orgId: string) => {
+  return [`/api/lab-orgs/${orgId}/statement-schedule`] as const;
+};
+
+export const getGetStatementScheduleQueryOptions = <
+  TData = Awaited<ReturnType<typeof getStatementSchedule>>,
+  TError = ErrorType<unknown>,
+>(
+  orgId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatementSchedule>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetStatementScheduleQueryKey(orgId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getStatementSchedule>>
+  > = ({ signal }) =>
+    getStatementSchedule(orgId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!orgId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getStatementSchedule>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetStatementScheduleQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getStatementSchedule>>
+>;
+export type GetStatementScheduleQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get or create the auto-send schedule for a lab
+ */
+
+export function useGetStatementSchedule<
+  TData = Awaited<ReturnType<typeof getStatementSchedule>>,
+  TError = ErrorType<unknown>,
+>(
+  orgId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatementSchedule>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetStatementScheduleQueryOptions(orgId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Update the auto-send schedule for a lab
+ */
+export const getUpdateStatementScheduleUrl = (orgId: string) => {
+  return `/api/lab-orgs/${orgId}/statement-schedule`;
+};
+
+export const updateStatementSchedule = async (
+  orgId: string,
+  statementScheduleInput: StatementScheduleInput,
+  options?: RequestInit,
+): Promise<StatementScheduleResult> => {
+  return customFetch<StatementScheduleResult>(
+    getUpdateStatementScheduleUrl(orgId),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(statementScheduleInput),
+    },
+  );
+};
+
+export const getUpdateStatementScheduleMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateStatementSchedule>>,
+    TError,
+    { orgId: string; data: BodyType<StatementScheduleInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateStatementSchedule>>,
+  TError,
+  { orgId: string; data: BodyType<StatementScheduleInput> },
+  TContext
+> => {
+  const mutationKey = ["updateStatementSchedule"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateStatementSchedule>>,
+    { orgId: string; data: BodyType<StatementScheduleInput> }
+  > = (props) => {
+    const { orgId, data } = props ?? {};
+
+    return updateStatementSchedule(orgId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateStatementScheduleMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateStatementSchedule>>
+>;
+export type UpdateStatementScheduleMutationBody =
+  BodyType<StatementScheduleInput>;
+export type UpdateStatementScheduleMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Update the auto-send schedule for a lab
+ */
+export const useUpdateStatementSchedule = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateStatementSchedule>>,
+    TError,
+    { orgId: string; data: BodyType<StatementScheduleInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateStatementSchedule>>,
+  TError,
+  { orgId: string; data: BodyType<StatementScheduleInput> },
+  TContext
+> => {
+  return useMutation(getUpdateStatementScheduleMutationOptions(options));
 };
 
 /**

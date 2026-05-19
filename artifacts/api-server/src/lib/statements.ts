@@ -90,7 +90,13 @@ export function priorMonthRange(asOf: Date): {
 export async function buildPracticeStatements(
   labOrganizationId: string,
   periodStart: Date,
-  periodEnd: Date
+  periodEnd: Date,
+  /**
+   * When provided (non-null, non-empty), only practices whose id appears in
+   * this list will be included in the returned statements. null / undefined
+   * means "all practices with activity" — the default behaviour.
+   */
+  includedOrgIds?: string[] | null
 ): Promise<PracticeStatementData[]> {
   const rows = await db.query.invoices.findMany({
     where: and(
@@ -102,9 +108,19 @@ export async function buildPracticeStatements(
   });
   if (!rows.length) return [];
 
+  // Apply per-practice filter when an explicit inclusion list is present.
+  const filterIds =
+    includedOrgIds && includedOrgIds.length > 0 ? new Set(includedOrgIds) : null;
+
   const practiceIds = Array.from(
-    new Set(rows.map((r) => r.providerOrganizationId))
+    new Set(
+      rows
+        .map((r) => r.providerOrganizationId)
+        .filter((id) => !filterIds || filterIds.has(id))
+    )
   );
+  if (!practiceIds.length) return [];
+
   const practiceRows = await db
     .select()
     .from(organizations)
@@ -117,6 +133,8 @@ export async function buildPracticeStatements(
   const grouped = new Map<string, PracticeStatementData>();
   for (const inv of rows) {
     const id = inv.providerOrganizationId;
+    // Skip invoices for practices that aren't in the inclusion filter.
+    if (filterIds && !filterIds.has(id)) continue;
     const org = byId.get(id);
     const cur =
       grouped.get(id) ||
@@ -411,10 +429,18 @@ export async function runMonthlyStatementsForLab(opts: {
       }
     : null;
 
+  // Respect the per-practice inclusion filter saved on the schedule.
+  // null / empty → send to all practices with activity (default behaviour).
+  const includedOrgIds =
+    sched?.includedOrgIds && sched.includedOrgIds.length > 0
+      ? sched.includedOrgIds
+      : null;
+
   const statements = await buildPracticeStatements(
     opts.labOrganizationId,
     start,
-    end
+    end,
+    includedOrgIds
   );
 
   const results: RunResultRow[] = [];
@@ -759,9 +785,13 @@ export async function processDueSchedules(asOf: Date = new Date()): Promise<void
   });
 
   for (const sched of due) {
-    // Clamp the chosen day to the current month's last day so admins picking
-    // 31 still get sent on Feb 28/29, Apr 30, etc.
-    const target = Math.min(Math.max(1, sched.dayOfMonth), lastDay);
+    // dayOfMonth = 0 means "last day of month" — fire on the true last calendar
+    // day of the current month. Values 1–31 are clamped to the month's actual
+    // length so admins picking 31 still get sent on Feb 28/29, Apr 30, etc.
+    const target =
+      sched.dayOfMonth === 0
+        ? lastDay
+        : Math.min(Math.max(1, sched.dayOfMonth), lastDay);
     // Catch-up semantics: run any time on or after the target day this month
     // if we have not yet sent for the prior month. This covers brief outages
     // and process restarts on the target day without resending.

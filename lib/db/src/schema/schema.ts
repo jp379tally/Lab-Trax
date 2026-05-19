@@ -1353,10 +1353,17 @@ export const statementSchedules = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     enabled: boolean("enabled").default(false).notNull(),
+    // dayOfMonth = 0 means "last day of month" (fires on the true last calendar
+    // day, regardless of how many days the month has). Values 1–31 fire on that
+    // numbered day, clamped to the month's actual last day when needed.
     dayOfMonth: integer("day_of_month").default(1).notNull(),
     emailSubject: text("email_subject"),
     emailBody: text("email_body"),
     emailReplyTo: text("email_reply_to"),
+    // Optional per-practice filter. When null (or empty), the scheduler sends
+    // to every practice with activity — matching the default "all" behaviour.
+    // When set, only practices whose id appears in this list receive a statement.
+    includedOrgIds: text("included_org_ids").array(),
     lastSentForMonth: text("last_sent_for_month"),
     lastRunAt: timestamp("last_run_at", { withTimezone: true }),
     inProgressForMonth: text("in_progress_for_month"),

@@ -477,6 +477,111 @@ export const UpdateItemLabelsResponse = zod.object({
 });
 
 /**
+ * @summary Get or create the auto-send schedule for a lab
+ */
+export const GetStatementScheduleParams = zod.object({
+  orgId: zod.coerce.string(),
+});
+
+export const getStatementScheduleResponseDataDayOfMonthMin = 0;
+export const getStatementScheduleResponseDataDayOfMonthMax = 31;
+
+export const GetStatementScheduleResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      enabled: zod.boolean(),
+      dayOfMonth: zod
+        .number()
+        .min(getStatementScheduleResponseDataDayOfMonthMin)
+        .max(getStatementScheduleResponseDataDayOfMonthMax),
+      emailSubject: zod.string().nullish(),
+      emailBody: zod.string().nullish(),
+      emailReplyTo: zod.string().nullish(),
+      includedOrgIds: zod.array(zod.string()).nullish(),
+      lastSentForMonth: zod.string().nullish(),
+      lastRunAt: zod.coerce.date().nullish(),
+      createdAt: zod.coerce.date().optional(),
+      updatedAt: zod.coerce.date().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Update the auto-send schedule for a lab
+ */
+export const UpdateStatementScheduleParams = zod.object({
+  orgId: zod.coerce.string(),
+});
+
+export const updateStatementScheduleBodyDayOfMonthMin = 0;
+export const updateStatementScheduleBodyDayOfMonthMax = 31;
+
+export const updateStatementScheduleBodyEmailSubjectMax = 998;
+
+export const updateStatementScheduleBodyEmailBodyMax = 20000;
+
+export const updateStatementScheduleBodyEmailReplyToMax = 320;
+
+export const updateStatementScheduleBodyIncludedOrgIdsMax = 500;
+
+export const UpdateStatementScheduleBody = zod.object({
+  enabled: zod.boolean(),
+  dayOfMonth: zod
+    .number()
+    .min(updateStatementScheduleBodyDayOfMonthMin)
+    .max(updateStatementScheduleBodyDayOfMonthMax)
+    .describe("0 = last day of month; 1–31 = specific numbered day"),
+  emailSubject: zod
+    .string()
+    .max(updateStatementScheduleBodyEmailSubjectMax)
+    .nullish(),
+  emailBody: zod
+    .string()
+    .max(updateStatementScheduleBodyEmailBodyMax)
+    .nullish(),
+  emailReplyTo: zod
+    .string()
+    .max(updateStatementScheduleBodyEmailReplyToMax)
+    .nullish(),
+  includedOrgIds: zod
+    .array(zod.string())
+    .max(updateStatementScheduleBodyIncludedOrgIdsMax)
+    .nullish()
+    .describe(
+      "null or omitted = send to all; non-empty = only these practice IDs",
+    ),
+});
+
+export const updateStatementScheduleResponseDataDayOfMonthMin = 0;
+export const updateStatementScheduleResponseDataDayOfMonthMax = 31;
+
+export const UpdateStatementScheduleResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      id: zod.string(),
+      labOrganizationId: zod.string(),
+      enabled: zod.boolean(),
+      dayOfMonth: zod
+        .number()
+        .min(updateStatementScheduleResponseDataDayOfMonthMin)
+        .max(updateStatementScheduleResponseDataDayOfMonthMax),
+      emailSubject: zod.string().nullish(),
+      emailBody: zod.string().nullish(),
+      emailReplyTo: zod.string().nullish(),
+      includedOrgIds: zod.array(zod.string()).nullish(),
+      lastSentForMonth: zod.string().nullish(),
+      lastRunAt: zod.coerce.date().nullish(),
+      createdAt: zod.coerce.date().optional(),
+      updatedAt: zod.coerce.date().optional(),
+    })
+    .optional(),
+});
+
+/**
  * Returns the open (issued or partially-paid) invoices the lab can
 currently receive payments against. Requires the caller to have a
 billing role (owner, admin, or billing) in `labOrganizationId`.

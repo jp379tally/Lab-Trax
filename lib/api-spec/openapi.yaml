@@ -361,6 +361,45 @@ paths:
                 $ref: "#/components/schemas/ItemLabelsResult"
         "403":
           description: Caller is not a lab administrator.
+  /lab-orgs/{orgId}/statement-schedule:
+    get:
+      operationId: getStatementSchedule
+      tags: [invoices]
+      summary: Get or create the auto-send schedule for a lab
+      parameters:
+        - in: path
+          name: orgId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Statement schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatementScheduleResult"
+    put:
+      operationId: updateStatementSchedule
+      tags: [invoices]
+      summary: Update the auto-send schedule for a lab
+      parameters:
+        - in: path
+          name: orgId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatementScheduleInput"
+      responses:
+        "200":
+          description: Updated statement schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatementScheduleResult"
   /invoices/open:
     get:
       operationId: listOpenInvoices
@@ -743,6 +782,61 @@ components:
           minItems: 1
           maxItems: 500
           items: { $ref: "#/components/schemas/PaymentApplication" }
+    StatementSchedule:
+      type: object
+      required:
+        - id
+        - labOrganizationId
+        - enabled
+        - dayOfMonth
+      properties:
+        id: { type: string }
+        labOrganizationId: { type: string }
+        enabled: { type: boolean }
+        # 0 = last day of month; 1–31 = specific numbered day (clamped to month length)
+        dayOfMonth:
+          type: integer
+          minimum: 0
+          maximum: 31
+        emailSubject: { type: string, nullable: true }
+        emailBody: { type: string, nullable: true }
+        emailReplyTo: { type: string, nullable: true }
+        # null = all practices with activity; non-empty array = only these practice IDs
+        includedOrgIds:
+          type: array
+          nullable: true
+          items: { type: string }
+        lastSentForMonth: { type: string, nullable: true }
+        lastRunAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    StatementScheduleResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/StatementSchedule"
+    StatementScheduleInput:
+      type: object
+      required:
+        - enabled
+        - dayOfMonth
+      properties:
+        enabled: { type: boolean }
+        dayOfMonth:
+          type: integer
+          minimum: 0
+          maximum: 31
+          description: 0 = last day of month; 1–31 = specific numbered day
+        emailSubject: { type: string, nullable: true, maxLength: 998 }
+        emailBody: { type: string, nullable: true, maxLength: 20000 }
+        emailReplyTo: { type: string, nullable: true, maxLength: 320 }
+        includedOrgIds:
+          type: array
+          nullable: true
+          maxItems: 500
+          items: { type: string }
+          description: null or omitted = send to all; non-empty = only these practice IDs
     ReceivePaymentsResult:
       type: object
       properties:

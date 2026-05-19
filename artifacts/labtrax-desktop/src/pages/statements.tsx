@@ -18,6 +18,7 @@ interface StatementSchedule {
   emailSubject: string | null;
   emailBody: string | null;
   emailReplyTo: string | null;
+  includedOrgIds: string[] | null;
   lastSentForMonth: string | null;
   lastRunAt: string | null;
 }
@@ -359,11 +360,25 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
     queryFn: () => apiFetch<StatementSchedule>(`/lab-orgs/${orgId}/statement-schedule`),
   });
 
+  const practicesQuery = useQuery({
+    queryKey: ["organizations", orgId, "practices"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    // Only show provider orgs that belong to this specific lab.
+    select: (orgs) =>
+      [...orgs]
+        .filter((o) => o.parentLabOrganizationId === orgId)
+        .sort((a, b) =>
+          (a.displayName || a.name).localeCompare(b.displayName || b.name)
+        ),
+  });
+
   const [enabled, setEnabled] = useState(false);
-  const [dayOfMonth, setDayOfMonth] = useState(1);
+  const [dayOfMonth, setDayOfMonth] = useState(0);
   const [emailSubject, setEmailSubject] = useState("");
   const [emailBody, setEmailBody] = useState("");
   const [emailReplyTo, setEmailReplyTo] = useState("");
+  const [selectedOrgIds, setSelectedOrgIds] = useState<Set<string>>(new Set());
+  const [allSelected, setAllSelected] = useState(true);
   const [showPreview, setShowPreview] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -375,6 +390,14 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
       setEmailSubject(scheduleQuery.data.emailSubject ?? "");
       setEmailBody(scheduleQuery.data.emailBody ?? "");
       setEmailReplyTo(scheduleQuery.data.emailReplyTo ?? "");
+      const ids = scheduleQuery.data.includedOrgIds;
+      if (ids && ids.length > 0) {
+        setSelectedOrgIds(new Set(ids));
+        setAllSelected(false);
+      } else {
+        setSelectedOrgIds(new Set());
+        setAllSelected(true);
+      }
     }
   }, [scheduleQuery.data]);
 
@@ -385,6 +408,7 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
       emailSubject: string | null;
       emailBody: string | null;
       emailReplyTo: string | null;
+      includedOrgIds: string[] | null;
     }) =>
       apiFetch<StatementSchedule>(`/lab-orgs/${orgId}/statement-schedule`, {
         method: "PUT",
@@ -422,13 +446,49 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
   });
 
   function save() {
+    const practices = practicesQuery.data ?? [];
+    // Send null (= "all practices" mode) when either:
+    // a) the "Select all" toggle is active, OR
+    // b) the user has manually checked every practice in the list
+    const allPracticesChecked =
+      allSelected ||
+      selectedOrgIds.size === 0 ||
+      (practices.length > 0 && selectedOrgIds.size >= practices.length);
+    const includedOrgIds = allPracticesChecked ? null : Array.from(selectedOrgIds);
     saveMutation.mutate({
       enabled,
       dayOfMonth,
       emailSubject: emailSubject.trim() || null,
       emailBody: emailBody.trim() ? emailBody : null,
       emailReplyTo: emailReplyTo.trim() || null,
+      includedOrgIds,
     });
+  }
+
+  function togglePractice(id: string) {
+    const allPractices = practicesQuery.data ?? [];
+    setSelectedOrgIds((prev) => {
+      // When transitioning from "all selected", initialize the full set first,
+      // then toggle the clicked row — so unchecking one practice leaves all
+      // others checked rather than making the clicked one the only selection.
+      const base = allSelected
+        ? new Set(allPractices.map((p) => p.id))
+        : new Set(prev);
+      if (base.has(id)) base.delete(id);
+      else base.add(id);
+      return base;
+    });
+    setAllSelected(false);
+  }
+
+  function selectAll() {
+    setSelectedOrgIds(new Set());
+    setAllSelected(true);
+  }
+
+  function deselectAll() {
+    setSelectedOrgIds(new Set());
+    setAllSelected(false);
   }
 
   const sched = scheduleQuery.data;
@@ -487,7 +547,7 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
                 <span>
                   <span className="block text-sm font-medium">Email statements automatically each month</span>
                   <span className="block text-xs text-muted-foreground mt-0.5">
-                    On the chosen day, every practice with activity in the prior month will be emailed its statement PDF.
+                    On the chosen day, selected practices with activity in the prior month will be emailed their statement PDF. Use the "Send to" list below to choose which practices receive statements.
                   </span>
                 </span>
               </label>
@@ -502,15 +562,85 @@ function ScheduleModal({ orgId, onClose }: { orgId: string; onClose: () => void 
                   disabled={!enabled}
                   className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none disabled:opacity-50"
                 >
+                  <option value={0}>Last day of month</option>
                   {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
-                <p className="text-[11px] text-muted-foreground mt-1.5">
-                  In months that don't have the chosen day (e.g. day 31 in February),
-                  statements are sent on the last day of that month instead.
-                </p>
+                {dayOfMonth >= 29 && (
+                  <p className="text-[11px] text-muted-foreground mt-1.5">
+                    In months that don't have day {dayOfMonth}, statements are sent on the last day of that month instead.
+                  </p>
+                )}
               </div>
+
+              {enabled && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                      Send to
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={selectAll}
+                        className="text-xs text-primary hover:underline disabled:opacity-50"
+                      >
+                        Select all
+                      </button>
+                      <span className="text-muted-foreground text-xs">/</span>
+                      <button
+                        type="button"
+                        onClick={deselectAll}
+                        className="text-xs text-primary hover:underline"
+                        title="Clears explicit selections — reverts to sending to all practices with activity"
+                      >
+                        Clear selection (send to all)
+                      </button>
+                    </div>
+                  </div>
+                  {practicesQuery.isLoading && (
+                    <div className="text-xs text-muted-foreground py-2">
+                      <Loader2 size={12} className="inline animate-spin mr-1" /> Loading practices…
+                    </div>
+                  )}
+                  {!practicesQuery.isLoading && (practicesQuery.data ?? []).length === 0 && (
+                    <p className="text-xs text-muted-foreground">No practices found. When auto-send runs, all practices with activity will receive a statement.</p>
+                  )}
+                  {(practicesQuery.data ?? []).length > 0 && (
+                    <>
+                      <div className="max-h-44 overflow-y-auto rounded-md border border-border bg-secondary/20 divide-y divide-border">
+                        {(practicesQuery.data ?? []).map((p) => {
+                          const checked = allSelected || selectedOrgIds.has(p.id);
+                          return (
+                            <label key={p.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-secondary/60 select-none">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => togglePractice(p.id)}
+                                className="h-4 w-4 accent-primary shrink-0"
+                              />
+                              <span className="text-sm flex-1 min-w-0 truncate">
+                                {p.displayName || p.name}
+                              </span>
+                              {!p.billingEmail && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/20 text-warning font-medium shrink-0">
+                                  no email on file
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-1.5">
+                        {allSelected || selectedOrgIds.size === 0
+                          ? "All practices with activity will receive a statement."
+                          : `${selectedOrgIds.size} practice${selectedOrgIds.size === 1 ? "" : "s"} selected. Practices without activity are always skipped.`}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
 
               <div className="border-t border-border pt-4">
                 <div className="flex items-center justify-between mb-2">
