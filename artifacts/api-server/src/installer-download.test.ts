@@ -24,7 +24,7 @@ vi.mock("./routes/index.js", () => {
 });
 vi.mock("./lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
 vi.mock("./lib/case-media.js", () => ({ startDailyOrphanedMediaCleanup: vi.fn() }));
-vi.mock("./lib/backup.js", () => ({ startDailyOneDriveBackup: vi.fn(), start15MinRollingBackup: vi.fn() }));
+vi.mock("./lib/backup.js", () => ({ startDailyOneDriveBackup: vi.fn(), restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./middlewares/csrf.js", () => ({
   requireCsrf: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));

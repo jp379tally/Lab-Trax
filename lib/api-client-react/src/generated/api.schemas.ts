@@ -49,6 +49,92 @@ export interface NotificationListResult {
   data?: Notification[];
 }
 
+export type BackupRunRequestDestination =
+  (typeof BackupRunRequestDestination)[keyof typeof BackupRunRequestDestination];
+
+export const BackupRunRequestDestination = {
+  onedrive: "onedrive",
+  local: "local",
+  network: "network",
+} as const;
+
+export interface BackupRunRequest {
+  destination: BackupRunRequestDestination;
+  /** Target folder path (required for local and network destinations) */
+  path?: string | null;
+}
+
+export interface BackupRunResult {
+  ok?: boolean;
+  /** Backup archive size in bytes */
+  size?: number;
+  completedAt?: string;
+  fileName?: string;
+}
+
+/**
+ * Unit for the interval value
+ */
+export type BackupScheduleInputUnit =
+  (typeof BackupScheduleInputUnit)[keyof typeof BackupScheduleInputUnit];
+
+export const BackupScheduleInputUnit = {
+  minutes: "minutes",
+  hours: "hours",
+} as const;
+
+export type BackupScheduleInputDestination =
+  (typeof BackupScheduleInputDestination)[keyof typeof BackupScheduleInputDestination];
+
+export const BackupScheduleInputDestination = {
+  onedrive: "onedrive",
+  local: "local",
+  network: "network",
+} as const;
+
+export interface BackupScheduleInput {
+  /** Number of interval units between backups (e.g. 15 minutes, 1 hour) */
+  interval: number;
+  /** Unit for the interval value */
+  unit: BackupScheduleInputUnit;
+  destination: BackupScheduleInputDestination;
+  path?: string | null;
+  enabled: boolean;
+}
+
+/**
+ * Unit for the interval value
+ */
+export type BackupScheduleResultUnit =
+  | (typeof BackupScheduleResultUnit)[keyof typeof BackupScheduleResultUnit]
+  | null;
+
+export const BackupScheduleResultUnit = {
+  minutes: "minutes",
+  hours: "hours",
+} as const;
+
+export type BackupScheduleResultDestination =
+  | (typeof BackupScheduleResultDestination)[keyof typeof BackupScheduleResultDestination]
+  | null;
+
+export const BackupScheduleResultDestination = {
+  onedrive: "onedrive",
+  local: "local",
+  network: "network",
+} as const;
+
+export interface BackupScheduleResult {
+  ok?: boolean;
+  /** Number of interval units (null if no schedule is set) */
+  interval?: number | null;
+  /** Unit for the interval value */
+  unit?: BackupScheduleResultUnit;
+  destination?: BackupScheduleResultDestination;
+  path?: string | null;
+  enabled?: boolean;
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -440,4 +526,9 @@ export type ListOpenInvoicesParams = {
    * Provider/practice to filter open invoices for.
    */
   providerOrganizationId: string;
+};
+
+export type DisableBackupSchedule200 = {
+  ok?: boolean;
+  enabled?: boolean;
 };

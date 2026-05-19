@@ -618,6 +618,95 @@ export const ListOpenInvoicesResponse = zod.object({
 });
 
 /**
+ * Triggers an immediate full backup (all cases, invoices, media, etc.)
+to the chosen destination. Requires the X-Platform-Admin-Secret header.
+
+ * @summary Run an immediate full backup
+ */
+export const RunBackupNowBody = zod.object({
+  destination: zod.enum(["onedrive", "local", "network"]),
+  path: zod
+    .string()
+    .nullish()
+    .describe(
+      "Target folder path (required for local and network destinations)",
+    ),
+});
+
+export const RunBackupNowResponse = zod.object({
+  ok: zod.boolean().optional(),
+  size: zod.number().optional().describe("Backup archive size in bytes"),
+  completedAt: zod.coerce.date().optional(),
+  fileName: zod.string().optional(),
+});
+
+/**
+ * Returns the recurring backup schedule stored in system settings.
+Requires the X-Platform-Admin-Secret header.
+
+ * @summary Get the current backup schedule configuration
+ */
+export const GetBackupScheduleResponse = zod.object({
+  ok: zod.boolean().optional(),
+  interval: zod
+    .number()
+    .nullish()
+    .describe("Number of interval units (null if no schedule is set)"),
+  unit: zod
+    .enum(["minutes", "hours"])
+    .nullish()
+    .describe("Unit for the interval value"),
+  destination: zod.enum(["onedrive", "local", "network"]).nullish(),
+  path: zod.string().nullish(),
+  enabled: zod.boolean().optional(),
+});
+
+/**
+ * Persists the schedule configuration to system settings and restarts
+the in-process recurring backup job. Requires the
+X-Platform-Admin-Secret header.
+
+ * @summary Save the recurring backup schedule
+ */
+export const SaveBackupScheduleBody = zod.object({
+  interval: zod
+    .number()
+    .describe(
+      "Number of interval units between backups (e.g. 15 minutes, 1 hour)",
+    ),
+  unit: zod.enum(["minutes", "hours"]).describe("Unit for the interval value"),
+  destination: zod.enum(["onedrive", "local", "network"]),
+  path: zod.string().nullish(),
+  enabled: zod.boolean(),
+});
+
+export const SaveBackupScheduleResponse = zod.object({
+  ok: zod.boolean().optional(),
+  interval: zod
+    .number()
+    .nullish()
+    .describe("Number of interval units (null if no schedule is set)"),
+  unit: zod
+    .enum(["minutes", "hours"])
+    .nullish()
+    .describe("Unit for the interval value"),
+  destination: zod.enum(["onedrive", "local", "network"]).nullish(),
+  path: zod.string().nullish(),
+  enabled: zod.boolean().optional(),
+});
+
+/**
+ * Sets the schedule to disabled in system settings and stops the
+in-process interval job. Requires the X-Platform-Admin-Secret header.
+
+ * @summary Disable the recurring backup schedule
+ */
+export const DisableBackupScheduleResponse = zod.object({
+  ok: zod.boolean().optional(),
+  enabled: zod.boolean().optional(),
+});
+
+/**
  * QuickBooks-style "Receive Payments" — record one payment from a
 provider, distribute it across one or more open invoices, and post
 the combined deposit to a bank account in a single database

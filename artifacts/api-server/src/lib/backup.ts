@@ -1,20 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
+import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import archiver from "archiver";
 import { db } from "@workspace/db";
-import {
-  users,
-  labCases,
-  systemSettings,
-  organizations,
-  cases as casesTable,
-  caseAttachments,
-  invoices,
-  bankTransactions,
-  pricingTiers,
-  pricingOverrides,
-} from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { systemSettings } from "@workspace/db";
+import { eq, sql } from "drizzle-orm";
 import { uploadToOneDrive } from "./onedrive";
 import { logger } from "./logger";
 
@@ -35,242 +26,281 @@ export interface BackupResult {
   size: number;
   webUrl: string;
   folder: string;
-  counts: BackupCounts;
 }
 
+export interface BackupRunResult {
+  size: number;
+  completedAt: string;
+  fileName: string;
+  destination: BackupDestination;
+  path?: string;
+}
+
+export type BackupDestination = "onedrive" | "local" | "network";
+
+export const SETTING_BACKUP_HOUR_UTC = "backup_hour_utc";
+export const SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES = "backup_schedule_interval_minutes";
+export const SETTING_BACKUP_SCHEDULE_DESTINATION = "backup_schedule_destination";
+export const SETTING_BACKUP_SCHEDULE_PATH = "backup_schedule_path";
+export const SETTING_BACKUP_SCHEDULE_ENABLED = "backup_schedule_enabled";
+
+export const ALL_SCHEDULE_SETTINGS = [
+  SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
+  SETTING_BACKUP_SCHEDULE_DESTINATION,
+  SETTING_BACKUP_SCHEDULE_PATH,
+  SETTING_BACKUP_SCHEDULE_ENABLED,
+] as const;
+
+/**
+ * Run pg_dump --format=custom against DATABASE_URL.
+ * Returns the raw binary dump buffer (typically compressed by pg_dump).
+ * Throws if pg_dump exits non-zero or DATABASE_URL is not set.
+ */
+function buildPgDumpBuffer(): Buffer {
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) throw new Error("DATABASE_URL is not set — cannot run pg_dump.");
+  const result = spawnSync("pg_dump", ["--format=custom", `--dbname=${dbUrl}`], {
+    maxBuffer: 2 * 1024 * 1024 * 1024, // 2 GB safety cap
+    timeout: 10 * 60 * 1000,           // 10 min timeout
+    encoding: "buffer",
+  });
+  if (result.status !== 0) {
+    const stderr = result.stderr?.toString("utf8") || "unknown error";
+    throw new Error(`pg_dump failed (exit ${result.status}): ${stderr}`);
+  }
+  if (!result.stdout || result.stdout.length === 0) {
+    throw new Error("pg_dump produced empty output.");
+  }
+  return result.stdout as Buffer;
+}
+
+/**
+ * Encrypt a buffer using AES-256-GCM.
+ *
+ * Output format (all big-endian):
+ *   [4 bytes magic "LTRX"] [12 bytes IV] [16 bytes GCM auth-tag] [ciphertext]
+ *
+ * The encryption key is derived by SHA-256-hashing the BACKUP_ENCRYPTION_KEY
+ * env var (preferred) or JWT_SECRET (fallback). Decryption requires the same
+ * secret; document decrypt steps in the manifest inside the ZIP before encrypting.
+ */
+function encryptBuffer(plaintext: Buffer): Buffer {
+  const secret = process.env.BACKUP_ENCRYPTION_KEY || process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error(
+      "Backup encryption requires BACKUP_ENCRYPTION_KEY (or JWT_SECRET) to be set. " +
+      "Set one of these environment variables before running a backup.",
+    );
+  }
+  const key = createHash("sha256").update(secret).digest(); // 32-byte key
+  const iv = randomBytes(12); // 96-bit IV for GCM
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag(); // 16 bytes
+  const magic = Buffer.from("LTRX");
+  return Buffer.concat([magic, iv, authTag, ciphertext]);
+}
+
+/**
+ * Build a full LabTrax backup:
+ *  1. Run pg_dump to capture the entire PostgreSQL database in custom format.
+ *  2. Bundle the dump + case-media uploads into a ZIP archive.
+ *  3. AES-256-GCM encrypt the ZIP buffer.
+ *
+ * The resulting `.zip.enc` file can be decrypted with the matching secret and
+ * then restored with pg_restore (for the db dump) + extracting the media/ dir.
+ */
 export async function buildBackupZipBuffer(triggeredBy: string): Promise<{
   buffer: Buffer;
   fileName: string;
-  counts: BackupCounts;
 }> {
-  const [
-    allUsers,
-    allLabCases,
-    allOrganizations,
-    allCases,
-    allCaseAttachments,
-    allInvoices,
-    allBankTransactions,
-    allPricingTiers,
-    allPricingOverrides,
-  ] = await Promise.all([
-    db.select().from(users),
-    db.select().from(labCases),
-    db.select().from(organizations),
-    db.select().from(casesTable),
-    db.select().from(caseAttachments),
-    db.select().from(invoices),
-    db.select().from(bankTransactions),
-    db.select().from(pricingTiers),
-    db.select().from(pricingOverrides),
-  ]);
-
-  const safeUsers = allUsers.map(({ password: _pw, ...rest }): Omit<typeof rest & { password: string }, "password"> => rest);
-
-  const counts: BackupCounts = {
-    users: safeUsers.length,
-    labCases: allLabCases.length,
-    organizations: allOrganizations.length,
-    cases: allCases.length,
-    caseAttachments: allCaseAttachments.length,
-    invoices: allInvoices.length,
-    bankTransactions: allBankTransactions.length,
-    pricingTiers: allPricingTiers.length,
-    pricingOverrides: allPricingOverrides.length,
-  };
+  const pgDump = buildPgDumpBuffer();
 
   const dateStr = new Date().toISOString().split("T")[0];
-  const fileName = `labtrax-backup-${dateStr}.zip`;
+  const fileName = `labtrax-backup-${dateStr}.zip.enc`;
+
   const manifest = {
-    version: "1.1",
+    version: "2.0",
     appName: "LabTrax",
     exportedAt: new Date().toISOString(),
     exportedBy: triggeredBy,
-    counts,
-    tables: [
-      "users",
-      "lab_cases",
-      "organizations",
-      "cases",
-      "case_attachments",
-      "invoices",
-      "bank_transactions",
-      "pricing_tiers",
-      "pricing_overrides",
-    ],
-    note: "Passwords excluded. Media files included in media/ directory.",
+    dbFormat: "pg_dump:custom",
+    decryptNote:
+      "This file is AES-256-GCM encrypted. Format: 4-byte magic 'LTRX' + 12-byte IV + 16-byte GCM auth-tag + ciphertext. " +
+      "Set BACKUP_ENCRYPTION_KEY (or JWT_SECRET) to the same value used during backup, derive a 32-byte key via SHA-256, " +
+      "then decrypt to get the inner ZIP. Restore the database with: pg_restore --clean --if-exists -d <dbname> db/database.pgdump",
+    mediaNote: "Case-media attachments are in the media/ directory of the inner ZIP.",
   };
 
   const mediaDir = path.resolve(process.cwd(), "uploads", "case-media");
   const mediaExists = fs.existsSync(mediaDir);
 
-  const buffer: Buffer = await new Promise((resolve, reject) => {
+  const zipBuffer: Buffer = await new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const archive = archiver("zip", { zlib: { level: 6 } });
     archive.on("data", (chunk: Buffer) => chunks.push(chunk));
     archive.on("end", () => resolve(Buffer.concat(chunks)));
     archive.on("error", reject);
     archive.append(JSON.stringify(manifest, null, 2), { name: "manifest.json" });
-    archive.append(JSON.stringify(safeUsers, null, 2), { name: "data/users.json" });
-    archive.append(JSON.stringify(allLabCases, null, 2), { name: "data/lab_cases.json" });
-    archive.append(JSON.stringify(allOrganizations, null, 2), { name: "data/organizations.json" });
-    archive.append(JSON.stringify(allCases, null, 2), { name: "data/cases.json" });
-    archive.append(JSON.stringify(allCaseAttachments, null, 2), { name: "data/case_attachments.json" });
-    archive.append(JSON.stringify(allInvoices, null, 2), { name: "data/invoices.json" });
-    archive.append(JSON.stringify(allBankTransactions, null, 2), { name: "data/bank_transactions.json" });
-    archive.append(JSON.stringify(allPricingTiers, null, 2), { name: "data/pricing_tiers.json" });
-    archive.append(JSON.stringify(allPricingOverrides, null, 2), { name: "data/pricing_overrides.json" });
+    archive.append(pgDump, { name: "db/database.pgdump" });
     if (mediaExists) archive.directory(mediaDir, "media");
     archive.finalize();
   });
 
-  return { buffer, fileName, counts };
+  const buffer = encryptBuffer(zipBuffer);
+  return { buffer, fileName };
 }
 
 export async function runOneDriveBackup(triggeredBy: string): Promise<BackupResult> {
-  const { buffer, fileName, counts } = await buildBackupZipBuffer(triggeredBy);
-  const result = await uploadToOneDrive(buffer, fileName, "LabTrax Backups", "rename");
+  const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
+  const result = await uploadToOneDrive(buffer, fileName, "LabTrax Backups");
   return {
     fileName: result.name,
     size: result.size,
     webUrl: result.webUrl,
     folder: "LabTrax Backups",
-    counts,
   };
 }
 
-// ── Rolling backup settings keys ─────────────────────────────────────────────
-export const SETTING_BACKUP_HOUR_UTC = "backup_hour_utc";
-export const SETTING_ROLLING_BACKUP_ENABLED = "rolling_backup_enabled";
-export const SETTING_ROLLING_BACKUP_LAST_RUN_AT = "rolling_backup_last_run_at";
-export const SETTING_ROLLING_BACKUP_LAST_ERROR = "rolling_backup_last_error";
+/**
+ * Write an encrypted backup to a local filesystem path.
+ * On Linux, UNC/SMB paths must be pre-mounted (e.g. via cifs-utils) so they
+ * appear as a local directory — pass the mount point as targetPath.
+ */
+export async function runLocalBackup(
+  triggeredBy: string,
+  targetPath: string,
+): Promise<BackupRunResult> {
+  const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
+  const resolvedDir = path.resolve(targetPath);
+  fs.mkdirSync(resolvedDir, { recursive: true });
+  const destFile = path.join(resolvedDir, fileName);
+  fs.writeFileSync(destFile, buffer);
+  return {
+    size: buffer.length,
+    completedAt: new Date().toISOString(),
+    fileName,
+    destination: "local",
+    path: destFile,
+  };
+}
 
-const ROLLING_BACKUP_FILENAME = "LabTrax-Rolling-Backup.zip";
-const ROLLING_BACKUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
-const ROLLING_BACKUP_STARTUP_DELAY_MS = 30 * 1000; // 30-second delay at startup
+/** Minimal interface covering the ssh2 API surface used by runSftpBackup. */
+interface SshClient {
+  on(event: "ready", listener: () => void): this;
+  on(event: "error", listener: (err: Error) => void): this;
+  sftp(callback: (err: Error | undefined, sftp: SftpSession) => void): void;
+  connect(opts: { host: string; port: number; username: string; password?: string }): void;
+  end(): void;
+}
+interface SftpSession {
+  createWriteStream(path: string): NodeJS.WritableStream;
+}
+interface Ssh2Module {
+  Client: new () => SshClient;
+}
 
-// ── Rolling backup state helpers ─────────────────────────────────────────────
-
-async function isRollingBackupEnabled(): Promise<boolean> {
+/**
+ * Write an encrypted backup to an SFTP server.
+ * destPath must be an sftp:// URL in the form:
+ *   sftp://user@host[:port]/remote/directory
+ * Embedded passwords are rejected at the schedule-save layer; authenticate
+ * via SSH key by configuring the server to accept the API process's key.
+ * Requires the `ssh2` npm package installed in api-server.
+ */
+async function runSftpBackup(
+  triggeredBy: string,
+  sftpUrl: string,
+): Promise<BackupRunResult> {
+  let parsed: URL;
   try {
-    const rows = await db
-      .select()
-      .from(systemSettings)
-      .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
-    const raw = rows[0]?.value ?? null;
-    // Default to enabled if not set
-    if (raw === null) return true;
-    return raw !== "false";
+    parsed = new URL(sftpUrl);
   } catch {
-    return true;
+    throw new Error(`Invalid SFTP URL: ${sftpUrl}`);
   }
-}
+  if (parsed.protocol !== "sftp:") {
+    throw new Error(`Expected sftp:// URL, got: ${parsed.protocol}`);
+  }
 
-async function persistRollingBackupSuccess(): Promise<void> {
-  const now = new Date().toISOString();
-  await db
-    .insert(systemSettings)
-    .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: now })
-    .onConflictDoUpdate({
-      target: systemSettings.key,
-      set: { value: now, updatedAt: new Date() },
-    });
-  // Clear any previous error
-  await db
-    .insert(systemSettings)
-    .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: null })
-    .onConflictDoUpdate({
-      target: systemSettings.key,
-      set: { value: null, updatedAt: new Date() },
-    });
-}
+  const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
 
-async function persistRollingBackupError(message: string): Promise<void> {
-  await db
-    .insert(systemSettings)
-    .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: message })
-    .onConflictDoUpdate({
-      target: systemSettings.key,
-      set: { value: message, updatedAt: new Date() },
-    });
-}
+  // Dynamically import ssh2 — optional runtime dep. Absence surfaces a clear install message.
+  let Ssh2Client: new () => SshClient;
+  try {
+    // @ts-expect-error — ssh2 is an optional runtime dep; the type is provided by SshClient above
+    const ssh2 = (await import("ssh2")) as Ssh2Module;
+    Ssh2Client = ssh2.Client;
+  } catch {
+    throw new Error(
+      "SFTP backup requires the 'ssh2' package. " +
+      "Run: pnpm --filter @workspace/api-server add ssh2",
+    );
+  }
 
-async function runRollingOneDriveBackup(): Promise<BackupResult> {
-  const { buffer, counts } = await buildBackupZipBuffer("scheduler:rolling-15min");
-  const result = await uploadToOneDrive(
-    buffer,
-    ROLLING_BACKUP_FILENAME,
-    "LabTrax Backups",
-    "replace",
-  );
+  const host = parsed.hostname;
+  const port = parsed.port ? parseInt(parsed.port, 10) : 22;
+  const username = decodeURIComponent(parsed.username || "");
+  const remoteDir = parsed.pathname || "/";
+  const remoteFile = `${remoteDir.replace(/\/$/, "")}/${fileName}`;
+
+  await new Promise<void>((resolve, reject) => {
+    const conn = new Ssh2Client();
+    conn.on("ready", () => {
+      conn.sftp((err: Error | undefined, sftp: SftpSession) => {
+        if (err) { conn.end(); return reject(err); }
+        const writeStream = sftp.createWriteStream(remoteFile);
+        writeStream.on("error", (e: Error) => { conn.end(); reject(e); });
+        writeStream.on("close", () => { conn.end(); resolve(); });
+        writeStream.end(buffer);
+      });
+    });
+    conn.on("error", (e: Error) => reject(e));
+    conn.connect({ host, port, username });
+  });
+
   return {
-    fileName: result.name,
-    size: result.size,
-    webUrl: result.webUrl,
-    folder: "LabTrax Backups",
-    counts,
+    size: buffer.length,
+    completedAt: new Date().toISOString(),
+    fileName,
+    destination: "network",
+    path: remoteFile,
   };
 }
 
-// ── Rolling backup scheduler ─────────────────────────────────────────────────
-// Fires immediately after a 30-second startup delay, then every 15 minutes.
-// Silently overwrites LabTrax-Rolling-Backup.zip on OneDrive on every tick.
-
-let rollingScheduled = false;
-
-export async function start15MinRollingBackup() {
-  if (rollingScheduled) return;
-  rollingScheduled = true;
-
-  const tick = async () => {
-    try {
-      const enabled = await isRollingBackupEnabled();
-      if (!enabled) {
-        logger.debug("Rolling OneDrive backup skipped (disabled via settings)");
-        return;
-      }
-      logger.info(
-        { startedAt: new Date().toISOString() },
-        "Rolling OneDrive backup starting",
-      );
-      const result = await runRollingOneDriveBackup();
-      await persistRollingBackupSuccess().catch((e) => {
-        logger.warn({ err: e?.message }, "Failed to persist rolling backup success state");
-      });
-      logger.info(
-        {
-          fileName: result.fileName,
-          size: result.size,
-          cases: result.counts.cases,
-          users: result.counts.users,
-        },
-        "Rolling OneDrive backup OK",
-      );
-    } catch (err: any) {
-      const message = err?.message || String(err);
-      logger.error({ err: message }, "Rolling OneDrive backup FAILED");
-      await persistRollingBackupError(message).catch((e) => {
-        logger.warn({ err: e?.message }, "Failed to persist rolling backup error state");
-      });
-    } finally {
-      // Always schedule the next tick
-      setTimeout(tick, ROLLING_BACKUP_INTERVAL_MS);
+export async function runBackup(
+  triggeredBy: string,
+  destination: BackupDestination,
+  destPath?: string,
+): Promise<BackupRunResult> {
+  if (destination === "onedrive") {
+    const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
+    const result = await uploadToOneDrive(buffer, fileName, "LabTrax Backups");
+    return {
+      size: result.size,
+      completedAt: new Date().toISOString(),
+      fileName: result.name,
+      destination: "onedrive",
+    };
+  }
+  if (destination === "local") {
+    if (!destPath) throw new Error("A destination path is required for local backups.");
+    return runLocalBackup(triggeredBy, destPath);
+  }
+  if (destination === "network") {
+    if (!destPath) throw new Error("A network path or sftp:// URL is required for network backups.");
+    // sftp:// → SFTP transport; anything else → local filesystem (mounted UNC/NFS share)
+    if (destPath.startsWith("sftp://")) {
+      return runSftpBackup(triggeredBy, destPath);
     }
-  };
-
-  logger.info(
-    {
-      intervalMinutes: 15,
-      firstRunInSeconds: ROLLING_BACKUP_STARTUP_DELAY_MS / 1000,
-    },
-    "15-min rolling OneDrive backup scheduled",
-  );
-  setTimeout(tick, ROLLING_BACKUP_STARTUP_DELAY_MS);
+    return runLocalBackup(triggeredBy, destPath);
+  }
+  throw new Error(`Unknown backup destination: ${destination}`);
 }
 
-// ── Daily backup scheduler ────────────────────────────────────────────────────
-// Runs once per day at the configured UTC hour (default 07:00 UTC ≈ 2-3am ET).
-// Override with BACKUP_HOUR_UTC env var (0–23) or the backup_hour_utc system_settings row.
+/**
+ * Key used in the system_settings table for the nightly backup hour (0–23 UTC).
+ * When absent the env var BACKUP_HOUR_UTC is used (default 7).
+ */
 
 export async function getBackupHourUtc(): Promise<number> {
   const envHour = Math.max(
@@ -294,6 +324,43 @@ export async function getBackupHourUtc(): Promise<number> {
   }
   return envHour;
 }
+
+export interface BackupScheduleConfig {
+  intervalMinutes: number | null;
+  destination: BackupDestination | null;
+  path: string | null;
+  enabled: boolean;
+}
+
+export async function getBackupScheduleConfig(): Promise<BackupScheduleConfig> {
+  try {
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(
+        sql`${systemSettings.key} in (${SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES}, ${SETTING_BACKUP_SCHEDULE_DESTINATION}, ${SETTING_BACKUP_SCHEDULE_PATH}, ${SETTING_BACKUP_SCHEDULE_ENABLED})`,
+      );
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    const intervalRaw = byKey[SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES] ?? null;
+    const intervalMinutes =
+      intervalRaw !== null ? (parseInt(intervalRaw, 10) || null) : null;
+    const destinationRaw = byKey[SETTING_BACKUP_SCHEDULE_DESTINATION] ?? null;
+    const destination =
+      destinationRaw === "onedrive" || destinationRaw === "local" || destinationRaw === "network"
+        ? destinationRaw
+        : null;
+    const schedulePath = byKey[SETTING_BACKUP_SCHEDULE_PATH] ?? null;
+    const enabledRaw = byKey[SETTING_BACKUP_SCHEDULE_ENABLED] ?? null;
+    const enabled = enabledRaw === "true";
+    return { intervalMinutes, destination, path: schedulePath, enabled };
+  } catch {
+    return { intervalMinutes: null, destination: null, path: null, enabled: false };
+  }
+}
+
+// ── Daily backup scheduler ───────────────────────────────────────────────────
+// Runs once per day at the configured UTC hour (default 07:00 UTC ≈ 2-3am ET).
+// Override with BACKUP_HOUR_UTC env var (0–23) or the backup_hour_utc system_settings row.
 
 let scheduled = false;
 
@@ -333,14 +400,12 @@ export async function startDailyOneDriveBackup() {
         {
           fileName: result.fileName,
           size: result.size,
-          cases: result.counts.cases,
-          users: result.counts.users,
         },
         "Daily OneDrive backup OK",
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
       logger.error(
-        { err: err?.message || String(err) },
+        { err: err instanceof Error ? err.message : String(err) },
         "Daily OneDrive backup FAILED",
       );
     } finally {
@@ -358,4 +423,50 @@ export async function startDailyOneDriveBackup() {
     "Daily OneDrive backup scheduled",
   );
   setTimeout(tick, initialDelay);
+}
+
+// ── Dynamic recurring backup scheduler ──────────────────────────────────────
+// Driven by system_settings rows written by PUT /api/admin/backup/schedule.
+// The interval timer is replaced each time the schedule is updated.
+
+let _scheduledIntervalTimer: ReturnType<typeof setInterval> | null = null;
+
+async function fireScheduledBackup() {
+  const config = await getBackupScheduleConfig();
+  if (!config.enabled || !config.destination) return;
+  const label = `scheduler:interval`;
+  try {
+    logger.info(
+      { destination: config.destination, path: config.path },
+      "Scheduled interval backup starting",
+    );
+    const result = await runBackup(label, config.destination, config.path ?? undefined);
+    logger.info(
+      { size: result.size, fileName: result.fileName },
+      "Scheduled interval backup OK",
+    );
+  } catch (err: unknown) {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Scheduled interval backup FAILED",
+    );
+  }
+}
+
+export async function restartScheduledBackupJob(): Promise<void> {
+  if (_scheduledIntervalTimer !== null) {
+    clearInterval(_scheduledIntervalTimer);
+    _scheduledIntervalTimer = null;
+  }
+  const config = await getBackupScheduleConfig();
+  if (!config.enabled || !config.intervalMinutes || !config.destination) {
+    logger.info("[backup] Recurring backup schedule is disabled or not configured.");
+    return;
+  }
+  const intervalMs = config.intervalMinutes * 60 * 1000;
+  logger.info(
+    { intervalMinutes: config.intervalMinutes, destination: config.destination },
+    "[backup] Recurring backup schedule started",
+  );
+  _scheduledIntervalTimer = setInterval(fireScheduledBackup, intervalMs);
 }

@@ -12,14 +12,7 @@ import {
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
-import {
-  runOneDriveBackup,
-  getBackupHourUtc,
-  SETTING_BACKUP_HOUR_UTC,
-  SETTING_ROLLING_BACKUP_ENABLED,
-  SETTING_ROLLING_BACKUP_LAST_RUN_AT,
-  SETTING_ROLLING_BACKUP_LAST_ERROR,
-} from "../lib/backup";
+import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, ALL_SCHEDULE_SETTINGS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -4487,7 +4480,7 @@ Important rules:
     }
   });
 
-  // ── Admin Backup → OneDrive ───────────────────────────────────────────────
+  // ── Admin Backup → OneDrive (legacy) ─────────────────────────────────────
   router.post("/admin/backup/onedrive", requireAuth, async (req, res) => {
     try {
       const reqUser = (req as any).user;
@@ -4503,6 +4496,161 @@ Important rules:
       return res
         .status(500)
         .json({ error: e?.message || "OneDrive backup failed." });
+    }
+  });
+
+  // ── Admin Backup: run now ─────────────────────────────────────────────────
+  router.post("/admin/backup/run", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const reqUser = (req as any).user;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const destination = body.destination as BackupDestination | undefined;
+    if (destination !== "onedrive" && destination !== "local" && destination !== "network") {
+      return res.status(400).json({ error: "destination must be one of: onedrive, local, network." });
+    }
+    const destPath = typeof body.path === "string" ? body.path.trim() : undefined;
+    if ((destination === "local" || destination === "network") && !destPath) {
+      return res.status(400).json({ error: "path is required for local and network destinations." });
+    }
+    try {
+      const triggeredBy = `manual:${(reqUser as any)?.username || "admin"}`;
+      const result = await runBackup(triggeredBy, destination, destPath);
+      return res.json({ ok: true, size: result.size, completedAt: result.completedAt, fileName: result.fileName });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Backup failed." });
+    }
+  });
+
+  // ── Admin Backup: schedule get ────────────────────────────────────────────
+  // Convert interval+unit → intervalMinutes (stored in DB).
+  function toIntervalMinutes(interval: number, unit: "minutes" | "hours"): number {
+    return unit === "hours" ? interval * 60 : interval;
+  }
+  // Convert stored intervalMinutes back to { interval, unit } for the API response.
+  function fromIntervalMinutes(
+    minutes: number | null,
+  ): { interval: number | null; unit: "minutes" | "hours" | null } {
+    if (minutes === null) return { interval: null, unit: null };
+    if (minutes >= 60 && minutes % 60 === 0) return { interval: minutes / 60, unit: "hours" };
+    return { interval: minutes, unit: "minutes" };
+  }
+
+  router.get("/admin/backup/schedule", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const config = await getBackupScheduleConfig();
+      const { interval, unit } = fromIntervalMinutes(config.intervalMinutes);
+      return res.json({
+        ok: true,
+        interval,
+        unit,
+        destination: config.destination,
+        path: config.path,
+        enabled: config.enabled,
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to fetch backup schedule.";
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── Admin Backup: schedule save ───────────────────────────────────────────
+  router.put("/admin/backup/schedule", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const intervalRaw = typeof body.interval === "number" ? body.interval : parseInt(String(body.interval ?? ""), 10);
+    const unit = body.unit as "minutes" | "hours" | undefined;
+    const destination = body.destination as BackupDestination | undefined;
+    const destPath = typeof body.path === "string" ? body.path.trim() || null : null;
+    const enabled = body.enabled === true || body.enabled === "true";
+
+    if (!Number.isFinite(intervalRaw) || intervalRaw <= 0) {
+      return res.status(400).json({ error: "interval must be a positive integer." });
+    }
+    if (unit !== "minutes" && unit !== "hours") {
+      return res.status(400).json({ error: "unit must be 'minutes' or 'hours'." });
+    }
+    const intervalMinutes = toIntervalMinutes(intervalRaw, unit);
+    const VALID_INTERVALS = [15, 30, 60, 120, 240, 480, 1440];
+    if (!VALID_INTERVALS.includes(intervalMinutes)) {
+      return res.status(400).json({
+        error: `Computed intervalMinutes (${intervalMinutes}) is not a supported value. Valid combinations: 15 min, 30 min, 1 h, 2 h, 4 h, 8 h, 24 h.`,
+      });
+    }
+    if (destination !== "onedrive" && destination !== "local" && destination !== "network") {
+      return res.status(400).json({ error: "destination must be one of: onedrive, local, network." });
+    }
+    if ((destination === "local" || destination === "network") && !destPath) {
+      return res.status(400).json({ error: "path is required for local and network destinations." });
+    }
+    // Reject SFTP URLs with embedded passwords — credentials must not be stored
+    // at rest in system_settings. Use SSH key authentication or mount the remote
+    // share as a local filesystem path.
+    if (destPath && destPath.startsWith("sftp://")) {
+      try {
+        const u = new URL(destPath);
+        if (u.password) {
+          return res.status(400).json({
+            error:
+              "SFTP URLs must not contain an embedded password (credentials at rest risk). " +
+              "Use SSH key-based authentication and omit the password from the URL: sftp://user@host/path",
+          });
+        }
+      } catch {
+        return res.status(400).json({ error: "Invalid SFTP URL." });
+      }
+    }
+
+    try {
+      const upsert = async (key: string, value: string | null) => {
+        if (value === null) {
+          await db.delete(systemSettings).where(eq(systemSettings.key, key));
+        } else {
+          await db
+            .insert(systemSettings)
+            .values({ key, value })
+            .onConflictDoUpdate({ target: systemSettings.key, set: { value, updatedAt: new Date() } });
+        }
+      };
+      await upsert(SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, String(intervalMinutes));
+      await upsert(SETTING_BACKUP_SCHEDULE_DESTINATION, destination);
+      await upsert(SETTING_BACKUP_SCHEDULE_PATH, destPath);
+      await upsert(SETTING_BACKUP_SCHEDULE_ENABLED, enabled ? "true" : "false");
+
+      // Restart the in-process recurring job with the new settings.
+      void restartScheduledBackupJob();
+
+      return res.json({ ok: true, interval: intervalRaw, unit, destination, path: destPath, enabled });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to save backup schedule.";
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── Admin Backup: schedule disable ───────────────────────────────────────
+  router.delete("/admin/backup/schedule", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_BACKUP_SCHEDULE_ENABLED, value: "false" })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: "false", updatedAt: new Date() },
+        });
+      void restartScheduledBackupJob();
+      return res.json({ ok: true, enabled: false });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to disable backup schedule.";
+      return res.status(500).json({ error: msg });
     }
   });
 

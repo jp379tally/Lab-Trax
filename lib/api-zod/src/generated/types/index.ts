@@ -8,6 +8,16 @@
 
 export * from "./acknowledgeAiReview200";
 export * from "./acknowledgeAiReview200Data";
+export * from "./backupRunRequest";
+export * from "./backupRunRequestDestination";
+export * from "./backupRunResult";
+export * from "./backupScheduleInput";
+export * from "./backupScheduleInputDestination";
+export * from "./backupScheduleInputUnit";
+export * from "./backupScheduleResult";
+export * from "./backupScheduleResultDestination";
+export * from "./backupScheduleResultUnit";
+export * from "./disableBackupSchedule200";
 export * from "./doctorMergeAuditEntry";
 export * from "./doctorMergePreview";
 export * from "./doctorMergePreviewData";

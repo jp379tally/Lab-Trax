@@ -11,7 +11,7 @@ import { logger } from "./lib/logger";
 import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
-import { startDailyOneDriveBackup, start15MinRollingBackup } from "./lib/backup";
+import { startDailyOneDriveBackup, restartScheduledBackupJob } from "./lib/backup";
 import { startBillingJobs } from "./lib/billing-jobs";
 import { handleStripeWebhook } from "./routes/billing";
 import {
@@ -271,6 +271,11 @@ if (process.env.REPLIT_CONNECTORS_HOSTNAME) {
   startDailyOneDriveBackup();
   start15MinRollingBackup();
 }
+// Dynamic recurring backup scheduler — reads persisted settings from DB and
+// starts the interval timer. Runs at startup so saved schedules survive restarts.
+restartScheduledBackupJob().catch((err: unknown) => {
+  logger.warn({ err }, "[backup] Failed to restore recurring backup schedule at startup");
+});
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof ZodError) {

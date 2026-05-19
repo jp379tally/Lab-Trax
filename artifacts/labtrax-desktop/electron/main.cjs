@@ -236,6 +236,15 @@ function createWindow() {
 
 ipcMain.handle("get-app-version", () => app.getVersion());
 
+ipcMain.handle("dialog:show-folder", async () => {
+  const win = BrowserWindow.getAllWindows()[0];
+  const result = await dialog.showOpenDialog(win ?? undefined, {
+    properties: ["openDirectory", "createDirectory"],
+    title: "Select backup folder",
+  });
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+
 ipcMain.handle("install-update", () => {
   const { autoUpdater } = require("electron-updater");
   autoUpdater.quitAndInstall();

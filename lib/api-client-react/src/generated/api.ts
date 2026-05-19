@@ -18,6 +18,11 @@ import type {
 
 import type {
   AcknowledgeAiReview200,
+  BackupRunRequest,
+  BackupRunResult,
+  BackupScheduleInput,
+  BackupScheduleResult,
+  DisableBackupSchedule200,
   DoctorMergePreview,
   DoctorMergeRequest,
   DoctorMergeResult,
@@ -1441,6 +1446,347 @@ export function useListOpenInvoices<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Triggers an immediate full backup (all cases, invoices, media, etc.)
+to the chosen destination. Requires the X-Platform-Admin-Secret header.
+
+ * @summary Run an immediate full backup
+ */
+export const getRunBackupNowUrl = () => {
+  return `/api/admin/backup/run`;
+};
+
+export const runBackupNow = async (
+  backupRunRequest: BackupRunRequest,
+  options?: RequestInit,
+): Promise<BackupRunResult> => {
+  return customFetch<BackupRunResult>(getRunBackupNowUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(backupRunRequest),
+  });
+};
+
+export const getRunBackupNowMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof runBackupNow>>,
+    TError,
+    { data: BodyType<BackupRunRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof runBackupNow>>,
+  TError,
+  { data: BodyType<BackupRunRequest> },
+  TContext
+> => {
+  const mutationKey = ["runBackupNow"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof runBackupNow>>,
+    { data: BodyType<BackupRunRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return runBackupNow(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RunBackupNowMutationResult = NonNullable<
+  Awaited<ReturnType<typeof runBackupNow>>
+>;
+export type RunBackupNowMutationBody = BodyType<BackupRunRequest>;
+export type RunBackupNowMutationError = ErrorType<void>;
+
+/**
+ * @summary Run an immediate full backup
+ */
+export const useRunBackupNow = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof runBackupNow>>,
+    TError,
+    { data: BodyType<BackupRunRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof runBackupNow>>,
+  TError,
+  { data: BodyType<BackupRunRequest> },
+  TContext
+> => {
+  return useMutation(getRunBackupNowMutationOptions(options));
+};
+
+/**
+ * Returns the recurring backup schedule stored in system settings.
+Requires the X-Platform-Admin-Secret header.
+
+ * @summary Get the current backup schedule configuration
+ */
+export const getGetBackupScheduleUrl = () => {
+  return `/api/admin/backup/schedule`;
+};
+
+export const getBackupSchedule = async (
+  options?: RequestInit,
+): Promise<BackupScheduleResult> => {
+  return customFetch<BackupScheduleResult>(getGetBackupScheduleUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetBackupScheduleQueryKey = () => {
+  return [`/api/admin/backup/schedule`] as const;
+};
+
+export const getGetBackupScheduleQueryOptions = <
+  TData = Awaited<ReturnType<typeof getBackupSchedule>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getBackupSchedule>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetBackupScheduleQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getBackupSchedule>>
+  > = ({ signal }) => getBackupSchedule({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getBackupSchedule>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetBackupScheduleQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getBackupSchedule>>
+>;
+export type GetBackupScheduleQueryError = ErrorType<void>;
+
+/**
+ * @summary Get the current backup schedule configuration
+ */
+
+export function useGetBackupSchedule<
+  TData = Awaited<ReturnType<typeof getBackupSchedule>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getBackupSchedule>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetBackupScheduleQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Persists the schedule configuration to system settings and restarts
+the in-process recurring backup job. Requires the
+X-Platform-Admin-Secret header.
+
+ * @summary Save the recurring backup schedule
+ */
+export const getSaveBackupScheduleUrl = () => {
+  return `/api/admin/backup/schedule`;
+};
+
+export const saveBackupSchedule = async (
+  backupScheduleInput: BackupScheduleInput,
+  options?: RequestInit,
+): Promise<BackupScheduleResult> => {
+  return customFetch<BackupScheduleResult>(getSaveBackupScheduleUrl(), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(backupScheduleInput),
+  });
+};
+
+export const getSaveBackupScheduleMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof saveBackupSchedule>>,
+    TError,
+    { data: BodyType<BackupScheduleInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof saveBackupSchedule>>,
+  TError,
+  { data: BodyType<BackupScheduleInput> },
+  TContext
+> => {
+  const mutationKey = ["saveBackupSchedule"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof saveBackupSchedule>>,
+    { data: BodyType<BackupScheduleInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return saveBackupSchedule(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SaveBackupScheduleMutationResult = NonNullable<
+  Awaited<ReturnType<typeof saveBackupSchedule>>
+>;
+export type SaveBackupScheduleMutationBody = BodyType<BackupScheduleInput>;
+export type SaveBackupScheduleMutationError = ErrorType<void>;
+
+/**
+ * @summary Save the recurring backup schedule
+ */
+export const useSaveBackupSchedule = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof saveBackupSchedule>>,
+    TError,
+    { data: BodyType<BackupScheduleInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof saveBackupSchedule>>,
+  TError,
+  { data: BodyType<BackupScheduleInput> },
+  TContext
+> => {
+  return useMutation(getSaveBackupScheduleMutationOptions(options));
+};
+
+/**
+ * Sets the schedule to disabled in system settings and stops the
+in-process interval job. Requires the X-Platform-Admin-Secret header.
+
+ * @summary Disable the recurring backup schedule
+ */
+export const getDisableBackupScheduleUrl = () => {
+  return `/api/admin/backup/schedule`;
+};
+
+export const disableBackupSchedule = async (
+  options?: RequestInit,
+): Promise<DisableBackupSchedule200> => {
+  return customFetch<DisableBackupSchedule200>(getDisableBackupScheduleUrl(), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDisableBackupScheduleMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof disableBackupSchedule>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof disableBackupSchedule>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["disableBackupSchedule"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof disableBackupSchedule>>,
+    void
+  > = () => {
+    return disableBackupSchedule(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DisableBackupScheduleMutationResult = NonNullable<
+  Awaited<ReturnType<typeof disableBackupSchedule>>
+>;
+
+export type DisableBackupScheduleMutationError = ErrorType<void>;
+
+/**
+ * @summary Disable the recurring backup schedule
+ */
+export const useDisableBackupSchedule = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof disableBackupSchedule>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof disableBackupSchedule>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getDisableBackupScheduleMutationOptions(options));
+};
 
 /**
  * QuickBooks-style "Receive Payments" — record one payment from a

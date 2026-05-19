@@ -20,6 +20,8 @@ tags:
     description: Subscription billing operations (LabTrax)
   - name: notifications
     description: In-app notification operations (LabTrax)
+  - name: backup
+    description: Backup and schedule operations (LabTrax)
 paths:
   /healthz:
     get:
@@ -429,6 +431,92 @@ paths:
                 $ref: "#/components/schemas/OpenInvoiceListResult"
         "403":
           description: Caller lacks a billing role on the lab.
+  /admin/backup/run:
+    post:
+      operationId: runBackupNow
+      tags: [backup]
+      summary: Run an immediate full backup
+      description: |
+        Triggers an immediate full backup (all cases, invoices, media, etc.)
+        to the chosen destination. Requires the X-Platform-Admin-Secret header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupRunRequest"
+      responses:
+        "200":
+          description: Backup completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupRunResult"
+        "400":
+          description: Invalid destination or missing path
+        "403":
+          description: Admin access required
+  /admin/backup/schedule:
+    get:
+      operationId: getBackupSchedule
+      tags: [backup]
+      summary: Get the current backup schedule configuration
+      description: |
+        Returns the recurring backup schedule stored in system settings.
+        Requires the X-Platform-Admin-Secret header.
+      responses:
+        "200":
+          description: Current schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupScheduleResult"
+        "403":
+          description: Admin access required
+    put:
+      operationId: saveBackupSchedule
+      tags: [backup]
+      summary: Save the recurring backup schedule
+      description: |
+        Persists the schedule configuration to system settings and restarts
+        the in-process recurring backup job. Requires the
+        X-Platform-Admin-Secret header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupScheduleInput"
+      responses:
+        "200":
+          description: Schedule saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupScheduleResult"
+        "400":
+          description: Invalid interval or destination
+        "403":
+          description: Admin access required
+    delete:
+      operationId: disableBackupSchedule
+      tags: [backup]
+      summary: Disable the recurring backup schedule
+      description: |
+        Sets the schedule to disabled in system settings and stops the
+        in-process interval job. Requires the X-Platform-Admin-Secret header.
+      responses:
+        "200":
+          description: Schedule disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  enabled: { type: boolean }
+        "403":
+          description: Admin access required
   /invoices/receive-payments:
     post:
       operationId: receiveInvoicePayments
@@ -507,6 +595,64 @@ components:
         data:
           type: array
           items: { $ref: "#/components/schemas/Notification" }
+    BackupRunRequest:
+      type: object
+      required: [destination]
+      properties:
+        destination:
+          type: string
+          enum: [onedrive, local, network]
+        path:
+          type: string
+          nullable: true
+          description: Target folder path (required for local and network destinations)
+    BackupRunResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        size: { type: integer, description: "Backup archive size in bytes" }
+        completedAt: { type: string, format: date-time }
+        fileName: { type: string }
+    BackupScheduleInput:
+      type: object
+      required: [interval, unit, destination, enabled]
+      properties:
+        interval:
+          type: integer
+          description: "Number of interval units between backups (e.g. 15 minutes, 1 hour)"
+        unit:
+          type: string
+          enum: [minutes, hours]
+          description: "Unit for the interval value"
+        destination:
+          type: string
+          enum: [onedrive, local, network]
+        path:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+    BackupScheduleResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        interval:
+          type: integer
+          nullable: true
+          description: "Number of interval units (null if no schedule is set)"
+        unit:
+          type: string
+          nullable: true
+          enum: [minutes, hours]
+          description: "Unit for the interval value"
+        destination:
+          type: string
+          nullable: true
+          enum: [onedrive, local, network]
+        path:
+          type: string
+          nullable: true
+        enabled: { type: boolean }
     HealthStatus:
       type: object
       properties:

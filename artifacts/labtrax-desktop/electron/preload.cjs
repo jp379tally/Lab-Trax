@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     clearTokens: () => ipcRenderer.invoke("auth:clear-tokens"),
     isAvailable: () => ipcRenderer.invoke("auth:is-available"),
   },
+  showFolderDialog: () => ipcRenderer.invoke("dialog:show-folder"),
   itero: {
     getStatus: () => ipcRenderer.invoke("itero:get-status"),
     setCredentials: (payload) => ipcRenderer.invoke("itero:set-credentials", payload),

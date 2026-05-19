@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, Github, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, Github, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,8 +13,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { apiFetch, ApiError, notifySessionCleared } from "@/lib/api";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
-import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
-import { formatNextBackupTime } from "@/lib/backup-schedule";
 import { formatPhone } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
@@ -31,9 +29,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage" | "desktop" | "itero" | "platform-admin" | "subscriptions";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "itero" | "platform-admin" | "subscriptions";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "storage", "desktop", "itero", "platform-admin", "subscriptions"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "itero", "platform-admin", "subscriptions"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -58,7 +56,7 @@ export default function SettingsPage() {
     { key: "sessions", label: "Active sessions", icon: Monitor, show: true },
     { key: "organizations", label: "Organizations", icon: Building2, show: true },
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
-    { key: "storage", label: "Storage", icon: HardDrive, show: isAdmin },
+    { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
     { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin && hasPlatformAdminBridge },
@@ -104,7 +102,7 @@ export default function SettingsPage() {
           {tab === "sessions" && <SessionsPanel />}
           {tab === "organizations" && <OrganizationsPanel />}
           {tab === "users" && isAdmin && <UsersPanel />}
-          {tab === "storage" && isAdmin && <StoragePanel />}
+          {tab === "backup" && isAdmin && <BackupPanel />}
           {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
           {tab === "itero" && isAdmin && <IteroPanel />}
           {tab === "platform-admin" && isAdmin && hasPlatformAdminBridge && <PlatformAdminPanel />}
@@ -781,902 +779,351 @@ function UsersPanel() {
   );
 }
 
-interface CleanupReport {
-  ok: boolean;
-  triggeredBy: string;
-  dryRun: boolean;
-  mediaDirExists: boolean;
-  scannedFiles: number;
-  referencedFiles: number;
-  orphanCount: number;
-  removedCount: number;
-  freedBytes: number;
-  sample: string[];
-  errors: Array<{ fileName: string; error: string }>;
+type BackupDestinationType = "onedrive" | "local" | "network";
+type BackupIntervalUnit = "minutes" | "hours";
+
+interface BackupScheduleData {
+  interval: number | null;
+  unit: BackupIntervalUnit | null;
+  destination: BackupDestinationType | null;
+  path: string | null;
+  enabled: boolean;
 }
 
-interface LastRun {
-  at: string;
-  removedCount: number;
-  freedBytes: number;
+const INTERVAL_OPTIONS: Array<{ interval: number; unit: BackupIntervalUnit; label: string }> = [
+  { interval: 15, unit: "minutes", label: "Every 15 minutes" },
+  { interval: 30, unit: "minutes", label: "Every 30 minutes" },
+  { interval: 1, unit: "hours", label: "Every hour" },
+  { interval: 2, unit: "hours", label: "Every 2 hours" },
+  { interval: 4, unit: "hours", label: "Every 4 hours" },
+  { interval: 8, unit: "hours", label: "Every 8 hours" },
+  { interval: 24, unit: "hours", label: "Every 24 hours" },
+];
+
+function intervalKey(interval: number, unit: BackupIntervalUnit): string {
+  return `${interval}_${unit}`;
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, i);
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
+function parseIntervalKey(key: string): { interval: number; unit: BackupIntervalUnit } | null {
+  const [iv, u] = key.split("_");
+  const n = parseInt(iv ?? "", 10);
+  if (!Number.isFinite(n) || (u !== "minutes" && u !== "hours")) return null;
+  return { interval: n, unit: u };
 }
 
-const LAST_RUN_KEY = "labtrax.admin.storage.lastRun";
-
-interface CleanupAlertSettings {
-  minRemoved: number;
-  minFreedMb: number;
-  dbMinRemoved: number | null;
-  dbMinFreedMb: number | null;
-  envMinRemoved: number;
-  envMinFreedMb: number;
+function formatBackupSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }
 
-interface CleanupScheduleSettings {
-  hourUtc: number;
-  dbHourUtc: number | null;
-  envHourUtc: number;
-  retentionDays: number;
-  dbRetentionDays: number | null;
-  envRetentionDays: number;
-  stuckTimeoutMinutes: number;
-  dbStuckTimeoutMinutes: number | null;
-  envStuckTimeoutMinutes: number;
-}
-
-function CleanupScheduleSettingsPanel() {
+function BackupPanel() {
   const queryClient = useQueryClient();
-  const [hourUtc, setHourUtc] = useState("");
-  const [retentionDays, setRetentionDays] = useState("");
-  const [stuckTimeoutMinutes, setStuckTimeoutMinutes] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const [nowDest, setNowDest] = useState<BackupDestinationType>("onedrive");
+  const [nowPath, setNowPath] = useState("");
+  const [backupResult, setBackupResult] = useState<{ size: number; completedAt: string; fileName: string } | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
 
-  const settingsQuery = useQuery({
-    queryKey: ["admin", "cleanup-schedule"],
-    queryFn: () => apiFetch<CleanupScheduleSettings>("/admin/settings/cleanup-schedule"),
-  });
+  const [schedIntervalKey, setSchedIntervalKey] = useState<string>(intervalKey(1, "hours"));
+  const [schedDest, setSchedDest] = useState<BackupDestinationType>("onedrive");
+  const [schedPath, setSchedPath] = useState("");
+  const [schedEnabled, setSchedEnabled] = useState(false);
+  const [schedError, setSchedError] = useState<string | null>(null);
+  const [schedSuccess, setSchedSuccess] = useState(false);
 
-  useEffect(() => {
-    if (settingsQuery.data) {
-      setHourUtc(String(settingsQuery.data.hourUtc));
-      setRetentionDays(String(settingsQuery.data.retentionDays));
-      setStuckTimeoutMinutes(String(settingsQuery.data.stuckTimeoutMinutes));
-    }
-  }, [settingsQuery.data]);
-
-  const saveMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean; hourUtc: number; retentionDays: number; stuckTimeoutMinutes: number }>(
-        "/admin/settings/cleanup-schedule",
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            hourUtc: parseInt(hourUtc, 10),
-            retentionDays: parseInt(retentionDays, 10),
-            stuckTimeoutMinutes: parseInt(stuckTimeoutMinutes, 10),
-          }),
-        },
-      ),
-    onSuccess: () => {
-      setError(null);
-      setSuccess(true);
-      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-schedule"] });
-      setTimeout(() => setSuccess(false), 2500);
-    },
-    onError: (err: Error) => {
-      setSuccess(false);
-      setError(err.message || "Failed to save settings.");
-    },
-  });
-
-  const resetHourMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean }>("/admin/settings/cleanup-schedule?field=hourUtc", {
-        method: "DELETE",
-      }),
-    onSuccess: () => {
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-schedule"] });
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Failed to reset setting.");
-    },
-  });
-
-  const resetRetentionMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean }>("/admin/settings/cleanup-schedule?field=retentionDays", {
-        method: "DELETE",
-      }),
-    onSuccess: () => {
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-schedule"] });
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Failed to reset setting.");
-    },
-  });
-
-  const resetStuckTimeoutMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean }>("/admin/settings/cleanup-schedule?field=stuckTimeoutMinutes", {
-        method: "DELETE",
-      }),
-    onSuccess: () => {
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-schedule"] });
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Failed to reset setting.");
-    },
-  });
-
-  const data = settingsQuery.data;
-  const gate = usePlatformAdminGate([
-    settingsQuery.error,
-    saveMutation.error,
-    resetHourMutation.error,
-    resetRetentionMutation.error,
-    resetStuckTimeoutMutation.error,
-  ]);
-
-  return (
-    <div className="border border-border rounded-lg p-4 space-y-4">
-      <div className="flex items-center gap-2">
-        <Clock size={14} className="text-muted-foreground" />
-        <h3 className="text-sm font-semibold">Cleanup schedule</h3>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        Controls when the nightly cleanup runs and how long its history is kept. The cleanup hour takes effect on the next server restart; history retention applies immediately on each run.
-      </p>
-      {gate.blocked && <PlatformAdminSetupNotice />}
-      {error && !gate.blocked && <Alert tone="danger">{error}</Alert>}
-      {success && <Alert tone="success">Schedule saved.</Alert>}
-      {settingsQuery.isLoading ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 size={13} className="animate-spin" />
-          Loading…
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Cleanup hour (UTC, 0–23)">
-            <input
-              className={inputCls}
-              type="number"
-              min={0}
-              max={23}
-              step={1}
-              value={hourUtc}
-              onChange={(e) => setHourUtc(e.target.value)}
-              placeholder={data ? String(data.envHourUtc) : "8"}
-            />
-            {data && data.dbHourUtc !== null ? (
-              <button
-                type="button"
-                onClick={() => resetHourMutation.mutate()}
-                disabled={resetHourMutation.isPending}
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-              >
-                {resetHourMutation.isPending ? (
-                  <Loader2 size={11} className="animate-spin" />
-                ) : (
-                  <RotateCcw size={11} />
-                )}
-                Reset to default ({data.envHourUtc}:00 UTC)
-              </button>
-            ) : data ? (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Using env default: {data.envHourUtc}:00 UTC
-              </p>
-            ) : null}
-          </Field>
-          <Field label="History retention (days)">
-            <input
-              className={inputCls}
-              type="number"
-              min={1}
-              step={1}
-              value={retentionDays}
-              onChange={(e) => setRetentionDays(e.target.value)}
-              placeholder={data ? String(data.envRetentionDays) : "365"}
-            />
-            {data && data.dbRetentionDays !== null ? (
-              <button
-                type="button"
-                onClick={() => resetRetentionMutation.mutate()}
-                disabled={resetRetentionMutation.isPending}
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-              >
-                {resetRetentionMutation.isPending ? (
-                  <Loader2 size={11} className="animate-spin" />
-                ) : (
-                  <RotateCcw size={11} />
-                )}
-                Reset to default ({data.envRetentionDays} days)
-              </button>
-            ) : data ? (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Using env default: {data.envRetentionDays} days
-              </p>
-            ) : null}
-          </Field>
-          <Field label="Crash-recovery timeout (min)">
-            <input
-              className={inputCls}
-              type="number"
-              min={1}
-              step={1}
-              value={stuckTimeoutMinutes}
-              onChange={(e) => setStuckTimeoutMinutes(e.target.value)}
-              placeholder={data ? String(data.envStuckTimeoutMinutes) : "30"}
-            />
-            {data && data.dbStuckTimeoutMinutes !== null ? (
-              <button
-                type="button"
-                onClick={() => resetStuckTimeoutMutation.mutate()}
-                disabled={resetStuckTimeoutMutation.isPending}
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-              >
-                {resetStuckTimeoutMutation.isPending ? (
-                  <Loader2 size={11} className="animate-spin" />
-                ) : (
-                  <RotateCcw size={11} />
-                )}
-                Reset to default ({data.envStuckTimeoutMinutes} min)
-              </button>
-            ) : data ? (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Using env default: {data.envStuckTimeoutMinutes} min
-              </p>
-            ) : null}
-          </Field>
-        </div>
-      )}
-      {(() => {
-        const parsed = parseInt(hourUtc, 10);
-        if (!isNaN(parsed) && parsed >= 0 && parsed <= 23) {
-          return (
-            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-              <Clock size={11} className="shrink-0" />
-              Next run: <span className="text-foreground font-medium">{formatNextCleanupTime(parsed)}</span>
-            </p>
-          );
-        }
-        return null;
-      })()}
-      <button
-        type="button"
-        onClick={() => saveMutation.mutate()}
-        disabled={saveMutation.isPending || settingsQuery.isLoading}
-        className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
-      >
-        {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
-        {saveMutation.isPending ? "Saving…" : "Save schedule"}
-      </button>
-    </div>
-  );
-}
-
-function CleanupAlertSettingsPanel() {
-  const queryClient = useQueryClient();
-  const [minRemoved, setMinRemoved] = useState("");
-  const [minFreedMb, setMinFreedMb] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
-
-  const settingsQuery = useQuery({
-    queryKey: ["admin", "cleanup-alert-settings"],
-    queryFn: () => apiFetch<CleanupAlertSettings>("/admin/settings/cleanup-alerts"),
-  });
-
-  useEffect(() => {
-    if (settingsQuery.data) {
-      setMinRemoved(String(settingsQuery.data.minRemoved));
-      setMinFreedMb(String(settingsQuery.data.minFreedMb));
-    }
-  }, [settingsQuery.data]);
-
-  const saveMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean; minRemoved: number; minFreedMb: number }>(
-        "/admin/settings/cleanup-alerts",
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            minRemoved: parseInt(minRemoved, 10),
-            minFreedMb: parseFloat(minFreedMb),
-          }),
-        },
-      ),
-    onSuccess: () => {
-      setError(null);
-      setSuccess(true);
-      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-alert-settings"] });
-      setTimeout(() => setSuccess(false), 2500);
-    },
-    onError: (err: Error) => {
-      setSuccess(false);
-      setError(err.message || "Failed to save settings.");
-    },
-  });
-
-  const resetMinRemovedMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean }>("/admin/settings/cleanup-alerts?field=minRemoved", {
-        method: "DELETE",
-      }),
-    onSuccess: () => {
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-alert-settings"] });
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Failed to reset setting.");
-    },
-  });
-
-  const resetMinFreedMbMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean }>("/admin/settings/cleanup-alerts?field=minFreedMb", {
-        method: "DELETE",
-      }),
-    onSuccess: () => {
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "cleanup-alert-settings"] });
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Failed to reset setting.");
-    },
-  });
-
-  const data = settingsQuery.data;
-  const gate = usePlatformAdminGate([
-    settingsQuery.error,
-    saveMutation.error,
-    resetMinRemovedMutation.error,
-    resetMinFreedMbMutation.error,
-  ]);
-
-  return (
-    <div className="border border-border rounded-lg p-4 space-y-4">
-      <div className="flex items-center gap-2">
-        <BellRing size={14} className="text-muted-foreground" />
-        <h3 className="text-sm font-semibold">Cleanup alert thresholds</h3>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        The nightly cleanup job emails admins when it removes files or frees storage above these limits. Set "Min freed (MB)" to 0 to disable the freed-bytes threshold.
-      </p>
-      {gate.blocked && <PlatformAdminSetupNotice />}
-      {error && !gate.blocked && <Alert tone="danger">{error}</Alert>}
-      {success && <Alert tone="success">Thresholds saved.</Alert>}
-      {settingsQuery.isLoading ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 size={13} className="animate-spin" />
-          Loading…
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Min files removed">
-            <input
-              className={inputCls}
-              type="number"
-              min={1}
-              step={1}
-              value={minRemoved}
-              onChange={(e) => setMinRemoved(e.target.value)}
-              placeholder={data ? String(data.envMinRemoved) : "1"}
-            />
-            {data && data.dbMinRemoved !== null ? (
-              <button
-                type="button"
-                onClick={() => resetMinRemovedMutation.mutate()}
-                disabled={resetMinRemovedMutation.isPending}
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-              >
-                {resetMinRemovedMutation.isPending ? (
-                  <Loader2 size={11} className="animate-spin" />
-                ) : (
-                  <RotateCcw size={11} />
-                )}
-                Reset to default ({data.envMinRemoved})
-              </button>
-            ) : data ? (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Using env default: {data.envMinRemoved}
-              </p>
-            ) : null}
-          </Field>
-          <Field label="Min freed (MB)">
-            <input
-              className={inputCls}
-              type="number"
-              min={0}
-              step={0.1}
-              value={minFreedMb}
-              onChange={(e) => setMinFreedMb(e.target.value)}
-              placeholder={data ? String(data.envMinFreedMb) : "0"}
-            />
-            {data && data.dbMinFreedMb !== null ? (
-              <button
-                type="button"
-                onClick={() => resetMinFreedMbMutation.mutate()}
-                disabled={resetMinFreedMbMutation.isPending}
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-              >
-                {resetMinFreedMbMutation.isPending ? (
-                  <Loader2 size={11} className="animate-spin" />
-                ) : (
-                  <RotateCcw size={11} />
-                )}
-                Reset to default ({data.envMinFreedMb} MB)
-              </button>
-            ) : data ? (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Using env default: {data.envMinFreedMb} MB
-              </p>
-            ) : null}
-          </Field>
-        </div>
-      )}
-      <button
-        type="button"
-        onClick={() => saveMutation.mutate()}
-        disabled={saveMutation.isPending || settingsQuery.isLoading}
-        className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
-      >
-        {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
-        {saveMutation.isPending ? "Saving…" : "Save thresholds"}
-      </button>
-    </div>
-  );
-}
-
-interface BackupScheduleSettings {
-  hourUtc: number;
-  dbHourUtc: number | null;
-  envHourUtc: number;
-  rollingBackupEnabled: boolean;
-  rollingBackupLastRunAt: string | null;
-  rollingBackupLastError: string | null;
-}
-
-function BackupSchedulePanel() {
-  const queryClient = useQueryClient();
-  const [hourUtc, setHourUtc] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
-  const [rollingError, setRollingError] = useState<string | null>(null);
-
-  const scheduleQuery = useQuery({
-    queryKey: ["admin", "backup-schedule"],
-    queryFn: () => apiFetch<BackupScheduleSettings>("/admin/settings/backup-schedule"),
-    staleTime: 60 * 1000,
-    refetchInterval: 60 * 1000,
+  const scheduleQuery = useQuery<BackupScheduleData>({
+    queryKey: ["admin", "backup-schedule-v2"],
+    queryFn: () => apiFetch("/admin/backup/schedule"),
   });
 
   useEffect(() => {
     if (scheduleQuery.data) {
-      setHourUtc(String(scheduleQuery.data.hourUtc));
+      const { interval, unit } = scheduleQuery.data;
+      if (interval !== null && unit !== null) {
+        setSchedIntervalKey(intervalKey(interval, unit));
+      }
+      setSchedDest((scheduleQuery.data.destination as BackupDestinationType | null) ?? "onedrive");
+      setSchedPath(scheduleQuery.data.path ?? "");
+      setSchedEnabled(scheduleQuery.data.enabled);
     }
   }, [scheduleQuery.data]);
 
-  const saveMutation = useMutation({
+  const backupNowMutation = useMutation({
     mutationFn: () =>
-      apiFetch<{ success: boolean; hourUtc: number }>(
-        "/admin/settings/backup-schedule",
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hourUtc: parseInt(hourUtc, 10) }),
-        },
-      ),
-    onSuccess: () => {
-      setError(null);
-      setSuccess(true);
-      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule"] });
-      setTimeout(() => setSuccess(false), 2500);
-    },
-    onError: (err: Error) => {
-      setSuccess(false);
-      setError(err.message || "Failed to save settings.");
-    },
-  });
-
-  const resetMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ success: boolean }>("/admin/settings/backup-schedule?field=hourUtc", {
-        method: "DELETE",
+      apiFetch<{ size: number; completedAt: string; fileName: string }>("/admin/backup/run", {
+        method: "POST",
+        body: JSON.stringify({ destination: nowDest, path: nowPath.trim() || undefined }),
       }),
-    onSuccess: () => {
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule"] });
+    onSuccess: (data) => {
+      setBackupResult(data);
+      setBackupError(null);
     },
     onError: (err: Error) => {
-      setError(err.message || "Failed to reset setting.");
+      setBackupResult(null);
+      setBackupError(err.message || "Backup failed.");
     },
   });
 
-  const toggleRollingMutation = useMutation({
-    mutationFn: (enabled: boolean) =>
-      apiFetch<{ success: boolean; rollingBackupEnabled: boolean }>(
-        "/admin/settings/backup-schedule",
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rollingBackupEnabled: enabled }),
-        },
-      ),
-    onMutate: async (enabled) => {
-      await queryClient.cancelQueries({ queryKey: ["admin", "backup-schedule"] });
-      const prev = queryClient.getQueryData<BackupScheduleSettings>(["admin", "backup-schedule"]);
-      if (prev) {
-        queryClient.setQueryData<BackupScheduleSettings>(["admin", "backup-schedule"], {
-          ...prev,
-          rollingBackupEnabled: enabled,
-        });
-      }
-      return { prev };
+  const saveScheduleMutation = useMutation({
+    mutationFn: () => {
+      const parsed = parseIntervalKey(schedIntervalKey) ?? { interval: 1, unit: "hours" as BackupIntervalUnit };
+      return apiFetch("/admin/backup/schedule", {
+        method: "PUT",
+        body: JSON.stringify({
+          interval: parsed.interval,
+          unit: parsed.unit,
+          destination: schedDest,
+          path: schedPath.trim() || null,
+          enabled: schedEnabled,
+        }),
+      });
     },
     onSuccess: () => {
-      setRollingError(null);
-      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule"] });
+      setSchedError(null);
+      setSchedSuccess(true);
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
+      setTimeout(() => setSchedSuccess(false), 2500);
     },
-    onError: (err: Error, _enabled, ctx: any) => {
-      setRollingError(err.message || "Failed to toggle rolling backup.");
-      if (ctx?.prev) {
-        queryClient.setQueryData(["admin", "backup-schedule"], ctx.prev);
-      }
+    onError: (err: Error) => {
+      setSchedError(err.message || "Failed to save schedule.");
     },
   });
 
-  const data = scheduleQuery.data;
+  const disableScheduleMutation = useMutation({
+    mutationFn: () => apiFetch("/admin/backup/schedule", { method: "DELETE" }),
+    onSuccess: () => {
+      setSchedEnabled(false);
+      setSchedError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
+    },
+    onError: (err: Error) => {
+      setSchedError(err.message || "Failed to disable schedule.");
+    },
+  });
+
+  const electron = typeof window !== "undefined"
+    ? (window as ElectronWindow).electronAPI
+    : null;
+
+  async function pickFolderFor(setter: (v: string) => void) {
+    if (electron?.showFolderDialog) {
+      const p = await electron.showFolderDialog();
+      if (p) setter(p);
+    }
+  }
+
   const gate = usePlatformAdminGate([
     scheduleQuery.error,
-    saveMutation.error,
-    resetMutation.error,
-    toggleRollingMutation.error,
+    backupNowMutation.error,
+    saveScheduleMutation.error,
+    disableScheduleMutation.error,
   ]);
 
-  const parsed = parseInt(hourUtc, 10);
-  const previewLabel =
-    !isNaN(parsed) && parsed >= 0 && parsed <= 23
-      ? formatNextBackupTime(parsed)
-      : null;
+  const needsPath = (d: BackupDestinationType) => d === "local" || d === "network";
 
   return (
-    <div className="border border-border rounded-lg p-4 space-y-4">
-      <div className="flex items-center gap-2">
-        <Clock size={14} className="text-muted-foreground" />
-        <h3 className="text-sm font-semibold">OneDrive backup schedule</h3>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        Controls when the nightly OneDrive backup runs. The backup hour takes effect on the next server restart.
-      </p>
+    <PanelShell title="Backup" subtitle="Back up all LabTrax data to keep your records safe.">
       {gate.blocked && <PlatformAdminSetupNotice />}
-      {error && !gate.blocked && <Alert tone="danger">{error}</Alert>}
-      {success && <Alert tone="success">Schedule saved.</Alert>}
-      {scheduleQuery.isLoading ? (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 size={13} className="animate-spin" />
-          Loading…
-        </div>
-      ) : (
-        <Field label="Backup hour (UTC, 0–23)">
-          <input
-            className={inputCls}
-            type="number"
-            min={0}
-            max={23}
-            step={1}
-            value={hourUtc}
-            onChange={(e) => setHourUtc(e.target.value)}
-            placeholder={data ? String(data.envHourUtc) : "7"}
-          />
-          {data && data.dbHourUtc !== null ? (
-            <button
-              type="button"
-              onClick={() => resetMutation.mutate()}
-              disabled={resetMutation.isPending}
-              className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
-            >
-              {resetMutation.isPending ? (
-                <Loader2 size={11} className="animate-spin" />
-              ) : (
-                <RotateCcw size={11} />
-              )}
-              Reset to default ({data.envHourUtc}:00 UTC)
-            </button>
-          ) : data ? (
-            <p className="text-[11px] text-muted-foreground mt-1">
-              Using env default: {data.envHourUtc}:00 UTC
-            </p>
-          ) : null}
-        </Field>
-      )}
-      {previewLabel && (
-        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-          <Clock size={11} className="shrink-0" />
-          Next backup: <span className="text-foreground font-medium">{previewLabel}</span>
-        </p>
-      )}
-      <button
-        type="button"
-        onClick={() => saveMutation.mutate()}
-        disabled={saveMutation.isPending || scheduleQuery.isLoading}
-        className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
-      >
-        {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
-        {saveMutation.isPending ? "Saving…" : "Save schedule"}
-      </button>
 
-      {/* ── 15-minute rolling backup ────────────────────────────────────── */}
-      <div className="border-t border-border pt-4 space-y-3">
+      {/* ── Back up now ── */}
+      <div className="border border-border rounded-lg p-4 space-y-4">
         <div className="flex items-center gap-2">
-          <RefreshCw size={14} className="text-muted-foreground" />
-          <h4 className="text-sm font-semibold">15-minute rolling backup</h4>
+          <ShieldCheck size={14} className="text-muted-foreground" />
+          <h3 className="text-sm font-semibold">Back up LabTrax data now</h3>
         </div>
         <p className="text-xs text-muted-foreground">
-          Overwrites <span className="font-mono text-foreground">LabTrax-Rolling-Backup.zip</span> on
-          OneDrive every 15 minutes — always the latest snapshot with a worst-case 15-minute data-loss window.
+          Creates a full backup ZIP containing all cases, patients, doctors, invoices, payments, bank transactions, pricing, and media attachments.
         </p>
 
-        {rollingError && !gate.blocked && <Alert tone="danger">{rollingError}</Alert>}
-
-        <div className="flex items-center justify-between gap-4">
-          <div className="space-y-0.5">
-            <p className="text-sm font-medium">Enable rolling backup</p>
-            <p className="text-xs text-muted-foreground">
-              Keeps the server continuously backing up while OneDrive is connected.
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={data?.rollingBackupEnabled ?? true}
-            disabled={gate.blocked || toggleRollingMutation.isPending || scheduleQuery.isLoading}
-            onClick={() => {
-              if (!data) return;
-              toggleRollingMutation.mutate(!data.rollingBackupEnabled);
-            }}
-            className={[
-              "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-              (data?.rollingBackupEnabled ?? true) ? "bg-primary" : "bg-input",
-            ].join(" ")}
-          >
-            <span
-              className={[
-                "pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform",
-                (data?.rollingBackupEnabled ?? true) ? "translate-x-4" : "translate-x-0",
-              ].join(" ")}
-            />
-          </button>
-        </div>
-
-        {/* Status line */}
-        {data && (
-          <div className="rounded-md bg-secondary/40 border border-border px-3 py-2.5 space-y-1.5 text-xs">
-            <div className="flex items-center gap-1.5">
-              <RefreshCw size={11} className="text-muted-foreground shrink-0" />
-              <span className="text-muted-foreground">Last successful run:</span>
-              <span className="font-medium text-foreground">
-                {data.rollingBackupLastRunAt
-                  ? formatRelative(data.rollingBackupLastRunAt)
-                  : "Not yet run"}
-              </span>
-            </div>
-            {data.rollingBackupLastError && (
-              <div className="flex items-start gap-1.5 text-destructive">
-                <span className="shrink-0 mt-0.5">⚠</span>
-                <span className="break-all">{data.rollingBackupLastError}</span>
-              </div>
-            )}
-          </div>
+        {backupError && !gate.blocked && <Alert tone="danger">{backupError}</Alert>}
+        {backupResult && (
+          <Alert tone="success">
+            Backup complete — {formatBackupSize(backupResult.size)} saved as{" "}
+            <code className="font-mono text-xs">{backupResult.fileName}</code> at{" "}
+            {new Date(backupResult.completedAt).toLocaleString()}.
+          </Alert>
         )}
-      </div>
-    </div>
-  );
-}
 
-function StoragePanel() {
-  const [report, setReport] = useState<CleanupReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [lastRun, setLastRun] = useState<LastRun | null>(() => {
-    try {
-      const raw = localStorage.getItem(LAST_RUN_KEY);
-      return raw ? (JSON.parse(raw) as LastRun) : null;
-    } catch {
-      return null;
-    }
-  });
-
-  const scanMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<CleanupReport>("/admin/cleanup/orphaned-media?dryRun=true", {
-        method: "POST",
-      }),
-    onSuccess: (data) => {
-      setReport(data);
-      setError(null);
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Scan failed.");
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<CleanupReport>("/admin/cleanup/orphaned-media?dryRun=false", {
-        method: "POST",
-      }),
-    onSuccess: (data) => {
-      setReport(data);
-      setError(null);
-      const run: LastRun = {
-        at: new Date().toISOString(),
-        removedCount: data.removedCount,
-        freedBytes: data.freedBytes,
-      };
-      setLastRun(run);
-      try {
-        localStorage.setItem(LAST_RUN_KEY, JSON.stringify(run));
-      } catch {
-        // ignore
-      }
-    },
-    onError: (err: Error) => {
-      setError(err.message || "Cleanup failed.");
-    },
-  });
-
-  const busy = scanMutation.isPending || deleteMutation.isPending;
-
-  return (
-    <PanelShell
-      title="Storage"
-      subtitle="Scan for and remove orphaned case-media files that are no longer linked to any case."
-    >
-      {error && <Alert tone="danger">{error}</Alert>}
-
-      {lastRun && (
-        <div className="rounded-md bg-secondary/40 border border-border px-4 py-3 text-sm space-y-0.5">
-          <div className="font-medium text-foreground">Last cleanup</div>
-          <div className="text-xs text-muted-foreground">
-            Ran {formatRelative(lastRun.at)} · removed {lastRun.removedCount} {lastRun.removedCount === 1 ? "file" : "files"} · freed {formatBytes(lastRun.freedBytes)}
+        <div className="space-y-3">
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">Destination</div>
+            <div className="flex flex-wrap gap-4">
+              {(["onedrive", "local", "network"] as const).map((d) => (
+                <label key={d} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <input
+                    type="radio"
+                    name="now-destination"
+                    value={d}
+                    checked={nowDest === d}
+                    onChange={() => { setNowDest(d); setBackupResult(null); setBackupError(null); }}
+                    className="accent-primary"
+                  />
+                  {d === "onedrive" ? "OneDrive" : d === "local" ? "Local folder / USB" : "Network server"}
+                </label>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
 
-      <div className="flex gap-3 items-center">
+          {needsPath(nowDest) && (
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  {nowDest === "local" ? "Folder path" : "Network path (UNC/SMB or SFTP URL)"}
+                </label>
+                <input
+                  value={nowPath}
+                  onChange={(e) => setNowPath(e.target.value)}
+                  placeholder={nowDest === "local" ? "C:\\Backups\\LabTrax" : "\\\\server\\share\\LabTrax"}
+                  className={inputCls}
+                />
+              </div>
+              {electron?.showFolderDialog && nowDest === "local" && (
+                <button
+                  type="button"
+                  onClick={() => pickFolderFor(setNowPath)}
+                  className="h-9 px-3 rounded-md border border-border bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 shrink-0"
+                >
+                  Browse…
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
         <button
           type="button"
-          onClick={() => scanMutation.mutate()}
-          disabled={busy}
-          className="h-9 px-4 rounded-md bg-secondary text-foreground text-sm font-medium hover:bg-secondary/80 disabled:opacity-60 inline-flex items-center gap-2"
+          onClick={() => backupNowMutation.mutate()}
+          disabled={
+            backupNowMutation.isPending ||
+            gate.blocked ||
+            (needsPath(nowDest) && !nowPath.trim())
+          }
+          className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
         >
-          {scanMutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <HardDrive size={14} />
-          )}
-          {scanMutation.isPending ? "Scanning…" : "Scan for orphans"}
+          {backupNowMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          {backupNowMutation.isPending ? "Backing up…" : "Back up now"}
         </button>
-
-        {report && report.dryRun && report.orphanCount > 0 && (
-          <button
-            type="button"
-            onClick={() => {
-              if (
-                !window.confirm(
-                  `Delete ${report.orphanCount} orphaned ${report.orphanCount === 1 ? "file" : "files"} (${formatBytes(report.freedBytes)})? This cannot be undone.`,
-                )
-              )
-                return;
-              deleteMutation.mutate();
-            }}
-            disabled={busy}
-            className="h-9 px-4 rounded-md bg-destructive/10 text-destructive text-sm font-medium hover:bg-destructive/20 disabled:opacity-60 inline-flex items-center gap-2"
-          >
-            {deleteMutation.isPending ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Trash2 size={14} />
-            )}
-            {deleteMutation.isPending
-              ? "Deleting…"
-              : `Delete ${report.orphanCount} orphaned ${report.orphanCount === 1 ? "file" : "files"}`}
-          </button>
-        )}
       </div>
 
-      {report && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {[
-              { label: "Scanned", value: report.scannedFiles.toLocaleString() },
-              { label: "Referenced", value: report.referencedFiles.toLocaleString() },
-              { label: "Orphans", value: report.orphanCount.toLocaleString() },
-              {
-                label: report.dryRun ? "Reclaimable" : "Freed",
-                value: formatBytes(report.freedBytes),
-              },
-            ].map(({ label, value }) => (
-              <div
-                key={label}
-                className="rounded-lg border border-border bg-secondary/30 px-4 py-3 text-center"
-              >
-                <div className="text-xl font-semibold tabular-nums">{value}</div>
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mt-0.5">
-                  {label}
-                </div>
-              </div>
-            ))}
+      {/* ── Schedule ── */}
+      <div className="border border-border rounded-lg p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Clock size={14} className="text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Schedule routine backups</h3>
           </div>
-
-          {!report.mediaDirExists && (
-            <div className="text-sm text-muted-foreground rounded-md bg-secondary/40 border border-border px-3 py-2">
-              The case-media upload directory does not exist yet — no files have been uploaded, so there is nothing to scan.
-            </div>
-          )}
-
-          {!report.dryRun && report.removedCount > 0 && (
-            <Alert tone="success">
-              Removed {report.removedCount} {report.removedCount === 1 ? "file" : "files"} · freed {formatBytes(report.freedBytes)}.
-            </Alert>
-          )}
-
-          {report.orphanCount === 0 && report.dryRun && report.mediaDirExists && (
-            <div className="text-sm text-muted-foreground text-center py-2">
-              No orphaned files found. Storage is clean.
-            </div>
-          )}
-
-          {report.sample.length > 0 && (
-            <div>
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
-                Sample orphaned files ({report.sample.length} shown)
-              </div>
-              <div className="border border-border rounded-md divide-y divide-border max-h-48 overflow-y-auto">
-                {report.sample.map((name) => (
-                  <div key={name} className="px-3 py-1.5 text-xs font-mono text-muted-foreground truncate">
-                    {name}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {report.errors.length > 0 && (
-            <div>
-              <div className="text-[11px] uppercase tracking-wide text-destructive font-medium mb-1.5">
-                Errors ({report.errors.length})
-              </div>
-              <div className="border border-destructive/30 rounded-md divide-y divide-border max-h-36 overflow-y-auto">
-                {report.errors.map(({ fileName, error: errMsg }) => (
-                  <div key={fileName} className="px-3 py-1.5 text-xs">
-                    <span className="font-mono text-muted-foreground">{fileName}</span>
-                    <span className="text-destructive ml-2">{errMsg}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+          {scheduleQuery.data?.enabled && (
+            <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-success/15 text-success">
+              Active
+            </span>
           )}
         </div>
-      )}
-      <CleanupScheduleSettingsPanel />
-      <CleanupAlertSettingsPanel />
-      <BackupSchedulePanel />
+        <p className="text-xs text-muted-foreground">
+          Automatically back up LabTrax at a regular interval to protect against data loss.
+        </p>
+
+        {schedError && !gate.blocked && <Alert tone="danger">{schedError}</Alert>}
+        {schedSuccess && <Alert tone="success">Schedule saved.</Alert>}
+
+        {scheduleQuery.isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 size={13} className="animate-spin" />
+            Loading…
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Interval">
+                <select
+                  value={schedIntervalKey}
+                  onChange={(e) => setSchedIntervalKey(e.target.value)}
+                  className={inputCls}
+                >
+                  {INTERVAL_OPTIONS.map((opt) => (
+                    <option key={intervalKey(opt.interval, opt.unit)} value={intervalKey(opt.interval, opt.unit)}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Destination">
+                <select
+                  value={schedDest}
+                  onChange={(e) => setSchedDest(e.target.value as BackupDestinationType)}
+                  className={inputCls}
+                >
+                  <option value="onedrive">OneDrive</option>
+                  <option value="local">Local folder / USB</option>
+                  <option value="network">Network server</option>
+                </select>
+              </Field>
+            </div>
+
+            {needsPath(schedDest) && (
+              <div className="flex gap-2 items-end">
+                <div className="flex-1">
+                  <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                    {schedDest === "local" ? "Folder path" : "Network path (UNC/SMB or SFTP URL)"}
+                  </label>
+                  <input
+                    value={schedPath}
+                    onChange={(e) => setSchedPath(e.target.value)}
+                    placeholder={schedDest === "local" ? "C:\\Backups\\LabTrax" : "\\\\server\\share\\LabTrax"}
+                    className={inputCls}
+                  />
+                </div>
+                {electron?.showFolderDialog && schedDest === "local" && (
+                  <button
+                    type="button"
+                    onClick={() => pickFolderFor(setSchedPath)}
+                    className="h-9 px-3 rounded-md border border-border bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 shrink-0"
+                  >
+                    Browse…
+                  </button>
+                )}
+              </div>
+            )}
+
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={schedEnabled}
+                onChange={(e) => setSchedEnabled(e.target.checked)}
+                className="accent-primary"
+              />
+              Enable automatic backups
+            </label>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => saveScheduleMutation.mutate()}
+            disabled={
+              saveScheduleMutation.isPending ||
+              scheduleQuery.isLoading ||
+              gate.blocked ||
+              (schedEnabled && needsPath(schedDest) && !schedPath.trim())
+            }
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-2"
+          >
+            {saveScheduleMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+            {saveScheduleMutation.isPending ? "Saving…" : "Save schedule"}
+          </button>
+          {scheduleQuery.data?.enabled && (
+            <button
+              type="button"
+              onClick={() => disableScheduleMutation.mutate()}
+              disabled={disableScheduleMutation.isPending || gate.blocked}
+              className="h-9 px-3 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground disabled:opacity-60"
+            >
+              Disable
+            </button>
+          )}
+        </div>
+      </div>
     </PanelShell>
   );
 }
@@ -2918,7 +2365,7 @@ type PlatformAdminAPI = {
   testSecret: (payload: string | { apiBaseUrl: string }) => Promise<PlatformAdminTestResult>;
   onChanged: (cb: (s: PlatformAdminStatus) => void) => () => void;
 };
-type ElectronWindow = Window & { electronAPI?: { itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
+type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
 
 function PlatformAdminPanel() {
   const electron = typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null;
