@@ -4,10 +4,16 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import { statementSchedules, statementSendRuns } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
-import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole, requireMembership } from "../lib/rbac";
+import { ADMIN_ROLES, BILLING_ROLES, requireAnyRole } from "../lib/rbac";
 import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
-import { retryStatementSendRun, runMonthlyStatementsForLab } from "../lib/statements";
+import {
+  generateStatementsZipBufferForLab,
+  retryStatementSendRun,
+  runBatchSendStatements,
+  runMonthlyStatementsForLab,
+  type InvoiceScope,
+} from "../lib/statements";
 
 const router = Router();
 router.use(requireAuth);
@@ -155,6 +161,82 @@ router.get(
       .orderBy(desc(statementSendRuns.createdAt))
       .limit(limit);
     return ok(res, rows);
+  })
+);
+
+// ── On-demand batch send (email + SMS) ────────────────────────────────────────
+
+const batchSendSchema = z.object({
+  practiceIds: z.array(z.string().max(128)).max(500).nullish(),
+  invoiceScope: z.enum(["open", "open_overdue_90", "all"]).default("open"),
+  channels: z
+    .array(z.enum(["email", "sms"]))
+    .min(1, "At least one channel is required"),
+  emailSubject: z.string().max(998).nullish(),
+  emailBody: z.string().max(20000).nullish(),
+  periodLabel: z.string().max(200).nullish(),
+});
+
+router.post(
+  "/:orgId/statements/batch-send",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const orgId = String(req.params.orgId);
+    await requireAnyRole(userId, orgId, ADMIN_ROLES);
+    const input = batchSendSchema.parse(req.body);
+
+    const result = await runBatchSendStatements({
+      labOrganizationId: orgId,
+      triggeredByUserId: userId,
+      practiceIds: input.practiceIds ?? null,
+      invoiceScope: input.invoiceScope as InvoiceScope,
+      channels: input.channels as Array<"email" | "sms">,
+      emailSubject: input.emailSubject ?? null,
+      emailBody: input.emailBody ?? null,
+      periodLabel: input.periodLabel ?? null,
+    });
+
+    if (!result.results.length) {
+      throw new HttpError(
+        400,
+        "No invoices found for the selected practices and scope."
+      );
+    }
+
+    return ok(res, result);
+  })
+);
+
+// ── On-demand batch download (ZIP of statement PDFs) ─────────────────────────
+
+const batchDownloadSchema = z.object({
+  practiceIds: z.array(z.string().max(128)).max(500).nullish(),
+  invoiceScope: z.enum(["open", "open_overdue_90", "all"]).default("open"),
+  periodLabel: z.string().max(200).nullish(),
+});
+
+router.post(
+  "/:orgId/statements/batch-download",
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).auth.userId as string;
+    const orgId = String(req.params.orgId);
+    await requireAnyRole(userId, orgId, BILLING_ROLES);
+    const input = batchDownloadSchema.parse(req.body);
+
+    const { zipBuffer, filename } = await generateStatementsZipBufferForLab({
+      labOrganizationId: orgId,
+      practiceIds: input.practiceIds ?? null,
+      invoiceScope: input.invoiceScope as InvoiceScope,
+      periodLabel: input.periodLabel ?? null,
+    });
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`
+    );
+    res.setHeader("Content-Length", String(zipBuffer.length));
+    res.end(zipBuffer);
   })
 );
 

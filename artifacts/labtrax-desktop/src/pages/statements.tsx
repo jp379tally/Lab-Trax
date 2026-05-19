@@ -95,6 +95,7 @@ export default function StatementsPage() {
   const [selected, setSelected] = useState<StatementRow | null>(null);
   const [showSchedule, setShowSchedule] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showGenerate, setShowGenerate] = useState(false);
   const [orgId] = useSelectedOrg();
 
   const scheduleQuery = useQuery({

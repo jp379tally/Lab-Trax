@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import archiver from "archiver";
 import nodemailer from "nodemailer";
 import { and, asc, eq, gte, inArray, lt, or, isNull, ne, lte } from "drizzle-orm";
 import { db } from "@workspace/db";
@@ -802,6 +803,404 @@ export async function retryStatementSendRun(
   runId: string
 ): Promise<RetryResult> {
   return attemptStatementSendForRun(runId);
+}
+
+// ── On-demand batch-send helpers ─────────────────────────────────────────────
+
+export type InvoiceScope = "open" | "open_overdue_90" | "all";
+
+/**
+ * Builds practice statement data scoped by invoice status (not calendar period).
+ * Used by the on-demand batch-send modal.
+ *
+ * - "open" / "open_overdue_90": non-paid, non-voided invoices; practices with
+ *   zero open balance are excluded.
+ * - "all": every invoice regardless of status.
+ *
+ * When practiceIds is non-empty, only those practices are returned.
+ */
+export async function buildPracticeStatementsForScope(
+  labOrganizationId: string,
+  scope: InvoiceScope,
+  practiceIds?: string[] | null
+): Promise<PracticeStatementData[]> {
+  const rows = await db.query.invoices.findMany({
+    where:
+      scope === "all"
+        ? eq(invoices.labOrganizationId, labOrganizationId)
+        : and(
+            eq(invoices.labOrganizationId, labOrganizationId),
+            ne(invoices.status, "paid"),
+            ne(invoices.status, "void")
+          ),
+    orderBy: [asc(invoices.createdAt)],
+  });
+  if (!rows.length) return [];
+
+  const filterIds =
+    practiceIds && practiceIds.length > 0 ? new Set(practiceIds) : null;
+
+  const uniquePracticeIds = Array.from(
+    new Set(
+      rows
+        .map((r) => r.providerOrganizationId)
+        .filter((id) => !filterIds || filterIds.has(id))
+    )
+  );
+  if (!uniquePracticeIds.length) return [];
+
+  const practiceRows = await db
+    .select()
+    .from(organizations)
+    .where(inArray(organizations.id, uniquePracticeIds));
+  const byId = new Map(practiceRows.map((o) => [o.id, o]));
+
+  const grouped = new Map<string, PracticeStatementData>();
+  for (const inv of rows) {
+    const id = inv.providerOrganizationId;
+    if (filterIds && !filterIds.has(id)) continue;
+    const org = byId.get(id);
+    const cur =
+      grouped.get(id) ??
+      ({
+        practiceId: id,
+        practiceName: org?.displayName || org?.name || "Unknown practice",
+        practiceEmail: org?.billingEmail || null,
+        statementEmailOptOut: org?.statementEmailOptOut ?? false,
+        invoiceCount: 0,
+        totalBilled: 0,
+        totalPaid: 0,
+        openBalance: 0,
+        invoices: [],
+      } as PracticeStatementData);
+
+    const total = Number(inv.total ?? 0);
+    const balance = Number(inv.balanceDue ?? 0);
+    cur.invoiceCount += 1;
+    cur.totalBilled += total;
+    cur.totalPaid += Math.max(0, total - balance);
+    if (inv.status !== "void") cur.openBalance += balance;
+    const meta = (inv.displayMetadataJson ?? null) as
+      | { patientName?: string | null; billTo?: string | null }
+      | null;
+    cur.invoices.push({
+      invoiceNumber: inv.invoiceNumber,
+      issuedAt: inv.issuedAt ?? inv.createdAt ?? null,
+      dueAt: inv.dueAt ?? null,
+      status: inv.status,
+      total: String(inv.total ?? "0"),
+      balanceDue: String(inv.balanceDue ?? "0"),
+      patientName: meta?.patientName ?? null,
+      billTo: meta?.billTo ?? null,
+    });
+    grouped.set(id, cur);
+  }
+
+  const all = Array.from(grouped.values());
+  return scope === "all" ? all : all.filter((s) => s.openBalance > 0);
+}
+
+/**
+ * Sends an SMS notification to a practice phone number via Twilio.
+ * Never throws — returns a result object instead.
+ */
+export async function sendStatementSms(opts: {
+  to: string;
+  labName: string;
+  practiceName: string;
+  periodLabel: string;
+  openBalance: number;
+}): Promise<{ delivered: boolean; reason?: string }> {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.TWILIO_PHONE_NUMBER;
+  if (!sid || !token || !from) {
+    return { delivered: false, reason: "SMS not configured on server" };
+  }
+  const body =
+    `${opts.labName}: Statement for ${opts.practiceName} — ${opts.periodLabel}. ` +
+    `Open balance: ${fmtMoney(opts.openBalance)}. Please contact us with any questions.`;
+  const params = new URLSearchParams();
+  params.set("From", from);
+  params.set("To", opts.to);
+  params.set("Body", body);
+  try {
+    const r = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+      {
+        method: "POST",
+        headers: {
+          Authorization:
+            "Basic " + Buffer.from(`${sid}:${token}`).toString("base64"),
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      }
+    );
+    if (!r.ok) {
+      return { delivered: false, reason: `Twilio HTTP ${r.status}` };
+    }
+    return { delivered: true };
+  } catch (err: any) {
+    return { delivered: false, reason: err?.message ?? "SMS send failed" };
+  }
+}
+
+/**
+ * Generates a ZIP archive containing one statement PDF per practice.
+ * All PDFs are generated sequentially before the ZIP is assembled.
+ */
+export async function generateStatementsZipBuffer(
+  labName: string,
+  statements: PracticeStatementData[],
+  label: string,
+  logoBuffer: Buffer | null
+): Promise<Buffer> {
+  const pdfs: Array<{ name: string; buf: Buffer }> = [];
+  for (const s of statements) {
+    const safeName = s.practiceName.replace(/[^a-z0-9-_]+/gi, "_");
+    const buf = await generateStatementPdfBuffer(labName, s, label, logoBuffer);
+    pdfs.push({ name: `statement-${safeName}.pdf`, buf });
+  }
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const arc = archiver("zip", { zlib: { level: 6 } });
+    const chunks: Buffer[] = [];
+    arc.on("data", (c: Buffer) => chunks.push(c));
+    arc.on("end", () => resolve(Buffer.concat(chunks)));
+    arc.on("error", reject);
+    for (const { name, buf } of pdfs) {
+      arc.append(buf, { name });
+    }
+    arc.finalize();
+  });
+}
+
+export interface BatchSendResult {
+  practiceId: string;
+  practiceName: string;
+  emailStatus: "sent" | "failed" | "skipped" | null;
+  emailError: string | null;
+  smsStatus: "sent" | "failed" | "skipped" | null;
+  smsError: string | null;
+}
+
+/**
+ * On-demand batch send: emails and/or SMS for the selected practices and scope.
+ * Records each attempt in statementSendRuns for history tracking.
+ */
+export async function runBatchSendStatements(opts: {
+  labOrganizationId: string;
+  triggeredByUserId: string;
+  practiceIds?: string[] | null;
+  invoiceScope: InvoiceScope;
+  channels: Array<"email" | "sms">;
+  emailSubject?: string | null;
+  emailBody?: string | null;
+  periodLabel?: string | null;
+}): Promise<{ periodLabel: string; results: BatchSendResult[] }> {
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, opts.labOrganizationId),
+  });
+  const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
+  const effectivePlacements = resolveLocalLogoplacements(labOrg);
+  const logoBuffer = effectivePlacements.has("statements")
+    ? await readLogoBuffer(opts.labOrganizationId)
+    : null;
+  const emailLogoUrl =
+    effectivePlacements.has("emails") && labOrg?.logoUrl
+      ? `${getAppBaseUrl()}${labOrg.logoUrl}`
+      : null;
+
+  const sched = await db.query.statementSchedules.findFirst({
+    where: eq(statementSchedules.labOrganizationId, opts.labOrganizationId),
+  });
+  const template = {
+    subject: opts.emailSubject?.trim() || sched?.emailSubject || null,
+    body: opts.emailBody?.trim() || sched?.emailBody || null,
+    replyTo: sched?.emailReplyTo || null,
+  };
+
+  const label =
+    opts.periodLabel?.trim() ||
+    `Statement as of ${new Date().toLocaleString("en-US", {
+      month: "long",
+      year: "numeric",
+    })}`;
+
+  const statements = await buildPracticeStatementsForScope(
+    opts.labOrganizationId,
+    opts.invoiceScope,
+    opts.practiceIds ?? null
+  );
+
+  const sendEmail = opts.channels.includes("email");
+  const sendSms = opts.channels.includes("sms");
+
+  // Fetch phone numbers for SMS channel.
+  const practiceOrgIds = statements.map((s) => s.practiceId);
+  const phoneById = new Map<string, string | null>();
+  if (sendSms && practiceOrgIds.length) {
+    const phoneRows = await db
+      .select({ id: organizations.id, phone: organizations.phone })
+      .from(organizations)
+      .where(inArray(organizations.id, practiceOrgIds));
+    for (const r of phoneRows) phoneById.set(r.id, r.phone);
+  }
+
+  const periodMonthStr = new Date().toISOString().slice(0, 7);
+  const results: BatchSendResult[] = [];
+
+  for (const s of statements) {
+    const safeName = s.practiceName.replace(/[^a-z0-9-_]+/gi, "_");
+    const filename = `statement-${safeName}-${periodMonthStr}.pdf`;
+
+    let emailStatus: BatchSendResult["emailStatus"] = null;
+    let emailError: string | null = null;
+    let smsStatus: BatchSendResult["smsStatus"] = null;
+    let smsError: string | null = null;
+
+    if (sendEmail) {
+      if (s.statementEmailOptOut) {
+        emailStatus = "skipped";
+        emailError = "Practice opted out of statement emails";
+      } else if (!s.practiceEmail) {
+        emailStatus = "skipped";
+        emailError = "No billing email on file";
+      } else {
+        try {
+          const pdfBuffer = await generateStatementPdfBuffer(
+            labName,
+            s,
+            label,
+            logoBuffer
+          );
+          const er = await sendStatementEmail({
+            to: s.practiceEmail,
+            fromName: labName,
+            practiceName: s.practiceName,
+            periodLabel: label,
+            pdfBuffer,
+            pdfFilename: filename,
+            totals: { billed: s.totalBilled, open: s.openBalance },
+            template,
+            labLogoUrl: emailLogoUrl,
+          });
+          emailStatus = er.delivered ? "sent" : "failed";
+          if (!er.delivered) emailError = er.reason ?? "Email send failed";
+        } catch (err: any) {
+          emailStatus = "failed";
+          emailError = err?.message ?? "Email send failed";
+          logger.error(
+            { err, practiceId: s.practiceId },
+            "Batch statement email failed"
+          );
+        }
+      }
+    }
+
+    if (sendSms) {
+      const phone = phoneById.get(s.practiceId) ?? null;
+      if (!phone) {
+        smsStatus = "skipped";
+        smsError = "No phone number on file";
+      } else {
+        const sr = await sendStatementSms({
+          to: phone,
+          labName,
+          practiceName: s.practiceName,
+          periodLabel: label,
+          openBalance: s.openBalance,
+        });
+        smsStatus = sr.delivered ? "sent" : "failed";
+        if (!sr.delivered) smsError = sr.reason ?? "SMS send failed";
+      }
+    }
+
+    const runStatus: string =
+      emailStatus === "failed" || smsStatus === "failed"
+        ? "failed"
+        : (!sendEmail || emailStatus === "skipped") &&
+            (!sendSms || smsStatus === "skipped")
+          ? "skipped_no_email"
+          : "sent";
+
+    await db.insert(statementSendRuns).values({
+      labOrganizationId: opts.labOrganizationId,
+      practiceOrganizationId: s.practiceId,
+      practiceName: s.practiceName,
+      practiceEmail: s.practiceEmail,
+      periodMonth: periodMonthStr,
+      status: runStatus,
+      errorMessage: [emailError, smsError].filter(Boolean).join("; ") || null,
+      invoiceCount: s.invoiceCount,
+      totalBilled: s.totalBilled.toFixed(2),
+      openBalance: s.openBalance.toFixed(2),
+      triggeredBy: "manual",
+      triggeredByUserId: opts.triggeredByUserId,
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+      nextAttemptAt: null,
+    });
+
+    results.push({
+      practiceId: s.practiceId,
+      practiceName: s.practiceName,
+      emailStatus,
+      emailError,
+      smsStatus,
+      smsError,
+    });
+  }
+
+  return { periodLabel: label, results };
+}
+
+/**
+ * Generates a ZIP buffer for all matching practices — with logo — ready to
+ * stream back as a download response. This keeps logo resolution out of the
+ * route layer.
+ */
+export async function generateStatementsZipBufferForLab(opts: {
+  labOrganizationId: string;
+  practiceIds?: string[] | null;
+  invoiceScope: InvoiceScope;
+  periodLabel?: string | null;
+}): Promise<{ zipBuffer: Buffer; filename: string; periodLabel: string }> {
+  const labOrg = await db.query.organizations.findFirst({
+    where: eq(organizations.id, opts.labOrganizationId),
+  });
+  const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
+  const effectivePlacements = resolveLocalLogoplacements(labOrg);
+  const logoBuffer = effectivePlacements.has("statements")
+    ? await readLogoBuffer(opts.labOrganizationId)
+    : null;
+
+  const label =
+    opts.periodLabel?.trim() ||
+    `Statement as of ${new Date().toLocaleString("en-US", {
+      month: "long",
+      year: "numeric",
+    })}`;
+
+  const statements = await buildPracticeStatementsForScope(
+    opts.labOrganizationId,
+    opts.invoiceScope,
+    opts.practiceIds ?? null
+  );
+
+  if (!statements.length) {
+    throw new Error("No invoices found for the selected practices and scope.");
+  }
+
+  const zipBuffer = await generateStatementsZipBuffer(
+    labName,
+    statements,
+    label,
+    logoBuffer
+  );
+  const dateStr = new Date().toISOString().slice(0, 10);
+  return { zipBuffer, filename: `statements-${dateStr}.zip`, periodLabel: label };
 }
 
 export async function processDueRetries(asOf: Date = new Date()): Promise<{
