@@ -1314,7 +1314,7 @@ export function InvoiceEditor({
                   )}
                   {items.map((it, idx) => (
                     <tr key={idx} className="border-t border-border">
-                      <td className="px-3 py-1.5">
+                      <td className="px-3 py-1.5 align-top">
                         {(() => {
                           // No priced catalog (case-less invoice or no
                           // tiers configured) → behave like the original
@@ -1342,15 +1342,24 @@ export function InvoiceEditor({
                             !pricedItems.some((p) => p.label === it.item);
                           if (isCustom) {
                             return (
-                              <div className="flex items-stretch gap-1">
-                                <input
-                                  type="text"
+                              <div className="flex items-start gap-1">
+                                <textarea
                                   value={it.item}
-                                  onChange={(e) =>
-                                    updateItem(idx, { item: e.target.value })
-                                  }
+                                  onChange={(e) => {
+                                    updateItem(idx, { item: e.target.value });
+                                    const el = e.currentTarget;
+                                    el.style.height = "auto";
+                                    el.style.height = `${el.scrollHeight}px`;
+                                  }}
+                                  ref={(el) => {
+                                    if (el) {
+                                      el.style.height = "auto";
+                                      el.style.height = `${el.scrollHeight}px`;
+                                    }
+                                  }}
                                   placeholder="Custom item name"
-                                  className="flex-1 min-w-0 h-8 px-2 rounded bg-background border border-input text-sm"
+                                  rows={1}
+                                  className="flex-1 min-w-0 min-h-[2rem] px-2 py-1.5 rounded bg-background border border-input text-sm resize-none overflow-hidden"
                                 />
                                 <button
                                   type="button"
