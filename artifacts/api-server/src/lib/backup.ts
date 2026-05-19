@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import archiver from "archiver";
 import { db } from "@workspace/db";
-import { systemSettings, users } from "@workspace/db";
+import { systemSettings, users, backupRuns } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { uploadToOneDrive } from "./onedrive";
 import { logger } from "./logger";
@@ -299,39 +299,82 @@ export async function getLastSuccessfulBackupAt(): Promise<string | null> {
   }
 }
 
+async function recordBackupRun(
+  result: BackupRunResult & { triggeredBy: string; error?: string },
+): Promise<void> {
+  try {
+    await db.insert(backupRuns).values({
+      triggeredBy: result.triggeredBy,
+      destination: result.destination,
+      path: result.path ?? null,
+      fileName: result.fileName,
+      sizeBytes: result.size,
+      status: result.error ? "error" : "success",
+      error: result.error ?? null,
+      completedAt: new Date(result.completedAt),
+    });
+  } catch (err) {
+    logger.warn({ err }, "Failed to record backup run in DB");
+  }
+}
+
+async function recordBackupError(
+  triggeredBy: string,
+  destination: BackupDestination,
+  destPath: string | undefined,
+  error: string,
+): Promise<void> {
+  try {
+    await db.insert(backupRuns).values({
+      triggeredBy,
+      destination,
+      path: destPath ?? null,
+      fileName: null,
+      sizeBytes: null,
+      status: "error",
+      error,
+      completedAt: new Date(),
+    });
+  } catch (err) {
+    logger.warn({ err }, "Failed to record backup error in DB");
+  }
+}
+
 export async function runBackup(
   triggeredBy: string,
   destination: BackupDestination,
   destPath?: string,
 ): Promise<BackupRunResult> {
-  if (destination === "onedrive") {
-    const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
-    const result = await uploadToOneDrive(buffer, fileName, "LabTrax Backups");
-    const runResult: BackupRunResult = {
-      size: result.size,
-      completedAt: new Date().toISOString(),
-      fileName: result.name,
-      destination: "onedrive",
-    };
-    await recordSuccessfulBackup();
-    return runResult;
+  let result: BackupRunResult;
+  try {
+    if (destination === "onedrive") {
+      const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
+      const uploaded = await uploadToOneDrive(buffer, fileName, "LabTrax Backups");
+      result = {
+        size: uploaded.size,
+        completedAt: new Date().toISOString(),
+        fileName: uploaded.name,
+        destination: "onedrive",
+      };
+    } else if (destination === "local") {
+      if (!destPath) throw new Error("A destination path is required for local backups.");
+      result = await runLocalBackup(triggeredBy, destPath);
+    } else if (destination === "network") {
+      if (!destPath) throw new Error("A network path or sftp:// URL is required for network backups.");
+      result = destPath.startsWith("sftp://")
+        ? await runSftpBackup(triggeredBy, destPath)
+        : await runLocalBackup(triggeredBy, destPath);
+    } else {
+      throw new Error(`Unknown backup destination: ${destination}`);
+    }
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await recordBackupError(triggeredBy, destination, destPath, errMsg);
+    throw err;
   }
-  if (destination === "local") {
-    if (!destPath) throw new Error("A destination path is required for local backups.");
-    const runResult = await runLocalBackup(triggeredBy, destPath);
-    await recordSuccessfulBackup();
-    return runResult;
-  }
-  if (destination === "network") {
-    if (!destPath) throw new Error("A network path or sftp:// URL is required for network backups.");
-    // sftp:// → SFTP transport; anything else → local filesystem (mounted UNC/NFS share)
-    const runResult = destPath.startsWith("sftp://")
-      ? await runSftpBackup(triggeredBy, destPath)
-      : await runLocalBackup(triggeredBy, destPath);
-    await recordSuccessfulBackup();
-    return runResult;
-  }
-  throw new Error(`Unknown backup destination: ${destination}`);
+  await recordSuccessfulBackup();
+  await recordBackupRun({ ...result, triggeredBy });
+  return result;
 }
 
 /**

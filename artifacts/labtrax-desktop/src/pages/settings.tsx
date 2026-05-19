@@ -828,6 +828,18 @@ function formatBackupSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+interface BackupRunRow {
+  id: number;
+  triggeredBy: string;
+  destination: string;
+  path: string | null;
+  fileName: string | null;
+  sizeBytes: number | null;
+  status: string;
+  error: string | null;
+  completedAt: string;
+}
+
 function BackupPanel() {
   const queryClient = useQueryClient();
   const [nowDest, setNowDest] = useState<BackupDestinationType>("onedrive");
@@ -845,6 +857,12 @@ function BackupPanel() {
   const scheduleQuery = useQuery<BackupScheduleData>({
     queryKey: ["admin", "backup-schedule-v2"],
     queryFn: () => apiFetch("/admin/backup/schedule"),
+  });
+
+  const historyQuery = useQuery<{ ok: boolean; runs: BackupRunRow[] }>({
+    queryKey: ["admin", "backup-history"],
+    queryFn: () => apiFetch("/admin/backup/history"),
+    staleTime: 30_000,
   });
 
   useEffect(() => {
@@ -868,10 +886,12 @@ function BackupPanel() {
     onSuccess: (data) => {
       setBackupResult(data);
       setBackupError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
     },
     onError: (err: Error) => {
       setBackupResult(null);
       setBackupError(err.message || "Backup failed.");
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
     },
   });
 
@@ -1152,6 +1172,94 @@ function BackupPanel() {
             </button>
           )}
         </div>
+      </div>
+
+      {/* ── Recent backups ── */}
+      <div className="border border-border rounded-lg p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <History size={14} className="text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Recent backups</h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => historyQuery.refetch()}
+            disabled={historyQuery.isFetching}
+            className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            {historyQuery.isFetching ? <Loader2 size={11} className="animate-spin inline" /> : "Refresh"}
+          </button>
+        </div>
+
+        {historyQuery.isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 size={13} className="animate-spin" />
+            Loading…
+          </div>
+        ) : historyQuery.isError ? (
+          <p className="text-xs text-destructive">Could not load backup history.</p>
+        ) : !historyQuery.data?.runs?.length ? (
+          <p className="text-xs text-muted-foreground">No backups recorded yet. Run your first backup above.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Status</th>
+                  <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">When</th>
+                  <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Destination</th>
+                  <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Size</th>
+                  <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">File</th>
+                  <th className="text-left py-1.5 font-medium text-muted-foreground">Triggered by</th>
+                </tr>
+              </thead>
+              <tbody>
+                {historyQuery.data.runs.map((run) => (
+                  <tr key={run.id} className="border-b border-border/50 last:border-0 hover:bg-muted/30">
+                    <td className="py-1.5 pr-3 align-top">
+                      {run.status === "success" ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-success/15 text-success">
+                          <Check size={9} />
+                          OK
+                        </span>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-destructive/15 text-destructive cursor-help"
+                          title={run.error ?? "Unknown error"}
+                        >
+                          Error
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-3 align-top whitespace-nowrap text-muted-foreground">
+                      {new Date(run.completedAt).toLocaleString(undefined, {
+                        month: "short", day: "numeric", year: "numeric",
+                        hour: "numeric", minute: "2-digit",
+                      })}
+                    </td>
+                    <td className="py-1.5 pr-3 align-top capitalize">
+                      {run.destination}
+                      {run.path && (
+                        <span className="block text-[10px] text-muted-foreground font-mono truncate max-w-[140px]" title={run.path}>
+                          {run.path}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-3 align-top whitespace-nowrap">
+                      {run.sizeBytes != null ? formatBackupSize(run.sizeBytes) : "—"}
+                    </td>
+                    <td className="py-1.5 pr-3 align-top font-mono max-w-[160px] truncate" title={run.fileName ?? undefined}>
+                      {run.fileName ?? "—"}
+                    </td>
+                    <td className="py-1.5 align-top text-muted-foreground">
+                      {run.triggeredBy}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </PanelShell>
   );

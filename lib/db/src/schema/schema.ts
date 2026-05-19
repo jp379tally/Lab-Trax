@@ -1676,6 +1676,24 @@ export const vendors = pgTable(
   })
 );
 
+export const backupRuns = pgTable(
+  "backup_runs",
+  {
+    id: serial("id").primaryKey(),
+    triggeredBy: text("triggered_by").notNull(),
+    destination: text("destination").notNull(),
+    path: text("path"),
+    fileName: text("file_name"),
+    sizeBytes: integer("size_bytes"),
+    status: text("status").notNull().default("success"),
+    error: text("error"),
+    completedAt: timestamp("completed_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    completedAtIdx: index("backup_runs_completed_at_idx").on(table.completedAt),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

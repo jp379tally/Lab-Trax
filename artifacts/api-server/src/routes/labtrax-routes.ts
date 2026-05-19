@@ -20,7 +20,7 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions, backupRuns } from "@workspace/db";
 import { notDeleted } from "../lib/soft-delete";
 import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
@@ -4657,6 +4657,24 @@ Important rules:
       return res.json({ ok: true, enabled: false });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to disable backup schedule.";
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── Admin Backup: history ─────────────────────────────────────────────────
+  router.get("/admin/backup/history", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const rows = await db
+        .select()
+        .from(backupRuns)
+        .orderBy(sql`${backupRuns.completedAt} DESC`)
+        .limit(20);
+      return res.json({ ok: true, runs: rows });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to fetch backup history.";
       return res.status(500).json({ error: msg });
     }
   });
