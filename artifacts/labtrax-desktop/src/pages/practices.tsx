@@ -751,6 +751,7 @@ interface PracticeFields {
   zip: string;
   isActive: boolean;
   accountNumber: string;
+  statementEmailOptOut: boolean;
 }
 
 export function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => void }) {
@@ -770,6 +771,7 @@ export function PracticeEditor({ org, onClose }: { org: Organization; onClose: (
     zip: org.zip || "",
     isActive: org.isActive ?? true,
     accountNumber: org.accountNumber || "",
+    statementEmailOptOut: org.statementEmailOptOut ?? false,
   });
 
   const detailQuery = useQuery({
@@ -797,6 +799,7 @@ export function PracticeEditor({ org, onClose }: { org: Organization; onClose: (
       zip: d.zip || "",
       isActive: d.isActive ?? true,
       accountNumber: d.accountNumber || "",
+      statementEmailOptOut: d.statementEmailOptOut ?? false,
     });
   }, [detailQuery.data]);
 
@@ -993,6 +996,22 @@ export function PracticeEditor({ org, onClose }: { org: Organization; onClose: (
                 Active
               </label>
             </FormField>
+            {org.type === "provider" && (
+              <FormField label="Statement emails" full>
+                <label className="inline-flex items-center gap-2 text-sm h-9 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={fields.statementEmailOptOut}
+                    onChange={(e) => update("statementEmailOptOut", e.target.checked)}
+                    className="h-4 w-4"
+                  />
+                  Opt out of automated statement emails
+                </label>
+                <div className="text-[11px] text-muted-foreground mt-1">
+                  When checked, this practice will be skipped during monthly auto-send runs even if it has a billing email on file.
+                </div>
+              </FormField>
+            )}
             {org.type === "provider" && org.parentLabOrganizationId && (
               <FormField label="Account number" full>
                 <input

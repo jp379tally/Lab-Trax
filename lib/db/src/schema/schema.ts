@@ -165,6 +165,12 @@ export const organizations = pgTable(
     }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    // When true, the automated statement-email engine will skip this practice
+    // even if it has activity and a billing email. Labs set this once per
+    // practice instead of manually deselecting the practice each month.
+    statementEmailOptOut: boolean("statement_email_opt_out")
+      .default(false)
+      .notNull(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),
   },

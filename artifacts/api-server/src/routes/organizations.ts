@@ -58,6 +58,8 @@ const createOrgSchema = z.object({
   state: z.string().optional(),
   zip: z.string().optional(),
   isActive: z.boolean().optional(),
+  // When true the automated statement-email engine skips this practice.
+  statementEmailOptOut: z.boolean().optional(),
   // Doctor name is used (alongside the address) to derive the auto account
   // number when the lab admin doesn't supply one. It's optional and not
   // persisted on the org row directly — it just feeds the derivation.

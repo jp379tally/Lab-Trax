@@ -34,6 +34,8 @@ export interface PracticeStatementData {
   practiceId: string;
   practiceName: string;
   practiceEmail: string | null;
+  /** True when the practice has opted out of receiving statement emails. */
+  statementEmailOptOut: boolean;
   invoiceCount: number;
   totalBilled: number;
   totalPaid: number;
@@ -142,6 +144,7 @@ export async function buildPracticeStatements(
         practiceId: id,
         practiceName: org?.displayName || org?.name || "Unknown practice",
         practiceEmail: org?.billingEmail || null,
+        statementEmailOptOut: org?.statementEmailOptOut ?? false,
         invoiceCount: 0,
         totalBilled: 0,
         totalPaid: 0,
@@ -401,7 +404,7 @@ export interface RunResultRow {
   practiceId: string;
   practiceName: string;
   practiceEmail: string | null;
-  status: "sent" | "failed" | "skipped_no_email";
+  status: "sent" | "failed" | "skipped_no_email" | "skipped_opted_out";
   errorMessage?: string;
 }
 
@@ -451,7 +454,10 @@ export async function runMonthlyStatementsForLab(opts: {
     let errorMessage: string | undefined;
 
     try {
-      if (!s.practiceEmail) {
+      if (s.statementEmailOptOut) {
+        status = "skipped_opted_out";
+        errorMessage = "Practice has opted out of statement emails";
+      } else if (!s.practiceEmail) {
         status = "skipped_no_email";
         errorMessage = "Practice has no billing email on file";
       } else {
@@ -524,7 +530,7 @@ export async function runMonthlyStatementsForLab(opts: {
 
 export interface RetryResult {
   runId: string;
-  status: "sent" | "failed" | "skipped_no_email";
+  status: "sent" | "failed" | "skipped_no_email" | "skipped_opted_out";
   attemptCount: number;
   errorMessage?: string;
 }
@@ -549,10 +555,11 @@ async function attemptStatementSendForRun(runId: string): Promise<RetryResult> {
   });
   const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
 
-  // Re-resolve the practice's billing email — it may have been corrected
-  // between the original failed attempt and the retry.
+  // Re-resolve the practice's billing email and opt-out flag — they may have
+  // been corrected between the original failed attempt and the retry.
   let practiceEmail = run.practiceEmail;
   let practiceName = run.practiceName;
+  let practiceOptedOut = false;
   if (run.practiceOrganizationId) {
     const practice = await db.query.organizations.findFirst({
       where: eq(organizations.id, run.practiceOrganizationId),
@@ -560,6 +567,7 @@ async function attemptStatementSendForRun(runId: string): Promise<RetryResult> {
     if (practice) {
       practiceEmail = practice.billingEmail || null;
       practiceName = practice.displayName || practice.name || practiceName;
+      practiceOptedOut = practice.statementEmailOptOut ?? false;
     }
   }
 
@@ -578,7 +586,10 @@ async function attemptStatementSendForRun(runId: string): Promise<RetryResult> {
   let errorMessage: string | undefined;
 
   try {
-    if (!practiceEmail) {
+    if (practiceOptedOut) {
+      status = "skipped_opted_out";
+      errorMessage = "Practice has opted out of statement emails";
+    } else if (!practiceEmail) {
       status = "skipped_no_email";
       errorMessage = "Practice has no billing email on file";
     } else if (!data) {
@@ -843,6 +854,9 @@ export async function processDueSchedules(asOf: Date = new Date()): Promise<void
       const skipped = result.results.filter(
         (r) => r.status === "skipped_no_email"
       ).length;
+      const optedOut = result.results.filter(
+        (r) => r.status === "skipped_opted_out"
+      ).length;
       logger.info(
         {
           labOrganizationId: sched.labOrganizationId,
@@ -850,6 +864,7 @@ export async function processDueSchedules(asOf: Date = new Date()): Promise<void
           sent,
           failed,
           skipped,
+          optedOut,
         },
         "Scheduled monthly statements complete"
       );

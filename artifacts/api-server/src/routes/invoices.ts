@@ -2742,6 +2742,7 @@ async function buildAndPersistStatementPdf(opts: {
     practiceId: opts.providerOrganizationId,
     practiceName,
     practiceEmail: practice?.billingEmail || null,
+    statementEmailOptOut: practice?.statementEmailOptOut ?? false,
     invoiceCount: opts.invoicesList.length,
     totalBilled: opts.totals.billed,
     totalPaid: opts.totals.paid,

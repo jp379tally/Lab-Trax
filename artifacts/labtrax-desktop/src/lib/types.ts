@@ -339,6 +339,7 @@ export interface Organization {
   state?: string | null;
   zip?: string | null;
   isActive?: boolean;
+  statementEmailOptOut?: boolean | null;
   parentLabOrganizationId?: string | null;
   accountNumber?: string | null;
   createdByUserId?: string | null;
