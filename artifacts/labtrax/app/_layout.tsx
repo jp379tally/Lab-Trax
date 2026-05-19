@@ -22,6 +22,7 @@ import { queryClient } from "@/lib/query-client";
 import { AppProvider } from "@/lib/app-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { ThemeProvider } from "@/lib/theme-context";
+import { RevenueCatProvider } from "@/lib/revenuecat";
 import LoginScreen from "@/components/LoginScreen";
 import LockScreen from "@/components/LockScreen";
 import Colors from "@/constants/colors";
@@ -103,7 +104,7 @@ function InactivityWrapper({ children }: { children: React.ReactNode }) {
 }
 
 function AuthGate() {
-  const { isAuthenticated, isAuthLoading, isLocked } = useAuth();
+  const { isAuthenticated, isAuthLoading, isLocked, currentUserId } = useAuth();
 
   if (isAuthLoading) {
     return (
@@ -122,9 +123,10 @@ function AuthGate() {
   }
 
   return (
-    <ThemeProvider>
-      <AppProvider>
-        <InactivityWrapper>
+    <RevenueCatProvider userId={currentUserId}>
+      <ThemeProvider>
+        <AppProvider>
+          <InactivityWrapper>
           <View style={{ flex: 1, backgroundColor: Colors.light.backgroundSolid }}>
             <LinearGradient
               colors={["rgba(20,93,160,0.14)", "rgba(20,93,160,0.03)", "rgba(244,247,251,0)"]}
@@ -144,9 +146,10 @@ function AuthGate() {
             />
             <RootLayoutNav />
           </View>
-        </InactivityWrapper>
-      </AppProvider>
-    </ThemeProvider>
+          </InactivityWrapper>
+        </AppProvider>
+      </ThemeProvider>
+    </RevenueCatProvider>
   );
 }
 

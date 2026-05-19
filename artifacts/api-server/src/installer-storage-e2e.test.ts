@@ -167,6 +167,9 @@ vi.mock("@workspace/db", () => {
     systemSettings: T,
     installerChangelog: T,
     installerUploads: T,
+    // Billing / subscriptions
+    subscriptions: T,
+    subscriptionEvents: T,
     // Audit / misc
     auditLogs: T,
     mediaCleanupRuns: T,

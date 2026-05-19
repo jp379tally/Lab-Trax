@@ -13,7 +13,14 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/theme-context";
-import { resilientFetch, getApiUrl } from "@/lib/query-client";
+import { resilientFetch } from "@/lib/query-client";
+import {
+  isRevenueCatAvailable,
+  useRevenueCat,
+  purchasePackage,
+  restorePurchases,
+} from "@/lib/revenuecat";
+import type { PurchasesPackage } from "react-native-purchases";
 
 interface Entitlement {
   status:
@@ -123,6 +130,18 @@ function fmtPrice(unitAmount: number | null, currency: string, interval: string 
   return `$${price} ${curr}${per}`;
 }
 
+function fmtRcPrice(pkg: PurchasesPackage): string {
+  const price = pkg.product.priceString;
+  const period = pkg.packageType === "MONTHLY"
+    ? "/mo"
+    : pkg.packageType === "ANNUAL"
+      ? "/yr"
+      : "";
+  return `${price}${period}`;
+}
+
+const useNativeIAP = Platform.OS === "ios" || Platform.OS === "android";
+
 export default function SubscriptionScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -133,28 +152,38 @@ export default function SubscriptionScreen() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const rcAvailable = isRevenueCatAvailable();
+  const { offering, loading: rcLoading, refresh: rcRefresh } = useRevenueCat();
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [subResp, plansResp] = await Promise.all([
         resilientFetch("/api/billing/subscription"),
-        resilientFetch("/api/billing/plans"),
+        useNativeIAP && rcAvailable
+          ? Promise.resolve(null)
+          : resilientFetch("/api/billing/plans"),
       ]);
       const subJson = await subResp.json().catch(() => ({}));
-      const plansJson = await plansResp.json().catch(() => ({}));
       setEntitlement(subJson?.entitlement ?? null);
-      setPlans(plansJson?.plans ?? []);
-    } catch (err: any) {
+      if (plansResp) {
+        const plansJson = await plansResp.json().catch(() => ({}));
+        setPlans(plansJson?.plans ?? []);
+      }
+    } catch {
       setError("Failed to load subscription info.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [rcAvailable]);
 
   useEffect(() => {
     load();
-  }, [load]);
+    if (rcAvailable) {
+      rcRefresh();
+    }
+  }, [load, rcAvailable, rcRefresh]);
 
   const meta = entitlement ? (STATUS_META[entitlement.status] ?? STATUS_META.legacy_free) : null;
 
@@ -164,6 +193,48 @@ export default function SubscriptionScreen() {
     entitlement?.status === "locked" ||
     entitlement?.status === "past_due" ||
     entitlement?.status === "canceled";
+
+  async function handleNativePurchase(pkg: PurchasesPackage) {
+    setActionLoading(true);
+    try {
+      const result = await purchasePackage(pkg);
+      if (result.cancelled) {
+        return;
+      }
+      if (result.success) {
+        await load();
+        Alert.alert("Success", "Your subscription is now active!");
+      } else {
+        Alert.alert("Purchase Failed", result.error ?? "Something went wrong. Please try again.");
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleNativeRestore() {
+    setActionLoading(true);
+    try {
+      const result = await restorePurchases();
+      if (result.success) {
+        await load();
+        Alert.alert("Restored", "Your purchases have been restored.");
+      } else {
+        Alert.alert("Restore Failed", result.error ?? "No purchases found to restore.");
+      }
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleNativeManage() {
+    const { Linking } = await import("react-native");
+    if (Platform.OS === "ios") {
+      await Linking.openURL("https://apps.apple.com/account/subscriptions");
+    } else {
+      await Linking.openURL("https://play.google.com/store/account/subscriptions");
+    }
+  }
 
   async function handleSubscribe(priceId?: string) {
     setActionLoading(true);
@@ -217,6 +288,8 @@ export default function SubscriptionScreen() {
       setActionLoading(false);
     }
   }
+
+  const rcPackages = offering?.availablePackages ?? [];
 
   return (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
@@ -318,8 +391,74 @@ export default function SubscriptionScreen() {
               </View>
             </View>
 
-            {/* CTA */}
-            {needsPayment && (
+            {/* CTA — native IAP (iOS / Android) */}
+            {needsPayment && useNativeIAP && rcAvailable && (
+              <View style={{ gap: 12 }}>
+                {rcLoading ? (
+                  <ActivityIndicator size="small" color={colors.tint} />
+                ) : rcPackages.length > 0 ? (
+                  <>
+                    <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
+                      CHOOSE A PLAN
+                    </Text>
+                    {rcPackages.map((pkg) => (
+                      <Pressable
+                        key={pkg.identifier}
+                        style={({ pressed }) => [
+                          styles.planCard,
+                          {
+                            backgroundColor: colors.backgroundSolid,
+                            borderColor: isDark ? "#444" : "#E2E8F0",
+                          },
+                          pressed && { opacity: 0.75 },
+                        ]}
+                        onPress={() => handleNativePurchase(pkg)}
+                        disabled={actionLoading}
+                      >
+                        <Text style={[styles.planName, { color: colors.text }]}>
+                          {pkg.product.title || pkg.product.identifier}
+                        </Text>
+                        <Text style={[styles.planPrice, { color: colors.tint }]}>
+                          {fmtRcPrice(pkg)}
+                        </Text>
+                        {actionLoading ? (
+                          <ActivityIndicator size="small" color={colors.tint} />
+                        ) : (
+                          <Ionicons
+                            name="arrow-forward-circle"
+                            size={22}
+                            color={colors.tint}
+                          />
+                        )}
+                      </Pressable>
+                    ))}
+
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.restoreBtn,
+                        pressed && { opacity: 0.7 },
+                      ]}
+                      onPress={handleNativeRestore}
+                      disabled={actionLoading}
+                    >
+                      <Text style={[styles.restoreBtnText, { color: colors.textSecondary }]}>
+                        Restore Purchases
+                      </Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <View style={styles.errorBox}>
+                    <Ionicons name="information-circle-outline" size={20} color="#6B7280" />
+                    <Text style={[styles.errorText, { color: "#6B7280" }]}>
+                      No plans available. Please try again later.
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* CTA — Stripe / web */}
+            {needsPayment && !useNativeIAP && (
               <View style={{ gap: 12 }}>
                 {plans.length > 0 ? (
                   <>
@@ -383,6 +522,7 @@ export default function SubscriptionScreen() {
               </View>
             )}
 
+            {/* Manage subscription */}
             {(entitlement.status === "active" || entitlement.status === "past_due") && (
               <Pressable
                 style={({ pressed }) => [
@@ -393,7 +533,7 @@ export default function SubscriptionScreen() {
                   },
                   pressed && { opacity: 0.7 },
                 ]}
-                onPress={handleManage}
+                onPress={useNativeIAP && rcAvailable ? handleNativeManage : handleManage}
                 disabled={actionLoading}
               >
                 {actionLoading ? (
@@ -403,6 +543,22 @@ export default function SubscriptionScreen() {
                 )}
                 <Text style={[styles.secondaryBtnText, { color: colors.tint }]}>
                   Manage Subscription
+                </Text>
+              </Pressable>
+            )}
+
+            {/* Restore on manage view as well (iOS requirement) */}
+            {useNativeIAP && rcAvailable && !needsPayment && (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.restoreBtn,
+                  pressed && { opacity: 0.7 },
+                ]}
+                onPress={handleNativeRestore}
+                disabled={actionLoading}
+              >
+                <Text style={[styles.restoreBtnText, { color: colors.textSecondary }]}>
+                  Restore Purchases
                 </Text>
               </Pressable>
             )}
@@ -609,6 +765,14 @@ const styles = StyleSheet.create({
   secondaryBtnText: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 15,
+  },
+  restoreBtn: {
+    alignItems: "center",
+    paddingVertical: 10,
+  },
+  restoreBtnText: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
   },
   detailsCard: {
     borderRadius: 14,
