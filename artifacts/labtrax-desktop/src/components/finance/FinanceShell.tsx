@@ -54,7 +54,7 @@ export function FinanceShell({ children, requireAccount }: Props) {
     <div className="px-8 py-7">
       <div className="flex items-start justify-between mb-5">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Finance</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Financial</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Bank register, reconciliation, cash flow, and recurring entries.
           </p>

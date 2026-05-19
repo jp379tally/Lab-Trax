@@ -6,6 +6,7 @@ import {
   Building2,
   CheckCircle,
   ChevronDown,
+  ChevronRight,
   CreditCard,
   FileBarChart2,
   FileText,
@@ -40,16 +41,32 @@ interface NavItem {
   billingOnly?: boolean;
 }
 
-const NAV: NavItem[] = [
+interface NavGroup {
+  label: string;
+  icon: typeof LayoutDashboard;
+  children: NavItem[];
+}
+
+const NAV: (NavItem | NavGroup)[] = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
   { label: "Cases", path: "/cases", icon: FileText },
   { label: "Accounts", path: "/accounts", icon: Building2 },
-  { label: "Invoices", path: "/invoices", icon: Receipt },
-  { label: "Financial", path: "/finance", icon: Wallet },
-  { label: "Statements", path: "/statements", icon: CreditCard },
+  {
+    label: "Financial",
+    icon: Wallet,
+    children: [
+      { label: "Invoices", path: "/invoices", icon: Receipt },
+      { label: "Statements", path: "/statements", icon: CreditCard },
+      { label: "Bank Register", path: "/finance", icon: Wallet },
+    ],
+  },
   { label: "Pricing", path: "/pricing", icon: Tag },
   { label: "Reports", path: "/reports", icon: FileBarChart2, billingOnly: true },
 ];
+
+function isGroup(item: NavItem | NavGroup): item is NavGroup {
+  return "children" in item;
+}
 
 const BILLING_ROLES = new Set(["owner", "admin", "billing"]);
 
@@ -85,6 +102,11 @@ export function AppLayout({ children }: Props) {
       ),
     [meQuery.data],
   );
+
+  const financialPaths = ["/invoices", "/statements", "/finance"];
+  const financialActive = financialPaths.some((p) => location.startsWith(p));
+  const [financialOpen, setFinancialOpen] = useState(financialActive);
+
   const successCount = entries.filter((e) => e.status === "success").length;
   const errorCount = entries.filter((e) => e.status === "error").length;
   const interruptedCount = entries.filter((e) => e.status === "interrupted").length;
@@ -104,6 +126,38 @@ export function AppLayout({ children }: Props) {
 
   const role = user?.role === "admin" ? "Admin" : user?.role === "user" ? "User" : "Member";
 
+  function renderNavItem(item: NavItem, indent = false) {
+    if (item.billingOnly && !hasBillingLab) return null;
+    if (item.adminOnly && user?.role !== "admin") return null;
+    const active =
+      item.path === "/"
+        ? location === "/" || location === ""
+        : location.startsWith(item.path);
+    const Icon = item.icon;
+    return (
+      <li key={item.path}>
+        <Link
+          href={item.path}
+          className={`flex items-center gap-3 rounded-md text-sm font-medium transition-colors ${
+            indent ? "px-3 py-1.5 pl-9" : "px-3 py-2"
+          } ${
+            active
+              ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+              : "text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          }`}
+        >
+          <Icon size={indent ? 14 : 16} strokeWidth={2.2} />
+          <span className="flex-1">{item.label}</span>
+          {item.badge && (
+            <span className="text-[10px] bg-sidebar-accent text-sidebar-accent-foreground px-1.5 py-0.5 rounded-full">
+              {item.badge}
+            </span>
+          )}
+        </Link>
+      </li>
+    );
+  }
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
       {/* Sidebar */}
@@ -116,32 +170,38 @@ export function AppLayout({ children }: Props) {
             Workspace
           </div>
           <ul className="space-y-0.5">
-            {NAV.filter((item) => !item.billingOnly || hasBillingLab).map((item) => {
-              const active =
-                item.path === "/"
-                  ? location === "/" || location === ""
-                  : location.startsWith(item.path);
-              const Icon = item.icon;
-              return (
-                <li key={item.path}>
-                  <Link
-                    href={item.path}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                      active
-                        ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
-                        : "text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                    }`}
-                  >
-                    <Icon size={16} strokeWidth={2.2} />
-                    <span className="flex-1">{item.label}</span>
-                    {item.badge && (
-                      <span className="text-[10px] bg-sidebar-accent text-sidebar-accent-foreground px-1.5 py-0.5 rounded-full">
-                        {item.badge}
-                      </span>
+            {NAV.map((item) => {
+              if (isGroup(item)) {
+                const isOpen = financialOpen || financialActive;
+                const Icon = item.icon;
+                return (
+                  <li key={item.label}>
+                    <button
+                      type="button"
+                      onClick={() => setFinancialOpen((v) => !v)}
+                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                        financialActive && !isOpen
+                          ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+                          : "text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                      }`}
+                    >
+                      <Icon size={16} strokeWidth={2.2} />
+                      <span className="flex-1 text-left">{item.label}</span>
+                      {isOpen ? (
+                        <ChevronDown size={14} className="shrink-0 opacity-60" />
+                      ) : (
+                        <ChevronRight size={14} className="shrink-0 opacity-60" />
+                      )}
+                    </button>
+                    {isOpen && (
+                      <ul className="mt-0.5 space-y-0.5">
+                        {item.children.map((child) => renderNavItem(child, true))}
+                      </ul>
                     )}
-                  </Link>
-                </li>
-              );
+                  </li>
+                );
+              }
+              return renderNavItem(item as NavItem);
             })}
           </ul>
 
