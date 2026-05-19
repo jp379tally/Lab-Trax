@@ -512,6 +512,11 @@ export default function AccountsPage() {
                                 <Archive size={9} /> Archived
                               </span>
                             )}
+                            {!search.trim() && orgDoctors.length > 0 && (
+                              <span className="text-[10px] font-normal bg-primary/10 text-primary rounded-full px-2 py-0.5 tabular-nums">
+                                {orgDoctors.length} {orgDoctors.length === 1 ? "doctor" : "doctors"}
+                              </span>
+                            )}
                           </div>
                           {org.displayName && (
                             <div className="text-xs text-muted-foreground">{org.name}</div>
