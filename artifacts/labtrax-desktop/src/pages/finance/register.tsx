@@ -388,6 +388,7 @@ function RegisterTable({
         <TxnEditor
           organizationId={organizationId}
           accountId={accountId}
+          accounts={accounts}
           existing={editing}
           categories={cats.data || []}
           onClose={() => {
@@ -431,6 +432,16 @@ function RegisterTable({
   );
 }
 
+interface RecurringSource {
+  payee?: string | null;
+  memo?: string | null;
+  categoryId?: string | null;
+  bankAccountId: string;
+  txnDate: string;
+  debitAmount: string | number;
+  creditAmount: string | number;
+}
+
 function MakeRecurringDialog({
   organizationId,
   accounts,
@@ -442,7 +453,7 @@ function MakeRecurringDialog({
   organizationId: string;
   accounts: BankAccount[];
   categories: TransactionCategory[];
-  source: BankTransaction;
+  source: RecurringSource;
   onClose: () => void;
   onComplete: () => void;
 }) {
@@ -1119,17 +1130,20 @@ function SummaryCard({
 function TxnEditor({
   organizationId,
   accountId,
+  accounts,
   existing,
   categories,
   onClose,
 }: {
   organizationId: string;
   accountId: string;
+  accounts: BankAccount[];
   existing: BankTransaction | null;
   categories: TransactionCategory[];
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const [showRecurring, setShowRecurring] = useState(false);
   const [txnDate, setTxnDate] = useState<string>(
     existing ? toInputDate(existing.txnDate) : new Date().toISOString().slice(0, 10)
   );
@@ -1372,6 +1386,16 @@ function TxnEditor({
               <CheckCircle2 size={14} />
               {save.isPending ? "Saving…" : existing ? "Save changes" : "Add entry"}
             </button>
+            {(!existing || !existing.recurringRuleId) && (
+              <button
+                type="button"
+                onClick={() => setShowRecurring(true)}
+                className="h-9 px-4 rounded-md text-sm hover:bg-secondary inline-flex items-center gap-1.5"
+              >
+                <Repeat size={14} />
+                Recurring
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -1382,6 +1406,24 @@ function TxnEditor({
           </div>
         </div>
       </div>
+      {showRecurring && (
+        <MakeRecurringDialog
+          organizationId={organizationId}
+          accounts={accounts}
+          categories={categories}
+          source={{
+            payee: payee || null,
+            memo: memo || null,
+            categoryId: categoryId || null,
+            bankAccountId: accountId,
+            txnDate: txnDate,
+            debitAmount: payment,
+            creditAmount: deposit,
+          }}
+          onClose={() => setShowRecurring(false)}
+          onComplete={() => setShowRecurring(false)}
+        />
+      )}
     </div>
   );
 }
