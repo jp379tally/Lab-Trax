@@ -1880,9 +1880,50 @@ export default function CaseDetailScreen() {
                       }
                       return;
                     }
-                    Linking.openURL(fileUrl).catch(() => {
-                      Alert.alert("Unable to open", "Could not open this file.");
-                    });
+                    if (downloadingAttachmentId === att.id) return;
+                    const mimeType = att.fileType || "application/octet-stream";
+                    const fullUrl = fileUrl.startsWith("http")
+                      ? fileUrl
+                      : new URL(fileUrl, getApiUrl()).toString();
+                    const cacheDir = FileSystem.Paths.cache.uri;
+                    const localUri = cacheDir.endsWith("/") ? cacheDir + att.fileName : cacheDir + "/" + att.fileName;
+                    setDownloadingAttachmentId(att.id);
+                    setDownloadProgress(0);
+                    try {
+                      const token = getAccessToken();
+                      const downloadResumable = FileSystem.createDownloadResumable(
+                        fullUrl,
+                        localUri,
+                        token ? { headers: { Authorization: `Bearer ${token}` } } : {},
+                        (progressData) => {
+                          const { totalBytesWritten, totalBytesExpectedToWrite } = progressData;
+                          if (totalBytesExpectedToWrite > 0) {
+                            setDownloadProgress(totalBytesWritten / totalBytesExpectedToWrite);
+                          }
+                        },
+                      );
+                      const downloadRes = await downloadResumable.downloadAsync();
+                      if (!downloadRes || downloadRes.status !== 200) {
+                        Alert.alert("Download failed", "Could not download this file.");
+                        return;
+                      }
+                      const canShare = await Sharing.isAvailableAsync();
+                      if (canShare) {
+                        await Sharing.shareAsync(downloadRes.uri, {
+                          mimeType,
+                          dialogTitle: att.fileName,
+                        });
+                      } else {
+                        await Linking.openURL(downloadRes.uri).catch(() => {
+                          Alert.alert("Unable to open", "Could not open this file.");
+                        });
+                      }
+                    } catch {
+                      Alert.alert("Unable to open", "Could not download or open this file.");
+                    } finally {
+                      setDownloadingAttachmentId(null);
+                      setDownloadProgress(0);
+                    }
                   }}
                   style={({ pressed }) => ({
                     flexDirection: "row" as const,
