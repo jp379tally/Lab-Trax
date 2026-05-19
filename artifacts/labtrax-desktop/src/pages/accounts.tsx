@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Building2,
   CheckSquare,
   ChevronDown,
@@ -62,6 +65,9 @@ export default function AccountsPage() {
 
   const [search, setSearch] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [openCasesOnly, setOpenCasesOnly] = useState(false);
+  const [doctorSortKey, setDoctorSortKey] = useState<"totalCases" | "openCases" | "totalBilled" | "lastCaseAt">("totalCases");
+  const [doctorSortDir, setDoctorSortDir] = useState<"asc" | "desc">("desc");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<Organization | null>(null);
   const [adding, setAdding] = useState(false);
@@ -192,6 +198,15 @@ export default function AccountsPage() {
 
   const archivedCount = useMemo(() => orgs.filter((o) => !!o.deletedAt).length, [orgs]);
 
+  function handleDoctorSortClick(key: typeof doctorSortKey) {
+    if (doctorSortKey === key) {
+      setDoctorSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setDoctorSortKey(key);
+      setDoctorSortDir("desc");
+    }
+  }
+
   const { filteredPractices, autoExpandedIds } = useMemo(() => {
     const q = search.trim().toLowerCase();
     const practiceOrgs = orgs.filter((o) => o.type === "provider" || o.type === "lab");
@@ -199,19 +214,37 @@ export default function AccountsPage() {
 
     const result = practiceOrgs.filter((o) => {
       if (!showArchived && o.deletedAt) return false;
+
+      const doctors = doctorsByPractice.get(o.id) ?? [];
+
+      if (openCasesOnly) {
+        const hasVisibleDoctor = doctors.some((d) => {
+          if (d.openCases === 0) return false;
+          if (!q) return true;
+          return d.doctorName.toLowerCase().includes(q) || d.practiceName.toLowerCase().includes(q);
+        });
+        if (!hasVisibleDoctor) {
+          const nameMatch =
+            o.name.toLowerCase().includes(q) ||
+            (o.displayName || "").toLowerCase().includes(q);
+          if (!nameMatch) return false;
+          const anyOpenDoc = doctors.some((d) => d.openCases > 0);
+          if (!anyOpenDoc) return false;
+        }
+      }
+
       if (!q) return true;
       const nameMatch =
         o.name.toLowerCase().includes(q) ||
         (o.displayName || "").toLowerCase().includes(q);
       if (nameMatch) return true;
-      const doctors = doctorsByPractice.get(o.id) ?? [];
       const doctorMatch = doctors.some((d) => d.doctorName.toLowerCase().includes(q));
       if (doctorMatch) autoExp.add(o.id);
       return doctorMatch;
     }).sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
 
     return { filteredPractices: result, autoExpandedIds: autoExp };
-  }, [orgs, search, showArchived, doctorsByPractice]);
+  }, [orgs, search, showArchived, openCasesOnly, doctorsByPractice]);
 
   const effectiveExpanded = useMemo(() => {
     const combined = new Set(expanded);
@@ -280,6 +313,15 @@ export default function AccountsPage() {
             />
             Show archived{archivedCount > 0 ? ` (${archivedCount})` : ""}
           </label>
+          <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground select-none cursor-pointer">
+            <input
+              type="checkbox"
+              checked={openCasesOnly}
+              onChange={(e) => setOpenCasesOnly(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            With open cases only
+          </label>
 
           {picked.size > 0 && (
             <div className="ml-auto flex items-center gap-2">
@@ -325,12 +367,68 @@ export default function AccountsPage() {
                 <th className="text-left font-medium px-4 py-2.5">Practice / Doctor</th>
                 <th className="text-left font-medium py-2.5">Contact</th>
                 <th className="text-left font-medium py-2.5">Location</th>
-                <th className="text-right font-medium py-2.5">Cases</th>
-                <th className="text-right font-medium py-2.5">Open</th>
+                <th className="text-right font-medium py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => handleDoctorSortClick("totalCases")}
+                    className="inline-flex items-center gap-1 hover:text-foreground transition-colors ml-auto"
+                    title="Sort doctors by Cases"
+                  >
+                    Cases
+                    {doctorSortKey === "totalCases" ? (
+                      doctorSortDir === "desc" ? <ArrowDown size={11} /> : <ArrowUp size={11} />
+                    ) : (
+                      <ArrowUpDown size={11} className="opacity-40" />
+                    )}
+                  </button>
+                </th>
+                <th className="text-right font-medium py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => handleDoctorSortClick("openCases")}
+                    className="inline-flex items-center gap-1 hover:text-foreground transition-colors ml-auto"
+                    title="Sort doctors by Open cases"
+                  >
+                    Open
+                    {doctorSortKey === "openCases" ? (
+                      doctorSortDir === "desc" ? <ArrowDown size={11} /> : <ArrowUp size={11} />
+                    ) : (
+                      <ArrowUpDown size={11} className="opacity-40" />
+                    )}
+                  </button>
+                </th>
                 <th className="text-right font-medium py-2.5">Rush</th>
-                <th className="text-right font-medium py-2.5">Billed</th>
+                <th className="text-right font-medium py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => handleDoctorSortClick("totalBilled")}
+                    className="inline-flex items-center gap-1 hover:text-foreground transition-colors ml-auto"
+                    title="Sort doctors by Billed amount"
+                  >
+                    Billed
+                    {doctorSortKey === "totalBilled" ? (
+                      doctorSortDir === "desc" ? <ArrowDown size={11} /> : <ArrowUp size={11} />
+                    ) : (
+                      <ArrowUpDown size={11} className="opacity-40" />
+                    )}
+                  </button>
+                </th>
                 <th className="text-right font-medium py-2.5">Balance</th>
-                <th className="text-left font-medium px-5 py-2.5">Last case</th>
+                <th className="text-left font-medium px-5 py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => handleDoctorSortClick("lastCaseAt")}
+                    className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                    title="Sort doctors by Last case date"
+                  >
+                    Last case
+                    {doctorSortKey === "lastCaseAt" ? (
+                      doctorSortDir === "desc" ? <ArrowDown size={11} /> : <ArrowUp size={11} />
+                    ) : (
+                      <ArrowUpDown size={11} className="opacity-40" />
+                    )}
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -352,19 +450,29 @@ export default function AccountsPage() {
               {filteredPractices.map((org) => {
                 const s = practiceStats.get(org.id) ?? { caseCount: 0, openBalance: 0, totalBilled: 0 };
                 const isOpen = effectiveExpanded.has(org.id);
-                const orgDoctors = (doctorsByPractice.get(org.id) ?? []).sort((a, b) =>
-                  b.totalCases - a.totalCases
-                );
-                const hasDoctors = orgDoctors.length > 0;
-
                 const q = search.trim().toLowerCase();
-                const visibleDoctors = q
-                  ? orgDoctors.filter(
-                      (d) =>
-                        d.doctorName.toLowerCase().includes(q) ||
-                        d.practiceName.toLowerCase().includes(q),
-                    )
-                  : orgDoctors;
+                const orgDoctors = (doctorsByPractice.get(org.id) ?? [])
+                  .filter((d) => {
+                    if (openCasesOnly && d.openCases === 0) return false;
+                    if (!q) return true;
+                    return (
+                      d.doctorName.toLowerCase().includes(q) ||
+                      d.practiceName.toLowerCase().includes(q)
+                    );
+                  })
+                  .sort((a, b) => {
+                    let cmp = 0;
+                    if (doctorSortKey === "lastCaseAt") {
+                      const aVal = a.lastCaseAt ?? "";
+                      const bVal = b.lastCaseAt ?? "";
+                      cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+                    } else {
+                      cmp = a[doctorSortKey] - b[doctorSortKey];
+                    }
+                    return doctorSortDir === "desc" ? -cmp : cmp;
+                  });
+                const hasDoctors = orgDoctors.length > 0;
+                const visibleDoctors = orgDoctors;
 
                 return [
                   <tr
