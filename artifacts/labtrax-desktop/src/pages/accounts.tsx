@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
@@ -26,6 +26,9 @@ import { formatMoney, relativeTime } from "@/lib/format";
 import type { DoctorRow, MergeSourceInput, UndoToast, MergeDialogResult } from "@/pages/doctors";
 import { DoctorDrawer, MergeDialog } from "@/pages/doctors";
 import { PracticeEditor, AddPracticeDialog } from "@/pages/practices";
+
+const EXPANDED_STORAGE_KEY = "accounts_expanded_v1";
+const SCROLL_STORAGE_KEY = "accounts_scroll_v1";
 
 const OPEN_STATUSES = new Set([
   "received",
@@ -68,7 +71,13 @@ export default function AccountsPage() {
   const [openCasesOnly, setOpenCasesOnly] = useState(false);
   const [doctorSortKey, setDoctorSortKey] = useState<"totalCases" | "openCases" | "totalBilled" | "lastCaseAt">("totalCases");
   const [doctorSortDir, setDoctorSortDir] = useState<"asc" | "desc">("desc");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    try {
+      const stored = sessionStorage.getItem(EXPANDED_STORAGE_KEY);
+      if (stored) return new Set(JSON.parse(stored) as string[]);
+    } catch {}
+    return new Set();
+  });
   const [editing, setEditing] = useState<Organization | null>(null);
   const [adding, setAdding] = useState(false);
   const [selectedDoctor, setSelectedDoctor] = useState<DoctorRow | null>(null);
@@ -79,6 +88,7 @@ export default function AccountsPage() {
   } | null>(null);
   const [undoToast, setUndoToast] = useState<UndoToast | null>(null);
   const queryClient = useQueryClient();
+  const pageRef = useRef<HTMLDivElement>(null);
 
   const adminLabIds = useMemo(() => {
     const set = new Set<string>();
@@ -103,6 +113,8 @@ export default function AccountsPage() {
     },
   });
 
+  const isLoading = orgsQuery.isLoading || casesQuery.isLoading || invoicesQuery.isLoading;
+
   useEffect(() => {
     if (!undoToast) return;
     const remaining = undoToast.expiresAt - Date.now();
@@ -113,6 +125,49 @@ export default function AccountsPage() {
     const t = window.setTimeout(() => setUndoToast(null), remaining);
     return () => window.clearTimeout(t);
   }, [undoToast]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify(Array.from(expanded)));
+    } catch {}
+  }, [expanded]);
+
+  const scrollRestoredRef = useRef(false);
+
+  useEffect(() => {
+    const el = pageRef.current?.closest("main") as HTMLElement | null;
+    if (!el) return;
+
+    const raw = sessionStorage.getItem(SCROLL_STORAGE_KEY);
+    const target = raw !== null ? Number(raw) : NaN;
+    if (Number.isFinite(target) && target > 0) {
+      el.scrollTop = target;
+      scrollRestoredRef.current = el.scrollTop >= target - 1;
+    } else {
+      scrollRestoredRef.current = true;
+    }
+
+    function handleScroll() {
+      try {
+        sessionStorage.setItem(SCROLL_STORAGE_KEY, String(el!.scrollTop));
+      } catch {}
+    }
+
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    if (isLoading || scrollRestoredRef.current) return;
+    const el = pageRef.current?.closest("main") as HTMLElement | null;
+    if (!el) return;
+    const raw = sessionStorage.getItem(SCROLL_STORAGE_KEY);
+    const target = raw !== null ? Number(raw) : NaN;
+    if (Number.isFinite(target) && target > 0) {
+      el.scrollTop = target;
+    }
+    scrollRestoredRef.current = true;
+  }, [isLoading]);
 
   const orgs = orgsQuery.data ?? [];
   const cases = casesQuery.data ?? [];
@@ -265,10 +320,8 @@ export default function AccountsPage() {
     });
   }
 
-  const isLoading = orgsQuery.isLoading || casesQuery.isLoading || invoicesQuery.isLoading;
-
   return (
-    <div className="px-8 py-7">
+    <div ref={pageRef} className="px-8 py-7">
       <div className="flex items-start justify-between mb-6">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Accounts</h1>
