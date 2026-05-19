@@ -4662,9 +4662,10 @@ Important rules:
   });
 
   // ── Admin Backup: history ─────────────────────────────────────────────────
-  router.get("/admin/backup/history", platformAdminUserOrSecret, async (req, res) => {
-    if (!isPlatformAdmin(req)) {
-      return res.status(403).json({ error: "Admin access required." });
+  router.get("/admin/backup/history", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    if (!reqUser || reqUser.role !== "admin" || reqUser.userType !== "lab") {
+      return res.status(403).json({ error: "Lab admin access required." });
     }
     try {
       const rows = await db

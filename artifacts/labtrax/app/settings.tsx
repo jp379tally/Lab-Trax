@@ -71,6 +71,20 @@ export default function SettingsScreen() {
   } | null>(null);
   const [rollingBackupLoading, setRollingBackupLoading] = useState(false);
 
+  type BackupRun = {
+    id: number;
+    triggeredBy: string;
+    destination: string;
+    path: string | null;
+    fileName: string | null;
+    sizeBytes: number | null;
+    status: string;
+    error: string | null;
+    completedAt: string;
+  };
+  const [backupHistory, setBackupHistory] = useState<BackupRun[]>([]);
+  const [backupHistoryLoading, setBackupHistoryLoading] = useState(false);
+
   type UserStatus = "active" | "inactive" | "on_lunch" | "out_of_office" | "on_break";
   const [userStatus, setUserStatus] = useState<UserStatus>("active");
   const [labExpanded, setLabExpanded] = useState(false);
@@ -124,6 +138,28 @@ export default function SettingsScreen() {
       }
     }
     void fetchRollingBackup();
+    return () => { cancelled = true; };
+  }, [isLabAdminForEffect]);
+
+  useEffect(() => {
+    if (!isLabAdminForEffect) return;
+    let cancelled = false;
+    async function fetchBackupHistory() {
+      setBackupHistoryLoading(true);
+      try {
+        const res = await resilientFetch("/api/admin/backup/history");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data.runs)) {
+          setBackupHistory(data.runs.slice(0, 10));
+        }
+      } catch {
+        // gracefully ignore — backup history unavailable
+      } finally {
+        if (!cancelled) setBackupHistoryLoading(false);
+      }
+    }
+    void fetchBackupHistory();
     return () => { cancelled = true; };
   }, [isLabAdminForEffect]);
 
@@ -1073,6 +1109,93 @@ export default function SettingsScreen() {
                   </View>
                 </>
               ) : null}
+            </View>
+          </View>
+        )}
+
+        {isLabAdmin && (
+          <View style={styles.section}>
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <Text style={[styles.sectionTitle, { color: colors.textTertiary, marginBottom: 0 }]}>RECENT BACKUPS</Text>
+              {!backupHistoryLoading && (
+                <Pressable
+                  hitSlop={8}
+                  onPress={async () => {
+                    setBackupHistoryLoading(true);
+                    try {
+                      const res = await resilientFetch("/api/admin/backup/history");
+                      if (res.ok) {
+                        const data = await res.json();
+                        if (Array.isArray(data.runs)) {
+                          setBackupHistory(data.runs.slice(0, 10));
+                        }
+                      }
+                    } catch {}
+                    finally { setBackupHistoryLoading(false); }
+                  }}
+                >
+                  <Ionicons name="refresh" size={16} color={colors.textTertiary} />
+                </Pressable>
+              )}
+            </View>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {backupHistoryLoading && backupHistory.length === 0 ? (
+                <View style={{ padding: 28, alignItems: "center" }}>
+                  <ActivityIndicator size="small" color={colors.tint} />
+                </View>
+              ) : backupHistory.length === 0 ? (
+                <View style={{ padding: 24, alignItems: "center", gap: 8 }}>
+                  <Ionicons name="cloud-offline-outline" size={28} color={colors.textTertiary} />
+                  <Text style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>No backup runs found</Text>
+                </View>
+              ) : (
+                backupHistory.map((run, idx) => {
+                  const isSuccess = run.status === "success";
+                  const statusColor = isSuccess ? "#16A34A" : "#DC2626";
+                  const statusBg = isSuccess ? "#DCFCE7" : "#FEE2E2";
+                  const statusLabel = isSuccess ? "Success" : "Failed";
+                  const statusIcon: keyof typeof Ionicons.glyphMap = isSuccess ? "checkmark-circle" : "close-circle";
+                  const sizeLabel = run.sizeBytes != null
+                    ? run.sizeBytes >= 1024 * 1024
+                      ? `${(run.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+                      : `${Math.round(run.sizeBytes / 1024)} KB`
+                    : null;
+                  const destLabel = run.destination
+                    ? run.destination.charAt(0).toUpperCase() + run.destination.slice(1)
+                    : "Unknown";
+                  return (
+                    <React.Fragment key={run.id}>
+                      {idx > 0 && (
+                        <View style={[styles.menuDivider, { backgroundColor: colors.borderLight, marginLeft: 0 }]} />
+                      )}
+                      <View style={[styles.menuItem, { paddingVertical: 12 }]}>
+                        <View style={[styles.menuIcon, { backgroundColor: statusBg }]}>
+                          <Ionicons name={statusIcon} size={18} color={statusColor} />
+                        </View>
+                        <View style={[styles.menuInfo, { gap: 3 }]}>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                            <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: statusBg }}>
+                              <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: statusColor }}>{statusLabel}</Text>
+                            </View>
+                            <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: colors.textSecondary }}>
+                              {destLabel}
+                              {sizeLabel ? ` · ${sizeLabel}` : ""}
+                            </Text>
+                          </View>
+                          <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textTertiary }}>
+                            {new Date(run.completedAt).toLocaleString()}
+                          </Text>
+                          {!isSuccess && run.error ? (
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: "#DC2626" }} numberOfLines={2}>
+                              {run.error}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    </React.Fragment>
+                  );
+                })
+              )}
             </View>
           </View>
         )}
