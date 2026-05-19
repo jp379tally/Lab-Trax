@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, Ban, CheckCircle2, Download, Loader2, Plus, Repeat, Search, Trash2, Upload, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
+import { VendorCombobox } from "@/components/finance/VendorCombobox";
 import type { BankAccount, BankTransaction, Invoice, TransactionCategory } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 
@@ -370,6 +371,7 @@ function RegisterTable({
               })}
               <InlineBlankRows
                 accountId={accountId}
+                organizationId={organizationId}
                 rowCount={3}
                 categories={cats.data || []}
                 onSaved={() =>
@@ -544,9 +546,10 @@ function MakeRecurringDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium mb-1">Payee</label>
-              <input
+              <VendorCombobox
+                organizationId={organizationId}
                 value={payee}
-                onChange={(e) => setPayee(e.target.value)}
+                onChange={setPayee}
                 className={`${inputCls} w-full`}
               />
             </div>
@@ -712,11 +715,13 @@ function MakeRecurringDialog({
 
 function InlineBlankRows({
   accountId,
+  organizationId,
   rowCount,
   categories,
   onSaved,
 }: {
   accountId: string;
+  organizationId: string;
   rowCount: number;
   categories: Array<{ id: string; name: string }>;
   onSaved: () => void;
@@ -737,6 +742,7 @@ function InlineBlankRows({
         <BlankRow
           key={k}
           accountId={accountId}
+          organizationId={organizationId}
           categories={categories}
           onSaved={handleSaved}
         />
@@ -747,10 +753,12 @@ function InlineBlankRows({
 
 function BlankRow({
   accountId,
+  organizationId,
   categories,
   onSaved,
 }: {
   accountId: string;
+  organizationId: string;
   categories: Array<{ id: string; name: string }>;
   onSaved: () => void;
 }) {
@@ -834,11 +842,10 @@ function BlankRow({
         </td>
         <td className="py-1.5"></td>
         <td className="py-1.5">
-          <input
-            type="text"
+          <VendorCombobox
+            organizationId={organizationId}
             value={payee}
-            onChange={(e) => setPayee(e.target.value)}
-            onKeyDown={onKeyDown}
+            onChange={setPayee}
             placeholder="Payee"
             disabled={savedOnce}
             className={inputCls}
@@ -1261,10 +1268,10 @@ function TxnEditor({
             </Field>
           </div>
           <Field label="Payee">
-            <input
-              type="text"
+            <VendorCombobox
+              organizationId={organizationId}
               value={payee}
-              onChange={(e) => setPayee(e.target.value)}
+              onChange={setPayee}
               className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
             />
           </Field>

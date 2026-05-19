@@ -1634,6 +1634,28 @@ export const subscriptionEvents = pgTable(
   })
 );
 
+export const vendors = pgTable(
+  "vendors",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    labOrganizationId: varchar("lab_organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    address: text("address"),
+    phone: text("phone"),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => ({
+    vendorLabIdx: index("vendors_lab_idx").on(table.labOrganizationId),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,

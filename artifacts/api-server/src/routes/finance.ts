@@ -13,6 +13,7 @@ import {
   reconciliationItems,
   reconciliations,
   transactionCategories,
+  vendors,
 } from "@workspace/db";
 import { HttpError, ok } from "../lib/http";
 import { softDelete, softDeleteById } from "../lib/soft-delete";
@@ -1989,6 +1990,106 @@ router.get(
         total: equityTotal.toFixed(2),
       },
     });
+  }),
+);
+
+// ─── Vendors ──────────────────────────────────────────────────────────────────
+
+router.get(
+  "/vendors",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = z.object({ organizationId: z.string().min(1) }).parse(req.query);
+    await requireAnyRole(uid(req), organizationId, BILLING_ROLES);
+    const rows = await db
+      .select()
+      .from(vendors)
+      .where(
+        and(
+          eq(vendors.labOrganizationId, organizationId),
+          sql`${vendors.deletedAt} IS NULL`
+        )
+      )
+      .orderBy(asc(vendors.name));
+    return ok(res, rows);
+  }),
+);
+
+router.post(
+  "/vendors",
+  asyncHandler(async (req, res) => {
+    const input = z
+      .object({
+        organizationId: z.string().min(1),
+        name: z.string().min(1).max(200),
+        address: z.string().max(500).nullable().optional(),
+        phone: z.string().max(50).nullable().optional(),
+        isActive: z.boolean().optional(),
+      })
+      .parse(req.body);
+    await requireAnyRole(uid(req), input.organizationId, BILLING_ROLES);
+    const [row] = await db
+      .insert(vendors)
+      .values({
+        labOrganizationId: input.organizationId,
+        name: input.name.trim(),
+        address: input.address ?? null,
+        phone: input.phone ?? null,
+        isActive: input.isActive ?? true,
+      })
+      .returning();
+    return ok(res, row);
+  }),
+);
+
+router.patch(
+  "/vendors/:vendorId",
+  asyncHandler(async (req, res) => {
+    const { vendorId } = req.params;
+    const input = z
+      .object({
+        name: z.string().min(1).max(200).optional(),
+        address: z.string().max(500).nullable().optional(),
+        phone: z.string().max(50).nullable().optional(),
+        isActive: z.boolean().optional(),
+      })
+      .parse(req.body);
+    const [existing] = await db
+      .select()
+      .from(vendors)
+      .where(eq(vendors.id, vendorId))
+      .limit(1);
+    if (!existing || existing.deletedAt) throw new HttpError(404, "Vendor not found");
+    await requireAnyRole(uid(req), existing.labOrganizationId, BILLING_ROLES);
+    const updates: Partial<typeof vendors.$inferInsert> = {};
+    if (input.name !== undefined) updates.name = input.name.trim();
+    if (input.address !== undefined) updates.address = input.address;
+    if (input.phone !== undefined) updates.phone = input.phone;
+    if (input.isActive !== undefined) updates.isActive = input.isActive;
+    const [updated] = await db
+      .update(vendors)
+      .set(updates)
+      .where(eq(vendors.id, vendorId))
+      .returning();
+    return ok(res, updated);
+  }),
+);
+
+router.delete(
+  "/vendors/:vendorId",
+  asyncHandler(async (req, res) => {
+    const { vendorId } = req.params;
+    const [existing] = await db
+      .select()
+      .from(vendors)
+      .where(eq(vendors.id, vendorId))
+      .limit(1);
+    if (!existing || existing.deletedAt) throw new HttpError(404, "Vendor not found");
+    await requireAnyRole(uid(req), existing.labOrganizationId, BILLING_ROLES);
+    await db
+      .update(vendors)
+      .set({ deletedAt: new Date() })
+      .where(eq(vendors.id, vendorId));
+    return ok(res, { ok: true });
   }),
 );
 
