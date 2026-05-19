@@ -243,6 +243,14 @@ export default function StatementsPage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => setShowGenerate(true)}
+            disabled={!orgId || rows.length === 0}
+            className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Send size={14} /> Generate Statements
+          </button>
+          <button
+            type="button"
             onClick={() => setShowHistory(true)}
             disabled={!orgId}
             className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
@@ -389,6 +397,15 @@ export default function StatementsPage() {
       )}
       {showHistory && orgId && (
         <HistoryModal orgId={orgId} onClose={() => setShowHistory(false)} />
+      )}
+      {showGenerate && orgId && (
+        <GenerateStatementsModal
+          orgId={orgId}
+          rows={rows}
+          practices={organizationsQuery.data?.filter((o) => o.parentLabOrganizationId === orgId) ?? []}
+          scheduleTemplate={scheduleQuery.data ? { subject: scheduleQuery.data.emailSubject, body: scheduleQuery.data.emailBody } : null}
+          onClose={() => setShowGenerate(false)}
+        />
       )}
     </div>
   );
@@ -972,6 +989,409 @@ function HistoryModal({ orgId, onClose }: { orgId: string; onClose: () => void }
           </table>
         </div>
       </aside>
+    </div>
+  );
+}
+
+// ── Helpers for GenerateStatementsModal ─────────────────────────────────────
+
+async function downloadStatementsZip(
+  orgId: string,
+  body: { practiceIds: string[] | null; invoiceScope: string; periodLabel: string | null }
+): Promise<void> {
+  const rawToken = localStorage.getItem("labtrax_desktop_tokens_v1");
+  let accessToken = "";
+  if (rawToken) {
+    try { accessToken = JSON.parse(rawToken)?.accessToken ?? ""; } catch { /* ignore */ }
+  }
+  const res = await fetch(`/api/lab-orgs/${orgId}/statements/batch-download`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = `HTTP ${res.status}`;
+    try { msg = JSON.parse(text)?.message || msg; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `statements-${new Date().toISOString().slice(0, 10)}.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+type BatchScope = "open" | "open_overdue_90" | "all";
+
+interface BatchSendResult {
+  practiceId: string;
+  practiceName: string;
+  emailStatus: "sent" | "failed" | "skipped" | null;
+  emailError: string | null;
+  smsStatus: "sent" | "failed" | "skipped" | null;
+  smsError: string | null;
+}
+
+function BatchStatusBadge({ status, error }: { status: "sent" | "failed" | "skipped" | null; error: string | null }) {
+  if (status === null) return <span className="text-muted-foreground text-[11px]">—</span>;
+  if (status === "sent") return <span className="text-[11px] font-medium text-success">Sent</span>;
+  if (status === "skipped") return <span className="text-[11px] text-warning" title={error ?? "Skipped"}>Skipped</span>;
+  return <span className="text-[11px] text-destructive" title={error ?? "Failed"}>Failed</span>;
+}
+
+function GenerateStatementsModal({
+  orgId,
+  rows,
+  practices,
+  scheduleTemplate,
+  onClose,
+}: {
+  orgId: string;
+  rows: StatementRow[];
+  practices: Organization[];
+  scheduleTemplate: { subject: string | null; body: string | null } | null;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [allSelected, setAllSelected] = useState(true);
+  const [practiceSearch, setPracticeSearch] = useState("");
+  const [onlyWithBalance, setOnlyWithBalance] = useState(true);
+
+  const [scope, setScope] = useState<BatchScope>("open");
+
+  const [emailEnabled, setEmailEnabled] = useState(true);
+  const [smsEnabled, setSmsEnabled] = useState(false);
+  const [downloadEnabled, setDownloadEnabled] = useState(false);
+  const [emailSubject, setEmailSubject] = useState(scheduleTemplate?.subject ?? "");
+  const [emailBody, setEmailBody] = useState(scheduleTemplate?.body ?? "");
+  const [stmtPeriodLabel, setStmtPeriodLabel] = useState(
+    `Statement as of ${new Date().toLocaleString("en-US", { month: "long", year: "numeric" })}`
+  );
+
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [results, setResults] = useState<BatchSendResult[] | null>(null);
+  const [resultPeriodLabel, setResultPeriodLabel] = useState("");
+
+  const balanceByPracticeId = useMemo(() => {
+    const map = new Map<string, { open: number; overdue: number }>();
+    for (const r of rows) map.set(r.practiceId, { open: r.openBalance, overdue: r.overdueBalance });
+    return map;
+  }, [rows]);
+
+  const filteredPractices = useMemo(() => {
+    const q = practiceSearch.trim().toLowerCase();
+    return practices.filter((p) => {
+      if (onlyWithBalance) {
+        const bal = balanceByPracticeId.get(p.id);
+        if (!bal || bal.open <= 0) return false;
+      }
+      if (q) return (p.displayName || p.name).toLowerCase().includes(q);
+      return true;
+    });
+  }, [practices, practiceSearch, onlyWithBalance, balanceByPracticeId]);
+
+  function isChecked(id: string) { return allSelected || selectedIds.has(id); }
+
+  function togglePractice(id: string) {
+    setSelectedIds((prev) => {
+      const base = allSelected ? new Set(filteredPractices.map((p) => p.id)) : new Set(prev);
+      if (base.has(id)) base.delete(id); else base.add(id);
+      return base;
+    });
+    setAllSelected(false);
+  }
+
+  function selectAll() { setSelectedIds(new Set()); setAllSelected(true); }
+  function deselectAll() { setSelectedIds(new Set()); setAllSelected(false); }
+
+  const selectedCount = allSelected ? filteredPractices.length : selectedIds.size;
+  const practicesWithEmail = filteredPractices.filter((p) => p.billingEmail && isChecked(p.id)).length;
+  const practicesWithPhone = filteredPractices.filter((p) => (p as any).phone && isChecked(p.id)).length;
+
+  async function handleSend() {
+    setSending(true);
+    setSendError(null);
+    const practiceIds = allSelected ? null : Array.from(selectedIds);
+    const channels: Array<"email" | "sms"> = [
+      ...(emailEnabled ? (["email"] as const) : []),
+      ...(smsEnabled ? (["sms"] as const) : []),
+    ];
+    try {
+      let newResults: BatchSendResult[] | null = null;
+      let newLabel = stmtPeriodLabel;
+      if (channels.length > 0) {
+        const resp = await apiFetch<{ periodLabel: string; results: BatchSendResult[] }>(
+          `/lab-orgs/${orgId}/statements/batch-send`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              practiceIds,
+              invoiceScope: scope,
+              channels,
+              emailSubject: emailSubject.trim() || null,
+              emailBody: emailBody.trim() || null,
+              periodLabel: stmtPeriodLabel.trim() || null,
+            }),
+          }
+        );
+        newResults = resp.results;
+        newLabel = resp.periodLabel;
+      }
+      if (downloadEnabled) {
+        await downloadStatementsZip(orgId, {
+          practiceIds,
+          invoiceScope: scope,
+          periodLabel: stmtPeriodLabel.trim() || null,
+        });
+      }
+      qc.invalidateQueries({ queryKey: ["statement-runs", orgId] });
+      setResults(newResults);
+      setResultPeriodLabel(newLabel);
+      setStep(4);
+    } catch (err: unknown) {
+      setSendError(err instanceof ApiError ? err.message : (err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const canSend = emailEnabled || smsEnabled || downloadEnabled;
+
+  const SCOPE_OPTIONS: Array<{ value: BatchScope; title: string; desc: string }> = [
+    { value: "open", title: "Open invoices only", desc: "Non-paid, non-voided invoices with a remaining balance." },
+    { value: "open_overdue_90", title: "Open invoices (aging highlighted)", desc: "Same as above — PDF highlights invoices 30, 60, and 90+ days past due." },
+    { value: "all", title: "All invoices", desc: "Every invoice regardless of status — includes paid and voided." },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-foreground/40" onClick={onClose}>
+      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <header className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
+          <div>
+            <div className="text-xs text-muted-foreground">Generate statements</div>
+            <div className="text-sm font-semibold">
+              {step === 1 ? "Select practices" : step === 2 ? "Invoice scope & label" : step === 3 ? "Delivery channels" : "Results"}
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"><X size={16} /></button>
+        </header>
+
+        <div className="flex items-center px-5 py-2.5 border-b border-border gap-1 shrink-0">
+          {SCOPE_OPTIONS.map(({ value: _, title: __, desc: ___ }, idx) => {
+            const n = idx + 1;
+            const labels = ["Practices", "Scope", "Delivery"];
+            const active = step === n;
+            const done = step > n && step < 4;
+            return (
+              <div key={n} className="flex items-center gap-1.5">
+                <div className={`flex items-center gap-1.5 text-[11px] font-medium ${active ? "text-primary" : done ? "text-success" : "text-muted-foreground"}`}>
+                  <div className={`h-5 w-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${active ? "bg-primary text-primary-foreground" : done ? "bg-success/20 text-success" : "bg-secondary text-muted-foreground"}`}>
+                    {done ? "✓" : n}
+                  </div>
+                  {labels[idx]}
+                </div>
+                {idx < 2 && <div className="w-6 h-px bg-border mx-1" />}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {step === 1 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <input type="search" value={practiceSearch} onChange={(e) => setPracticeSearch(e.target.value)} placeholder="Search practice…" className="w-full h-8 pl-8 pr-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary" />
+                </div>
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none shrink-0">
+                  <input type="checkbox" checked={onlyWithBalance} onChange={(e) => setOnlyWithBalance(e.target.checked)} className="h-3.5 w-3.5 accent-primary" />
+                  Open balance only
+                </label>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">{selectedCount} of {filteredPractices.length} practice{filteredPractices.length === 1 ? "" : "s"} selected</span>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={selectAll} className="text-xs text-primary hover:underline">Select all</button>
+                  <span className="text-muted-foreground text-xs">/</span>
+                  <button type="button" onClick={deselectAll} className="text-xs text-primary hover:underline">None</button>
+                </div>
+              </div>
+              {filteredPractices.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-6 text-center">No practices match the current filter.</p>
+              ) : (
+                <div className="max-h-72 overflow-y-auto rounded-md border border-border bg-secondary/10 divide-y divide-border">
+                  {filteredPractices.map((p) => {
+                    const bal = balanceByPracticeId.get(p.id);
+                    const checked = isChecked(p.id);
+                    return (
+                      <label key={p.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-secondary/60 select-none">
+                        <input type="checkbox" checked={checked} onChange={() => togglePractice(p.id)} className="h-4 w-4 accent-primary shrink-0" />
+                        <span className="flex-1 min-w-0 truncate text-sm">{p.displayName || p.name}</span>
+                        <span className="tabular-nums text-xs text-muted-foreground shrink-0">
+                          {bal && bal.open > 0 ? formatMoney(bal.open) : ""}
+                          {bal && bal.overdue > 0 && <span className="ml-1 text-destructive">({formatMoney(bal.overdue)} od)</span>}
+                        </span>
+                        {!p.billingEmail && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning/20 text-warning font-medium shrink-0">no email</span>}
+                        {!(p as any).phone && <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground font-medium shrink-0">no phone</span>}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">Choose which invoices to include in each statement.</p>
+              {SCOPE_OPTIONS.map(({ value: sv, title, desc }) => (
+                <label key={sv} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer select-none transition-colors ${scope === sv ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}>
+                  <input type="radio" name="scope" value={sv} checked={scope === sv} onChange={() => setScope(sv)} className="mt-0.5 accent-primary" />
+                  <span>
+                    <span className="block text-sm font-medium">{title}</span>
+                    <span className="block text-xs text-muted-foreground mt-0.5">{desc}</span>
+                  </span>
+                </label>
+              ))}
+              <div className="pt-1">
+                <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Statement period label</label>
+                <input type="text" value={stmtPeriodLabel} onChange={(e) => setStmtPeriodLabel(e.target.value)} className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary" />
+                <p className="text-[11px] text-muted-foreground mt-1">Appears on the PDF header and in email text as the statement period.</p>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">Choose how to deliver statements. Select at least one option.</p>
+              <div className="space-y-2">
+                <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer select-none transition-colors ${emailEnabled ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}>
+                  <input type="checkbox" checked={emailEnabled} onChange={(e) => setEmailEnabled(e.target.checked)} className="mt-0.5 h-4 w-4 accent-primary" />
+                  <span>
+                    <span className="block text-sm font-medium"><Mail size={13} className="inline mr-1" />Email (PDF attachment)</span>
+                    <span className="block text-xs text-muted-foreground mt-0.5">{practicesWithEmail} of {selectedCount} selected practices have a billing email on file.</span>
+                  </span>
+                </label>
+                <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer select-none transition-colors ${smsEnabled ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}>
+                  <input type="checkbox" checked={smsEnabled} onChange={(e) => setSmsEnabled(e.target.checked)} className="mt-0.5 h-4 w-4 accent-primary" />
+                  <span>
+                    <span className="block text-sm font-medium"><MessageSquare size={13} className="inline mr-1" />SMS notification</span>
+                    <span className="block text-xs text-muted-foreground mt-0.5">{practicesWithPhone} of {selectedCount} selected practices have a phone number on file.</span>
+                  </span>
+                </label>
+                <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer select-none transition-colors ${downloadEnabled ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}>
+                  <input type="checkbox" checked={downloadEnabled} onChange={(e) => setDownloadEnabled(e.target.checked)} className="mt-0.5 h-4 w-4 accent-primary" />
+                  <span>
+                    <span className="block text-sm font-medium"><Download size={13} className="inline mr-1" />Download ZIP</span>
+                    <span className="block text-xs text-muted-foreground mt-0.5">Download a ZIP archive with one PDF per practice — no email or SMS is sent.</span>
+                  </span>
+                </label>
+              </div>
+              {!canSend && <p className="text-sm text-destructive">Please select at least one delivery option.</p>}
+              {emailEnabled && (
+                <div className="border-t border-border pt-4 space-y-3">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Email template (optional overrides)</div>
+                  <div>
+                    <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Subject</label>
+                    <input type="text" value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)} placeholder={DEFAULT_STATEMENT_SUBJECT} className="w-full h-9 px-3 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary" />
+                  </div>
+                  <div>
+                    <label className="block text-xs uppercase tracking-wide text-muted-foreground font-medium mb-1.5">Message body</label>
+                    <textarea value={emailBody} onChange={(e) => setEmailBody(e.target.value)} rows={5} placeholder={DEFAULT_STATEMENT_BODY} className="w-full px-3 py-2 rounded-md bg-secondary text-sm focus:outline-none focus:ring-1 focus:ring-primary border border-transparent focus:border-primary resize-y font-mono" />
+                    <p className="text-[11px] text-muted-foreground mt-1">Leave blank to use the saved auto-send template. Placeholders: <code>{"{{practiceName}}"}</code>, <code>{"{{labName}}"}</code>, <code>{"{{periodLabel}}"}</code>, <code>{"{{openBalance}}"}</code>.</p>
+                  </div>
+                </div>
+              )}
+              {sendError && <div className="text-sm text-destructive border border-destructive/30 bg-destructive/10 rounded-md p-2.5">{sendError}</div>}
+            </div>
+          )}
+
+          {step === 4 && (
+            <div className="space-y-3">
+              {results ? (
+                <>
+                  <div className="text-sm font-medium">Statements sent for <span className="text-primary">{resultPeriodLabel || stmtPeriodLabel}</span></div>
+                  <div className="rounded-md border border-border overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-secondary/40 border-b border-border">
+                          <th className="text-left px-4 py-2 text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Practice</th>
+                          {emailEnabled && <th className="text-center px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Email</th>}
+                          {smsEnabled && <th className="text-center px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground font-medium">SMS</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {results.map((r) => (
+                          <tr key={r.practiceId} className="border-t border-border">
+                            <td className="px-4 py-2.5 font-medium text-sm">{r.practiceName}</td>
+                            {emailEnabled && <td className="px-3 py-2.5 text-center"><BatchStatusBadge status={r.emailStatus} error={r.emailError} /></td>}
+                            {smsEnabled && <td className="px-3 py-2.5 text-center"><BatchStatusBadge status={r.smsStatus} error={r.smsError} /></td>}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="text-xs text-muted-foreground flex gap-4">
+                    <span className="text-success font-medium">{results.filter((r) => r.emailStatus === "sent" || r.smsStatus === "sent").length} delivered</span>
+                    <span className="text-warning">{results.filter((r) => r.emailStatus === "skipped" && r.smsStatus !== "sent").length} skipped</span>
+                    <span className="text-destructive">{results.filter((r) => r.emailStatus === "failed" || r.smsStatus === "failed").length} failed</span>
+                  </div>
+                </>
+              ) : downloadEnabled ? (
+                <div className="py-8 text-center">
+                  <Download size={28} className="mx-auto mb-2 text-success" />
+                  <p className="text-sm font-medium">ZIP downloaded.</p>
+                  <p className="text-xs text-muted-foreground mt-1">Check your downloads folder.</p>
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+
+        <footer className="flex items-center justify-between px-5 py-3 border-t border-border bg-secondary/30 rounded-b-xl shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              if (step === 4 || step === 1) onClose();
+              else setStep((s) => (s - 1) as 1 | 2 | 3 | 4);
+            }}
+            className="h-9 px-3 rounded-md text-sm font-medium hover:bg-secondary"
+          >
+            {step === 4 ? "Close" : step === 1 ? "Cancel" : "Back"}
+          </button>
+          {step < 3 && (
+            <button
+              type="button"
+              onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3 | 4)}
+              disabled={step === 1 && selectedCount === 0}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+            >
+              Next
+            </button>
+          )}
+          {step === 3 && (
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={sending || !canSend}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-2"
+            >
+              {sending ? <><Loader2 size={14} className="animate-spin" /> Generating…</> : <><Send size={14} /> Generate & Send</>}
+            </button>
+          )}
+        </footer>
+      </div>
     </div>
   );
 }
