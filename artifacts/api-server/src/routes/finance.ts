@@ -1128,6 +1128,18 @@ router.post(
   })
 );
 
+router.get(
+  "/recurring/:id",
+  asyncHandler(async (req, res) => {
+    const rule = await db.query.recurringTransactions.findFirst({
+      where: eq(recurringTransactions.id, String(req.params.id)),
+    });
+    if (!rule) throw new HttpError(404, "Recurring rule not found.");
+    await requireAnyRole(uid(req), rule.labOrganizationId, BILLING_ROLES);
+    return ok(res, rule);
+  })
+);
+
 router.patch(
   "/recurring/:id",
   asyncHandler(async (req, res) => {

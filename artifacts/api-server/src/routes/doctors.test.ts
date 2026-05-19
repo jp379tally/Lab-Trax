@@ -4,11 +4,16 @@
  * Skipped when no DATABASE_URL is configured — same convention as
  * `cases-similarity.test.ts` and `cross-lab-doctor.test.ts`.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { createHash } from "node:crypto";
 import request from "supertest";
+
+vi.mock("../lib/backup.js", () => ({ startDailyOneDriveBackup: vi.fn(), start15MinRollingBackup: vi.fn(), restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
+vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
+vi.mock("../lib/case-media.js", () => ({ startDailyOrphanedMediaCleanup: vi.fn() }));
 
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;

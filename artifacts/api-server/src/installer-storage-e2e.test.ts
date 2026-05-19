@@ -213,6 +213,7 @@ vi.mock("./lib/case-media.js", () => ({
 
 vi.mock("./lib/backup.js", () => ({
   startDailyOneDriveBackup: vi.fn(),
+  start15MinRollingBackup: vi.fn(),
   restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined),
   runOneDriveBackup: vi.fn(),
   getBackupHourUtc: vi.fn(),

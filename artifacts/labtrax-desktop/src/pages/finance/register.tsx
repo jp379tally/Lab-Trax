@@ -5,7 +5,7 @@ import { apiFetch } from "@/lib/api";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { VendorCombobox } from "@/components/finance/VendorCombobox";
 import { CategorySelect } from "@/components/finance/CategorySelect";
-import type { BankAccount, BankTransaction, Invoice, TransactionCategory } from "@/lib/types";
+import type { BankAccount, BankTransaction, Invoice, RecurringRule, TransactionCategory } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 
 export default function RegisterPage() {
@@ -447,6 +447,7 @@ function MakeRecurringDialog({
   accounts,
   categories,
   source,
+  editRule,
   onClose,
   onComplete,
 }: {
@@ -454,69 +455,87 @@ function MakeRecurringDialog({
   accounts: BankAccount[];
   categories: TransactionCategory[];
   source: RecurringSource;
+  editRule?: RecurringRule;
   onClose: () => void;
   onComplete: () => void;
 }) {
+  const isEdit = !!editRule;
+
   const debit = Number(source.debitAmount);
   const credit = Number(source.creditAmount);
-  const initialDirection: "debit" | "credit" = credit > 0 ? "credit" : "debit";
-  const initialAmount =
-    initialDirection === "credit" ? credit : debit || 0;
+  const initialDirection: "debit" | "credit" = isEdit
+    ? editRule!.direction
+    : credit > 0 ? "credit" : "debit";
+  const initialAmount = isEdit
+    ? Number(editRule!.amount || 0).toFixed(2)
+    : (initialDirection === "credit" ? credit : debit || 0).toFixed(2);
   const today = new Date().toISOString().slice(0, 10);
 
   const [name, setName] = useState(
-    source.payee ||
-      `Recurring ${initialDirection === "credit" ? "deposit" : "payment"}`
+    isEdit
+      ? editRule!.name
+      : source.payee || `Recurring ${initialDirection === "credit" ? "deposit" : "payment"}`
   );
-  const [payee, setPayee] = useState(source.payee || "");
-  const [memo, setMemo] = useState(source.memo || "");
-  const [categoryId, setCategoryId] = useState(source.categoryId || "");
-  const [bankAccountId, setBankAccountId] = useState(source.bankAccountId);
+  const [payee, setPayee] = useState(isEdit ? (editRule!.payee || "") : (source.payee || ""));
+  const [memo, setMemo] = useState(isEdit ? (editRule!.memo || "") : (source.memo || ""));
+  const [categoryId, setCategoryId] = useState(isEdit ? (editRule!.categoryId || "") : (source.categoryId || ""));
+  const [bankAccountId, setBankAccountId] = useState(isEdit ? editRule!.bankAccountId : source.bankAccountId);
   const [direction, setDirection] = useState<"debit" | "credit">(initialDirection);
   const estimateMethod = "fixed" as const;
-  const [amount, setAmount] = useState(initialAmount.toFixed(2));
-  const [frequency, setFrequency] = useState<
-    "weekly" | "monthly" | "annual"
-  >("monthly");
-  const [dayOfMonth, setDayOfMonth] = useState<number>(
-    new Date(source.txnDate).getDate() || 1
+  const [amount, setAmount] = useState(initialAmount);
+  const [frequency, setFrequency] = useState<"weekly" | "biweekly" | "monthly" | "quarterly" | "annual">(
+    isEdit ? editRule!.frequency : "monthly"
   );
-  const [startDate, setStartDate] = useState(today);
-  const [endDate, setEndDate] = useState("");
-  const [autoCreate, setAutoCreate] = useState(true);
+  const [dayOfMonth, setDayOfMonth] = useState<number>(
+    isEdit ? editRule!.dayOfMonth : (new Date(source.txnDate).getDate() || 1)
+  );
+  const [startDate, setStartDate] = useState(
+    isEdit ? editRule!.startDate.slice(0, 10) : today
+  );
+  const [endDate, setEndDate] = useState(
+    isEdit ? (editRule!.endDate?.slice(0, 10) || "") : ""
+  );
+  const [autoCreate, setAutoCreate] = useState(isEdit ? editRule!.autoCreate : true);
   const [postNow, setPostNow] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const usableAccounts = accounts.filter((a) => !a.isArchived);
 
   const save = useMutation({
     mutationFn: async () => {
-      const amt =
-        estimateMethod === "fixed" ? Number(amount) : null;
+      const amt = estimateMethod === "fixed" ? Number(amount) : null;
       if (estimateMethod === "fixed" && (!amt || !(amt > 0))) {
         throw new Error("Enter a positive amount, or switch to 'Average of last 3'.");
       }
       if (!name.trim()) throw new Error("Give the rule a name.");
       if (!bankAccountId) throw new Error("Choose a bank account.");
+      const payload = {
+        organizationId,
+        bankAccountId,
+        name: name.trim(),
+        payee: payee.trim() || null,
+        memo: memo.trim() || null,
+        categoryId: categoryId || null,
+        direction,
+        estimateMethod,
+        amount: amt,
+        frequency,
+        dayOfMonth,
+        startDate: new Date(startDate).toISOString(),
+        endDate: endDate ? new Date(endDate).toISOString() : null,
+        autoCreate,
+        isActive: true,
+      };
+      if (isEdit) {
+        return apiFetch(`/finance/recurring/${editRule!.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+      }
       const created = await apiFetch<{ id: string }>("/finance/recurring", {
         method: "POST",
-        body: JSON.stringify({
-          organizationId,
-          bankAccountId,
-          name: name.trim(),
-          payee: payee.trim() || null,
-          memo: memo.trim() || null,
-          categoryId: categoryId || null,
-          direction,
-          estimateMethod,
-          amount: amt,
-          frequency,
-          dayOfMonth,
-          startDate: new Date(startDate).toISOString(),
-          endDate: endDate ? new Date(endDate).toISOString() : null,
-          autoCreate,
-          isActive: true,
-        }),
+        body: JSON.stringify(payload),
       });
       if (postNow && created?.id) {
         await apiFetch(`/finance/recurring/${created.id}/post-next`, {
@@ -526,7 +545,14 @@ function MakeRecurringDialog({
       return created;
     },
     onSuccess: () => onComplete(),
-    onError: (e: any) => setError(e?.message || "Failed to create rule."),
+    onError: (e: any) => setError(e?.message || (isEdit ? "Failed to update rule." : "Failed to create rule.")),
+  });
+
+  const deleteRule = useMutation({
+    mutationFn: () =>
+      apiFetch(`/finance/recurring/${editRule!.id}`, { method: "DELETE" }),
+    onSuccess: () => onComplete(),
+    onError: (e: any) => setError(e?.message || "Failed to delete rule."),
   });
 
   const inputCls =
@@ -536,7 +562,7 @@ function MakeRecurringDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/30 p-4">
       <div className="w-full max-w-lg bg-card border border-border rounded-xl shadow-lg max-h-[90vh] overflow-y-auto">
         <header className="sticky top-0 bg-card border-b border-border px-5 py-3 flex items-center justify-between">
-          <h2 className="text-base font-semibold">Make recurring</h2>
+          <h2 className="text-base font-semibold">{isEdit ? "Edit recurring rule" : "Make recurring"}</h2>
           <button
             type="button"
             onClick={onClose}
@@ -631,7 +657,9 @@ function MakeRecurringDialog({
                 className={`${inputCls} w-full`}
               >
                 <option value="weekly">Weekly</option>
+                <option value="biweekly">Every 2 weeks</option>
                 <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
                 <option value="annual">Yearly</option>
               </select>
             </div>
@@ -681,38 +709,78 @@ function MakeRecurringDialog({
             />
             Auto-create projected register entries
           </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={postNow}
-              onChange={(e) => setPostNow(e.target.checked)}
-            />
-            Post next entry now (creates a real register row dated today)
-          </label>
+          {!isEdit && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={postNow}
+                onChange={(e) => setPostNow(e.target.checked)}
+              />
+              Post next entry now (creates a real register row dated today)
+            </label>
+          )}
           {error && (
             <p className="text-xs text-destructive">{error}</p>
           )}
+          {confirmDelete && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 space-y-2">
+              <p className="text-sm font-medium text-destructive">Delete this recurring rule?</p>
+              <p className="text-xs text-muted-foreground">
+                Existing projected entries linked to this rule won't be removed, but no new ones will be created.
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={deleteRule.isPending}
+                  onClick={() => deleteRule.mutate()}
+                  className="h-8 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-semibold hover:bg-destructive/90 disabled:opacity-60 inline-flex items-center gap-1"
+                >
+                  {deleteRule.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                  Yes, delete
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(false)}
+                  className="h-8 px-3 rounded-md hover:bg-secondary text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-        <footer className="sticky bottom-0 bg-card border-t border-border px-5 py-3 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-9 px-3 rounded-md hover:bg-secondary text-sm"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={save.isPending}
-            onClick={() => {
-              setError(null);
-              save.mutate();
-            }}
-            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
-          >
-            {save.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
-            Create rule
-          </button>
+        <footer className="sticky bottom-0 bg-card border-t border-border px-5 py-3 flex items-center gap-2">
+          {isEdit && !confirmDelete && (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              className="h-9 px-3 rounded-md text-sm text-destructive hover:bg-destructive/10 inline-flex items-center gap-1.5"
+            >
+              <Trash2 size={13} />
+              Delete rule
+            </button>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-9 px-3 rounded-md hover:bg-secondary text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={save.isPending}
+              onClick={() => {
+                setError(null);
+                save.mutate();
+              }}
+              className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+            >
+              {save.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
+              {isEdit ? "Save changes" : "Create rule"}
+            </button>
+          </div>
         </footer>
       </div>
     </div>
@@ -1144,6 +1212,8 @@ function TxnEditor({
 }) {
   const qc = useQueryClient();
   const [showRecurring, setShowRecurring] = useState(false);
+  const [editRuleData, setEditRuleData] = useState<RecurringRule | null>(null);
+  const [fetchingRule, setFetchingRule] = useState(false);
   const [txnDate, setTxnDate] = useState<string>(
     existing ? toInputDate(existing.txnDate) : new Date().toISOString().slice(0, 10)
   );
@@ -1386,7 +1456,29 @@ function TxnEditor({
               <CheckCircle2 size={14} />
               {save.isPending ? "Saving…" : existing ? "Save changes" : "Add entry"}
             </button>
-            {(!existing || !existing.recurringRuleId) && (
+            {existing?.recurringRuleId ? (
+              <button
+                type="button"
+                disabled={fetchingRule}
+                onClick={async () => {
+                  setFetchingRule(true);
+                  try {
+                    const rule = await apiFetch<RecurringRule>(
+                      `/finance/recurring/${existing.recurringRuleId}`
+                    );
+                    setEditRuleData(rule);
+                  } catch {
+                    setError("Could not load recurring rule.");
+                  } finally {
+                    setFetchingRule(false);
+                  }
+                }}
+                className="h-9 px-4 rounded-md text-sm hover:bg-secondary inline-flex items-center gap-1.5 disabled:opacity-60"
+              >
+                {fetchingRule ? <Loader2 size={14} className="animate-spin" /> : <Repeat size={14} />}
+                Edit rule
+              </button>
+            ) : (
               <button
                 type="button"
                 onClick={() => setShowRecurring(true)}
@@ -1422,6 +1514,28 @@ function TxnEditor({
           }}
           onClose={() => setShowRecurring(false)}
           onComplete={() => setShowRecurring(false)}
+        />
+      )}
+      {editRuleData && (
+        <MakeRecurringDialog
+          organizationId={organizationId}
+          accounts={accounts}
+          categories={categories}
+          source={{
+            payee: payee || null,
+            memo: memo || null,
+            categoryId: categoryId || null,
+            bankAccountId: accountId,
+            txnDate: txnDate,
+            debitAmount: payment,
+            creditAmount: deposit,
+          }}
+          editRule={editRuleData}
+          onClose={() => setEditRuleData(null)}
+          onComplete={() => {
+            setEditRuleData(null);
+            qc.invalidateQueries({ queryKey: ["finance"] });
+          }}
         />
       )}
     </div>

@@ -10,11 +10,16 @@
  *  3. Asserts both the resulting `status` and `paymentMethodOnFile` in the DB.
  *  4. Cleans up its own rows.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray, isNull, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import request from "supertest";
 import type { Express } from "express";
+
+vi.mock("../lib/backup.js", () => ({ startDailyOneDriveBackup: vi.fn(), start15MinRollingBackup: vi.fn(), restartScheduledBackupJob: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../lib/billing-jobs.js", () => ({ startBillingJobs: vi.fn() }));
+vi.mock("../lib/statements.js", () => ({ startStatementScheduler: vi.fn() }));
+vi.mock("../lib/case-media.js", () => ({ startDailyOrphanedMediaCleanup: vi.fn() }));
 
 const SHOULD_RUN = !!process.env["DATABASE_URL"];
 const maybe = SHOULD_RUN ? describe : describe.skip;
