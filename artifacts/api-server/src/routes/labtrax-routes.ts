@@ -12,7 +12,7 @@ import {
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
-import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, type BackupDestination } from "../lib/backup";
+import { runOneDriveBackup, runBackup, getBackupHourUtc, getBackupScheduleConfig, getLastSuccessfulBackupAt, getBackupStaleAlertSettings, getBackupHistoryRetentionDays, restartScheduledBackupJob, SETTING_BACKUP_HOUR_UTC, SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES, SETTING_BACKUP_SCHEDULE_DESTINATION, SETTING_BACKUP_SCHEDULE_PATH, SETTING_BACKUP_SCHEDULE_ENABLED, SETTING_BACKUP_LAST_SUCCESSFUL_AT, SETTING_BACKUP_HISTORY_RETENTION_DAYS, SETTING_BACKUP_HISTORY_MAX_ROWS, SETTING_ROLLING_BACKUP_ENABLED, SETTING_ROLLING_BACKUP_LAST_RUN_AT, SETTING_ROLLING_BACKUP_LAST_ERROR, ALL_SCHEDULE_SETTINGS, SETTING_BACKUP_STALE_ALERT_THRESHOLD_DAYS, SETTING_BACKUP_STALE_ALERT_RATE_LIMIT_DAYS, type BackupDestination } from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -4704,6 +4704,70 @@ Important rules:
       return res.json({ ok: true, runs: rows });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to fetch backup history.";
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── Admin Backup: history retention settings (GET) ────────────────────────
+  router.get("/admin/backup/history-retention", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const retention = await getBackupHistoryRetentionDays();
+      return res.json({ ok: true, ...retention });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to fetch backup history retention settings.";
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── Admin Backup: history retention settings (PUT) ────────────────────────
+  router.put("/admin/backup/history-retention", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const { retentionDays, maxRows } = req.body as {
+      retentionDays?: unknown;
+      maxRows?: unknown;
+    };
+
+    if (retentionDays !== undefined) {
+      const parsed = parseInt(String(retentionDays), 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return res.status(400).json({ error: "retentionDays must be a positive integer." });
+      }
+    }
+    if (maxRows !== undefined) {
+      const parsed = parseInt(String(maxRows), 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return res.status(400).json({ error: "maxRows must be a positive integer." });
+      }
+    }
+
+    try {
+      const upsert = async (key: string, value: string | null) => {
+        if (value === null) {
+          await db.delete(systemSettings).where(eq(systemSettings.key, key));
+        } else {
+          await db
+            .insert(systemSettings)
+            .values({ key, value })
+            .onConflictDoUpdate({ target: systemSettings.key, set: { value, updatedAt: new Date() } });
+        }
+      };
+
+      if (retentionDays !== undefined) {
+        await upsert(SETTING_BACKUP_HISTORY_RETENTION_DAYS, String(parseInt(String(retentionDays), 10)));
+      }
+      if (maxRows !== undefined) {
+        await upsert(SETTING_BACKUP_HISTORY_MAX_ROWS, String(parseInt(String(maxRows), 10)));
+      }
+
+      const retention = await getBackupHistoryRetentionDays();
+      return res.json({ ok: true, ...retention });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to save backup history retention settings.";
       return res.status(500).json({ error: msg });
     }
   });

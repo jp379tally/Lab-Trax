@@ -867,6 +867,47 @@ function BackupPanel() {
     staleTime: 30_000,
   });
 
+  const retentionQuery = useQuery<{
+    ok: boolean;
+    retentionDays: number;
+    dbRetentionDays: number | null;
+    envRetentionDays: number;
+    maxRows: number;
+    dbMaxRows: number | null;
+    envMaxRows: number;
+  }>({
+    queryKey: ["admin", "backup-history-retention"],
+    queryFn: () => apiFetch("/admin/backup/history-retention"),
+    staleTime: 60_000,
+  });
+
+  const [retentionDaysInput, setRetentionDaysInput] = useState<string>("");
+  const [maxRowsInput, setMaxRowsInput] = useState<string>("");
+  const [retentionSaved, setRetentionSaved] = useState(false);
+
+  useEffect(() => {
+    if (retentionQuery.data) {
+      setRetentionDaysInput(String(retentionQuery.data.retentionDays));
+      setMaxRowsInput(String(retentionQuery.data.maxRows));
+    }
+  }, [retentionQuery.data]);
+
+  const saveRetentionMutation = useMutation({
+    mutationFn: () =>
+      apiFetch("/admin/backup/history-retention", {
+        method: "PUT",
+        body: JSON.stringify({
+          retentionDays: parseInt(retentionDaysInput, 10),
+          maxRows: parseInt(maxRowsInput, 10),
+        }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-history-retention"] });
+      setRetentionSaved(true);
+      setTimeout(() => setRetentionSaved(false), 3000);
+    },
+  });
+
   useEffect(() => {
     if (scheduleQuery.data) {
       const { interval, unit } = scheduleQuery.data;
@@ -1229,6 +1270,70 @@ function BackupPanel() {
           >
             {historyQuery.isFetching ? <Loader2 size={11} className="animate-spin inline" /> : "Refresh"}
           </button>
+        </div>
+
+        {/* Retention policy */}
+        <div className="border border-border/60 rounded-md p-3 bg-muted/20 space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">History retention</p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-muted-foreground">Keep for (days)</label>
+              <input
+                type="number"
+                min={1}
+                value={retentionDaysInput}
+                onChange={(e) => setRetentionDaysInput(e.target.value)}
+                disabled={retentionQuery.isLoading || gate.blocked}
+                className="w-24 h-8 rounded-md border border-border bg-background px-2 text-xs disabled:opacity-50"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-muted-foreground">Max rows</label>
+              <input
+                type="number"
+                min={1}
+                value={maxRowsInput}
+                onChange={(e) => setMaxRowsInput(e.target.value)}
+                disabled={retentionQuery.isLoading || gate.blocked}
+                className="w-24 h-8 rounded-md border border-border bg-background px-2 text-xs disabled:opacity-50"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => saveRetentionMutation.mutate()}
+              disabled={
+                saveRetentionMutation.isPending ||
+                retentionQuery.isLoading ||
+                gate.blocked ||
+                !retentionDaysInput ||
+                !maxRowsInput ||
+                isNaN(parseInt(retentionDaysInput, 10)) ||
+                isNaN(parseInt(maxRowsInput, 10)) ||
+                parseInt(retentionDaysInput, 10) < 1 ||
+                parseInt(maxRowsInput, 10) < 1
+              }
+              className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5"
+            >
+              {saveRetentionMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : null}
+              {saveRetentionMutation.isPending ? "Saving…" : "Save"}
+            </button>
+            {retentionSaved && (
+              <span className="text-xs text-success flex items-center gap-1">
+                <Check size={11} />
+                Saved
+              </span>
+            )}
+          </div>
+          {saveRetentionMutation.isError && (
+            <p className="text-xs text-destructive">
+              {saveRetentionMutation.error instanceof Error
+                ? saveRetentionMutation.error.message
+                : "Failed to save retention settings."}
+            </p>
+          )}
+          <p className="text-[10px] text-muted-foreground">
+            Older entries are pruned automatically after each backup run. Whichever limit removes more rows wins.
+          </p>
         </div>
 
         {historyQuery.isLoading ? (

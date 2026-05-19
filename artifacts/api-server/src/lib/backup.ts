@@ -5,7 +5,7 @@ import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import archiver from "archiver";
 import { db } from "@workspace/db";
 import { systemSettings, users, backupRuns } from "@workspace/db";
-import { eq, sql } from "drizzle-orm";
+import { eq, lt, sql } from "drizzle-orm";
 import { uploadToOneDrive } from "./onedrive";
 import { logger } from "./logger";
 import { sendBackupNotificationEmail, sendBackupStaleAlertEmail } from "./mail";
@@ -45,6 +45,8 @@ export const SETTING_BACKUP_SCHEDULE_DESTINATION = "backup_schedule_destination"
 export const SETTING_BACKUP_SCHEDULE_PATH = "backup_schedule_path";
 export const SETTING_BACKUP_SCHEDULE_ENABLED = "backup_schedule_enabled";
 export const SETTING_BACKUP_LAST_SUCCESSFUL_AT = "backup_last_successful_at";
+export const SETTING_BACKUP_HISTORY_RETENTION_DAYS = "backup_history_retention_days";
+export const SETTING_BACKUP_HISTORY_MAX_ROWS = "backup_history_max_rows";
 export const SETTING_ROLLING_BACKUP_ENABLED = "rolling_backup_enabled";
 export const SETTING_ROLLING_BACKUP_LAST_RUN_AT = "rolling_backup_last_run_at";
 export const SETTING_ROLLING_BACKUP_LAST_ERROR = "rolling_backup_last_error";
@@ -290,6 +292,52 @@ async function recordSuccessfulBackup(): Promise<void> {
   }
 }
 
+/**
+ * Read the backup-history retention window from the DB, falling back to the
+ * BACKUP_HISTORY_RETENTION_DAYS env var (default 90).
+ */
+export async function getBackupHistoryRetentionDays(): Promise<{
+  retentionDays: number;
+  dbRetentionDays: number | null;
+  envRetentionDays: number;
+  maxRows: number;
+  dbMaxRows: number | null;
+  envMaxRows: number;
+}> {
+  const envRetentionDays =
+    Math.max(1, parseInt(process.env.BACKUP_HISTORY_RETENTION_DAYS || "90", 10) || 90);
+  const envMaxRows =
+    Math.max(1, parseInt(process.env.BACKUP_HISTORY_MAX_ROWS || "500", 10) || 500);
+  try {
+    const rows = await db
+      .select()
+      .from(systemSettings)
+      .where(
+        sql`${systemSettings.key} in (${SETTING_BACKUP_HISTORY_RETENTION_DAYS}, ${SETTING_BACKUP_HISTORY_MAX_ROWS})`,
+      );
+    const retentionRaw =
+      rows.find((r) => r.key === SETTING_BACKUP_HISTORY_RETENTION_DAYS)?.value ?? null;
+    const maxRowsRaw =
+      rows.find((r) => r.key === SETTING_BACKUP_HISTORY_MAX_ROWS)?.value ?? null;
+    const dbRetentionDays =
+      retentionRaw !== null ? Math.max(1, parseInt(retentionRaw, 10) || 1) : null;
+    const dbMaxRows =
+      maxRowsRaw !== null ? Math.max(1, parseInt(maxRowsRaw, 10) || 1) : null;
+    const retentionDays = dbRetentionDays !== null ? dbRetentionDays : envRetentionDays;
+    const maxRows = dbMaxRows !== null ? dbMaxRows : envMaxRows;
+    return { retentionDays, dbRetentionDays, envRetentionDays, maxRows, dbMaxRows, envMaxRows };
+  } catch {
+    return {
+      retentionDays: envRetentionDays,
+      dbRetentionDays: null,
+      envRetentionDays,
+      maxRows: envMaxRows,
+      dbMaxRows: null,
+      envMaxRows,
+    };
+  }
+}
+
 export async function getLastSuccessfulBackupAt(): Promise<string | null> {
   try {
     const rows = await db
@@ -299,6 +347,37 @@ export async function getLastSuccessfulBackupAt(): Promise<string | null> {
     return rows[0]?.value ?? null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Prune old backup_runs rows to keep the table lean.
+ * Applies both a day-based retention window and a maximum row-count cap.
+ * Whichever constraint removes more rows wins.
+ * Non-fatal: failures are logged as warnings and swallowed.
+ */
+async function pruneBackupHistory(): Promise<void> {
+  try {
+    const { retentionDays, maxRows } = await getBackupHistoryRetentionDays();
+
+    // Days-based retention: delete rows older than the retention window.
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    await db.delete(backupRuns).where(lt(backupRuns.completedAt, cutoff));
+
+    // Row-count cap: keep only the most recent N rows, oldest first out.
+    // The tie-breaker on id ensures deterministic behaviour when timestamps match.
+    await db.delete(backupRuns).where(
+      sql`${backupRuns.id} NOT IN (
+        SELECT id FROM ${backupRuns}
+        ORDER BY ${backupRuns.completedAt} DESC, ${backupRuns.id} DESC
+        LIMIT ${maxRows}
+      )`,
+    );
+  } catch (trimErr: unknown) {
+    logger.warn(
+      { err: trimErr instanceof Error ? trimErr.message : String(trimErr) },
+      "backup_runs history trim failed — old rows not pruned",
+    );
   }
 }
 
@@ -318,7 +397,9 @@ async function recordBackupRun(
     });
   } catch (err) {
     logger.warn({ err }, "Failed to record backup run in DB");
+    return;
   }
+  await pruneBackupHistory();
 }
 
 async function recordBackupError(
@@ -341,7 +422,9 @@ async function recordBackupError(
     });
   } catch (err) {
     logger.warn({ err }, "Failed to record backup error in DB");
+    return failedAt.toISOString();
   }
+  await pruneBackupHistory();
   return failedAt.toISOString();
 }
 

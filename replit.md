@@ -110,6 +110,8 @@ allocated atomically per `(year, entityType)` via
 - `CLEANUP_HOUR_UTC` — UTC hour (0–23) for the nightly orphaned media cleanup (default: `8`)
 - `CLEANUP_ALERT_MIN_REMOVED` — minimum files-removed count before a cleanup alert email is sent (default: `1`); raise to reduce noise in active labs
 - `CLEANUP_ALERT_MIN_FREED_MB` — minimum megabytes freed before a cleanup alert email is sent (default: `0`, disabled); works alongside `CLEANUP_ALERT_MIN_REMOVED` — either threshold can trigger the alert
+- `BACKUP_HISTORY_RETENTION_DAYS` — how many days of `backup_runs` history to keep (default: `90`); rows older than this are pruned automatically after each backup run; overridable per-lab via Settings → Backup → History retention
+- `BACKUP_HISTORY_MAX_ROWS` — maximum number of `backup_runs` rows to retain (default: `500`); oldest rows are removed first; works alongside `BACKUP_HISTORY_RETENTION_DAYS` — whichever removes more rows wins; overridable per-lab via Settings → Backup → History retention
 - `CLEANUP_HISTORY_RETENTION_DAYS` — how many days of `media_cleanup_runs` history to keep (default: `365`); rows older than this are deleted after each run
 - `CLEANUP_HISTORY_MAX_ROWS` — maximum number of `media_cleanup_runs` rows to retain (default: `1000`); oldest rows are removed first; works alongside `CLEANUP_HISTORY_RETENTION_DAYS` — whichever removes more rows wins
 - `BACKUP_HOUR_UTC` — UTC hour (0–23) for the nightly OneDrive backup (default: `7`)
