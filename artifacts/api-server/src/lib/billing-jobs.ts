@@ -4,6 +4,7 @@ import { subscriptions, organizations, users } from "@workspace/db";
 import { transitionSubscription, appendSubscriptionEvent } from "./entitlement";
 import { sendMail } from "./mail";
 import { logger } from "./logger";
+import { checkAndAlertBackupStaleness } from "./backup";
 
 const GRACE_DAYS = () =>
   Math.max(1, parseInt(process.env.SUBSCRIPTION_GRACE_DAYS ?? "7", 10));
@@ -245,6 +246,11 @@ async function runBillingJobOnce() {
     await runBillingTransitions();
   } catch (err: any) {
     logger.error({ err: err?.message }, "[billing] Daily billing job failed");
+  }
+  try {
+    await checkAndAlertBackupStaleness();
+  } catch (err: any) {
+    logger.error({ err: err?.message }, "[billing] Backup staleness check failed");
   }
 }
 

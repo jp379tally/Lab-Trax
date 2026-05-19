@@ -525,6 +525,55 @@ export async function sendBackupNotificationEmail(
   }
 }
 
+export interface BackupStaleAlertParams {
+  adminEmails: string[];
+  /** ISO string of the last successful backup, or null if never run. */
+  lastSuccessfulAt: string | null;
+  /** Number of days since the last successful backup (or Infinity if never run). */
+  daysSinceBackup: number;
+}
+
+export async function sendBackupStaleAlertEmail(
+  params: BackupStaleAlertParams,
+): Promise<void> {
+  if (params.adminEmails.length === 0) return;
+
+  const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const subject = `LabTrax — No successful backup in over 7 days (${dateStr})`;
+
+  const lastRunLine = params.lastSuccessfulAt
+    ? `The last successful backup was on <strong>${escapeHtml(params.lastSuccessfulAt.slice(0, 10))}</strong> — <strong>${Math.floor(params.daysSinceBackup)} days ago</strong>.`
+    : `<strong>No successful backup has ever been recorded</strong> for this LabTrax installation.`;
+  const lastRunText = params.lastSuccessfulAt
+    ? `The last successful backup was on ${params.lastSuccessfulAt.slice(0, 10)} — ${Math.floor(params.daysSinceBackup)} days ago.`
+    : `No successful backup has ever been recorded for this LabTrax installation.`;
+
+  const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: #e67e22; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.9;">Backup overdue — action required</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <div style="background:#fef3e2;border-left:4px solid #e67e22;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
+        <strong>Warning:</strong> Your LabTrax data has not been backed up in over 7 days.
+      </div>
+      <p style="font-size: 14px;">${lastRunLine}</p>
+      <p style="font-size: 14px;">Regular backups protect your lab data from loss. Please check your backup configuration and ensure a backup destination is configured and reachable.</p>
+      <p style="text-align: center; margin: 24px 0;">
+        <a href="${settingsUrl}" style="display: inline-block; background: #e67e22; color: white; padding: 12px 32px; border-radius: 8px; text-decoration: none; font-weight: bold;">Review Backup Settings →</a>
+      </p>
+      <p style="color: #666; font-size: 13px;">This alert is sent at most once every 3 days until a successful backup runs. You can manage backup settings on the <a href="${settingsUrl}" style="color: #4A6CF7;">Settings page</a>.</p>
+    </div>
+  </div>`;
+
+  const text = `LabTrax — Backup Overdue\n\nWarning: Your LabTrax data has not been backed up in over 7 days.\n\n${lastRunText}\n\nPlease review your backup settings: ${settingsUrl}\n\nThis alert is sent at most once every 3 days until a successful backup runs.\n\n— The LabTrax Team`;
+
+  for (const email of params.adminEmails) {
+    await sendMail({ to: email, subject, html, text });
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

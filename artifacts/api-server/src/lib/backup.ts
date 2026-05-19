@@ -8,7 +8,7 @@ import { systemSettings, users, backupRuns } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { uploadToOneDrive } from "./onedrive";
 import { logger } from "./logger";
-import { sendBackupNotificationEmail } from "./mail";
+import { sendBackupNotificationEmail, sendBackupStaleAlertEmail } from "./mail";
 
 export interface BackupCounts {
   users: number;
@@ -48,6 +48,7 @@ export const SETTING_BACKUP_LAST_SUCCESSFUL_AT = "backup_last_successful_at";
 export const SETTING_ROLLING_BACKUP_ENABLED = "rolling_backup_enabled";
 export const SETTING_ROLLING_BACKUP_LAST_RUN_AT = "rolling_backup_last_run_at";
 export const SETTING_ROLLING_BACKUP_LAST_ERROR = "rolling_backup_last_error";
+export const SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT = "backup_stale_alert_last_sent_at";
 
 export const ALL_SCHEDULE_SETTINGS = [
   SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
@@ -451,6 +452,88 @@ async function getAdminEmails(): Promise<string[]> {
       "[backup] Failed to load admin emails for notification; no notification will be sent",
     );
     return [];
+  }
+}
+
+const BACKUP_STALE_THRESHOLD_DAYS = 7;
+const BACKUP_STALE_ALERT_RATE_LIMIT_DAYS = 3;
+
+/**
+ * Check whether the last successful backup is stale (null or older than 7 days).
+ * If so, and if we haven't sent an alert within the past 3 days, send an alert
+ * email to all admin users and record the send time in system_settings.
+ */
+export async function checkAndAlertBackupStaleness(): Promise<void> {
+  try {
+    const lastSuccessfulAt = await getLastSuccessfulBackupAt();
+    const now = Date.now();
+
+    let daysSince: number;
+    if (lastSuccessfulAt === null) {
+      daysSince = Infinity;
+    } else {
+      const lastMs = new Date(lastSuccessfulAt).getTime();
+      if (isNaN(lastMs)) {
+        daysSince = Infinity;
+      } else {
+        daysSince = (now - lastMs) / (1000 * 60 * 60 * 24);
+      }
+    }
+
+    if (daysSince < BACKUP_STALE_THRESHOLD_DAYS) {
+      return;
+    }
+
+    const rateLimitRows = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT));
+    const lastSentRaw = rateLimitRows[0]?.value ?? null;
+
+    if (lastSentRaw !== null) {
+      const lastSentMs = new Date(lastSentRaw).getTime();
+      if (!isNaN(lastSentMs)) {
+        const daysSinceAlert = (now - lastSentMs) / (1000 * 60 * 60 * 24);
+        if (daysSinceAlert < BACKUP_STALE_ALERT_RATE_LIMIT_DAYS) {
+          logger.info(
+            { daysSinceAlert: daysSinceAlert.toFixed(1), rateLimitDays: BACKUP_STALE_ALERT_RATE_LIMIT_DAYS },
+            "[backup] Stale backup alert suppressed by rate limit",
+          );
+          return;
+        }
+      }
+    }
+
+    const adminEmails = await getAdminEmails();
+    if (adminEmails.length === 0) {
+      logger.warn("[backup] Stale backup detected but no admin emails found; skipping alert");
+      return;
+    }
+
+    await sendBackupStaleAlertEmail({
+      adminEmails,
+      lastSuccessfulAt,
+      daysSinceBackup: isFinite(daysSince) ? daysSince : 0,
+    });
+
+    const sentAt = new Date().toISOString();
+    await db
+      .insert(systemSettings)
+      .values({ key: SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT, value: sentAt })
+      .onConflictDoUpdate({
+        target: systemSettings.key,
+        set: { value: sentAt, updatedAt: new Date() },
+      });
+
+    logger.info(
+      { adminEmailCount: adminEmails.length, daysSinceBackup: isFinite(daysSince) ? daysSince.toFixed(1) : "never" },
+      "[backup] Stale backup alert sent",
+    );
+  } catch (err: unknown) {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "[backup] checkAndAlertBackupStaleness failed",
+    );
   }
 }
 
