@@ -1494,13 +1494,13 @@ export default function ScanScreen() {
       setIsAnalyzing(true);
       let failReason = "";
       // Watchdog: no matter what goes wrong below, never leave the user
-      // stuck on the "Analyzing RX..." spinner. After 20s, force the
+      // stuck on the "Analyzing RX..." spinner. After 45s, force the
       // flow forward to the form so the user can fill it in by hand.
       const watchdog = setTimeout(() => {
-        console.log("AI: watchdog fired — forcing form transition after 20s");
+        console.log("AI: watchdog fired — forcing form transition after 45s");
         setIsAnalyzing(false);
         setPhase("form");
-      }, 20000);
+      }, 45000);
 
       try {
         analyzeUri = await ensureHighQualityBase64(analyzeUri);

@@ -1961,23 +1961,122 @@ export async function registerRoutes(): Promise<IRouter> {
         .from(labCases)
         .where(and(eq(labCases.id, caseId), isNull(labCases.deletedAt)));
 
-      if (!rows.length) return res.status(404).json({ error: "Case not found." });
-      const row = rows[0]!;
+      if (rows.length) {
+        const row = rows[0]!;
+        // Enforce the same visibility rule as the list endpoint
+        const isOwner = row.ownerId === userId;
+        const isLabMember = row.organizationId ? labIds.includes(row.organizationId) : false;
+        if (!isOwner && !isLabMember) {
+          return res.status(403).json({ error: "Access denied." });
+        }
+        let parsed: any;
+        try {
+          parsed = JSON.parse(row.caseData);
+        } catch {
+          return res.status(500).json({ error: "Failed to parse case data." });
+        }
+        return res.json({ case: parsed });
+      }
 
-      // Enforce the same visibility rule as the list endpoint
-      const isOwner = row.ownerId === userId;
-      const isLabMember = row.organizationId ? labIds.includes(row.organizationId) : false;
-      if (!isOwner && !isLabMember) {
+      // Not found in lab_cases — check the desktop cases table so that cases
+      // created on the desktop also show history when opened in the mobile app.
+      const desktopRows = await db
+        .select()
+        .from(casesTable)
+        .where(and(eq(casesTable.id, caseId), isNull(casesTable.deletedAt)));
+
+      if (!desktopRows.length) return res.status(404).json({ error: "Case not found." });
+      const dc = desktopRows[0]!;
+
+      // Authorization: caller must be a member of the case's lab
+      if (!labIds.includes(dc.labOrganizationId)) {
         return res.status(403).json({ error: "Access denied." });
       }
 
-      let parsed: any;
-      try {
-        parsed = JSON.parse(row.caseData);
-      } catch {
-        return res.status(500).json({ error: "Failed to parse case data." });
+      // Fetch any file attachments so the mobile history shows them
+      const attachmentRows = await db
+        .select()
+        .from(caseAttachments)
+        .where(and(eq(caseAttachments.caseId, caseId), isNull(caseAttachments.deletedAt)));
+
+      const DESKTOP_TO_MOBILE_STATUS: Record<string, string> = {
+        received: "INTAKE", in_design: "DESIGN", in_milling: "MILLING",
+        in_porcelain: "PORCELAIN", qc: "QC_CHECK", shipped: "DELIVERY",
+        delivered: "COMPLETE", on_hold: "ON_HOLD", remake: "REMAKE", cancelled: "COMPLETE",
+      };
+
+      const createdMs = dc.createdAt ? new Date(dc.createdAt).getTime() : Date.now();
+      const updatedMs = dc.updatedAt ? new Date(dc.updatedAt).getTime() : createdMs;
+      const mobileStatus = DESKTOP_TO_MOBILE_STATUS[dc.status ?? ""] ?? "INTAKE";
+      const firstName = dc.patientFirstName ?? "";
+      const lastName = dc.patientLastName ?? "";
+      const patientName = [firstName, lastName].filter(Boolean).join(" ");
+      const initials = (firstName[0] ?? "") + (lastName[0] ?? "");
+
+      // Build a minimal activityLog so the History tab has content
+      const activityLog: any[] = [
+        {
+          id: `desktop-created-${dc.id}`,
+          type: "status",
+          timestamp: createdMs,
+          description: "Case received",
+          user: "Lab",
+        },
+      ];
+
+      if (dc.status && dc.status !== "received") {
+        activityLog.push({
+          id: `desktop-status-${dc.id}`,
+          type: "status",
+          timestamp: updatedMs,
+          description: `Status: ${mobileStatus.charAt(0) + mobileStatus.slice(1).toLowerCase().replace(/_/g, " ")}`,
+          user: "Lab",
+        });
       }
-      return res.json({ case: parsed });
+
+      for (const att of attachmentRows) {
+        const attMs = att.createdAt ? new Date(att.createdAt).getTime() : createdMs;
+        const isPhoto = att.fileType?.startsWith("image/");
+        activityLog.push({
+          id: `desktop-att-${att.id}`,
+          type: isPhoto ? "photo" : "document",
+          timestamp: attMs,
+          description: att.fileName ?? (isPhoto ? "Photo added" : "File added"),
+          user: "Lab",
+        });
+      }
+
+      // Sort chronologically
+      activityLog.sort((a, b) => a.timestamp - b.timestamp);
+
+      const synthesized: any = {
+        id: dc.id,
+        caseNumber: dc.caseNumber ?? "",
+        doctorName: dc.doctorName ?? "",
+        patientName,
+        patientInitials: initials || "?",
+        status: mobileStatus,
+        isRush: dc.priority === "rush",
+        notes: "",
+        price: null,
+        dueDate: dc.dueDate ?? null,
+        organizationId: dc.labOrganizationId ?? null,
+        affiliationKey: dc.labOrganizationId ? `org:${dc.labOrganizationId}` : null,
+        ownerId: dc.createdByUserId ?? null,
+        createdAt: createdMs,
+        updatedAt: updatedMs,
+        needsAiReview: dc.needsAiReview ?? false,
+        aiImportSource: dc.aiImportSource ?? null,
+        isRemake: !!dc.remakeOfCaseId,
+        remakeOfCaseId: dc.remakeOfCaseId ?? null,
+        remakeReason: dc.remakeReason ?? null,
+        remakeCharged: dc.remakeCharged ?? null,
+        photos: [],
+        activityLog,
+        _sourceTable: "cases",
+      };
+
+      return res.json({ case: synthesized });
     } catch (error: any) {
       console.error("Legacy get case by id error:", error?.message || error);
       return res.status(500).json({ error: "Failed to fetch case." });
@@ -2780,15 +2879,27 @@ Important rules:
         ...imageContents,
       ];
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-5.1",
+      const aiParams = {
         messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userContent },
+          { role: "system" as const, content: systemPrompt },
+          { role: "user" as const, content: userContent },
         ],
         max_completion_tokens: 1000,
         temperature: 0.1,
-      });
+      };
+
+      let response: any;
+      try {
+        response = await openai.chat.completions.create({ model: "gpt-5.1", ...aiParams });
+        console.log("AI analyze-prescription: used gpt-5.1");
+      } catch (modelErr: any) {
+        const isModelError = modelErr?.status === 404 || modelErr?.code === "model_not_found" ||
+          (typeof modelErr?.message === "string" && /model/i.test(modelErr.message));
+        if (!isModelError) throw modelErr;
+        console.log("AI analyze-prescription: gpt-5.1 unavailable, falling back to gpt-4o:", modelErr?.message);
+        response = await openai.chat.completions.create({ model: "gpt-4o", ...aiParams });
+        console.log("AI analyze-prescription: used gpt-4o (fallback)");
+      }
 
       const text = response.choices?.[0]?.message?.content || "";
       const jsonMatch = text.match(/\{[\s\S]*\}/);
