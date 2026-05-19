@@ -9,6 +9,8 @@ import {
   statementSendRuns,
 } from "@workspace/db";
 import { logger } from "./logger";
+import { openLabLogoStream } from "./lab-logo-storage";
+import { getAppBaseUrl } from "./mail";
 
 // Automatic retry configuration for failed statement sends.
 // MAX_ATTEMPTS includes the initial attempt, so a value of 3 means
@@ -50,6 +52,49 @@ export interface PracticeStatementData {
     patientName: string | null;
     billTo: string | null;
   }>;
+}
+
+/**
+ * Stream the logo for an org directly from App Storage into a Buffer.
+ * Returns null if no logo exists, storage is not configured, or the
+ * format is SVG (pdfkit cannot embed SVG natively).
+ */
+async function readLogoBuffer(orgId: string): Promise<Buffer | null> {
+  try {
+    const result = await openLabLogoStream(orgId);
+    if (!result) return null;
+    if (result.contentType.includes("svg")) return null;
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      result.stream.on("data", (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      result.stream.on("end", resolve);
+      result.stream.on("error", reject);
+    });
+    return Buffer.concat(chunks);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve effective logo placements from a saved preference array.
+ * Accepts null/undefined (org not found or column not set) and returns an
+ * empty Set so no logo appears until an admin opts in.
+ */
+function resolveLocalLogoplacements(
+  org:
+    | {
+        logoUrl: string | null | undefined;
+        logoplacements: string[] | null | undefined;
+      }
+    | null
+    | undefined
+): Set<string> {
+  if (!org) return new Set();
+  if (org.logoplacements != null) return new Set(org.logoplacements);
+  return new Set();
 }
 
 function fmtMoney(n: number): string {
@@ -179,7 +224,8 @@ export async function buildPracticeStatements(
 export async function generateStatementPdfBuffer(
   labName: string,
   data: PracticeStatementData,
-  periodLabel: string
+  periodLabel: string,
+  logoBuffer?: Buffer | null
 ): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({ size: "LETTER", margin: 48 });
@@ -187,6 +233,15 @@ export async function generateStatementPdfBuffer(
     doc.on("data", (c: Buffer) => chunks.push(c));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
+
+    if (logoBuffer) {
+      try {
+        doc.image(logoBuffer, 48, 30, { fit: [120, 48] });
+        doc.moveDown(2);
+      } catch {
+        // logo embed failed — fall through to text-only header
+      }
+    }
 
     doc.fontSize(20).font("Helvetica-Bold").text("Statement", { align: "left" });
     doc.moveDown(0.2);
@@ -353,6 +408,12 @@ export async function sendStatementEmail(opts: {
     body?: string | null;
     replyTo?: string | null;
   } | null;
+  /**
+   * When set, an <img> tag with the lab logo is prepended to the email HTML.
+   * Must be an absolute URL. Only populated when the `emails` placement is
+   * enabled for the lab.
+   */
+  labLogoUrl?: string | null;
 }): Promise<{ delivered: boolean; reason?: string }> {
   const smtp = getSmtpConfig();
   if (!smtp) {
@@ -379,13 +440,20 @@ export async function sendStatementEmail(opts: {
   const bodyText = renderStatementTemplate(bodyTemplate, vars);
   const replyTo = opts.template?.replyTo?.trim() || undefined;
 
+  const logoHeaderHtml = opts.labLogoUrl
+    ? `<div style="margin-bottom:12px;"><img src="${escapeHtml(opts.labLogoUrl)}" alt="Lab logo" style="max-height:48px;max-width:150px;object-fit:contain;display:block;" /></div>`
+    : "";
+  const emailHtml = logoHeaderHtml
+    ? `<div style="font-family:Arial,sans-serif;max-width:600px;">${logoHeaderHtml}${bodyToHtml(bodyText).replace(/^<div[^>]*>/, "").replace(/<\/div>$/, "")}</div>`
+    : bodyToHtml(bodyText);
+
   await transporter.sendMail({
     from: `${opts.fromName} <${smtp.from}>`,
     to: opts.to,
     ...(replyTo ? { replyTo } : {}),
     subject,
     text: bodyText,
-    html: bodyToHtml(bodyText),
+    html: emailHtml,
     attachments: [
       { filename: opts.pdfFilename, content: opts.pdfBuffer, contentType: "application/pdf" },
     ],
@@ -420,6 +488,16 @@ export async function runMonthlyStatementsForLab(opts: {
     where: eq(organizations.id, opts.labOrganizationId),
   });
   const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
+
+  // Determine which logo contexts are active for this lab.
+  const effectivePlacements = resolveLocalLogoplacements(labOrg);
+  const logoBuffer = effectivePlacements.has("statements")
+    ? await readLogoBuffer(opts.labOrganizationId)
+    : null;
+  const emailLogoUrl =
+    effectivePlacements.has("emails") && labOrg?.logoUrl
+      ? `${getAppBaseUrl()}${labOrg.logoUrl}`
+      : null;
 
   const sched = await db.query.statementSchedules.findFirst({
     where: eq(statementSchedules.labOrganizationId, opts.labOrganizationId),
@@ -464,7 +542,8 @@ export async function runMonthlyStatementsForLab(opts: {
         const pdfBuffer = await generateStatementPdfBuffer(
           labName,
           s,
-          periodLabel(periodMonth)
+          periodLabel(periodMonth),
+          logoBuffer
         );
         const result = await sendStatementEmail({
           to: s.practiceEmail,
@@ -475,6 +554,7 @@ export async function runMonthlyStatementsForLab(opts: {
           pdfFilename: filename,
           totals: { billed: s.totalBilled, open: s.openBalance },
           template,
+          labLogoUrl: emailLogoUrl,
         });
         if (!result.delivered) {
           status = "failed";
@@ -554,6 +634,14 @@ async function attemptStatementSendForRun(runId: string): Promise<RetryResult> {
     where: eq(organizations.id, run.labOrganizationId),
   });
   const labName = labOrg?.displayName || labOrg?.name || "LabTrax";
+  const retryPlacements = resolveLocalLogoplacements(labOrg);
+  const retryLogoBuffer = retryPlacements.has("statements")
+    ? await readLogoBuffer(run.labOrganizationId)
+    : null;
+  const retryEmailLogoUrl =
+    retryPlacements.has("emails") && labOrg?.logoUrl
+      ? `${getAppBaseUrl()}${labOrg.logoUrl}`
+      : null;
 
   // Re-resolve the practice's billing email and opt-out flag — they may have
   // been corrected between the original failed attempt and the retry.
@@ -602,7 +690,8 @@ async function attemptStatementSendForRun(runId: string): Promise<RetryResult> {
       const pdfBuffer = await generateStatementPdfBuffer(
         labName,
         data,
-        periodLabel(run.periodMonth)
+        periodLabel(run.periodMonth),
+        retryLogoBuffer
       );
       const result = await sendStatementEmail({
         to: practiceEmail,
@@ -612,6 +701,7 @@ async function attemptStatementSendForRun(runId: string): Promise<RetryResult> {
         pdfBuffer,
         pdfFilename: filename,
         totals: { billed: data.totalBilled, open: data.openBalance },
+        labLogoUrl: retryEmailLogoUrl,
       });
       if (!result.delivered) {
         status = "failed";

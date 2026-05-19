@@ -535,6 +535,38 @@ export function InvoiceEditor({
     user?.role === "admin" ||
     user?.role === "billing";
 
+  // Pre-fetch lab logo as a data-URL for invoice PDFs (only when placement is active)
+  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+  const invoicePlacementActive = !!(user?.practiceLogoplacements?.includes("invoices"));
+  useEffect(() => {
+    const logoUrl = user?.practiceLogoUrl;
+    if (!invoicePlacementActive || !logoUrl) {
+      setLogoDataUrl(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(logoUrl)
+      .then((r) => r.blob())
+      .then(
+        (blob) =>
+          new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          }),
+      )
+      .then((dataUrl) => {
+        if (!cancelled) setLogoDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setLogoDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [invoicePlacementActive, user?.practiceLogoUrl]);
+
   const detailQuery = useQuery({
     queryKey: ["invoice", invoice.id],
     queryFn: () => apiFetch<Invoice>(`/invoices/${invoice.id}`),
@@ -874,6 +906,7 @@ export function InvoiceEditor({
       balanceDue: detailQuery.data?.balanceDue ?? total,
       notes,
       generatedAt: new Date(),
+      logoUrl: logoDataUrl,
     };
   }
 

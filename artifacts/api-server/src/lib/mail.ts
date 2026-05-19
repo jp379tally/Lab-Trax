@@ -89,6 +89,12 @@ export interface InviteEmailParams {
   token: string;
   inviterName?: string | null;
   expiresAt?: Date | null;
+  /**
+   * When set, an <img> with the lab logo is shown in the email header.
+   * Should be an absolute URL (e.g. https://…/api/organizations/:id/logo).
+   * Only included when the lab's `welcome_emails` placement is enabled.
+   */
+  labLogoUrl?: string | null;
 }
 
 export async function sendInviteEmail(
@@ -108,9 +114,13 @@ export async function sendInviteEmail(
     ? `${inviter} has invited you to join`
     : `You have been invited to join`;
 
+  const logoHtml = params.labLogoUrl
+    ? `<div style="margin-bottom: 10px;"><img src="${escapeHtml(params.labLogoUrl)}" alt="Lab logo" style="max-height: 44px; max-width: 140px; object-fit: contain; display: block;" /></div>`
+    : "";
+
   const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
     <div style="background: #4A6CF7; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
-      <h2 style="margin: 0;">LabTrax</h2>
+      ${logoHtml}<h2 style="margin: 0;">LabTrax</h2>
       <p style="margin: 4px 0 0; opacity: 0.85;">You've been invited</p>
     </div>
     <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">

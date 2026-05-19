@@ -52,6 +52,8 @@ import type {
   StatementScheduleResult,
   UpdateCase200,
   UpdateCaseInput,
+  UpdateOrganizationLogoPlacements200,
+  UpdateOrganizationLogoPlacementsBody,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -2294,4 +2296,118 @@ export const useReceiveInvoicePayments = <
   TContext
 > => {
   return useMutation(getReceiveInvoicePaymentsMutationOptions(options));
+};
+
+/**
+ * @summary Update logo placement preferences for an organization
+ */
+export const getUpdateOrganizationLogoPlacementsUrl = (
+  organizationId: string,
+) => {
+  return `/api/organizations/${organizationId}/logo-placements`;
+};
+
+export const updateOrganizationLogoPlacements = async (
+  organizationId: string,
+  updateOrganizationLogoPlacementsBody: UpdateOrganizationLogoPlacementsBody,
+  options?: RequestInit,
+): Promise<UpdateOrganizationLogoPlacements200> => {
+  return customFetch<UpdateOrganizationLogoPlacements200>(
+    getUpdateOrganizationLogoPlacementsUrl(organizationId),
+    {
+      ...options,
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(updateOrganizationLogoPlacementsBody),
+    },
+  );
+};
+
+export const getUpdateOrganizationLogoPlacementsMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateOrganizationLogoPlacements>>,
+    TError,
+    {
+      organizationId: string;
+      data: BodyType<UpdateOrganizationLogoPlacementsBody>;
+    },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateOrganizationLogoPlacements>>,
+  TError,
+  {
+    organizationId: string;
+    data: BodyType<UpdateOrganizationLogoPlacementsBody>;
+  },
+  TContext
+> => {
+  const mutationKey = ["updateOrganizationLogoPlacements"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateOrganizationLogoPlacements>>,
+    {
+      organizationId: string;
+      data: BodyType<UpdateOrganizationLogoPlacementsBody>;
+    }
+  > = (props) => {
+    const { organizationId, data } = props ?? {};
+
+    return updateOrganizationLogoPlacements(
+      organizationId,
+      data,
+      requestOptions,
+    );
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateOrganizationLogoPlacementsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateOrganizationLogoPlacements>>
+>;
+export type UpdateOrganizationLogoPlacementsMutationBody =
+  BodyType<UpdateOrganizationLogoPlacementsBody>;
+export type UpdateOrganizationLogoPlacementsMutationError = ErrorType<void>;
+
+/**
+ * @summary Update logo placement preferences for an organization
+ */
+export const useUpdateOrganizationLogoPlacements = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateOrganizationLogoPlacements>>,
+    TError,
+    {
+      organizationId: string;
+      data: BodyType<UpdateOrganizationLogoPlacementsBody>;
+    },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateOrganizationLogoPlacements>>,
+  TError,
+  {
+    organizationId: string;
+    data: BodyType<UpdateOrganizationLogoPlacementsBody>;
+  },
+  TContext
+> => {
+  return useMutation(
+    getUpdateOrganizationLogoPlacementsMutationOptions(options),
+  );
 };

@@ -604,3 +604,11 @@ export type GetRxPracticeAliasParams = {
   labOrganizationId: string;
   rxName: string;
 };
+
+export type UpdateOrganizationLogoPlacementsBody = {
+  placements: string[];
+};
+
+export type UpdateOrganizationLogoPlacements200 = {
+  logoplacements?: string[] | null;
+};

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, Github, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -147,6 +147,17 @@ interface LabTeamMember {
   isSelf: boolean;
 }
 
+const LOGO_PLACEMENT_OPTIONS = [
+  { key: "invoices", label: "Invoices", desc: "Show logo on invoice PDFs sent to practices" },
+  { key: "statements", label: "Statements", desc: "Show logo on monthly billing statement PDFs" },
+  { key: "emails", label: "General emails", desc: "Include logo in outgoing email headers" },
+  { key: "welcome_emails", label: "Invite & welcome emails", desc: "Show logo in team invitation emails" },
+  { key: "payment_receipts", label: "Payment receipts", desc: "Show logo in payment confirmation emails" },
+  { key: "case_exports", label: "Case export PDFs", desc: "Show logo on work order and case summary exports" },
+  { key: "quotes", label: "Quotes & estimates", desc: "Show logo on quote documents" },
+  { key: "sms", label: "SMS (text messages)", desc: "Include logo reference in text notifications" },
+] as const;
+
 function ProfilePanel() {
   const { user, refresh } = useAuth();
   const queryClient = useQueryClient();
@@ -160,6 +171,9 @@ function ProfilePanel() {
   const [logoError, setLogoError] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [showPlacementsModal, setShowPlacementsModal] = useState(false);
+  const [placementsSelection, setPlacementsSelection] = useState<string[]>([]);
+  const [placementsError, setPlacementsError] = useState<string | null>(null);
 
   useEffect(() => {
     setFirstName(user?.firstName ?? "");
@@ -217,6 +231,24 @@ function ProfilePanel() {
     refetchOnWindowFocus: true,
   });
 
+  const placementsMutation = useMutation({
+    mutationFn: async (placements: string[]) => {
+      if (!user?.practiceOrganizationId) throw new Error("No lab organization linked.");
+      return apiFetch(
+        `/organizations/${user.practiceOrganizationId}/logo-placements`,
+        { method: "PATCH", body: JSON.stringify({ placements }) }
+      );
+    },
+    onSuccess: async () => {
+      setPlacementsError(null);
+      await refresh();
+      setShowPlacementsModal(false);
+    },
+    onError: (err: Error) => {
+      setPlacementsError(err.message || "Could not save logo placement preferences.");
+    },
+  });
+
   async function handleLogoFile(file: File) {
     setLogoError(null);
     if (!user?.practiceOrganizationId) {
@@ -253,6 +285,7 @@ function ProfilePanel() {
   const currentStatus = workStatusMeta(user?.workStatus);
 
   return (
+    <>
     <PanelShell title="Profile" subtitle="Your personal info shown across LabTrax.">
       {error && <Alert tone="danger">{error}</Alert>}
       {success && <Alert tone="success">Profile saved.</Alert>}
@@ -303,6 +336,24 @@ function ProfilePanel() {
                   : user?.practiceLogoUrl
                   ? "Replace logo"
                   : "Add a logo"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const allPlacements = ["invoices","statements","sms","emails","case_exports","quotes","welcome_emails","payment_receipts"];
+                  setPlacementsSelection(
+                    user?.practiceLogoplacements ??
+                    (user?.practiceLogoUrl ? allPlacements : [])
+                  );
+                  setPlacementsError(null);
+                  setShowPlacementsModal(true);
+                }}
+                disabled={!user?.practiceLogoUrl || !user?.practiceOrganizationId}
+                title={!user?.practiceLogoUrl ? "Upload a logo first to set placement preferences" : "Choose where the lab logo appears"}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-background text-xs font-semibold hover:bg-secondary disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <LayoutList size={12} />
+                Add logo to documents
               </button>
             </div>
           </div>
@@ -439,6 +490,77 @@ function ProfilePanel() {
         </ul>
       </div>
     </PanelShell>
+    {showPlacementsModal && (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+        onClick={() => setShowPlacementsModal(false)}
+      >
+        <div
+          className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm mx-4"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="p-5 border-b border-border">
+            <div className="font-semibold text-sm">Logo placement</div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Choose where the lab logo appears on documents and communications.
+            </p>
+          </div>
+          <div className="p-5 space-y-3 max-h-72 overflow-y-auto">
+            {LOGO_PLACEMENT_OPTIONS.map((opt) => {
+              const checked = placementsSelection.includes(opt.key);
+              return (
+                <label key={opt.key} className="flex items-start gap-3 cursor-pointer">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={checked}
+                    onClick={() =>
+                      setPlacementsSelection((prev) =>
+                        checked ? prev.filter((k) => k !== opt.key) : [...prev, opt.key]
+                      )
+                    }
+                    className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center mt-0.5 transition-colors ${
+                      checked
+                        ? "bg-primary border-primary"
+                        : "bg-background border-input hover:border-primary/50"
+                    }`}
+                  >
+                    {checked && <Check size={10} className="text-primary-foreground" />}
+                  </button>
+                  <div>
+                    <div className="text-sm font-medium leading-tight">{opt.label}</div>
+                    <div className="text-xs text-muted-foreground">{opt.desc}</div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+          {placementsError && (
+            <div className="px-5 pb-1">
+              <p className="text-xs text-destructive">{placementsError}</p>
+            </div>
+          )}
+          <div className="p-5 border-t border-border flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowPlacementsModal(false)}
+              className="h-8 px-3 rounded-md border border-input bg-background text-xs font-semibold hover:bg-secondary"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => placementsMutation.mutate(placementsSelection)}
+              disabled={placementsMutation.isPending}
+              className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 disabled:opacity-60"
+            >
+              {placementsMutation.isPending ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

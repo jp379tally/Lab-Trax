@@ -860,3 +860,18 @@ export const ReceiveInvoicePaymentsBody = zod.object({
     .min(1)
     .max(receiveInvoicePaymentsBodyApplicationsMax),
 });
+
+/**
+ * @summary Update logo placement preferences for an organization
+ */
+export const UpdateOrganizationLogoPlacementsParams = zod.object({
+  organizationId: zod.coerce.string(),
+});
+
+export const UpdateOrganizationLogoPlacementsBody = zod.object({
+  placements: zod.array(zod.string()),
+});
+
+export const UpdateOrganizationLogoPlacementsResponse = zod.object({
+  logoplacements: zod.array(zod.string()).nullish(),
+});

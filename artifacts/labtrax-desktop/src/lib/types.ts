@@ -346,6 +346,8 @@ export interface Organization {
   createdAt?: string | null;
   updatedAt?: string | null;
   deletedAt?: string | null;
+  logoUrl?: string | null;
+  logoplacements?: string[] | null;
 }
 
 export interface BankAccount {

@@ -133,6 +133,8 @@ export interface InvoicePdfOptions {
   balanceDue?: number | string | null;
   notes?: string | null;
   generatedAt: Date;
+  /** Full URL of the lab logo; shown in the top-right header when provided. */
+  logoUrl?: string | null;
 }
 
 export interface BuiltInvoicePdf {
@@ -224,11 +226,25 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
   doc.text(`#${opts.invoiceNumber}`, margin, 66);
   doc.setTextColor(0);
 
-  // Lab (right-aligned)
-  doc.setFontSize(11);
-  doc.setFont("helvetica", "bold");
-  doc.text(opts.labName, pageWidth - margin, 50, { align: "right" });
-  doc.setFont("helvetica", "normal");
+  // Lab logo (top-right) or lab name text
+  if (opts.logoUrl) {
+    try {
+      // logoUrl should be a pre-fetched base64 data URL; render as image
+      doc.addImage(opts.logoUrl, margin, 30, 0, 36);
+    } catch {
+      // fall back to text if image fails
+      doc.setFontSize(11);
+      doc.setFont("helvetica", "bold");
+      doc.text(opts.labName, pageWidth - margin, 50, { align: "right" });
+      doc.setFont("helvetica", "normal");
+    }
+  } else {
+    // Lab (right-aligned)
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "bold");
+    doc.text(opts.labName, pageWidth - margin, 50, { align: "right" });
+    doc.setFont("helvetica", "normal");
+  }
   doc.setFontSize(9);
   doc.setTextColor(120);
   doc.text(

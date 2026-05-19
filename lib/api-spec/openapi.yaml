@@ -703,6 +703,46 @@ paths:
           description: Invalid input or per-invoice amount exceeds balance.
         "403":
           description: Caller lacks a billing role on the lab.
+  /organizations/{organizationId}/logo-placements:
+    patch:
+      operationId: updateOrganizationLogoPlacements
+      tags: [cases]
+      summary: Update logo placement preferences for an organization
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [placements]
+              properties:
+                placements:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Placements updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logoplacements:
+                    type: array
+                    items:
+                      type: string
+                    nullable: true
+        "403":
+          description: Caller lacks admin access on this organization.
+        "404":
+          description: Organization not found.
 components:
   schemas:
     ItemLabelsResult:

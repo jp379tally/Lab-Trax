@@ -2902,7 +2902,7 @@ async function buildAndPersistStatementPdf(opts: {
     }),
   };
   const periodLabel = `${opts.periodStart.toISOString().slice(0, 10)} to ${opts.periodEnd.toISOString().slice(0, 10)}`;
-  const buf = await generateStatementPdfBuffer(labName, data, periodLabel);
+  const buf = await generateStatementPdfBuffer(labName, data, periodLabel, null);
   fs.mkdirSync(practiceStatementsDir, { recursive: true });
   const safeName = practiceName.replace(/[^a-z0-9-_]+/gi, "_").slice(0, 60);
   const fileName = `statement-${safeName}-${opts.statementId}.pdf`;

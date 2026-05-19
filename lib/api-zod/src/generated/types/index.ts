@@ -75,3 +75,5 @@ export * from "./updateCase200Data";
 export * from "./updateCaseInput";
 export * from "./updateCaseInputPriority";
 export * from "./updateCaseInputStatus";
+export * from "./updateOrganizationLogoPlacements200";
+export * from "./updateOrganizationLogoPlacementsBody";

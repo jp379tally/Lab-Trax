@@ -147,6 +147,13 @@ export const organizations = pgTable(
     // Settings → Profile → "Add a logo" and stored in App Storage.
     // Null when the lab hasn't uploaded one yet.
     logoUrl: text("logo_url"),
+    // Which documents/emails should include the lab logo.
+    // null = unset — treated as all-placements-enabled when logoUrl is set
+    // (preserves existing behavior for orgs that had a logo before this
+    // feature), or as empty for new orgs (opt-in required).
+    // Valid values: "invoices" | "statements" | "sms" | "emails" |
+    // "case_exports" | "quotes" | "welcome_emails" | "payment_receipts"
+    logoplacements: text("logo_placements").array(),
     // Provider organizations are created by a specific lab. We persist the
     // creating lab's id here (nullable for non-provider orgs / legacy rows)
     // so account-number uniqueness can be scoped per lab.

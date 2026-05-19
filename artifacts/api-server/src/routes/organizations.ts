@@ -24,7 +24,7 @@ import { writeAuditLog } from "../lib/audit";
 import { hashPassword } from "../lib/crypto";
 import { HttpError, ok } from "../lib/http";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
-import { sendInviteEmail } from "../lib/mail";
+import { getAppBaseUrl, sendInviteEmail } from "../lib/mail";
 import {
   assertCustomAccountNumberAvailable,
   generateProviderAccountNumber,
@@ -1351,6 +1351,11 @@ router.post(
             .join(" ")
             .trim() || inviter.username || inviter.email || null
         : null;
+      const invitePlacements = resolveLogoplacements(organization);
+      const labLogoUrl =
+        invitePlacements.has("welcome_emails") && organization?.logoUrl
+          ? `${getAppBaseUrl()}${organization.logoUrl}`
+          : null;
       const result = await sendInviteEmail({
         to: invite.email!,
         organizationName:
@@ -1361,6 +1366,7 @@ router.post(
         token: invite.token!,
         inviterName,
         expiresAt: invite.expiresAt ?? null,
+        labLogoUrl,
       });
       if (!result.sent) {
         req.log.warn(
@@ -1505,6 +1511,11 @@ router.post(
             .join(" ")
             .trim() || inviter.username || inviter.email || null
         : null;
+      const resendPlacements = resolveLogoplacements(organization);
+      const labLogoUrl =
+        resendPlacements.has("welcome_emails") && organization?.logoUrl
+          ? `${getAppBaseUrl()}${organization.logoUrl}`
+          : null;
       const result = await sendInviteEmail({
         to: updatedInvite.email!,
         organizationName:
@@ -1515,6 +1526,7 @@ router.post(
         token: updatedInvite.token!,
         inviterName,
         expiresAt: updatedInvite.expiresAt ?? null,
+        labLogoUrl,
       });
       if (!result.sent) {
         req.log.warn(
@@ -2191,6 +2203,84 @@ router.delete(
       beforeJson: membership,
     });
     return ok(res, { removed: true });
+  })
+);
+
+// ─── Logo placement helpers ──────────────────────────────────────────────────
+// Which document / email contexts can show a lab logo.
+export const LOGO_PLACEMENT_KEYS = [
+  "invoices",
+  "statements",
+  "sms",
+  "emails",
+  "case_exports",
+  "quotes",
+  "welcome_emails",
+  "payment_receipts",
+] as const;
+export type LogoPlacement = (typeof LOGO_PLACEMENT_KEYS)[number];
+
+/**
+ * Resolve effective logo placements from a saved preference array.
+ * - If `org` is null/undefined, returns an empty Set.
+ * - If `logoplacements` is an array (even empty), use it as-is.
+ * - If `logoplacements` is null the preference has not been configured yet;
+ *   returns an empty Set so no logo appears until an admin opts in.
+ *   (Existing orgs with a logo are backfilled to all-placements-enabled during
+ *   the migration that introduced this column.)
+ */
+export function resolveLogoplacements(
+  org:
+    | {
+        logoUrl: string | null | undefined;
+        logoplacements: string[] | null | undefined;
+      }
+    | null
+    | undefined
+): Set<string> {
+  if (!org) return new Set();
+  if (org.logoplacements != null) {
+    return new Set(org.logoplacements);
+  }
+  return new Set();
+}
+
+const logoPlacementsBodySchema = z.object({
+  placements: z
+    .array(z.enum(LOGO_PLACEMENT_KEYS))
+    .max(LOGO_PLACEMENT_KEYS.length),
+});
+
+router.patch(
+  "/:organizationId/logo-placements",
+  asyncHandler(async (req, res) => {
+    const { organizationId } = req.params;
+    await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
+
+    const { placements } = logoPlacementsBodySchema.parse(req.body);
+
+    const existing = await db.query.organizations.findFirst({
+      where: eq(organizations.id, organizationId),
+    });
+    if (!existing) throw new HttpError(404, "Organization not found.");
+
+    const [updated] = await db
+      .update(organizations)
+      .set({ logoplacements: placements, updatedAt: new Date() })
+      .where(eq(organizations.id, organizationId))
+      .returning();
+
+    await writeAuditLog({
+      req,
+      labId: organizationId,
+      action: "organization_logo_placements_updated",
+      entityType: "organization",
+      entityId: organizationId,
+      beforeJson: { placements: existing.logoplacements },
+      afterJson: { placements },
+    });
+
+    return ok(res, updated);
   })
 );
 

@@ -788,7 +788,7 @@ export function DashboardDropZone() {
         let rxEntryName = "";
         let extraFileCount = 0;
 
-        zip.forEach((relativePath, entry) => {
+        zip.forEach((relativePath: string, entry: JSZip.JSZipObject) => {
           if (entry.dir) return;
           const basename = relativePath.split("/").pop() || relativePath;
           if (/^itero_rx_.*\.pdf$/i.test(basename)) {

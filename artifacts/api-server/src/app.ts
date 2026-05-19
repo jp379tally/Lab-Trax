@@ -11,7 +11,7 @@ import { logger } from "./lib/logger";
 import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
-import { startDailyOneDriveBackup, restartScheduledBackupJob, start15MinRollingBackup } from "./lib/backup";
+import { startDailyOneDriveBackup, restartScheduledBackupJob } from "./lib/backup";
 import { startBillingJobs } from "./lib/billing-jobs";
 import { handleStripeWebhook } from "./routes/billing";
 import {
