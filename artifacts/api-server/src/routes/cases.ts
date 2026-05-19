@@ -1786,6 +1786,7 @@ const updateCaseSchema = z.object({
   providerOrganizationId: z.string().optional(),
   /** When true, clears suggestedDoctorName + suggestedProviderOrgId on the case. */
   clearSuggestion: z.boolean().optional(),
+  bridgeConnectors: z.string().optional(),
 });
 
 router.patch(
@@ -1906,6 +1907,8 @@ router.patch(
       updates.suggestedDoctorName = null;
       updates.suggestedProviderOrgId = null;
     }
+    if (input.bridgeConnectors !== undefined)
+      updates.bridgeConnectors = input.bridgeConnectors || null;
 
     const [updated] = await db
       .update(cases)
@@ -2441,6 +2444,82 @@ router.delete(
     });
 
     return ok(res, { deleted: true });
+  })
+);
+
+router.patch(
+  "/:caseId/restorations/:restorationId",
+  asyncHandler(async (req, res) => {
+    const found = await assertCaseAccess(
+      (req as any).auth.userId,
+      req.params.caseId
+    );
+    await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId
+    );
+    const restoration = await db.query.caseRestorations.findFirst({
+      where: and(
+        eq(caseRestorations.id, req.params.restorationId),
+        eq(caseRestorations.caseId, found.id)
+      ),
+    });
+    if (!restoration) throw new HttpError(404, "Restoration not found.");
+
+    const input = z
+      .object({
+        toothNumber: z.string().min(1).optional(),
+        material: z.string().optional(),
+        shade: z.string().optional(),
+        notes: z.string().optional(),
+        quantity: z.coerce.number().int().positive().optional(),
+        unitPrice: z.coerce.number().min(0).optional(),
+      })
+      .parse(req.body);
+
+    const patchFields: any = {};
+    if (input.toothNumber !== undefined) patchFields.toothNumber = input.toothNumber;
+    if (input.material !== undefined) patchFields.material = input.material || null;
+    if (input.shade !== undefined) patchFields.shade = input.shade || null;
+    if (input.notes !== undefined) patchFields.notes = input.notes || null;
+    if (input.quantity !== undefined) patchFields.quantity = input.quantity;
+    if (input.unitPrice !== undefined) {
+      patchFields.unitPrice = input.unitPrice.toFixed(2);
+      patchFields.priceSource = "manual";
+      patchFields.priceSourceId = null;
+      patchFields.priceSourceName = null;
+    }
+
+    if (Object.keys(patchFields).length === 0) {
+      return ok(res, restoration);
+    }
+
+    const [updated] = await db
+      .update(caseRestorations)
+      .set(patchFields)
+      .where(eq(caseRestorations.id, restoration.id))
+      .returning();
+
+    const actor = (req as any).user;
+    await db.insert(caseEvents).values({
+      caseId: found.id,
+      eventType: "restoration_updated",
+      actorUserId: (req as any).auth.userId,
+      actorOrganizationId: found.labOrganizationId,
+      actorInitials: actor?.initials || "SYS",
+      metadataJson: {
+        restorationId: restoration.id,
+        before: restoration,
+        after: patchFields,
+      },
+    });
+
+    await syncInvoiceFromRestorations({
+      caseId: found.id,
+      actorUserId: (req as any).auth.userId,
+    });
+
+    return ok(res, updated);
   })
 );
 

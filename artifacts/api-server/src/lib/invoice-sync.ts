@@ -30,6 +30,9 @@ import { calculateLineTotal, sumMoney } from "./case";
  *     auto-create their invoice on POST /cases). Callers that need to
  *     guarantee an invoice exists should use the existing
  *     `/invoices/cases/:caseId/generate-invoice` endpoint.
+ *   - When the case has `bridgeConnectors`, adjacent pontic+crown spans
+ *     are collapsed into a single bridge line item with a combined
+ *     description (e.g. "#13-15 Zirconia Bridge – 3 units").
  *
  * Returns the rebuilt invoice id (or null if nothing was synced).
  */
@@ -85,22 +88,27 @@ export async function syncInvoiceFromRestorations(args: {
       .delete(invoiceLineItems)
       .where(eq(invoiceLineItems.invoiceId, invoice.id));
 
-    const itemsToInsert = restorations.map((r, idx) => ({
-      invoiceId: invoice.id,
-      caseRestorationId: r.id,
-      description: noChargeRemake
-        ? `${r.restorationType} - Tooth ${r.toothNumber} (no-charge remake)`
-        : `${r.restorationType} - Tooth ${r.toothNumber}`,
-      quantity: r.quantity,
-      unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
-      lineTotal: noChargeRemake
-        ? "0.00"
-        : calculateLineTotal(r.quantity, r.unitPrice),
-      sortOrder: idx,
-    }));
+    // Build bridge-aware line items. When the case has `bridgeConnectors`,
+    // connected spans of adjacent teeth that include a pontic are merged
+    // into a single bridge line item with a combined description.
+    const itemsToInsert = buildBridgeAwareLineItems(
+      restorations,
+      (caseRow as any).bridgeConnectors ?? null,
+      noChargeRemake,
+    );
 
     if (itemsToInsert.length > 0) {
-      await tx.insert(invoiceLineItems).values(itemsToInsert);
+      await tx.insert(invoiceLineItems).values(
+        itemsToInsert.map((item, idx) => ({
+          invoiceId: invoice.id,
+          caseRestorationId: item.caseRestorationId,
+          description: item.description,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          lineTotal: item.lineTotal,
+          sortOrder: idx,
+        })),
+      );
     }
 
     const subtotal = sumMoney(itemsToInsert.map((i) => i.lineTotal));
@@ -124,9 +132,9 @@ export async function syncInvoiceFromRestorations(args: {
       ...existingMeta,
       teeth: teethList,
       shade: shadeList,
-      lineItems: restorations.map((r) => ({
-        item: r.restorationType,
-        description: `${r.restorationType} - Tooth ${r.toothNumber}`,
+      lineItems: itemsToInsert.map((i) => ({
+        item: i.description,
+        description: i.description,
       })),
     };
 
@@ -150,4 +158,203 @@ export async function syncInvoiceFromRestorations(args: {
   });
 
   return invoice.id;
+}
+
+// ── Bridge-aware line item builder ──────────────────────────────────────────
+
+interface SyncLineItem {
+  caseRestorationId: string | null;
+  description: string;
+  quantity: number;
+  unitPrice: string;
+  lineTotal: string;
+}
+
+/**
+ * Parse comma-separated connector pairs string ("13-14,14-15") into a Set of
+ * normalised `"lo-hi"` pair keys.
+ */
+function parseConnectors(value: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!value) return out;
+  for (const part of value.split(",")) {
+    const [a, b] = part.trim().split("-").map((s) => s.trim());
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb) && na > 0 && nb > 0) {
+      out.add(na < nb ? `${na}-${nb}` : `${nb}-${na}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Find connected components in a set of pair edges. Returns an array of sets
+ * where each set is a group of tooth numbers that form a connected span.
+ */
+function findConnectedComponents(
+  toothNumbers: number[],
+  connectorPairs: Set<string>,
+): number[][] {
+  const parent = new Map<number, number>();
+  for (const n of toothNumbers) parent.set(n, n);
+
+  function find(x: number): number {
+    const p = parent.get(x);
+    if (p === undefined || p === x) return x;
+    const root = find(p);
+    parent.set(x, root);
+    return root;
+  }
+
+  function union(x: number, y: number) {
+    const rx = find(x);
+    const ry = find(y);
+    if (rx !== ry) parent.set(rx, ry);
+  }
+
+  for (const pair of connectorPairs) {
+    const [as, bs] = pair.split("-");
+    const a = Number(as);
+    const b = Number(bs);
+    if (parent.has(a) && parent.has(b)) {
+      union(a, b);
+    }
+  }
+
+  const groups = new Map<number, number[]>();
+  for (const n of toothNumbers) {
+    const root = find(n);
+    const group = groups.get(root) ?? [];
+    group.push(n);
+    groups.set(root, group);
+  }
+  return Array.from(groups.values()).map((g) => g.sort((a, b) => a - b));
+}
+
+/**
+ * Build invoice line items, collapsing bridge spans into single items when
+ * the case has connector data. Falls back to one-item-per-restoration when
+ * there are no connectors or no bridge patterns are found.
+ */
+function buildBridgeAwareLineItems(
+  restorations: Array<{
+    id: string;
+    toothNumber: string;
+    restorationType: string;
+    material: string | null;
+    quantity: number;
+    unitPrice: string;
+  }>,
+  bridgeConnectors: string | null,
+  noChargeRemake: boolean,
+): SyncLineItem[] {
+  const connectors = parseConnectors(bridgeConnectors);
+
+  // Only apply bridge grouping when we have connector data and adult numeric
+  // teeth are involved (1–32).
+  if (connectors.size === 0) {
+    return restorations.map((r) => ({
+      caseRestorationId: r.id,
+      description: buildBasicDescription(r, noChargeRemake),
+      quantity: r.quantity,
+      unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
+      lineTotal: noChargeRemake
+        ? "0.00"
+        : calculateLineTotal(r.quantity, r.unitPrice),
+    }));
+  }
+
+  // Map restoration by numeric tooth number for quick lookup.
+  const byTooth = new Map<number, typeof restorations[0]>();
+  const nonNumeric: typeof restorations = [];
+  for (const r of restorations) {
+    const num = Number(r.toothNumber.trim());
+    if (Number.isInteger(num) && num >= 1 && num <= 32) {
+      byTooth.set(num, r);
+    } else {
+      nonNumeric.push(r);
+    }
+  }
+
+  const numericTeeth = Array.from(byTooth.keys());
+  const components = findConnectedComponents(numericTeeth, connectors);
+
+  // Identify which components form a bridge: must have ≥2 teeth and at least
+  // one "Pontic" restoration type within the span.
+  const usedRestorationIds = new Set<string>();
+  const items: SyncLineItem[] = [];
+
+  for (const group of components) {
+    if (group.length < 2) continue;
+
+    const groupRestorations = group.flatMap((n) => {
+      const r = byTooth.get(n);
+      return r ? [r] : [];
+    });
+    const hasPontic = groupRestorations.some((r) =>
+      /pontic/i.test(r.restorationType),
+    );
+    if (!hasPontic) continue;
+
+    // This span is a bridge. Collapse into one line item.
+    const lo = group[0]!;
+    const hi = group[group.length - 1]!;
+    const units = groupRestorations.reduce((s, r) => s + r.quantity, 0);
+    // Use the material from the first crown/abutment restoration in the group.
+    const abutment = groupRestorations.find(
+      (r) => !/pontic/i.test(r.restorationType),
+    );
+    const material = abutment?.material ?? groupRestorations[0]?.material ?? null;
+    const totalUnitPrice = groupRestorations.reduce(
+      (s, r) => s + Number(r.unitPrice),
+      0,
+    );
+    const avgUnitPrice = groupRestorations.length > 0
+      ? totalUnitPrice / groupRestorations.length
+      : 0;
+
+    const matLabel = material ? `${material} ` : "";
+    const bridgeDesc = `#${lo}-${hi} ${matLabel}Bridge – ${units} unit${units !== 1 ? "s" : ""}`;
+    const finalDesc = noChargeRemake ? `${bridgeDesc} (no-charge remake)` : bridgeDesc;
+
+    const perUnitStr = noChargeRemake ? "0.00" : avgUnitPrice.toFixed(2);
+    const lineTotal = noChargeRemake ? "0.00" : calculateLineTotal(units, perUnitStr);
+
+    items.push({
+      caseRestorationId: abutment?.id ?? groupRestorations[0]?.id ?? null,
+      description: finalDesc,
+      quantity: units,
+      unitPrice: perUnitStr,
+      lineTotal,
+    });
+
+    for (const r of groupRestorations) usedRestorationIds.add(r.id);
+  }
+
+  // Any restoration not consumed by a bridge span becomes its own line item.
+  for (const r of restorations) {
+    if (usedRestorationIds.has(r.id)) continue;
+    items.push({
+      caseRestorationId: r.id,
+      description: buildBasicDescription(r, noChargeRemake),
+      quantity: r.quantity,
+      unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
+      lineTotal: noChargeRemake
+        ? "0.00"
+        : calculateLineTotal(r.quantity, r.unitPrice),
+    });
+  }
+
+  return items;
+}
+
+function buildBasicDescription(
+  r: { restorationType: string; toothNumber: string; material?: string | null },
+  noChargeRemake: boolean,
+): string {
+  const base = r.material
+    ? `${r.material} ${r.restorationType} - Tooth ${r.toothNumber}`
+    : `${r.restorationType} - Tooth ${r.toothNumber}`;
+  return noChargeRemake ? `${base} (no-charge remake)` : base;
 }

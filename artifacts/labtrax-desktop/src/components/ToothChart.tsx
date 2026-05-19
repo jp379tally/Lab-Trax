@@ -126,6 +126,44 @@ export function formatToothSet(ids: Set<ToothId>): string {
   return [...numRanges, ...letterRanges].join(", ");
 }
 
+/**
+ * Normalise a connector pair key: always "<lower>-<higher>" for numeric
+ * teeth so storage and lookup are consistent regardless of rendering order.
+ */
+export function connectorPairKey(a: ToothId, b: ToothId): string {
+  const na = Number(a);
+  const nb = Number(b);
+  if (Number.isFinite(na) && Number.isFinite(nb)) {
+    return na < nb ? `${na}-${nb}` : `${nb}-${na}`;
+  }
+  return a < b ? `${a}-${b}` : `${b}-${a}`;
+}
+
+/**
+ * Parse a comma-separated bridge connector string (e.g. "13-14,14-15") into
+ * a Set of normalised pair keys.
+ */
+export function parseBridgeConnectors(value: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!value) return out;
+  for (const part of value.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const [a, b] = trimmed.split("-").map((s) => s.trim());
+    if (a && b) {
+      out.add(connectorPairKey(a, b));
+    }
+  }
+  return out;
+}
+
+/**
+ * Serialise a Set of connector pair keys back to a comma-separated string.
+ */
+export function formatBridgeConnectors(pairs: Set<string>): string {
+  return Array.from(pairs).sort().join(",");
+}
+
 interface ToothButtonProps {
   id: ToothId;
   selected: boolean;
@@ -178,6 +216,45 @@ function ToothButton({
   );
 }
 
+/** Small toggleable connector dot between two adjacent adult teeth. */
+function ConnectorDot({
+  pairKey,
+  active,
+  readOnly,
+  onToggle,
+}: {
+  pairKey: string;
+  active: boolean;
+  readOnly?: boolean;
+  onToggle: (key: string) => void;
+}) {
+  if (readOnly) {
+    return (
+      <span
+        className={`flex-shrink-0 w-2 h-2 rounded-full border ${
+          active
+            ? "bg-emerald-500 border-emerald-500"
+            : "bg-transparent border-muted-foreground/20"
+        }`}
+        title={active ? "Bridge connector" : undefined}
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(pairKey)}
+      className={`flex-shrink-0 w-2 h-2 rounded-full border transition-colors ${
+        active
+          ? "bg-emerald-500 border-emerald-500 hover:bg-emerald-600"
+          : "bg-transparent border-muted-foreground/30 hover:border-emerald-400 hover:bg-emerald-400/20"
+      }`}
+      title={active ? "Bridge connector (click to remove)" : "Add bridge connector"}
+      aria-pressed={active}
+    />
+  );
+}
+
 export interface ToothChartProps {
   /** Free-text tooth field value (e.g. "3, 5-8, A-C"). */
   value: string;
@@ -204,6 +281,23 @@ export interface ToothChartProps {
    * controls (editing still happens in the Restorations tab).
    */
   readOnly?: boolean;
+  /**
+   * When provided, clicking a tooth calls this callback instead of the
+   * default toggle behaviour. Used by the Restorations tab to open a
+   * guided dialog rather than just toggling a text field.
+   */
+  onToothClick?: (toothId: ToothId) => void;
+  /**
+   * Set of normalised connector pair keys (e.g. "13-14") indicating which
+   * adjacent tooth pairs are connected as a bridge span. Adult teeth only
+   * (1–32). Controlled from the parent form.
+   */
+  connectedPairs?: Set<string>;
+  /**
+   * Called when the user toggles a connector dot. Passes the updated set.
+   * Only called when `readOnly` is false.
+   */
+  onConnectedPairsChange?: (pairs: Set<string>) => void;
 }
 
 export function ToothChart({
@@ -213,6 +307,9 @@ export function ToothChart({
   billedTeethTypes,
   showPrimary: showPrimaryProp,
   readOnly,
+  onToothClick,
+  connectedPairs,
+  onConnectedPairsChange,
 }: ToothChartProps) {
   const [showPrimaryState, setShowPrimaryState] = useState(
     showPrimaryProp ?? false,
@@ -235,11 +332,25 @@ export function ToothChart({
     [billed, billedTeethTypes],
   );
 
+  const showConnectors = !readOnly && !!onConnectedPairsChange;
+
   function toggle(id: ToothId) {
+    if (onToothClick) {
+      onToothClick(id);
+      return;
+    }
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     onChange(formatToothSet(next));
+  }
+
+  function toggleConnector(key: string) {
+    if (!onConnectedPairsChange) return;
+    const next = new Set(connectedPairs ?? []);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    onConnectedPairsChange(next);
   }
 
   function clear() {
@@ -255,37 +366,64 @@ export function ToothChart({
     rightIds: ToothId[];
     primary?: boolean;
   }) {
+    const showDots = showConnectors && !primary;
+
+    function renderTeethWithDots(ids: ToothId[]) {
+      if (!showDots || ids.length === 0) {
+        return (
+          <div className="flex gap-0.5">
+            {ids.map((id) => (
+              <ToothButton
+                key={id}
+                id={String(id)}
+                selected={selected.has(String(id))}
+                billed={billed.has(String(id))}
+                billedTitle={billedTitleFor(String(id))}
+                primary={primary}
+                readOnly={readOnly}
+                onToggle={toggle}
+              />
+            ))}
+          </div>
+        );
+      }
+      const elements: React.ReactNode[] = [];
+      ids.forEach((id, idx) => {
+        elements.push(
+          <ToothButton
+            key={id}
+            id={String(id)}
+            selected={selected.has(String(id))}
+            billed={billed.has(String(id))}
+            billedTitle={billedTitleFor(String(id))}
+            primary={primary}
+            readOnly={readOnly}
+            onToggle={toggle}
+          />,
+        );
+        if (idx < ids.length - 1) {
+          const nextId = ids[idx + 1]!;
+          const pKey = connectorPairKey(id, nextId);
+          const isActive = (connectedPairs ?? new Set()).has(pKey);
+          elements.push(
+            <ConnectorDot
+              key={`dot-${pKey}`}
+              pairKey={pKey}
+              active={isActive}
+              readOnly={readOnly}
+              onToggle={toggleConnector}
+            />,
+          );
+        }
+      });
+      return <div className="flex items-center gap-0.5">{elements}</div>;
+    }
+
     return (
       <div className="flex items-center justify-center gap-1">
-        <div className="flex gap-0.5">
-          {leftIds.map((id) => (
-            <ToothButton
-              key={id}
-              id={String(id)}
-              selected={selected.has(String(id))}
-              billed={billed.has(String(id))}
-              billedTitle={billedTitleFor(String(id))}
-              primary={primary}
-              readOnly={readOnly}
-              onToggle={toggle}
-            />
-          ))}
-        </div>
+        {renderTeethWithDots(leftIds)}
         <div className="w-3 border-l border-border h-6 mx-1" aria-hidden />
-        <div className="flex gap-0.5">
-          {rightIds.map((id) => (
-            <ToothButton
-              key={id}
-              id={String(id)}
-              selected={selected.has(String(id))}
-              billed={billed.has(String(id))}
-              billedTitle={billedTitleFor(String(id))}
-              primary={primary}
-              readOnly={readOnly}
-              onToggle={toggle}
-            />
-          ))}
-        </div>
+        {renderTeethWithDots(rightIds)}
       </div>
     );
   }
@@ -305,6 +443,12 @@ export function ToothChart({
             <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/40 border border-emerald-500/50 inline-block" />
             Billed
           </span>
+          {showConnectors && (
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 inline-block" />
+              Bridge
+            </span>
+          )}
           {!readOnly && showPrimaryProp === undefined && (
             <button
               type="button"
@@ -316,7 +460,7 @@ export function ToothChart({
               {showPrimaryState ? "Hide primary (A–T)" : "Show primary (A–T)"}
             </button>
           )}
-          {!readOnly && selected.size > 0 && (
+          {!readOnly && selected.size > 0 && !onToothClick && (
             <button
               type="button"
               onClick={clear}
@@ -356,12 +500,20 @@ export function ToothChart({
         />
       </div>
 
-      {!readOnly && (
+      {!readOnly && !onToothClick && (
         <div className="text-[11px] text-muted-foreground pt-1">
           Click teeth to toggle. Selection is mirrored to the Tooth # field
           above (e.g.{" "}
           <span className="font-mono">{selected.size > 0 ? formatToothSet(selected) : "1-3, 14"}</span>
           ).
+        </div>
+      )}
+      {!readOnly && onToothClick && (
+        <div className="text-[11px] text-muted-foreground pt-1">
+          Click a tooth to add, replace, or mark it.
+          {showConnectors && (
+            <> Click a <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 align-middle mx-0.5" /> dot between teeth to mark a bridge connector.</>
+          )}
         </div>
       )}
     </div>

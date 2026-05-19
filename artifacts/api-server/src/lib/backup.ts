@@ -43,6 +43,9 @@ export const SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES = "backup_schedule_interva
 export const SETTING_BACKUP_SCHEDULE_DESTINATION = "backup_schedule_destination";
 export const SETTING_BACKUP_SCHEDULE_PATH = "backup_schedule_path";
 export const SETTING_BACKUP_SCHEDULE_ENABLED = "backup_schedule_enabled";
+export const SETTING_ROLLING_BACKUP_ENABLED = "rolling_backup_enabled";
+export const SETTING_ROLLING_BACKUP_LAST_RUN_AT = "rolling_backup_last_run_at";
+export const SETTING_ROLLING_BACKUP_LAST_ERROR = "rolling_backup_last_error";
 
 export const ALL_SCHEDULE_SETTINGS = [
   SETTING_BACKUP_SCHEDULE_INTERVAL_MINUTES,
@@ -469,4 +472,63 @@ export async function restartScheduledBackupJob(): Promise<void> {
     "[backup] Recurring backup schedule started",
   );
   _scheduledIntervalTimer = setInterval(fireScheduledBackup, intervalMs);
+}
+
+// ── 15-minute rolling OneDrive backup ────────────────────────────────────────
+// Persists last-run timestamp and any error to system_settings so the admin
+// panel can surface freshness and failures without querying logs.
+
+let _rollingBackupScheduled = false;
+const ROLLING_BACKUP_INTERVAL_MS = 15 * 60 * 1000;
+
+async function persistRollingBackupStatus(error?: string | null) {
+  const now = new Date().toISOString();
+  const upsert = async (key: string, value: string) => {
+    await db
+      .insert(systemSettings)
+      .values({ key, value })
+      .onConflictDoUpdate({
+        target: systemSettings.key,
+        set: { value, updatedAt: new Date() },
+      });
+  };
+  await upsert(SETTING_ROLLING_BACKUP_LAST_RUN_AT, now);
+  await upsert(SETTING_ROLLING_BACKUP_LAST_ERROR, error ?? "");
+}
+
+export async function start15MinRollingBackup() {
+  if (_rollingBackupScheduled) return;
+  _rollingBackupScheduled = true;
+
+  logger.info(
+    { intervalMs: ROLLING_BACKUP_INTERVAL_MS },
+    "15-min rolling OneDrive backup scheduled",
+  );
+
+  const tick = async () => {
+    // Honour the admin toggle — default on when the setting is absent.
+    try {
+      const rows = await db
+        .select()
+        .from(systemSettings)
+        .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
+      const raw = rows[0]?.value ?? null;
+      const enabled = raw === null ? true : raw !== "false";
+      if (!enabled) return;
+    } catch {
+      // If we can't read the setting, proceed with the backup to be safe.
+    }
+
+    try {
+      const result = await runOneDriveBackup("scheduler:rolling-15min");
+      logger.info({ fileName: result.fileName, size: result.size }, "15-min rolling OneDrive backup OK");
+      await persistRollingBackupStatus(null);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err: msg }, "15-min rolling OneDrive backup FAILED");
+      try { await persistRollingBackupStatus(msg); } catch { /* swallow */ }
+    }
+  };
+
+  setInterval(tick, ROLLING_BACKUP_INTERVAL_MS);
 }

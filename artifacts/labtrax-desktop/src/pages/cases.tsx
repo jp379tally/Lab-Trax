@@ -44,7 +44,12 @@ import {
   printInvoice,
   printTabContent,
 } from "@/lib/print";
-import { ToothChart, parseToothField } from "@/components/ToothChart";
+import {
+  ToothChart,
+  parseToothField,
+  parseBridgeConnectors,
+  formatBridgeConnectors,
+} from "@/components/ToothChart";
 import {
   buildHighlightedToothValue,
   deriveRxSummary,
@@ -52,6 +57,10 @@ import {
 } from "@/lib/rx-summary";
 import { StatusBadge } from "@/components/StatusBadge";
 import { InvoiceEditor } from "./invoices";
+import {
+  ToothActionDialog,
+  type ToothActionPayload,
+} from "@/components/ToothActionDialog";
 
 const STATUS_FILTERS: Array<{ value: string; label: string }> = [
   { value: "all", label: "All" },
@@ -1277,6 +1286,8 @@ type DetailedCase = LabCase & {
   attachments: CaseAttachment[];
   viewerIsLabMember?: boolean;
   viewerCanManageAttachments?: boolean;
+  /** Serialized bridge connector pairs, e.g. "13-14,14-15". Null when none. */
+  bridgeConnectors?: string | null;
   remakeOriginal?: {
     id: string;
     caseNumber: string;
@@ -1409,6 +1420,15 @@ export function CaseDrawer({
   });
   const [restError, setRestError] = useState<string | null>(null);
 
+  // Interactive tooth chart dialog state
+  const [toothDialogId, setToothDialogId] = useState<string | null>(null);
+  const [toothDialogError, setToothDialogError] = useState<string | null>(null);
+
+  // Bridge connector state — initialised from case data once loaded
+  const [connectedPairs, setConnectedPairs] = useState<Set<string>>(() =>
+    parseBridgeConnectors((labCase as any).bridgeConnectors ?? null),
+  );
+
   const { data, isLoading } = useQuery({
     queryKey: ["case", labCase.id],
     queryFn: () => apiFetch<DetailedCase>(`/cases/${labCase.id}`),
@@ -1441,6 +1461,17 @@ export function CaseDrawer({
         }
       >(`/invoices/${caseInvoice!.id}`),
   });
+
+  // Sync connectedPairs from server data when the detail query resolves
+  // (bridgeConnectors is not included in the list-level LabCase, only in
+  // the detail response).
+  useEffect(() => {
+    if (data && data.bridgeConnectors !== undefined) {
+      setConnectedPairs(
+        parseBridgeConnectors(data.bridgeConnectors ?? null),
+      );
+    }
+  }, [data?.bridgeConnectors]);
 
   // Teeth that already have a restoration line on this case. The tooth
   // chart highlights these so the user can avoid double-billing.
@@ -1708,6 +1739,90 @@ export function CaseDrawer({
     },
     onError: (e: Error) => setRestError(e.message),
   });
+
+  function invalidateAfterRestorationChange() {
+    qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+    qc.invalidateQueries({ queryKey: ["cases"] });
+    qc.invalidateQueries({ queryKey: ["invoice-for-case", labCase.id] });
+    qc.invalidateQueries({ queryKey: ["invoice-detail"] });
+    qc.invalidateQueries({ queryKey: ["invoices"] });
+  }
+
+  const toothDialogMutation = useMutation({
+    mutationFn: async (payload: ToothActionPayload) => {
+      if (payload.kind === "add_crown") {
+        await apiFetch(`/cases/${labCase.id}/restorations`, {
+          method: "POST",
+          body: JSON.stringify({
+            toothNumber: payload.toothId,
+            restorationType: payload.restorationType,
+            material: payload.material,
+            quantity: 1,
+          }),
+        });
+      } else if (payload.kind === "add_pontic") {
+        await apiFetch(`/cases/${labCase.id}/restorations`, {
+          method: "POST",
+          body: JSON.stringify({
+            toothNumber: payload.toothId,
+            restorationType: "Pontic",
+            quantity: 1,
+          }),
+        });
+      } else if (payload.kind === "mark_missing") {
+        // Missing is visual-only — toggle the tooth into the "selected" set
+        // on the current restForm so it shows on the chart; no server call.
+        return { kind: "missing", toothId: payload.toothId };
+      } else if (payload.kind === "replace_tooth") {
+        await apiFetch(
+          `/cases/${labCase.id}/restorations/${payload.restorationId}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({
+              toothNumber: payload.newToothNumber,
+              ...(payload.material ? { material: payload.material } : {}),
+            }),
+          },
+        );
+      }
+      return null;
+    },
+    onSuccess: (result) => {
+      if (result && (result as any).kind === "missing") {
+        // Mark-missing is local-only: add to the form tooth field so it
+        // appears highlighted on the chart.
+        const existing = parseToothField(restForm.toothNumber);
+        existing.add((result as any).toothId);
+        setRestForm((f) => ({
+          ...f,
+          toothNumber: Array.from(existing).join(", "),
+        }));
+      } else {
+        invalidateAfterRestorationChange();
+      }
+      setToothDialogId(null);
+      setToothDialogError(null);
+    },
+    onError: (e: Error) => setToothDialogError(e.message),
+  });
+
+  const saveConnectorsMutation = useMutation({
+    mutationFn: (pairs: Set<string>) =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          bridgeConnectors: formatBridgeConnectors(pairs),
+        }),
+      }),
+    onSuccess: () => {
+      invalidateAfterRestorationChange();
+    },
+  });
+
+  function handleConnectedPairsChange(pairs: Set<string>) {
+    setConnectedPairs(pairs);
+    saveConnectorsMutation.mutate(pairs);
+  }
 
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteCaseMutation = useMutation({
@@ -2537,15 +2652,29 @@ export function CaseDrawer({
                     className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md bg-secondary hover:bg-secondary/80 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
                   >
                     <Plus size={12} />
-                    {showAddRest ? "Cancel" : "Add restoration"}
+                    {showAddRest ? "Cancel" : "Add manually"}
                   </button>
                 </div>
               </div>
 
+              {/* Interactive chart — primary entry point for the click-driven workflow */}
+              <ToothChart
+                value={Array.from(billedTeeth).join(", ")}
+                onChange={() => {}}
+                billedTeeth={billedTeeth}
+                billedTeethTypes={billedTeethTypes}
+                onToothClick={(toothId) => {
+                  setToothDialogId(toothId);
+                  setToothDialogError(null);
+                }}
+                connectedPairs={connectedPairs}
+                onConnectedPairsChange={handleConnectedPairsChange}
+              />
+
               {showAddRest && (
                 <div className="border border-border rounded-lg p-4 space-y-3 bg-secondary/20">
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                    New restoration
+                    New restoration (manual entry)
                   </p>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -3304,6 +3433,21 @@ export function CaseDrawer({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Tooth chart action dialog */}
+      {toothDialogId !== null && (
+        <ToothActionDialog
+          toothId={toothDialogId}
+          restorations={data?.restorations ?? []}
+          isPending={toothDialogMutation.isPending}
+          error={toothDialogError}
+          onClose={() => {
+            setToothDialogId(null);
+            setToothDialogError(null);
+          }}
+          onConfirm={(payload) => toothDialogMutation.mutate(payload)}
+        />
       )}
     </div>
   );

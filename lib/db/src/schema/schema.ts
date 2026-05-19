@@ -465,6 +465,7 @@ export const cases = pgTable(
       { onDelete: "set null" }
     ),
     casePanBarcode: text("case_pan_barcode"),
+    bridgeConnectors: text("bridge_connectors"),
   },
   (table) => ({
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(
