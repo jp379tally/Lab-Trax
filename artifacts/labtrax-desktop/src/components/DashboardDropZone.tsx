@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { formatPhone } from "@/lib/format";
 
 interface LegacyCaseLite {
   id: string;
@@ -1181,12 +1182,12 @@ export function DashboardDropZone() {
             <div className="grid grid-cols-2 gap-2">
               <input
                 className={inputCls}
-                placeholder="Phone"
+                placeholder="000-000-0000"
                 value={newPracticeDraft.phone}
                 onChange={(e) =>
                   setNewPracticeDraft({
                     ...newPracticeDraft,
-                    phone: e.target.value,
+                    phone: formatPhone(e.target.value),
                   })
                 }
                 disabled={creatingPractice}

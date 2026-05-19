@@ -15,6 +15,7 @@ import { apiFetch, ApiError, notifySessionCleared } from "@/lib/api";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
 import { formatNextCleanupTime } from "@/lib/cleanup-schedule";
 import { formatNextBackupTime } from "@/lib/backup-schedule";
+import { formatPhone } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
 
@@ -360,8 +361,8 @@ function ProfilePanel() {
           <input
             type="tel"
             value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="(555) 555-5555"
+            onChange={(e) => setPhone(formatPhone(e.target.value))}
+            placeholder="000-000-0000"
             className={inputCls}
           />
         </Field>

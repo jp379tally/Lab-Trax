@@ -230,6 +230,17 @@ export function formatAcctNum(accountNumber: string): string {
   return `Acct #${accountNumber}`;
 }
 
+/**
+ * Formats a raw phone string into XXX-XXX-XXXX as the user types.
+ * Strips non-digits and caps at 10 digits.
+ */
+export function formatPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
 export function cleanDoctorDisplay(name: string): string {
   if (!name) return "";
   const match = name.match(/^(.+?)\s*\(([^)]+)\)\s*$/);

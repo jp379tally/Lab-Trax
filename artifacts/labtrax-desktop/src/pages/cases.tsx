@@ -37,7 +37,7 @@ import type {
   PricingTier,
   RestorationPriceSource,
 } from "@/lib/types";
-import { formatDate, formatDateTime, formatMoney, relativeTime, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, formatMoney, formatPhone, relativeTime, statusLabel } from "@/lib/format";
 import {
   printCaseHistory,
   printCaseLabel,
@@ -269,9 +269,9 @@ function ProviderPicker({ value, onChange, providers, disabled }: ProviderPicker
                 className="w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
               />
               <input
-                placeholder="Phone (optional)"
+                placeholder="Phone (optional, 000-000-0000)"
                 value={newPhone}
-                onChange={(e) => setNewPhone(e.target.value)}
+                onChange={(e) => setNewPhone(formatPhone(e.target.value))}
                 className="w-full h-8 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
               />
               <input

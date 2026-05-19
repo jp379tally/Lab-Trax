@@ -4,7 +4,7 @@ import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSi
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
-import { formatMoney, relativeTime } from "@/lib/format";
+import { formatMoney, formatPhone, relativeTime } from "@/lib/format";
 
 import { DEFAULT_PRICE_KEYS, priceKeyLabel } from "@/lib/pricing-keys";
 
@@ -542,7 +542,7 @@ export function AddPracticeDialog({
               <input type="email" value={fields.billingEmail} onChange={(e) => update("billingEmail", e.target.value)} className={inputCls} />
             </FormField>
             <FormField label="Phone">
-              <input value={fields.phone} onChange={(e) => update("phone", e.target.value)} className={inputCls} />
+              <input value={fields.phone} onChange={(e) => update("phone", formatPhone(e.target.value))} className={inputCls} placeholder="000-000-0000" />
             </FormField>
             <FormField label="Primary doctor name" full>
               <input value={fields.doctorName} onChange={(e) => update("doctorName", e.target.value)} className={inputCls} />
@@ -648,9 +648,9 @@ export function AddPracticeDialog({
                       </label>
                       <input
                         value={d.phone}
-                        onChange={(e) => updateDoctorRow(idx, "phone", e.target.value)}
+                        onChange={(e) => updateDoctorRow(idx, "phone", formatPhone(e.target.value))}
                         className={inputCls}
-                        placeholder="optional"
+                        placeholder="000-000-0000"
                       />
                     </div>
                     <div className="col-span-1 flex items-end justify-end h-full pt-4">
@@ -965,7 +965,7 @@ export function PracticeEditor({ org, onClose }: { org: Organization; onClose: (
               <input type="email" value={fields.billingEmail} onChange={(e) => update("billingEmail", e.target.value)} className={inputCls} />
             </FormField>
             <FormField label="Phone">
-              <input value={fields.phone} onChange={(e) => update("phone", e.target.value)} className={inputCls} />
+              <input value={fields.phone} onChange={(e) => update("phone", formatPhone(e.target.value))} className={inputCls} placeholder="000-000-0000" />
             </FormField>
             <FormField label="Address line 1" full>
               <input value={fields.addressLine1} onChange={(e) => update("addressLine1", e.target.value)} className={inputCls} />
@@ -1333,9 +1333,9 @@ function AddDoctorToPracticeDialog({
               <FormField label="Phone" full>
                 <input
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={(e) => setPhone(formatPhone(e.target.value))}
                   className={inputCls}
-                  placeholder="optional"
+                  placeholder="000-000-0000"
                 />
               </FormField>
               <div className="col-span-2 text-[11px] text-muted-foreground">

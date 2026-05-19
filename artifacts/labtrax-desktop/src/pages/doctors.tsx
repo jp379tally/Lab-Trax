@@ -23,7 +23,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
-import { formatDate, formatMoney, relativeTime } from "@/lib/format";
+import { formatDate, formatMoney, formatPhone, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 
 export interface MergeSourceInput {
@@ -766,7 +766,7 @@ function EditPracticeSection({
           <input value={fields.zip} onChange={(e) => update("zip", e.target.value)} className={inputCls} />
         </FormField>
         <FormField label="Phone">
-          <input value={fields.phone} onChange={(e) => update("phone", e.target.value)} className={inputCls} />
+          <input value={fields.phone} onChange={(e) => update("phone", formatPhone(e.target.value))} className={inputCls} placeholder="000-000-0000" />
         </FormField>
         {canEditAccountNumber && (
           <FormField label="Account number" full>

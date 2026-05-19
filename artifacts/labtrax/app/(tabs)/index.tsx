@@ -39,7 +39,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import Colors from "@/constants/colors";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
+import { getStationInfo, STATIONS, Client, LabUser, Invoice, InvoiceLineItem, DEFAULT_TIER_ITEMS, InventoryItem, CaseStatus, formatAcctNum, formatInvNum, formatPhone, cleanDoctorDisplay, LabCase, ProviderContact } from "@/lib/data";
 import { LabFileDropZone } from "@/components/LabFileDropZone";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { apiRequest, getApiUrl, getAccessToken } from "@/lib/query-client";
@@ -2355,7 +2355,7 @@ function AdminDashboard() {
           <View style={adm.fieldRow}>
             <View style={[adm.field, { flex: 1 }]}>
               <Text style={adm.fieldLabel}>Phone</Text>
-              <TextInput style={adm.input} value={newClientPhone} onChangeText={setNewClientPhone} placeholder="(555) 000-0000" placeholderTextColor={Colors.light.textTertiary} keyboardType="phone-pad" />
+              <TextInput style={adm.input} value={newClientPhone} onChangeText={(v) => setNewClientPhone(formatPhone(v))} placeholder="000-000-0000" placeholderTextColor={Colors.light.textTertiary} keyboardType="phone-pad" />
             </View>
             <View style={[adm.field, { flex: 1 }]}>
               <Text style={adm.fieldLabel}>Email</Text>
@@ -2500,10 +2500,10 @@ function AdminDashboard() {
                             value={pc.phone || ""}
                             onChangeText={(v) => {
                               const newContacts = getAllPCFromEdit(editingClient);
-                              newContacts[providerIdx] = { ...newContacts[providerIdx], phone: v };
+                              newContacts[providerIdx] = { ...newContacts[providerIdx], phone: formatPhone(v) };
                               setEditingClient({ ...editingClient, providerContacts: newContacts });
                             }}
-                            placeholder="Phone"
+                            placeholder="000-000-0000"
                             keyboardType="phone-pad"
                             placeholderTextColor={Colors.light.textTertiary}
                           />
@@ -2528,7 +2528,7 @@ function AdminDashboard() {
             <View style={adm.fieldRow}>
               <View style={[adm.field, { flex: 1 }]}>
                 <Text style={adm.fieldLabel}>Practice Phone</Text>
-                <TextInput style={adm.input} value={editingClient.phone} onChangeText={(v) => setEditingClient({ ...editingClient, phone: v })} keyboardType="phone-pad" />
+                <TextInput style={adm.input} value={editingClient.phone} onChangeText={(v) => setEditingClient({ ...editingClient, phone: formatPhone(v) })} placeholder="000-000-0000" keyboardType="phone-pad" />
               </View>
               <View style={[adm.field, { flex: 1 }]}>
                 <Text style={adm.fieldLabel}>Practice Email</Text>

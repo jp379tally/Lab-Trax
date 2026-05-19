@@ -24,6 +24,7 @@ import Colors from "@/constants/colors";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { resilientFetch } from "@/lib/query-client";
+import { formatPhone } from "@/lib/data";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -1357,8 +1358,8 @@ export default function SettingsScreen() {
               <TextInput
                 style={[styles.input, { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
                 value={editLabPhone}
-                onChangeText={setEditLabPhone}
-                placeholder="Enter phone number"
+                onChangeText={(v) => setEditLabPhone(formatPhone(v))}
+                placeholder="000-000-0000"
                 placeholderTextColor={colors.textTertiary}
                 keyboardType="phone-pad"
               />

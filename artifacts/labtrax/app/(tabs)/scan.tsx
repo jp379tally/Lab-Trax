@@ -30,7 +30,7 @@ import { useIsFocused } from "@react-navigation/native";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import Colors from "@/constants/colors";
-import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, cleanDoctorDisplay } from "@/lib/data";
+import { ActivityEntry, generateId, ToothEntry, ToothType, MATERIAL_PRICES, formatAcctNum, formatPhone, cleanDoctorDisplay } from "@/lib/data";
 import { resolvePriceForCase } from "@/lib/pricing";
 import { fetch as expoFetch } from "expo/fetch";
 import { getApiUrl, resilientFetch, getAccessToken } from "@/lib/query-client";
@@ -2983,8 +2983,8 @@ export default function ScanScreen() {
                       <TextInput
                         style={styles.dropdownSearchInput}
                         value={newDoctorPhone}
-                        onChangeText={setNewDoctorPhone}
-                        placeholder="Phone number..."
+                        onChangeText={(v) => setNewDoctorPhone(formatPhone(v))}
+                        placeholder="000-000-0000"
                         placeholderTextColor={Colors.light.textTertiary}
                         keyboardType="phone-pad"
                       />
