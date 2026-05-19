@@ -2,21 +2,59 @@ import { Tabs } from "expo-router";
 import { BlurView } from "expo-blur";
 import { Platform, StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import React from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useApp } from "@/lib/app-context";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
 import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications";
+import { useEntitlement } from "@/lib/useEntitlement";
+import { SubscriptionPaywall } from "@/components/SubscriptionPaywall";
 
 function ClassicTabLayout() {
   const { isDark, colors } = useTheme();
   const isWeb = Platform.OS === "web";
   const isIOS = Platform.OS === "ios";
   const { role, setRole, setAdminUnlocked } = useApp();
-  const { userType } = useAuth();
+  const { userType, isAuthenticated } = useAuth();
   const isProvider = userType === "provider";
   const filteredNotifs = useProviderFilteredNotifications();
   const unreadCount = filteredNotifs.filter(n => !n.read).length;
+
+  const { entitlement, refresh: refreshEntitlement } = useEntitlement(isAuthenticated);
+  const [paywallDismissed, setPaywallDismissed] = useState(false);
+  const [optimisticallyClosed, setOptimisticallyClosed] = useState(false);
+  const prevAccessLevelRef = useRef(entitlement?.accessLevel);
+
+  const accessLevel = entitlement?.accessLevel;
+
+  useEffect(() => {
+    const prev = prevAccessLevelRef.current;
+    prevAccessLevelRef.current = accessLevel;
+    if (prev === "read_only" && accessLevel !== "read_only") {
+      setPaywallDismissed(false);
+    }
+    if (accessLevel && accessLevel !== "locked" && accessLevel !== "read_only") {
+      setOptimisticallyClosed(false);
+    }
+  }, [accessLevel]);
+
+  const showPaywall =
+    !optimisticallyClosed &&
+    (accessLevel === "locked" || accessLevel === "read_only") &&
+    !(accessLevel === "read_only" && paywallDismissed);
+
+  function handleSubscribed() {
+    setOptimisticallyClosed(true);
+    refreshEntitlement().then(() => {
+      setOptimisticallyClosed(false);
+    });
+  }
+
+  function handleDismiss() {
+    if (accessLevel === "read_only") {
+      setPaywallDismissed(true);
+    }
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.backgroundSolid, maxWidth: isWeb ? 600 : undefined, alignSelf: isWeb ? "center" as const : undefined, width: isWeb ? "100%" : undefined }}>
@@ -131,6 +169,14 @@ function ClassicTabLayout() {
           }}
         />
       </Tabs>
+
+      {showPaywall && accessLevel && (
+        <SubscriptionPaywall
+          accessLevel={accessLevel}
+          onSubscribed={handleSubscribed}
+          onDismiss={accessLevel === "read_only" ? handleDismiss : undefined}
+        />
+      )}
     </View>
   );
 }
