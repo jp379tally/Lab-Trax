@@ -321,6 +321,26 @@ export interface IteroImportResult {
   data?: IteroImportResultData;
 }
 
+export type IteroZipImportResultData = {
+  deduped?: boolean;
+  caseId?: string | null;
+  caseNumber?: string | null;
+  needsAiReview?: boolean;
+  attachmentId?: string | null;
+  iteroOrderId?: string;
+  /** Number of non-Rx files from the ZIP that were attached to the case. */
+  extraFilesAttached?: number;
+  /** Number of non-Rx files that could not be attached (partial-failure indicator). */
+  extraFilesFailed?: number;
+  suggestedDoctorName?: string | null;
+  suggestedProviderOrgId?: string | null;
+};
+
+export interface IteroZipImportResult {
+  ok?: boolean;
+  data?: IteroZipImportResultData;
+}
+
 export interface OpenInvoice {
   id: string;
   invoiceNumber: string;
@@ -472,6 +492,16 @@ export type ImportCaseFromIteroRxBody = {
   /** Rx PDF or image (binary upload) */
   file: string;
   iteroOrderId: string;
+  labOrganizationId: string;
+  providerOrganizationId: string;
+  doctorNameHint?: string;
+  patientFirstNameHint?: string;
+  patientLastNameHint?: string;
+};
+
+export type ImportCaseFromIteroZipBody = {
+  /** iTero export ZIP (binary upload, max 300 MB) */
+  file: string;
   labOrganizationId: string;
   providerOrganizationId: string;
   doctorNameHint?: string;

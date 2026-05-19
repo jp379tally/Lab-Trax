@@ -101,6 +101,54 @@ export const ImportCaseFromIteroRxResponse = zod.object({
 });
 
 /**
+ * Accepts a full iTero export ZIP (e.g. OrthoCAD_Export_306682066.zip).
+The server locates the `iTero_Rx_*.pdf` inside, uses AI to create a
+case (same flow as `/cases/import-from-itero-rx`), attaches the Rx as
+the primary attachment, and attaches every other file in the ZIP to the
+new case. The iTero order ID is derived from the Rx filename; the ZIP
+filename is used as a fallback. Duplicate detection is the same as the
+single-file flow: an already-imported order returns `deduped: true`.
+
+ * @summary Import a case from an iTero export ZIP
+ */
+export const ImportCaseFromIteroZipBody = zod.object({
+  file: zod.string().describe("iTero export ZIP (binary upload, max 300 MB)"),
+  labOrganizationId: zod.string(),
+  providerOrganizationId: zod.string(),
+  doctorNameHint: zod.string().optional(),
+  patientFirstNameHint: zod.string().optional(),
+  patientLastNameHint: zod.string().optional(),
+});
+
+export const ImportCaseFromIteroZipResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      deduped: zod.boolean().optional(),
+      caseId: zod.string().nullish(),
+      caseNumber: zod.string().nullish(),
+      needsAiReview: zod.boolean().optional(),
+      attachmentId: zod.string().nullish(),
+      iteroOrderId: zod.string().optional(),
+      extraFilesAttached: zod
+        .number()
+        .optional()
+        .describe(
+          "Number of non-Rx files from the ZIP that were attached to the case.",
+        ),
+      extraFilesFailed: zod
+        .number()
+        .optional()
+        .describe(
+          "Number of non-Rx files that could not be attached (partial-failure indicator).",
+        ),
+      suggestedDoctorName: zod.string().nullish(),
+      suggestedProviderOrgId: zod.string().nullish(),
+    })
+    .optional(),
+});
+
+/**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
 given lab, ranked by similarity to the optional `q` / `like`
 parameters using normalized name comparison (trim, lowercase,

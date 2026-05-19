@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Router, type Request, type Response } from "express";
 import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
@@ -25,6 +26,7 @@ import {
 import multer from "multer";
 import { randomBytes } from "node:crypto";
 import OpenAI, { toFile } from "openai";
+import AdmZip from "adm-zip";
 import { writeAuditLog } from "../lib/audit";
 import { calculateLineTotal, sumMoney } from "../lib/case";
 import { syncInvoiceFromRestorations } from "../lib/invoice-sync";
@@ -2936,6 +2938,50 @@ const iteroImportBodySchema = z.object({
   patientLastNameHint: z.string().optional(),
 });
 
+// ── ZIP import config ────────────────────────────────────────────────────────
+
+const iteroZipUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      const tmpDir = path.join(os.tmpdir(), "labtrax-itero-zip");
+      try { fs.mkdirSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+      cb(null, tmpDir);
+    },
+    filename: (_req, _file, cb) => {
+      cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}.zip`);
+    },
+  }),
+  limits: { fileSize: 300 * 1024 * 1024 },
+});
+
+const iteroZipImportBodySchema = z.object({
+  labOrganizationId: z.string().min(1, "labOrganizationId is required"),
+  providerOrganizationId: z
+    .string()
+    .min(1, "providerOrganizationId is required"),
+  doctorNameHint: z.string().optional(),
+  patientFirstNameHint: z.string().optional(),
+  patientLastNameHint: z.string().optional(),
+});
+
+const EXT_TO_MIME: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ply": "application/octet-stream",
+  ".stl": "application/octet-stream",
+  ".obj": "application/octet-stream",
+  ".xml": "application/xml",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".json": "application/json",
+  ".txt": "text/plain",
+  ".zip": "application/zip",
+};
+
 router.post(
   "/import-from-itero-rx",
   iteroImportUpload.single("file"),
@@ -3632,6 +3678,710 @@ router.post(
         needsAiReview: true,
         attachmentId: attachment?.id,
         extracted,
+      },
+      201
+    );
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// iTero export ZIP import
+// POST /cases/import-from-itero-zip
+//
+// Accepts a full iTero export ZIP (e.g. OrthoCAD_Export_306682066.zip). The
+// server extracts the archive, finds the iTero_Rx_*.pdf, uses AI to create
+// the case (same flow as /import-from-itero-rx), then attaches every other
+// file in the ZIP to the new case. The iTero order ID is derived from the Rx
+// filename; the ZIP filename is used as a fallback.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post(
+  "/import-from-itero-zip",
+  iteroZipUpload.single("file"),
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const body = iteroZipImportBodySchema.parse(req.body ?? {});
+
+    if (!req.file) {
+      throw new HttpError(400, "ZIP file is required (field name 'file').");
+    }
+
+    await requireMembership(userId, body.labOrganizationId);
+
+    // ── Extract ZIP in memory ────────────────────────────────────────────────
+    let rxBuffer: Buffer;
+    let rxOriginalName: string;
+    let iteroOrderId: string;
+    let otherEntries: Array<{ name: string; data: Buffer; mimeType: string }> =
+      [];
+
+    const ZIP_MAX_ENTRIES = 100;
+    const ZIP_MAX_TOTAL_BYTES = 200 * 1024 * 1024;  // 200 MB uncompressed
+    const ZIP_MAX_ENTRY_BYTES = 50 * 1024 * 1024;   // 50 MB per file
+
+    try {
+      const zip = new AdmZip(req.file.path);
+      const entries = zip
+        .getEntries()
+        .filter((e) => !e.isDirectory && e.header.size > 0);
+
+      if (entries.length > ZIP_MAX_ENTRIES) {
+        throw new HttpError(
+          400,
+          `ZIP contains too many files (${entries.length}). Maximum is ${ZIP_MAX_ENTRIES}.`
+        );
+      }
+
+      const totalUncompressed = entries.reduce(
+        (sum, e) => sum + (e.header.size ?? 0),
+        0
+      );
+      if (totalUncompressed > ZIP_MAX_TOTAL_BYTES) {
+        throw new HttpError(
+          400,
+          `ZIP uncompressed size (${Math.round(totalUncompressed / 1024 / 1024)} MB) exceeds the ${ZIP_MAX_TOTAL_BYTES / 1024 / 1024} MB limit.`
+        );
+      }
+
+      const rxEntry = entries.find((e) =>
+        /^itero_rx_.*\.pdf$/i.test(path.basename(e.entryName))
+      );
+
+      if (!rxEntry) {
+        throw new HttpError(
+          400,
+          "No iTero Rx PDF found in this ZIP. Expected a file matching iTero_Rx_*.pdf inside the archive."
+        );
+      }
+
+      if ((rxEntry.header.size ?? 0) > ZIP_MAX_ENTRY_BYTES) {
+        throw new HttpError(
+          400,
+          `Rx PDF is too large (${Math.round((rxEntry.header.size ?? 0) / 1024 / 1024)} MB). Maximum per-file size is ${ZIP_MAX_ENTRY_BYTES / 1024 / 1024} MB.`
+        );
+      }
+
+      rxOriginalName = path.basename(rxEntry.entryName);
+      const orderIdMatch = rxOriginalName.match(/iTero_Rx_(\d+)\.pdf/i);
+      if (orderIdMatch) {
+        iteroOrderId = orderIdMatch[1];
+      } else {
+        const zipBasename = path.basename(req.file.originalname || "");
+        const zipDigits = zipBasename.match(/\d+/g);
+        iteroOrderId = zipDigits
+          ? zipDigits[zipDigits.length - 1]!
+          : randomBytes(4).toString("hex");
+      }
+
+      rxBuffer = rxEntry.getData();
+
+      for (const entry of entries) {
+        if (entry === rxEntry) continue;
+        const entryName = path.basename(entry.entryName);
+        if (!entryName) continue;
+        const entrySize = entry.header.size ?? 0;
+        if (entrySize > ZIP_MAX_ENTRY_BYTES) {
+          req.log?.warn(
+            { name: entryName, size: entrySize },
+            "iTero ZIP: skipping oversized extra entry"
+          );
+          continue;
+        }
+        const ext = path.extname(entryName).toLowerCase();
+        const mimeType = EXT_TO_MIME[ext] ?? "application/octet-stream";
+        otherEntries.push({ name: entryName, data: entry.getData(), mimeType });
+      }
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      throw new HttpError(
+        400,
+        `Could not read ZIP file: ${(err as Error).message}`
+      );
+    } finally {
+      try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+    }
+
+    // ── Optimistic dedup check ───────────────────────────────────────────────
+    const preExisting = await db.query.iteroImportedOrders.findFirst({
+      where: and(
+        eq(iteroImportedOrders.labOrganizationId, body.labOrganizationId),
+        eq(iteroImportedOrders.iteroOrderId, iteroOrderId)
+      ),
+    });
+    if (preExisting && preExisting.createdCaseId) {
+      await db
+        .update(iteroImportedOrders)
+        .set({ lastSeenAt: new Date() })
+        .where(eq(iteroImportedOrders.id, preExisting.id));
+      return ok(res, {
+        deduped: true,
+        caseId: preExisting.createdCaseId,
+        iteroOrderId: preExisting.iteroOrderId,
+        extraFilesAttached: 0,
+      });
+    }
+
+    // ── Save Rx PDF to caseMediaDir before the transaction ──────────────────
+    try {
+      fs.mkdirSync(caseMediaDir, { recursive: true });
+    } catch { /* ignore */ }
+    const rxExt = ".pdf";
+    const rxSafe = path
+      .basename(rxOriginalName, rxExt)
+      .replace(/[^a-zA-Z0-9\-_]+/g, "-")
+      .slice(0, 60) || "rx";
+    const rxDiskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${rxSafe}${rxExt}`;
+    const rxDiskPath = path.join(caseMediaDir, rxDiskName);
+    await fs.promises.writeFile(rxDiskPath, rxBuffer);
+    const rxStorageKey = buildIteroAttachmentUrl(req, rxDiskName);
+
+    // ── AI extraction ────────────────────────────────────────────────────────
+    let extracted: ExtractedRxFields = {};
+    const openai = getIteroOpenAIClient();
+    if (openai) {
+      try {
+        extracted = await extractRxFieldsFromBuffer(
+          openai,
+          rxBuffer,
+          "application/pdf",
+          rxOriginalName
+        );
+      } catch (err) {
+        req.log?.warn?.(
+          { err: (err as Error)?.message },
+          "iTero ZIP Rx AI extraction failed; creating case with hints only"
+        );
+      }
+    }
+
+    const patientFirstName =
+      extracted.patientFirstName?.trim() ||
+      body.patientFirstNameHint?.trim() ||
+      "Unknown";
+    const patientLastName =
+      extracted.patientLastName?.trim() ||
+      body.patientLastNameHint?.trim() ||
+      "Patient";
+    const doctorName =
+      extracted.doctorName?.trim() ||
+      body.doctorNameHint?.trim() ||
+      "Unknown Doctor";
+
+    // Doctor similarity suggestion
+    let suggestedDoctorName: string | null = null;
+    let suggestedProviderOrgId: string | null = null;
+    if (doctorName !== "Unknown Doctor") {
+      const existingGroups = await db
+        .selectDistinct({
+          doctorName: cases.doctorName,
+          providerOrganizationId: cases.providerOrganizationId,
+        })
+        .from(cases)
+        .where(
+          and(
+            eq(cases.labOrganizationId, body.labOrganizationId),
+            notDeleted(cases)
+          )
+        );
+      let bestSim = 0;
+      let bestMatch: { doctorName: string; providerOrganizationId: string } | null =
+        null;
+      const normExtracted = _normalizeDoctorForSim(doctorName);
+      for (const g of existingGroups) {
+        if (_normalizeDoctorForSim(g.doctorName) === normExtracted) continue;
+        const sim = _bigramSimilarity(doctorName, g.doctorName);
+        if (sim >= 0.4 && sim > bestSim) {
+          bestSim = sim;
+          bestMatch = g;
+        }
+      }
+      if (bestMatch) {
+        suggestedDoctorName = bestMatch.doctorName;
+        suggestedProviderOrgId = bestMatch.providerOrganizationId;
+      }
+    }
+
+    let dueDate: Date | null = null;
+    if (extracted.dueDate) {
+      const parsed = new Date(extracted.dueDate);
+      if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
+    }
+
+    const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
+
+    const normalizedCaseType = extracted.caseType
+      ? normalizeIteroCaseType(extracted.caseType)
+      : null;
+    if (normalizedCaseType) {
+      extracted.caseType = normalizedCaseType;
+    }
+    const teethList = (extracted.teeth || "")
+      .split(/[,\s]+/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    let prebuiltRestorations: Array<{
+      toothNumber: string;
+      restorationType: string;
+      material: string | null;
+      shade: string | null;
+      unitPrice: string;
+      priceSource: string | null;
+      priceSourceId: string | null;
+      priceSourceName: string | null;
+      priceKey: string | null;
+    }> = [];
+    if (teethList.length > 0 && normalizedCaseType) {
+      prebuiltRestorations = await Promise.all(
+        teethList.map(async (toothNumber) => {
+          const fallback = await resolveServerPriceWithSource(
+            {
+              labOrganizationId: body.labOrganizationId,
+              doctorName,
+              providerOrganizationId: body.providerOrganizationId,
+            },
+            extracted.material ?? null,
+            normalizedCaseType
+          );
+          return {
+            toothNumber,
+            restorationType: normalizedCaseType,
+            material: extracted.material ?? null,
+            shade: extracted.shade ?? null,
+            unitPrice: (fallback?.amount ?? 0).toFixed(2),
+            priceSource: fallback?.source ?? null,
+            priceSourceId: fallback?.sourceId ?? null,
+            priceSourceName: fallback?.sourceName ?? null,
+            priceKey: fallback?.key ?? null,
+          };
+        })
+      );
+    }
+
+    const user = (req as any).user;
+
+    // ── Atomic transaction ───────────────────────────────────────────────────
+    const txResult = await db.transaction(async (tx) => {
+      const [claim] = await tx
+        .insert(iteroImportedOrders)
+        .values({
+          labOrganizationId: body.labOrganizationId,
+          iteroOrderId,
+          createdCaseId: null,
+        })
+        .onConflictDoNothing({
+          target: [
+            iteroImportedOrders.labOrganizationId,
+            iteroImportedOrders.iteroOrderId,
+          ],
+        })
+        .returning();
+
+      if (!claim) {
+        const existing = await tx.query.iteroImportedOrders.findFirst({
+          where: and(
+            eq(iteroImportedOrders.labOrganizationId, body.labOrganizationId),
+            eq(iteroImportedOrders.iteroOrderId, iteroOrderId)
+          ),
+        });
+        if (existing) {
+          await tx
+            .update(iteroImportedOrders)
+            .set({ lastSeenAt: new Date() })
+            .where(eq(iteroImportedOrders.id, existing.id));
+        }
+        return { kind: "deduped" as const, existing };
+      }
+
+      const [createdCase] = await tx
+        .insert(cases)
+        .values({
+          caseNumber,
+          labOrganizationId: body.labOrganizationId,
+          providerOrganizationId: body.providerOrganizationId,
+          patientFirstName,
+          patientLastName,
+          doctorName,
+          status: "received",
+          priority: extracted.isRush ? "rush" : "normal",
+          dueDate,
+          createdByUserId: userId,
+          needsAiReview: true,
+          aiImportSource: "itero",
+          externalPatientId: iteroOrderId,
+          ...({ suggestedDoctorName, suggestedProviderOrgId } as any),
+        })
+        .returning();
+
+      if (prebuiltRestorations.length > 0) {
+        await tx.insert(caseRestorations).values(
+          prebuiltRestorations.map((r) => ({
+            caseId: createdCase.id,
+            toothNumber: r.toothNumber,
+            restorationType: r.restorationType,
+            material: r.material,
+            shade: r.shade,
+            notes: null,
+            quantity: 1,
+            unitPrice: r.unitPrice,
+            priceSource: r.priceSource,
+            priceSourceId: r.priceSourceId,
+            priceSourceName: r.priceSourceName,
+            priceKey: r.priceKey,
+          }))
+        );
+      }
+
+      if (extracted.notes && extracted.notes.trim()) {
+        await tx.insert(caseNotes).values({
+          caseId: createdCase.id,
+          authorUserId: userId,
+          authorOrganizationId: body.labOrganizationId,
+          noteText: `[iTero AI import] ${extracted.notes.trim()}`,
+          visibility: "internal_lab_only",
+        });
+      }
+
+      const [attachment] = await tx
+        .insert(caseAttachments)
+        .values({
+          caseId: createdCase.id,
+          uploadedByUserId: userId,
+          uploadedByOrganizationId: body.labOrganizationId,
+          fileName: rxOriginalName,
+          storageKey: rxStorageKey,
+          fileType: "application/pdf",
+          visibility: "shared_with_provider",
+        })
+        .returning();
+
+      await tx
+        .update(iteroImportedOrders)
+        .set({ createdCaseId: createdCase.id, lastSeenAt: new Date() })
+        .where(eq(iteroImportedOrders.id, claim.id));
+
+      await tx.insert(caseEvents).values({
+        caseId: createdCase.id,
+        eventType: "case_created_from_itero",
+        actorUserId: userId,
+        actorOrganizationId: body.labOrganizationId,
+        actorInitials: user?.initials || "SYS",
+        metadataJson: {
+          iteroOrderId,
+          source: "zip",
+          aiExtracted: Object.keys(extracted ?? {}),
+          attachmentId: attachment?.id,
+          extraFileCount: otherEntries.length,
+        },
+      });
+
+      // ── Auto-create draft invoice ──────────────────────────────────────────
+      let autoInvoiceId: string | null = null;
+      try {
+        const restorationRowsForInvoice =
+          await tx.query.caseRestorations.findMany({
+            where: eq(caseRestorations.caseId, createdCase.id),
+            orderBy: [caseRestorations.createdAt],
+          });
+        const patientName = `${createdCase.patientFirstName ?? ""} ${createdCase.patientLastName ?? ""}`
+          .replace(/\s+/g, " ")
+          .trim();
+        const teethListForInv = restorationRowsForInvoice
+          .map((r: any) => (r.toothNumber ?? "").trim())
+          .filter(Boolean);
+        const shadeListForInv = Array.from(
+          new Set(
+            restorationRowsForInvoice
+              .map((r: any) => (r.shade ?? "").trim())
+              .filter(Boolean)
+          )
+        );
+        const noteText =
+          extracted.notes && extracted.notes.trim()
+            ? `[iTero AI import] ${extracted.notes.trim()}`
+            : null;
+        const displayMetadataJson = {
+          patientName,
+          billTo: (createdCase.doctorName ?? "").trim(),
+          teeth: teethListForInv.join(", "),
+          shade: shadeListForInv.join(", "),
+          caseNotes: noteText ?? "",
+        };
+
+        const hasRestorations = prebuiltRestorations.length > 0;
+        const fallbackPriced =
+          hasRestorations &&
+          prebuiltRestorations.some(
+            (r) => r.priceSource === "fallback" || r.priceSource === null
+          );
+        const aiPricingWarning = !hasRestorations
+          ? "AI could not extract restorations from this Rx — please add line items and pricing before sending."
+          : fallbackPriced
+            ? "Some line items use default/fallback pricing — please verify before sending."
+            : null;
+
+        const [autoInvoice] = await tx
+          .insert(invoices)
+          .values({
+            invoiceNumber: `INV-${createdCase.caseNumber}`,
+            caseId: createdCase.id,
+            labOrganizationId: createdCase.labOrganizationId,
+            providerOrganizationId: createdCase.providerOrganizationId,
+            status: "draft",
+            displayMetadataJson,
+            aiGenerated: true,
+            aiPricingWarning,
+            createdByUserId: userId,
+            updatedByUserId: userId,
+          })
+          .onConflictDoNothing()
+          .returning();
+
+        if (autoInvoice) {
+          const labelCache: Record<string, string> = {};
+          if (hasRestorations) {
+            for (const restoration of restorationRowsForInvoice) {
+              const pk =
+                materialToPriceKey(
+                  restoration.material,
+                  restoration.restorationType
+                ) ?? restoration.restorationType;
+              if (!(pk in labelCache)) {
+                labelCache[pk] = await resolveItemLabel(
+                  createdCase.labOrganizationId,
+                  pk
+                );
+              }
+            }
+          }
+          const itemsToInsert = hasRestorations
+            ? restorationRowsForInvoice.map(
+                (restoration: any, index: number) => {
+                  const qty = Number(restoration.quantity ?? 1);
+                  const unit = Number(restoration.unitPrice ?? 0);
+                  const pk =
+                    materialToPriceKey(
+                      restoration.material,
+                      restoration.restorationType
+                    ) ?? restoration.restorationType;
+                  const label = labelCache[pk] ?? restoration.restorationType;
+                  return {
+                    invoiceId: autoInvoice.id,
+                    caseRestorationId: restoration.id,
+                    description: buildLineItemDescription(
+                      restoration.toothNumber,
+                      label
+                    ),
+                    quantity: restoration.quantity,
+                    unitPrice: restoration.unitPrice,
+                    lineTotal: (qty * unit).toFixed(2),
+                    sortOrder: index,
+                  };
+                }
+              )
+            : [
+                {
+                  invoiceId: autoInvoice.id,
+                  caseRestorationId: null,
+                  description:
+                    "[AI placeholder] Restorations could not be extracted — replace with actual line items.",
+                  quantity: "1",
+                  unitPrice: "0.00",
+                  lineTotal: "0.00",
+                  sortOrder: 0,
+                },
+              ];
+          await tx.insert(invoiceLineItems).values(itemsToInsert);
+          const subtotal = itemsToInsert
+            .reduce((acc, it) => acc + Number(it.lineTotal), 0)
+            .toFixed(2);
+          await tx
+            .update(invoices)
+            .set({ subtotal, total: subtotal, balanceDue: subtotal })
+            .where(eq(invoices.id, autoInvoice.id));
+          autoInvoiceId = autoInvoice.id;
+        }
+      } catch (invoiceErr) {
+        req.log?.warn(
+          { err: invoiceErr, caseId: createdCase.id },
+          "iTero ZIP auto-invoice creation failed"
+        );
+      }
+
+      return {
+        kind: "created" as const,
+        createdCase,
+        attachment,
+        autoInvoiceId,
+      };
+    });
+
+    if (txResult.kind === "deduped") {
+      // Clean up the RX file we pre-saved since the case already exists.
+      try { fs.unlinkSync(rxDiskPath); } catch { /* ignore */ }
+      const existing = txResult.existing;
+      if (existing && existing.createdCaseId) {
+        return ok(res, {
+          deduped: true,
+          caseId: existing.createdCaseId,
+          iteroOrderId: existing.iteroOrderId,
+          extraFilesAttached: 0,
+        });
+      }
+      throw new HttpError(
+        409,
+        "iTero order is already being imported; retry shortly."
+      );
+    }
+
+    const { createdCase, attachment } = txResult;
+
+    // ── Attach remaining ZIP files (best-effort, outside transaction) ────────
+    let extraFilesAttached = 0;
+    let extraFilesFailed = 0;
+    for (const entry of otherEntries) {
+      try {
+        const ext = path.extname(entry.name) || "";
+        const safe = path
+          .basename(entry.name, ext)
+          .replace(/[^a-zA-Z0-9\-_]+/g, "-")
+          .slice(0, 60) || "file";
+        const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
+        const diskPath = path.join(caseMediaDir, diskName);
+        await fs.promises.writeFile(diskPath, entry.data);
+        const storageKey = buildIteroAttachmentUrl(req, diskName);
+        await db.insert(caseAttachments).values({
+          caseId: createdCase.id,
+          uploadedByUserId: userId,
+          uploadedByOrganizationId: body.labOrganizationId,
+          fileName: entry.name,
+          storageKey,
+          fileType: entry.mimeType,
+          visibility: "shared_with_provider",
+        });
+        extraFilesAttached++;
+      } catch (attachErr) {
+        extraFilesFailed++;
+        req.log?.warn(
+          { err: attachErr, name: entry.name, caseId: createdCase.id },
+          "iTero ZIP: failed to save extra attachment"
+        );
+      }
+    }
+
+    // ── Audit log ────────────────────────────────────────────────────────────
+    await writeAuditLog({
+      req,
+      organizationId: body.labOrganizationId,
+      action: "case_created_from_itero",
+      entityType: "case",
+      entityId: createdCase.id,
+      afterJson: {
+        case: createdCase,
+        iteroOrderId,
+        attachmentId: attachment?.id,
+        extraFilesAttached,
+      },
+    });
+
+    // ── Admin notifications (best-effort) ────────────────────────────────────
+    try {
+      const adminMembers = await db
+        .select({ userId: organizationMemberships.userId })
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.labId, body.labOrganizationId),
+            eq(organizationMemberships.status, "active"),
+            inArray(organizationMemberships.role, ["owner", "admin"])
+          )
+        );
+
+      if (adminMembers.length > 0) {
+        const isUnknownDoctor =
+          doctorName === "Unknown Doctor" || !extracted.doctorName?.trim();
+        let isStandInDoctor = false;
+        let isUnknownPractice = false;
+
+        const priorCaseDoctorRows = await db
+          .selectDistinct({ doctorName: cases.doctorName })
+          .from(cases)
+          .where(
+            and(
+              eq(cases.labOrganizationId, body.labOrganizationId),
+              eq(cases.providerOrganizationId, body.providerOrganizationId),
+              ne(cases.id, createdCase.id),
+              notDeleted(cases)
+            )
+          );
+
+        const hasPriorCases = priorCaseDoctorRows.length > 0;
+        if (!hasPriorCases) {
+          isUnknownPractice = true;
+        } else if (!isUnknownDoctor) {
+          const knownDoctors = new Set(
+            priorCaseDoctorRows
+              .map((r) => String(r.doctorName ?? "").trim().toLowerCase())
+              .filter(Boolean)
+          );
+          isStandInDoctor =
+            knownDoctors.size > 0 &&
+            !knownDoctors.has(doctorName.trim().toLowerCase());
+        }
+
+        const notifType =
+          isUnknownDoctor || isStandInDoctor || isUnknownPractice
+            ? "alert"
+            : "case_imported_from_itero";
+        let notifTitle: string;
+        let notifBody: string;
+        if (isUnknownDoctor) {
+          notifTitle = `iTero ZIP case imported — unknown doctor`;
+          notifBody = `Case ${createdCase.caseNumber} was imported from an iTero ZIP but the doctor name could not be identified. Please review.`;
+        } else if (isUnknownPractice) {
+          notifTitle = `iTero ZIP case imported — unknown practice`;
+          notifBody = `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was imported from an iTero ZIP for a practice with no prior case history.`;
+        } else if (isStandInDoctor) {
+          notifTitle = `iTero ZIP case imported — unrecognised doctor`;
+          notifBody = `Case ${createdCase.caseNumber} was imported from an iTero ZIP with doctor "${doctorName}", who is not in the known provider list.`;
+        } else {
+          notifTitle = `New iTero ZIP case: ${createdCase.caseNumber}`;
+          notifBody = `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was imported from an iTero ZIP and needs your review. ${extraFilesAttached} additional file(s) were attached.`;
+        }
+
+        await db.insert(notifications).values(
+          adminMembers.map((m) => ({
+            userId: m.userId,
+            type: notifType,
+            title: notifTitle,
+            body: notifBody,
+            dataJson: {
+              caseId: createdCase.id,
+              caseNumber: createdCase.caseNumber,
+              iteroOrderId,
+              labOrganizationId: body.labOrganizationId,
+              extraFilesAttached,
+            },
+          }))
+        );
+      }
+    } catch (notifErr) {
+      req.log?.warn?.(
+        { err: (notifErr as Error)?.message, caseId: createdCase.id },
+        "iTero ZIP import: failed to write admin notifications (non-fatal)"
+      );
+    }
+
+    return ok(
+      res,
+      {
+        deduped: false,
+        caseId: createdCase.id,
+        caseNumber: createdCase.caseNumber,
+        needsAiReview: true,
+        attachmentId: attachment?.id,
+        iteroOrderId,
+        extraFilesAttached,
+        extraFilesFailed,
       },
       201
     );

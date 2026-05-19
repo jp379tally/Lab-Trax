@@ -11,10 +11,12 @@ import {
   CheckCircle2,
   FileText,
   Loader2,
+  PackageOpen,
   Sparkles,
   Upload,
   X,
 } from "lucide-react";
+import JSZip from "jszip";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { formatPhone } from "@/lib/format";
@@ -216,6 +218,13 @@ function isPdf(file: File): boolean {
   return (
     file.type === "application/pdf" ||
     file.name.toLowerCase().endsWith(".pdf")
+  );
+}
+function isZip(file: File): boolean {
+  return (
+    file.type === "application/zip" ||
+    file.type === "application/x-zip-compressed" ||
+    file.name.toLowerCase().endsWith(".zip")
   );
 }
 function canReadAsRx(file: File): boolean {
@@ -503,6 +512,10 @@ export function DashboardDropZone() {
   const [caseSearch, setCaseSearch] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [rxDraft, setRxDraft] = useState<ExtractedRx>({});
+  const [zipSource, setZipSource] = useState<{
+    originalZip: File;
+    extraFileCount: number;
+  } | null>(null);
   // Selected lab + practice when creating a modern /api/cases case from
   // an AI-read Rx. Lab defaults to the only lab the user belongs to.
   const [rxLabOrgId, setRxLabOrgId] = useState<string>("");
@@ -763,20 +776,76 @@ export function DashboardDropZone() {
     ],
   );
 
+  const runZipAnalyze = useCallback(
+    async (zipFile: File) => {
+      setPhase({ kind: "analyzing", fileName: zipFile.name });
+      setZipSource(null);
+      try {
+        const ab = await zipFile.arrayBuffer();
+        const zip = await new JSZip().loadAsync(ab);
+
+        let rxEntry: JSZip.JSZipObject | null = null;
+        let rxEntryName = "";
+        let extraFileCount = 0;
+
+        zip.forEach((relativePath, entry) => {
+          if (entry.dir) return;
+          const basename = relativePath.split("/").pop() || relativePath;
+          if (/^itero_rx_.*\.pdf$/i.test(basename)) {
+            rxEntry = entry;
+            rxEntryName = basename;
+          } else {
+            extraFileCount++;
+          }
+        });
+
+        if (!rxEntry) {
+          throw new Error(
+            "No iTero Rx PDF found in this ZIP. Expected a file named iTero_Rx_*.pdf inside the archive."
+          );
+        }
+
+        const rxArrayBuffer = await (rxEntry as JSZip.JSZipObject).async("arraybuffer");
+        const rxBlob = new Blob([rxArrayBuffer], { type: "application/pdf" });
+        const rxFile = new File([rxBlob], rxEntryName, {
+          type: "application/pdf",
+        });
+
+        setZipSource({ originalZip: zipFile, extraFileCount });
+        await runRxAnalyze(rxFile);
+      } catch (e: any) {
+        setZipSource(null);
+        setPhase({
+          kind: "error",
+          message: e?.message || "Could not process the ZIP file.",
+        });
+        window.setTimeout(() => setPhase({ kind: "idle" }), 6000);
+      }
+    },
+    [runRxAnalyze],
+  );
+
   const handleFiles = useCallback(
     (rawFiles: FileList | File[]) => {
       const files = Array.from(rawFiles);
       if (files.length === 0) return;
       setCaseSearch("");
       setSelectedCaseId(null);
+      // Single ZIP → check if it's an iTero export and auto-launch ZIP flow.
+      if (files.length === 1 && isZip(files[0])) {
+        void runZipAnalyze(files[0]);
+        return;
+      }
       // Single Rx-readable file → auto-launch the AI flow (matches mobile).
       if (files.length === 1 && canReadAsRx(files[0])) {
+        setZipSource(null);
         void runRxAnalyze(files[0]);
         return;
       }
+      setZipSource(null);
       setPhase({ kind: "picking", files });
     },
-    [runRxAnalyze],
+    [runRxAnalyze, runZipAnalyze],
   );
 
   const handleDrop = useCallback(
@@ -939,6 +1008,59 @@ export function DashboardDropZone() {
     const r = rxDraft;
     if (!user?.id || !rxLabOrgId || !rxProviderOrgId) return;
     setPhase({ kind: "uploading", message: "Creating case…" });
+
+    // ── ZIP path: call /cases/import-from-itero-zip with the original ZIP ────
+    if (zipSource) {
+      try {
+        const { first, last } = splitPatientName(r.patientName);
+        const fd = new FormData();
+        fd.append("file", zipSource.originalZip);
+        fd.append("labOrganizationId", rxLabOrgId);
+        fd.append("providerOrganizationId", rxProviderOrgId);
+        if (r.doctorName?.trim()) fd.append("doctorNameHint", r.doctorName.trim());
+        if (first?.trim()) fd.append("patientFirstNameHint", first.trim());
+        if (last?.trim()) fd.append("patientLastNameHint", last.trim());
+
+        const result = await apiFetch<{
+          deduped: boolean;
+          caseId: string | null;
+          caseNumber: string | null;
+          extraFilesAttached?: number;
+        }>("/cases/import-from-itero-zip", {
+          method: "POST",
+          body: fd,
+          headers: {},
+        });
+
+        qc.invalidateQueries({ queryKey: ["legacy-cases-for-dropzone"] });
+        qc.invalidateQueries({ queryKey: ["cases"] });
+        qc.invalidateQueries({ queryKey: ["invoices"] });
+        setZipSource(null);
+
+        if (result.deduped) {
+          setPhase({
+            kind: "done",
+            message: `This iTero order was already imported as case ${result.caseNumber ?? result.caseId ?? ""}. No duplicate created.`,
+          });
+        } else {
+          const extra = result.extraFilesAttached ?? 0;
+          setPhase({
+            kind: "done",
+            message: `Case ${result.caseNumber} created · Rx + ${extra} file${extra === 1 ? "" : "s"} attached · draft invoice ready.`,
+          });
+        }
+        window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
+      } catch (e: any) {
+        setPhase({
+          kind: "error",
+          message: e?.message || "Could not import iTero ZIP.",
+        });
+        window.setTimeout(() => setPhase({ kind: "idle" }), 5000);
+      }
+      return;
+    }
+
+    // ── Standard path: multi-step Rx create flow ─────────────────────────────
     try {
       // 1. Reserve a fresh case number from the modern endpoint so we
       //    don't collide with cases created elsewhere on the same lab.
@@ -1101,7 +1223,7 @@ export function DashboardDropZone() {
           </div>
           <button
             type="button"
-            onClick={() => setPhase({ kind: "idle" })}
+            onClick={() => { setPhase({ kind: "idle" }); setZipSource(null); }}
             className="text-muted-foreground hover:text-foreground"
             aria-label="Cancel"
           >
@@ -1112,6 +1234,16 @@ export function DashboardDropZone() {
           Review or edit, then create the case. The Rx will be attached and a
           draft invoice will be generated automatically.
         </p>
+        {zipSource && zipSource.extraFileCount > 0 && (
+          <div className="flex items-center gap-1.5 rounded-md bg-primary/8 border border-primary/20 px-2.5 py-1.5">
+            <PackageOpen size={13} className="text-primary shrink-0" />
+            <p className="text-xs text-primary font-medium">
+              {zipSource.extraFileCount} additional file
+              {zipSource.extraFileCount === 1 ? "" : "s"} from the ZIP will be
+              attached automatically.
+            </p>
+          </div>
+        )}
         {labOrgs.length > 1 && (
           <label className="block text-xs text-muted-foreground space-y-1">
             <span>Lab</span>
@@ -1516,21 +1648,23 @@ export function DashboardDropZone() {
         <div className="flex flex-wrap gap-2 pt-1">
           <button
             type="button"
-            onClick={() => setPhase({ kind: "idle" })}
+            onClick={() => { setPhase({ kind: "idle" }); setZipSource(null); }}
             className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
           >
             Cancel
           </button>
-          <button
-            type="button"
-            onClick={() =>
-              setPhase({ kind: "picking", files: [phase.file] })
-            }
-            className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-            title="Skip AI and upload this file (optionally attach to an existing case)"
-          >
-            Upload only
-          </button>
+          {!zipSource && (
+            <button
+              type="button"
+              onClick={() =>
+                setPhase({ kind: "picking", files: [phase.file] })
+              }
+              className="h-8 px-3 rounded-md bg-secondary text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              title="Skip AI and upload this file (optionally attach to an existing case)"
+            >
+              Upload only
+            </button>
+          )}
           <button
             type="button"
             onClick={createCaseFromRx}
@@ -1743,7 +1877,7 @@ export function DashboardDropZone() {
             </p>
             <p className="text-xs text-muted-foreground mt-0.5 inline-flex items-center gap-1">
               <Sparkles size={11} className="text-primary" />
-              AI auto-creates a case from any Rx PDF or photo
+              AI auto-creates a case from any Rx PDF, photo, or iTero ZIP
             </p>
           </div>
           <p className="text-xs text-primary font-medium">

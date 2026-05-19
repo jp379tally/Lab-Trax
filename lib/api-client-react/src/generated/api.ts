@@ -32,9 +32,11 @@ import type {
   GetRxPracticeAliasParams,
   HealthStatus,
   ImportCaseFromIteroRxBody,
+  ImportCaseFromIteroZipBody,
   ItemLabelsInput,
   ItemLabelsResult,
   IteroImportResult,
+  IteroZipImportResult,
   ListOpenInvoicesParams,
   MarkAllNotificationsRead200,
   NotificationListResult,
@@ -416,6 +418,129 @@ export const useImportCaseFromIteroRx = <
   TContext
 > => {
   return useMutation(getImportCaseFromIteroRxMutationOptions(options));
+};
+
+/**
+ * Accepts a full iTero export ZIP (e.g. OrthoCAD_Export_306682066.zip).
+The server locates the `iTero_Rx_*.pdf` inside, uses AI to create a
+case (same flow as `/cases/import-from-itero-rx`), attaches the Rx as
+the primary attachment, and attaches every other file in the ZIP to the
+new case. The iTero order ID is derived from the Rx filename; the ZIP
+filename is used as a fallback. Duplicate detection is the same as the
+single-file flow: an already-imported order returns `deduped: true`.
+
+ * @summary Import a case from an iTero export ZIP
+ */
+export const getImportCaseFromIteroZipUrl = () => {
+  return `/api/cases/import-from-itero-zip`;
+};
+
+export const importCaseFromIteroZip = async (
+  importCaseFromIteroZipBody: ImportCaseFromIteroZipBody,
+  options?: RequestInit,
+): Promise<IteroZipImportResult> => {
+  const formData = new FormData();
+  formData.append(`file`, importCaseFromIteroZipBody.file);
+  formData.append(
+    `labOrganizationId`,
+    importCaseFromIteroZipBody.labOrganizationId,
+  );
+  formData.append(
+    `providerOrganizationId`,
+    importCaseFromIteroZipBody.providerOrganizationId,
+  );
+  if (importCaseFromIteroZipBody.doctorNameHint !== undefined) {
+    formData.append(
+      `doctorNameHint`,
+      importCaseFromIteroZipBody.doctorNameHint,
+    );
+  }
+  if (importCaseFromIteroZipBody.patientFirstNameHint !== undefined) {
+    formData.append(
+      `patientFirstNameHint`,
+      importCaseFromIteroZipBody.patientFirstNameHint,
+    );
+  }
+  if (importCaseFromIteroZipBody.patientLastNameHint !== undefined) {
+    formData.append(
+      `patientLastNameHint`,
+      importCaseFromIteroZipBody.patientLastNameHint,
+    );
+  }
+
+  return customFetch<IteroZipImportResult>(getImportCaseFromIteroZipUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getImportCaseFromIteroZipMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importCaseFromIteroZip>>,
+    TError,
+    { data: BodyType<ImportCaseFromIteroZipBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof importCaseFromIteroZip>>,
+  TError,
+  { data: BodyType<ImportCaseFromIteroZipBody> },
+  TContext
+> => {
+  const mutationKey = ["importCaseFromIteroZip"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof importCaseFromIteroZip>>,
+    { data: BodyType<ImportCaseFromIteroZipBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return importCaseFromIteroZip(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ImportCaseFromIteroZipMutationResult = NonNullable<
+  Awaited<ReturnType<typeof importCaseFromIteroZip>>
+>;
+export type ImportCaseFromIteroZipMutationBody =
+  BodyType<ImportCaseFromIteroZipBody>;
+export type ImportCaseFromIteroZipMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Import a case from an iTero export ZIP
+ */
+export const useImportCaseFromIteroZip = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importCaseFromIteroZip>>,
+    TError,
+    { data: BodyType<ImportCaseFromIteroZipBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof importCaseFromIteroZip>>,
+  TError,
+  { data: BodyType<ImportCaseFromIteroZipBody> },
+  TContext
+> => {
+  return useMutation(getImportCaseFromIteroZipMutationOptions(options));
 };
 
 /**

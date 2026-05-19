@@ -129,6 +129,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IteroImportResult"
+  /cases/import-from-itero-zip:
+    post:
+      operationId: importCaseFromIteroZip
+      tags: [cases]
+      summary: Import a case from an iTero export ZIP
+      description: |
+        Accepts a full iTero export ZIP (e.g. OrthoCAD_Export_306682066.zip).
+        The server locates the `iTero_Rx_*.pdf` inside, uses AI to create a
+        case (same flow as `/cases/import-from-itero-rx`), attaches the Rx as
+        the primary attachment, and attaches every other file in the ZIP to the
+        new case. The iTero order ID is derived from the Rx filename; the ZIP
+        filename is used as a fallback. Duplicate detection is the same as the
+        single-file flow: an already-imported order returns `deduped: true`.
+      requestBody:
+        required: true
+        description: |
+          multipart/form-data with the full iTero export ZIP attached as the
+          `file` field. The `file` field is a binary upload represented as
+          `type: string` so the generated TypeScript client does not depend on
+          the DOM `File` global.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - labOrganizationId
+                - providerOrganizationId
+              properties:
+                file:
+                  type: string
+                  description: iTero export ZIP (binary upload, max 300 MB)
+                labOrganizationId:
+                  type: string
+                providerOrganizationId:
+                  type: string
+                doctorNameHint:
+                  type: string
+                patientFirstNameHint:
+                  type: string
+                patientLastNameHint:
+                  type: string
+      responses:
+        "201":
+          description: Case created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IteroZipImportResult"
+        "200":
+          description: Already imported (deduped)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IteroZipImportResult"
   /doctors/search:
     get:
       operationId: searchDoctors
@@ -975,6 +1030,31 @@ components:
               description: |
                 Display name of the suggested provider org, resolved
                 server-side so the desktop banner needs no extra round-trip.
+    IteroZipImportResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          properties:
+            deduped: { type: boolean }
+            caseId: { type: string, nullable: true }
+            caseNumber: { type: string, nullable: true }
+            needsAiReview: { type: boolean }
+            attachmentId: { type: string, nullable: true }
+            iteroOrderId: { type: string }
+            extraFilesAttached:
+              type: integer
+              description: Number of non-Rx files from the ZIP that were attached to the case.
+            extraFilesFailed:
+              type: integer
+              description: Number of non-Rx files that could not be attached (partial-failure indicator).
+            suggestedDoctorName:
+              type: string
+              nullable: true
+            suggestedProviderOrgId:
+              type: string
+              nullable: true
     OpenInvoice:
       type: object
       required:
