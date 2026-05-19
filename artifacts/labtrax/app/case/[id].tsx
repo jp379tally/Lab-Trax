@@ -16,6 +16,7 @@ import {
   Share,
   Linking,
   RefreshControl,
+  ActivityIndicator,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -137,6 +138,8 @@ export default function CaseDetailScreen() {
   const [originalCaseNumber, setOriginalCaseNumber] = useState<string | null>(null);
   const [serverAttachments, setServerAttachments] = useState<CaseAttachment[]>([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [attachmentsFetchError, setAttachmentsFetchError] = useState(false);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
@@ -1830,20 +1833,30 @@ export default function CaseDetailScreen() {
                   onPress={async () => {
                     if (!fileUrl) return;
                     if (is3D) {
+                      if (downloadingAttachmentId === att.id) return;
                       const mimeType = att.fileType || "application/octet-stream";
                       const fullUrl = fileUrl.startsWith("http")
                         ? fileUrl
                         : new URL(fileUrl, getApiUrl()).toString();
                       const cacheDir = FileSystem.Paths.cache.uri;
                       const localUri = cacheDir.endsWith("/") ? cacheDir + att.fileName : cacheDir + "/" + att.fileName;
+                      setDownloadingAttachmentId(att.id);
+                      setDownloadProgress(0);
                       try {
                         const token = getAccessToken();
-                        const downloadRes = await FileSystem.downloadAsync(
+                        const downloadResumable = FileSystem.createDownloadResumable(
                           fullUrl,
                           localUri,
                           token ? { headers: { Authorization: `Bearer ${token}` } } : {},
+                          (progressData) => {
+                            const { totalBytesWritten, totalBytesExpectedToWrite } = progressData;
+                            if (totalBytesExpectedToWrite > 0) {
+                              setDownloadProgress(totalBytesWritten / totalBytesExpectedToWrite);
+                            }
+                          },
                         );
-                        if (downloadRes.status !== 200) {
+                        const downloadRes = await downloadResumable.downloadAsync();
+                        if (!downloadRes || downloadRes.status !== 200) {
                           Alert.alert("Download failed", "Could not download the scan file.");
                           return;
                         }
@@ -1861,6 +1874,9 @@ export default function CaseDetailScreen() {
                         }
                       } catch {
                         Alert.alert("Unable to open", "Could not download or share this scan file.");
+                      } finally {
+                        setDownloadingAttachmentId(null);
+                        setDownloadProgress(0);
                       }
                       return;
                     }
@@ -1881,24 +1897,36 @@ export default function CaseDetailScreen() {
                     borderColor: Colors.light.border,
                   })}
                 >
-                  <Ionicons name={iconName} size={22} color={Colors.light.tint} />
+                  <Ionicons name={iconName} size={22} color={downloadingAttachmentId === att.id ? Colors.light.textSecondary : Colors.light.tint} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>
                       {att.fileName}
                     </Text>
                     <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
-                      {[
-                        fileTypeLabel,
-                        att.uploaderName,
-                        att.createdAt
-                          ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-                          : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
+                      {downloadingAttachmentId === att.id
+                        ? (downloadProgress > 0
+                            ? `Downloading… ${Math.round(downloadProgress * 100)}%`
+                            : "Downloading…")
+                        : [
+                            fileTypeLabel,
+                            att.uploaderName,
+                            att.createdAt
+                              ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                     </Text>
+                    {downloadingAttachmentId === att.id && downloadProgress > 0 && (
+                      <View style={{ height: 3, backgroundColor: "rgba(0,0,0,0.08)", borderRadius: 2, marginTop: 5, overflow: "hidden" }}>
+                        <View style={{ height: 3, backgroundColor: Colors.light.tint, borderRadius: 2, width: `${Math.round(downloadProgress * 100)}%` }} />
+                      </View>
+                    )}
                   </View>
-                  <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={Colors.light.textTertiary} />
+                  {downloadingAttachmentId === att.id
+                    ? <ActivityIndicator size="small" color={Colors.light.tint} />
+                    : <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={Colors.light.textTertiary} />
+                  }
                 </Pressable>
               );
             })}
