@@ -241,16 +241,16 @@ export default function StatementsPage() {
             type="button"
             onClick={() => setShowSchedule(true)}
             disabled={!orgId}
-            className="inline-flex items-center gap-2 h-9 px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
+            className="inline-flex items-center gap-2 min-h-[44px] px-3 rounded-md bg-secondary text-sm font-medium hover:bg-secondary/70 disabled:opacity-50 disabled:cursor-not-allowed border border-border"
           >
             <CalendarClock size={14} />
             <span className="flex flex-col items-start leading-tight">
               <span>Auto-send</span>
-              {scheduleFilterCount !== null && (
-                <span className="text-[10px] font-normal text-primary leading-none">
-                  {scheduleFilterCount} of {practiceCountForOrg || scheduleFilterCount} practice{scheduleFilterCount === 1 ? "" : "s"}
-                </span>
-              )}
+              <span className={`text-[10px] font-normal text-primary leading-none ${scheduleFilterCount !== null ? "" : "invisible"}`}>
+                {scheduleFilterCount !== null
+                  ? `${scheduleFilterCount} of ${practiceCountForOrg || scheduleFilterCount} practice${scheduleFilterCount === 1 ? "" : "s"}`
+                  : "placeholder"}
+              </span>
             </span>
           </button>
           <button
