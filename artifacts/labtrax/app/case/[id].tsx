@@ -1260,7 +1260,7 @@ export default function CaseDetailScreen() {
             <View style={styles.infoItem}>
               <Text style={styles.infoLabel}>Price</Text>
               <Text style={[styles.infoValue, { color: Colors.light.tint }]}>
-                ${caseItem.price.toFixed(2)}
+                ${(caseItem.price ?? 0).toFixed(2)}
               </Text>
             </View>
           )}
@@ -1545,7 +1545,7 @@ export default function CaseDetailScreen() {
                   return !photoTimestamps.some(pt => Math.abs(pt - entry.timestamp) < 5000);
                 });
               })()
-            : [...caseItem.routeHistory].sort((a, b) => b.timestamp - a.timestamp).map((rh) => ({
+            : [...(caseItem.routeHistory ?? [])].sort((a, b) => b.timestamp - a.timestamp).map((rh) => ({
                 id: String(rh.timestamp),
                 type: "station_change" as const,
                 timestamp: rh.timestamp,

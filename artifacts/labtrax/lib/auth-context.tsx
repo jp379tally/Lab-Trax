@@ -345,9 +345,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         JSON.stringify({ username: user.username, password }),
       );
       await fetchAllUsers();
-      if (user.role) {
-        await AsyncStorage.setItem("@drivesync_role", user.role);
-      }
       const userPicKey = `${PROFILE_PIC_KEY}_${user.id || user.username}`;
       const savedPic = await AsyncStorage.getItem(userPicKey);
       setProfilePicUriState(savedPic);
@@ -406,9 +403,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         BIOMETRIC_USER_KEY,
         JSON.stringify({ username: user.username, password: data.password }),
       );
-      if (data.role) {
-        await AsyncStorage.setItem("@drivesync_role", data.role);
-      }
       await fetchAllUsers();
       return { success: true, message: result.message, pendingJoinRequest: result.pendingJoinRequest };
     } catch (e: any) {
