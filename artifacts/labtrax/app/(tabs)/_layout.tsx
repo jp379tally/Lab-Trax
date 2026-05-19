@@ -9,6 +9,7 @@ import { useTheme } from "@/lib/theme-context";
 import { useProviderFilteredNotifications } from "@/lib/useFilteredNotifications";
 import { useEntitlement } from "@/lib/useEntitlement";
 import { SubscriptionPaywall } from "@/components/SubscriptionPaywall";
+import { GracePeriodBanner } from "@/components/GracePeriodBanner";
 
 function ClassicTabLayout() {
   const { isDark, colors } = useTheme();
@@ -22,6 +23,7 @@ function ClassicTabLayout() {
 
   const { entitlement, startAggressivePoll } = useEntitlement(isAuthenticated);
   const [paywallDismissed, setPaywallDismissed] = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
   const [optimisticallyClosed, setOptimisticallyClosed] = useState(false);
   const prevAccessLevelRef = useRef(entitlement?.accessLevel);
 
@@ -37,6 +39,7 @@ function ClassicTabLayout() {
     prevAccessLevelRef.current = accessLevel;
     if (prev === "read_only" && accessLevel !== "read_only") {
       setPaywallDismissed(false);
+      setBannerDismissed(false);
     }
     if (accessLevel && accessLevel !== "locked" && accessLevel !== "read_only") {
       setOptimisticallyClosed(false);
@@ -61,8 +64,25 @@ function ClassicTabLayout() {
     }
   }
 
+  function handleBannerSubscribe() {
+    setPaywallDismissed(false);
+  }
+
+  const showBanner =
+    accessLevel === "read_only" &&
+    paywallDismissed &&
+    !bannerDismissed &&
+    !optimisticallyClosed;
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.backgroundSolid, maxWidth: isWeb ? 600 : undefined, alignSelf: isWeb ? "center" as const : undefined, width: isWeb ? "100%" : undefined }}>
+      {showBanner && (
+        <GracePeriodBanner
+          graceDaysRemaining={entitlement?.graceDaysRemaining ?? null}
+          onSubscribe={handleBannerSubscribe}
+          onDismiss={() => setBannerDismissed(true)}
+        />
+      )}
       <Tabs
         screenOptions={{
           tabBarActiveTintColor: colors.tint,
