@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Github, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Github, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1243,6 +1243,9 @@ interface BackupScheduleSettings {
   hourUtc: number;
   dbHourUtc: number | null;
   envHourUtc: number;
+  rollingBackupEnabled: boolean;
+  rollingBackupLastRunAt: string | null;
+  rollingBackupLastError: string | null;
 }
 
 function BackupSchedulePanel() {
@@ -1250,11 +1253,13 @@ function BackupSchedulePanel() {
   const [hourUtc, setHourUtc] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [rollingError, setRollingError] = useState<string | null>(null);
 
   const scheduleQuery = useQuery({
     queryKey: ["admin", "backup-schedule"],
     queryFn: () => apiFetch<BackupScheduleSettings>("/admin/settings/backup-schedule"),
-    staleTime: 5 * 60 * 1000,
+    staleTime: 60 * 1000,
+    refetchInterval: 60 * 1000,
   });
 
   useEffect(() => {
@@ -1299,11 +1304,45 @@ function BackupSchedulePanel() {
     },
   });
 
+  const toggleRollingMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiFetch<{ success: boolean; rollingBackupEnabled: boolean }>(
+        "/admin/settings/backup-schedule",
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rollingBackupEnabled: enabled }),
+        },
+      ),
+    onMutate: async (enabled) => {
+      await queryClient.cancelQueries({ queryKey: ["admin", "backup-schedule"] });
+      const prev = queryClient.getQueryData<BackupScheduleSettings>(["admin", "backup-schedule"]);
+      if (prev) {
+        queryClient.setQueryData<BackupScheduleSettings>(["admin", "backup-schedule"], {
+          ...prev,
+          rollingBackupEnabled: enabled,
+        });
+      }
+      return { prev };
+    },
+    onSuccess: () => {
+      setRollingError(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule"] });
+    },
+    onError: (err: Error, _enabled, ctx: any) => {
+      setRollingError(err.message || "Failed to toggle rolling backup.");
+      if (ctx?.prev) {
+        queryClient.setQueryData(["admin", "backup-schedule"], ctx.prev);
+      }
+    },
+  });
+
   const data = scheduleQuery.data;
   const gate = usePlatformAdminGate([
     scheduleQuery.error,
     saveMutation.error,
     resetMutation.error,
+    toggleRollingMutation.error,
   ]);
 
   const parsed = parseInt(hourUtc, 10);
@@ -1377,6 +1416,73 @@ function BackupSchedulePanel() {
         {saveMutation.isPending ? <Loader2 size={13} className="animate-spin" /> : null}
         {saveMutation.isPending ? "Saving…" : "Save schedule"}
       </button>
+
+      {/* ── 15-minute rolling backup ────────────────────────────────────── */}
+      <div className="border-t border-border pt-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <RefreshCw size={14} className="text-muted-foreground" />
+          <h4 className="text-sm font-semibold">15-minute rolling backup</h4>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Overwrites <span className="font-mono text-foreground">LabTrax-Rolling-Backup.zip</span> on
+          OneDrive every 15 minutes — always the latest snapshot with a worst-case 15-minute data-loss window.
+        </p>
+
+        {rollingError && !gate.blocked && <Alert tone="danger">{rollingError}</Alert>}
+
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium">Enable rolling backup</p>
+            <p className="text-xs text-muted-foreground">
+              Keeps the server continuously backing up while OneDrive is connected.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={data?.rollingBackupEnabled ?? true}
+            disabled={gate.blocked || toggleRollingMutation.isPending || scheduleQuery.isLoading}
+            onClick={() => {
+              if (!data) return;
+              toggleRollingMutation.mutate(!data.rollingBackupEnabled);
+            }}
+            className={[
+              "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+              (data?.rollingBackupEnabled ?? true) ? "bg-primary" : "bg-input",
+            ].join(" ")}
+          >
+            <span
+              className={[
+                "pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg transition-transform",
+                (data?.rollingBackupEnabled ?? true) ? "translate-x-4" : "translate-x-0",
+              ].join(" ")}
+            />
+          </button>
+        </div>
+
+        {/* Status line */}
+        {data && (
+          <div className="rounded-md bg-secondary/40 border border-border px-3 py-2.5 space-y-1.5 text-xs">
+            <div className="flex items-center gap-1.5">
+              <RefreshCw size={11} className="text-muted-foreground shrink-0" />
+              <span className="text-muted-foreground">Last successful run:</span>
+              <span className="font-medium text-foreground">
+                {data.rollingBackupLastRunAt
+                  ? formatRelative(data.rollingBackupLastRunAt)
+                  : "Not yet run"}
+              </span>
+            </div>
+            {data.rollingBackupLastError && (
+              <div className="flex items-start gap-1.5 text-destructive">
+                <span className="shrink-0 mt-0.5">⚠</span>
+                <span className="break-all">{data.rollingBackupLastError}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

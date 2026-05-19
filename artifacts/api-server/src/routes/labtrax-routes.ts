@@ -12,7 +12,14 @@ import {
   DesktopInstallerNotConfiguredError,
   type DesktopInstallerKind,
 } from "../lib/desktop-installer-storage";
-import { runOneDriveBackup, getBackupHourUtc, SETTING_BACKUP_HOUR_UTC } from "../lib/backup";
+import {
+  runOneDriveBackup,
+  getBackupHourUtc,
+  SETTING_BACKUP_HOUR_UTC,
+  SETTING_ROLLING_BACKUP_ENABLED,
+  SETTING_ROLLING_BACKUP_LAST_RUN_AT,
+  SETTING_ROLLING_BACKUP_LAST_ERROR,
+} from "../lib/backup";
 import { sendInstallerPublishFailureAlertEmail } from "../lib/mail";
 import { cleanupOrphanedCaseMedia, runAndPersistCleanup, getCleanupAlertThresholds, getCleanupHistoryRetentionDays, getCleanupHourUtc, getCleanupProgress, getCleanupStuckTimeoutMinutes, cancelCleanup, CleanupAlreadyRunningError, SETTING_CLEANUP_MIN_REMOVED, SETTING_CLEANUP_MIN_FREED_MB, SETTING_CLEANUP_HISTORY_RETENTION_DAYS, SETTING_CLEANUP_HOUR_UTC, SETTING_CLEANUP_STUCK_TIMEOUT_MINUTES } from "../lib/case-media";
 import multer from "multer";
@@ -3595,7 +3602,8 @@ Important rules:
   // ── Admin: backup schedule settings ──────────────────────────────────────
   router.get("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
     const reqUser = (req as any).user;
-    if (!isPlatformAdmin(req)) {
+    // Read access only requires admin role — the data is not sensitive.
+    if (!reqUser || reqUser.role !== "admin") {
       return res.status(403).json({ error: "Admin access required." });
     }
     try {
@@ -3604,18 +3612,64 @@ Important rules:
         0,
         Math.min(23, parseInt(process.env.BACKUP_HOUR_UTC || "7", 10) || 7),
       );
-      const hourRows = await db
+      const settingKeys = [
+        SETTING_BACKUP_HOUR_UTC,
+        SETTING_ROLLING_BACKUP_ENABLED,
+        SETTING_ROLLING_BACKUP_LAST_RUN_AT,
+        SETTING_ROLLING_BACKUP_LAST_ERROR,
+      ];
+      const rows = await db
         .select()
         .from(systemSettings)
-        .where(eq(systemSettings.key, SETTING_BACKUP_HOUR_UTC));
-      const dbHourRaw = hourRows[0]?.value ?? null;
+        .where(inArray(systemSettings.key, settingKeys));
+      const rowMap = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+
+      const dbHourRaw = rowMap[SETTING_BACKUP_HOUR_UTC] ?? null;
       const dbHourUtc =
         dbHourRaw !== null
           ? Math.max(0, Math.min(23, parseInt(dbHourRaw, 10) || 0))
           : null;
-      return res.json({ hourUtc, dbHourUtc, envHourUtc });
+
+      const rollingEnabledRaw = rowMap[SETTING_ROLLING_BACKUP_ENABLED] ?? null;
+      const rollingBackupEnabled = rollingEnabledRaw === null ? true : rollingEnabledRaw !== "false";
+      const rollingBackupLastRunAt = rowMap[SETTING_ROLLING_BACKUP_LAST_RUN_AT] ?? null;
+      const rollingBackupLastError = rowMap[SETTING_ROLLING_BACKUP_LAST_ERROR] ?? null;
+
+      return res.json({
+        hourUtc,
+        dbHourUtc,
+        envHourUtc,
+        rollingBackupEnabled,
+        rollingBackupLastRunAt,
+        rollingBackupLastError,
+      });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to fetch backup schedule settings." });
+    }
+  });
+
+  router.patch("/admin/settings/backup-schedule", requireAuth, async (req, res) => {
+    const reqUser = (req as any).user;
+    // Toggle access only requires admin role — same policy as GET.
+    if (!reqUser || reqUser.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      const body = req.body as any;
+      if (typeof body?.rollingBackupEnabled !== "boolean") {
+        return res.status(400).json({ error: "rollingBackupEnabled (boolean) is required." });
+      }
+      const value = body.rollingBackupEnabled ? "true" : "false";
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_ROLLING_BACKUP_ENABLED, value })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value, updatedAt: new Date() },
+        });
+      return res.json({ success: true, rollingBackupEnabled: body.rollingBackupEnabled });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to update rolling backup setting." });
     }
   });
 

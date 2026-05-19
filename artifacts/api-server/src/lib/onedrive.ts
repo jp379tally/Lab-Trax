@@ -114,17 +114,31 @@ export async function deleteFromOneDrive(
   throw new Error(`OneDrive delete failed (${resp.status}): ${err}`);
 }
 
+/**
+ * Upload a buffer to OneDrive using the Microsoft Graph API.
+ *
+ * @param fileBuffer   Data to upload.
+ * @param fileName     Destination filename within the folder.
+ * @param folderPath   Folder path relative to drive root (default: "LabTrax Backups").
+ * @param conflictBehavior
+ *   - "rename"  (default) – create a new file with a disambiguated name if one exists.
+ *   - "replace" – silently overwrite the existing file; used for the rolling backup so
+ *                 only one LabTrax-Rolling-Backup.zip ever exists on OneDrive.
+ */
 export async function uploadToOneDrive(
   fileBuffer: Buffer,
   fileName: string,
-  folderPath = "LabTrax Backups"
+  folderPath = "LabTrax Backups",
+  conflictBehavior: "replace" | "rename" = "rename"
 ): Promise<{ webUrl: string; name: string; size: number }> {
   const token = await getOneDriveAccessToken();
   const uploadPath = `/${folderPath}/${fileName}`;
   const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB chunks
 
   if (fileBuffer.length <= 4 * 1024 * 1024) {
-    // Simple upload for files ≤ 4 MB
+    // Simple upload for files ≤ 4 MB.
+    // The Graph API PUT to /:path:/content always replaces an existing file by
+    // default, so both conflict behaviours resolve to the same call here.
     const resp = await graphRequest(
       `/me/drive/root:${encodeURIComponent(uploadPath).replace(/%2F/g, "/")}:/content`,
       {
@@ -142,7 +156,8 @@ export async function uploadToOneDrive(
     return { webUrl: item.webUrl || "", name: item.name, size: item.size };
   }
 
-  // Large file upload session
+  // Large file upload session — pass the desired conflict behaviour so
+  // "replace" causes OneDrive to overwrite the previous rolling backup.
   const sessionResp = await graphRequest(
     `/me/drive/root:${encodeURIComponent(uploadPath).replace(/%2F/g, "/")}:/createUploadSession`,
     {
@@ -150,7 +165,7 @@ export async function uploadToOneDrive(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         item: {
-          "@microsoft.graph.conflictBehavior": "rename",
+          "@microsoft.graph.conflictBehavior": conflictBehavior,
           name: fileName,
         },
       }),

@@ -175,8 +175,6 @@ vi.mock("@workspace/db", () => {
     mediaCleanupRuns: T,
     statementSchedules: T,
     statementSendRuns: T,
-    // Billing
-    subscriptions: T,
   };
 });
 
@@ -215,6 +213,7 @@ vi.mock("./lib/case-media.js", () => ({
 
 vi.mock("./lib/backup.js", () => ({
   startDailyOneDriveBackup: vi.fn(),
+  start15MinRollingBackup: vi.fn(),
   runOneDriveBackup: vi.fn(),
   getBackupHourUtc: vi.fn(),
   SETTING_BACKUP_HOUR_UTC: "backup_hour_utc",

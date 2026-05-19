@@ -64,6 +64,13 @@ export default function SettingsScreen() {
   const [addUserSelected, setAddUserSelected] = useState<{ username: string; email: string } | null>(null);
   const [addUserRole, setAddUserRole] = useState<"user" | "admin">("user");
 
+  const [rollingBackupStatus, setRollingBackupStatus] = useState<{
+    rollingBackupEnabled: boolean;
+    rollingBackupLastRunAt: string | null;
+    rollingBackupLastError: string | null;
+  } | null>(null);
+  const [rollingBackupLoading, setRollingBackupLoading] = useState(false);
+
   type UserStatus = "active" | "inactive" | "on_lunch" | "out_of_office" | "on_break";
   const [userStatus, setUserStatus] = useState<UserStatus>("active");
   const [labExpanded, setLabExpanded] = useState(false);
@@ -87,6 +94,38 @@ export default function SettingsScreen() {
       if (s) setUserStatus(s as UserStatus);
     });
   }, [currentUser]);
+
+  const currentUserDataForEffect = registeredUsers.find(
+    (u) => u.username.toLowerCase() === (currentUser || "").toLowerCase()
+  );
+  const isLabAdminForEffect =
+    userType === "lab" && currentUserDataForEffect?.role === "admin";
+
+  useEffect(() => {
+    if (!isLabAdminForEffect) return;
+    let cancelled = false;
+    async function fetchRollingBackup() {
+      setRollingBackupLoading(true);
+      try {
+        const res = await resilientFetch("/api/admin/settings/backup-schedule");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setRollingBackupStatus({
+            rollingBackupEnabled: data.rollingBackupEnabled ?? true,
+            rollingBackupLastRunAt: data.rollingBackupLastRunAt ?? null,
+            rollingBackupLastError: data.rollingBackupLastError ?? null,
+          });
+        }
+      } catch {
+        // gracefully ignore — OneDrive may not be configured
+      } finally {
+        if (!cancelled) setRollingBackupLoading(false);
+      }
+    }
+    void fetchRollingBackup();
+    return () => { cancelled = true; };
+  }, [isLabAdminForEffect]);
 
   function handleStatusChange(status: UserStatus) {
     setUserStatus(status);
@@ -939,6 +978,101 @@ export default function SettingsScreen() {
                   );
                 })
               )}
+            </View>
+          </View>
+        )}
+
+        {isLabAdmin && (rollingBackupLoading || rollingBackupStatus) && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>ONEDRIVE BACKUP</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {rollingBackupLoading && !rollingBackupStatus ? (
+                <View style={{ padding: 20, alignItems: "center" }}>
+                  <ActivityIndicator size="small" color={colors.tint} />
+                </View>
+              ) : rollingBackupStatus ? (
+                <>
+                  {/* Toggle row */}
+                  <Pressable
+                    style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+                    onPress={async () => {
+                      const next = !rollingBackupStatus.rollingBackupEnabled;
+                      setRollingBackupStatus((prev) => prev ? { ...prev, rollingBackupEnabled: next } : prev);
+                      try {
+                        const res = await resilientFetch("/api/admin/settings/backup-schedule", {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ rollingBackupEnabled: next }),
+                        });
+                        if (!res.ok) {
+                          setRollingBackupStatus((prev) => prev ? { ...prev, rollingBackupEnabled: !next } : prev);
+                          Alert.alert("Error", "Could not update rolling backup setting.");
+                        }
+                      } catch {
+                        setRollingBackupStatus((prev) => prev ? { ...prev, rollingBackupEnabled: !next } : prev);
+                        Alert.alert("Error", "Could not reach the server.");
+                      }
+                    }}
+                  >
+                    <View style={[styles.menuIcon, { backgroundColor: rollingBackupStatus.rollingBackupEnabled ? "#DCFCE7" : colors.surfaceSecondary }]}>
+                      <Ionicons
+                        name={rollingBackupStatus.rollingBackupEnabled ? "refresh-circle" : "pause-circle"}
+                        size={18}
+                        color={rollingBackupStatus.rollingBackupEnabled ? "#16A34A" : colors.textSecondary}
+                      />
+                    </View>
+                    <View style={styles.menuInfo}>
+                      <Text style={[styles.menuTitle, { color: colors.text }]}>15-min Rolling Backup</Text>
+                      <Text style={[styles.menuSub, { color: rollingBackupStatus.rollingBackupEnabled ? "#16A34A" : colors.textSecondary }]}>
+                        {rollingBackupStatus.rollingBackupEnabled
+                          ? "Active — overwrites LabTrax-Rolling-Backup.zip every 15 min"
+                          : "Paused — tap to enable"}
+                      </Text>
+                    </View>
+                    {/* Native-style toggle indicator */}
+                    <View
+                      style={{
+                        width: 44,
+                        height: 26,
+                        borderRadius: 13,
+                        backgroundColor: rollingBackupStatus.rollingBackupEnabled ? "#16A34A" : colors.borderLight,
+                        justifyContent: "center",
+                        padding: 3,
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: 10,
+                          backgroundColor: "#ffffff",
+                          alignSelf: rollingBackupStatus.rollingBackupEnabled ? "flex-end" : "flex-start",
+                          shadowColor: "#000",
+                          shadowOpacity: 0.15,
+                          shadowRadius: 2,
+                          shadowOffset: { width: 0, height: 1 },
+                          elevation: 2,
+                        }}
+                      />
+                    </View>
+                  </Pressable>
+
+                  {/* Last-run / error status — always rendered */}
+                  <View style={[styles.menuDivider, { backgroundColor: colors.borderLight, marginLeft: 0 }]} />
+                  <View style={[styles.menuItem, { flexDirection: "column", alignItems: "flex-start", gap: 4 }]}>
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: colors.textSecondary }}>
+                      {rollingBackupStatus.rollingBackupLastRunAt
+                        ? `Last run: ${new Date(rollingBackupStatus.rollingBackupLastRunAt).toLocaleString()}`
+                        : "Last run: Not yet run"}
+                    </Text>
+                    {rollingBackupStatus.rollingBackupLastError && (
+                      <Text style={{ fontSize: 12, fontFamily: "Inter_400Regular", color: "#DC2626" }} numberOfLines={2}>
+                        Error: {rollingBackupStatus.rollingBackupLastError}
+                      </Text>
+                    )}
+                  </View>
+                </>
+              ) : null}
             </View>
           </View>
         )}

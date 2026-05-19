@@ -11,7 +11,7 @@ import { logger } from "./lib/logger";
 import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
-import { startDailyOneDriveBackup } from "./lib/backup";
+import { startDailyOneDriveBackup, start15MinRollingBackup } from "./lib/backup";
 import { startBillingJobs } from "./lib/billing-jobs";
 import { handleStripeWebhook } from "./routes/billing";
 import {
@@ -266,9 +266,10 @@ app.use("/api", requireCsrf, router);
 startStatementScheduler();
 startDailyOrphanedMediaCleanup();
 startBillingJobs();
-// OneDrive backup scheduler — only active when the connector is available.
+// OneDrive backup schedulers — only active when the connector is available.
 if (process.env.REPLIT_CONNECTORS_HOSTNAME) {
   startDailyOneDriveBackup();
+  start15MinRollingBackup();
 }
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
