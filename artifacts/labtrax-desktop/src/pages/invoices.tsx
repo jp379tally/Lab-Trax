@@ -1371,7 +1371,7 @@ export function InvoiceEditor({
                                     })
                                   }
                                   title="Pick from list"
-                                  className="shrink-0 h-8 px-2 rounded border border-input bg-background text-xs text-muted-foreground hover:text-foreground hover:bg-secondary"
+                                  className="shrink-0 mt-0.5 h-8 px-2 rounded border border-input bg-background text-xs text-muted-foreground hover:text-foreground hover:bg-secondary"
                                 >
                                   List
                                 </button>
