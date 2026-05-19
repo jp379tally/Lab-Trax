@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { UpdateBanner } from "./UpdateBanner";
 import { Link, useLocation } from "wouter";
 import {
+  AlertTriangle,
   Bell,
   Building2,
   CheckCircle,
@@ -32,6 +33,19 @@ import { Logo } from "./Logo";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import type { MeResponse } from "@/lib/types";
+
+interface BackupScheduleShape {
+  lastSuccessfulBackupAt?: string | null;
+}
+
+const BACKUP_STALE_DAYS = 7;
+
+function isBackupStale(lastSuccessfulBackupAt: string | null | undefined): boolean {
+  if (!lastSuccessfulBackupAt) return true;
+  const last = new Date(lastSuccessfulBackupAt).getTime();
+  if (Number.isNaN(last)) return true;
+  return Date.now() - last > BACKUP_STALE_DAYS * 24 * 60 * 60 * 1000;
+}
 
 interface NavItem {
   label: string;
@@ -111,6 +125,7 @@ const POLL_INTERVAL_MS = 60_000;
 export function AppLayout({ children }: Props) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [menuOpen, setMenuOpen] = useState(false);
   const [uploadsOpen, setUploadsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -118,6 +133,18 @@ export function AppLayout({ children }: Props) {
   const [notifLoading, setNotifLoading] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
   const markReadInflight = useRef(false);
+
+  const backupScheduleQuery = useQuery<BackupScheduleShape>({
+    queryKey: ["admin", "backup-schedule-v2"],
+    queryFn: () => apiFetch<BackupScheduleShape>("/admin/backup/schedule"),
+    enabled: isAdmin,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const backupOverdue =
+    isAdmin &&
+    backupScheduleQuery.isSuccess &&
+    isBackupStale(backupScheduleQuery.data?.lastSuccessfulBackupAt);
 
   const { entries, activeCount, removeEntry, cancelEntry } = useUploads();
   const meQuery = useQuery({
@@ -293,10 +320,12 @@ export function AppLayout({ children }: Props) {
             {SECONDARY.filter((item) => !item.adminOnly || user?.role === "admin").map((item) => {
               const active = location.startsWith(item.path);
               const Icon = item.icon;
+              const showBackupDot = backupOverdue && item.path === "/settings";
               return (
                 <li key={item.path}>
                   <Link
                     href={item.path}
+                    title={showBackupDot ? "Backup overdue — visit Settings → Backup" : undefined}
                     className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                       active
                         ? "bg-sidebar-primary text-sidebar-primary-foreground"
@@ -304,7 +333,14 @@ export function AppLayout({ children }: Props) {
                     }`}
                   >
                     <Icon size={16} strokeWidth={2.2} />
-                    <span>{item.label}</span>
+                    <span className="flex-1">{item.label}</span>
+                    {showBackupDot && (
+                      <AlertTriangle
+                        size={13}
+                        className="shrink-0 text-amber-400"
+                        aria-label="Backup overdue"
+                      />
+                    )}
                   </Link>
                 </li>
               );
