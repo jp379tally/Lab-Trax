@@ -88,6 +88,9 @@ function setUrlParams(updates: Record<string, string | null>) {
   window.history.replaceState({}, "", url);
 }
 
+type SortKey = "practice" | "issued" | "due";
+type SortDir = "asc" | "desc";
+
 export default function InvoicesPage() {
   const queryClient = useQueryClient();
 
@@ -101,6 +104,8 @@ export default function InvoicesPage() {
   const [overdueBucket, setOverdueBucket] = useState(
     () => getUrlParam("overdue"),
   );
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [editing, setEditing] = useState<Invoice | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [statementBuilderOpen, setStatementBuilderOpen] = useState(false);
@@ -124,6 +129,20 @@ export default function InvoicesPage() {
       ),
   });
 
+  const practicesQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+    staleTime: 60_000,
+  });
+  const practiceOptions = useMemo(
+    () =>
+      (practicesQuery.data ?? []).filter(
+        (o) =>
+          (o.type === "provider" || o.type === "practice") && !o.deletedAt,
+      ).sort((a, b) => a.name.localeCompare(b.name)),
+    [practicesQuery.data],
+  );
+
   useEffect(() => {
     setUrlParams({
       q: search || null,
@@ -135,29 +154,56 @@ export default function InvoicesPage() {
     });
   }, [search, status, openOnly, aiOnly, practiceId, overdueBucket]);
 
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
+
   const filtered = useMemo(() => {
     const rows = data ?? [];
     const q = search.trim().toLowerCase();
-    return rows
-      .filter((i) => {
-        if (openOnly) {
-          if (i.status !== "open" && i.status !== "partially_paid") return false;
-        } else if (status !== "all" && i.status !== status) {
-          return false;
+    const list = rows.filter((i) => {
+      if (openOnly) {
+        if (i.status !== "open" && i.status !== "partially_paid") return false;
+      } else if (status !== "all" && i.status !== status) {
+        return false;
+      }
+      if (!q) return true;
+      const meta = readDisplayMetadata(i);
+      return (
+        i.invoiceNumber.toLowerCase().includes(q) ||
+        (i.providerOrganization?.name || "").toLowerCase().includes(q) ||
+        (meta.patientName || "").toLowerCase().includes(q) ||
+        (meta.billTo || "").toLowerCase().includes(q)
+      );
+    });
+
+    if (sortKey) {
+      const dir = sortDir === "asc" ? 1 : -1;
+      list.sort((a, b) => {
+        if (sortKey === "practice") {
+          return dir * (a.providerOrganization?.name || "").localeCompare(b.providerOrganization?.name || "");
         }
-        if (!q) return true;
-        const meta = readDisplayMetadata(i);
-        return (
-          i.invoiceNumber.toLowerCase().includes(q) ||
-          (i.providerOrganization?.name || "").toLowerCase().includes(q) ||
-          (meta.patientName || "").toLowerCase().includes(q) ||
-          (meta.billTo || "").toLowerCase().includes(q)
-        );
-      })
-      .sort((a, b) =>
+        if (sortKey === "issued") {
+          return dir * (a.issuedAt || "").localeCompare(b.issuedAt || "");
+        }
+        if (sortKey === "due") {
+          return dir * ((a.dueAt ?? a.dueDate) || "").localeCompare((b.dueAt ?? b.dueDate) || "");
+        }
+        return 0;
+      });
+    } else {
+      list.sort((a, b) =>
         (b.createdAt || b.issuedAt || "").localeCompare(a.createdAt || a.issuedAt || ""),
       );
-  }, [data, search, status, openOnly]);
+    }
+
+    return list;
+  }, [data, search, status, openOnly, sortKey, sortDir]);
 
   const stats = useMemo(() => {
     const rows = data ?? [];
@@ -295,6 +341,17 @@ export default function InvoicesPage() {
             <option value="61_90">61–90 days overdue</option>
             <option value="90_plus">90+ days overdue</option>
           </select>
+          <select
+            value={practiceId}
+            onChange={(e) => setPracticeId(e.target.value)}
+            className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+            title="Filter by practice"
+          >
+            <option value="">All practices</option>
+            {practiceOptions.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
           <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground select-none">
             <input
               type="checkbox"
@@ -320,11 +377,50 @@ export default function InvoicesPage() {
             <thead>
               <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                 <th className="text-left font-medium px-5 py-2.5">Invoice #</th>
-                <th className="text-left font-medium py-2.5">Client</th>
+                <th className="text-left font-medium py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("practice")}
+                    className="inline-flex items-center gap-1 hover:text-foreground"
+                  >
+                    Practice
+                    {sortKey === "practice" ? (
+                      sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />
+                    ) : (
+                      <span className="opacity-30"><ArrowUp size={10} /></span>
+                    )}
+                  </button>
+                </th>
                 <th className="text-left font-medium py-2.5">Patient</th>
                 <th className="text-left font-medium py-2.5">Bill to</th>
-                <th className="text-left font-medium py-2.5">Issued</th>
-                <th className="text-left font-medium py-2.5">Due</th>
+                <th className="text-left font-medium py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("issued")}
+                    className="inline-flex items-center gap-1 hover:text-foreground"
+                  >
+                    Issued
+                    {sortKey === "issued" ? (
+                      sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />
+                    ) : (
+                      <span className="opacity-30"><ArrowUp size={10} /></span>
+                    )}
+                  </button>
+                </th>
+                <th className="text-left font-medium py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("due")}
+                    className="inline-flex items-center gap-1 hover:text-foreground"
+                  >
+                    Due
+                    {sortKey === "due" ? (
+                      sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />
+                    ) : (
+                      <span className="opacity-30"><ArrowUp size={10} /></span>
+                    )}
+                  </button>
+                </th>
                 <th className="text-left font-medium py-2.5">Status</th>
                 <th className="text-right font-medium py-2.5">Total</th>
                 <th className="text-right font-medium px-5 py-2.5">Balance</th>
