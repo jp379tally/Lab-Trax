@@ -22,6 +22,9 @@
     },
     "production": {
       "autoIncrement": true,
+      "env": {
+        "EXPO_DEBUG": "1"
+      },
       "ios": {
         "distribution": "store"
       },
