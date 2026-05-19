@@ -274,6 +274,259 @@ html, body { margin: 0; padding: 0; }`,
   });
 }
 
+// ── Case Card (6in × 6in) ────────────────────────────────────────────────────
+
+/**
+ * Parse a teeth string into a Set of adult numeric tooth IDs (1–32).
+ * Inlined here so it works in a plain-TS file with no React imports.
+ */
+function parseAdultTeeth(value: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!value) return out;
+  for (const rawPart of value.split(/[,\s]+/)) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    if (part.includes("-")) {
+      const [a, b] = part.split("-").map((s) => s.trim());
+      if (!a || !b) continue;
+      const numA = Number(a);
+      const numB = Number(b);
+      if (Number.isInteger(numA) && Number.isInteger(numB)) {
+        const lo = Math.min(numA, numB);
+        const hi = Math.max(numA, numB);
+        for (let n = lo; n <= hi; n++) {
+          if (n >= 1 && n <= 32) out.add(String(n));
+        }
+      }
+      continue;
+    }
+    const n = Number(part);
+    if (Number.isInteger(n) && n >= 1 && n <= 32) out.add(String(n));
+  }
+  return out;
+}
+
+function toothCell(num: number, selected: boolean): string {
+  const cls = selected ? "lt-tooth sel" : "lt-tooth";
+  return `<span class="${cls}">${num}</span>`;
+}
+
+function buildToothChart(selected: Set<string>): string {
+  // Upper arch: 1–16 left to right
+  const upper = Array.from({ length: 16 }, (_, i) => i + 1);
+  // Lower arch: 32–17 left to right (mirrors the upper)
+  const lower = Array.from({ length: 16 }, (_, i) => 32 - i);
+
+  const upperRow = upper.map((n) => toothCell(n, selected.has(String(n)))).join("");
+  const lowerRow = lower.map((n) => toothCell(n, selected.has(String(n)))).join("");
+
+  return `
+<div class="lt-tooth-chart">
+  <div class="lt-tooth-row">${upperRow}</div>
+  <div class="lt-tooth-divider"></div>
+  <div class="lt-tooth-row">${lowerRow}</div>
+</div>`;
+}
+
+const CARD_CSS = `
+@page { size: 6in 6in; margin: 0.2in; }
+
+.lt-card-page {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #111;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0;
+  padding: 0;
+}
+
+.lt-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 2px solid #111;
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+.lt-card-case-num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.lt-card-header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.lt-card-date {
+  font-size: 9px;
+  color: #555;
+}
+
+.lt-card-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: #333;
+}
+
+.lt-card-badge.rush {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #fff;
+}
+
+.lt-card-section {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #555;
+  border-bottom: 1px solid #ddd;
+  padding-bottom: 1px;
+  margin: 8px 0 4px;
+}
+
+.lt-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 12px;
+}
+
+.lt-card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.lt-card-key {
+  font-size: 8px;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lt-card-val {
+  font-size: 11px;
+  font-weight: 500;
+  color: #111;
+}
+
+.lt-tooth-chart {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lt-tooth-row {
+  display: flex;
+  gap: 2px;
+}
+
+.lt-tooth {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid #bbb;
+  border-radius: 2px;
+  color: #555;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.lt-tooth.sel {
+  background: #1e3a5f;
+  border-color: #1e3a5f;
+  color: #fff;
+  font-weight: 700;
+}
+
+.lt-tooth-divider {
+  height: 3px;
+  border-top: 1px dashed #ccc;
+  margin: 1px 0;
+}
+
+.lt-card-footer {
+  font-size: 8px;
+  color: #888;
+  margin-top: 10px;
+  border-top: 1px solid #eee;
+  padding-top: 4px;
+}
+`;
+
+export function printCaseCard(labCase: LabCase): void {
+  const patient = `${labCase.patientFirstName ?? ""} ${
+    labCase.patientLastName ?? ""
+  }`.trim();
+
+  const selected = parseAdultTeeth(labCase.teeth);
+  const isRush = labCase.priority === "rush";
+
+  const badgeHtml = isRush
+    ? `<span class="lt-card-badge rush">Rush</span>`
+    : `<span class="lt-card-badge">${escapeHtml(statusLabel(labCase.status))}</span>`;
+
+  const header = `
+<div class="lt-card-header">
+  <div class="lt-card-case-num">Case ${escapeHtml(labCase.caseNumber)}</div>
+  <div class="lt-card-header-right">
+    <span class="lt-card-date">Printed ${escapeHtml(formatDate(new Date().toISOString()))}</span>
+    ${badgeHtml}
+  </div>
+</div>`;
+
+  const detailsGrid = `
+<div class="lt-card-section">Case Details</div>
+<div class="lt-card-grid">
+  <div class="lt-card-field"><span class="lt-card-key">Patient</span><span class="lt-card-val">${escapeHtml(patient || "—")}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">Doctor</span><span class="lt-card-val">${escapeHtml(labCase.doctorName || "—")}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">Status</span><span class="lt-card-val">${escapeHtml(statusLabel(labCase.status))}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">Priority</span><span class="lt-card-val">${escapeHtml(isRush ? "Rush" : "Normal")}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">Due Date</span><span class="lt-card-val">${escapeHtml(formatDate(labCase.dueDate))}</span></div>
+  <div class="lt-card-field"><span class="lt-card-key">Created</span><span class="lt-card-val">${escapeHtml(formatDate(labCase.createdAt))}</span></div>
+</div>`;
+
+  const rxGrid = `
+<div class="lt-card-section">RX Summary</div>
+<div class="lt-card-grid">
+  ${labCase.restorationTypes ? `<div class="lt-card-field"><span class="lt-card-key">Restorative Type</span><span class="lt-card-val">${escapeHtml(labCase.restorationTypes)}</span></div>` : ""}
+  ${labCase.restorationMaterials ? `<div class="lt-card-field"><span class="lt-card-key">Material</span><span class="lt-card-val">${escapeHtml(labCase.restorationMaterials)}</span></div>` : ""}
+  ${labCase.teeth ? `<div class="lt-card-field" style="grid-column:1/-1"><span class="lt-card-key">Tooth Number(s)</span><span class="lt-card-val">${escapeHtml(labCase.teeth)}</span></div>` : ""}
+  ${labCase.caseNotes ? `<div class="lt-card-field" style="grid-column:1/-1"><span class="lt-card-key">Notes</span><span class="lt-card-val" style="white-space:pre-wrap">${escapeHtml(labCase.caseNotes)}</span></div>` : ""}
+</div>`;
+
+  const toothChartSection = `
+<div class="lt-card-section">Tooth Chart</div>
+${buildToothChart(selected)}`;
+
+  const footer = `<div class="lt-card-footer">LabTrax · Case ${escapeHtml(labCase.caseNumber)} · Printed ${escapeHtml(formatDateTime(new Date().toISOString()))}</div>`;
+
+  const body = `${header}${detailsGrid}${rxGrid}${toothChartSection}${footer}`;
+
+  openPrintWindow({
+    title: `Case ${labCase.caseNumber} — Card`,
+    bodyClass: "lt-card-page",
+    extraCss: CARD_CSS,
+    body,
+  });
+}
+
 // ── Per-tab generic printers ────────────────────────────────────────────────
 
 export function printOverview(labCase: LabCase): string {

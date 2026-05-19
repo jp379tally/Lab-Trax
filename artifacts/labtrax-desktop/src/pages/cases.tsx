@@ -40,6 +40,7 @@ import type {
 } from "@/lib/types";
 import { formatDate, formatDateTime, formatMoney, formatPhone, relativeTime, statusLabel } from "@/lib/format";
 import {
+  printCaseCard,
   printCaseHistory,
   printCaseLabel,
   printInvoice,
@@ -2350,17 +2351,9 @@ export function CaseDrawer({
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() =>
-                        printTabContent({
-                          labCase: data ?? labCase,
-                          tab: "overview",
-                          restorations: data?.restorations ?? [],
-                          attachments: data?.attachments ?? [],
-                          notes: data?.notes ?? [],
-                        })
-                      }
+                      onClick={() => printCaseCard(data ?? labCase)}
                       className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-secondary hover:bg-secondary/80 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      title="Print overview"
+                      title="Print case card"
                     >
                       <Printer size={11} />
                       Print

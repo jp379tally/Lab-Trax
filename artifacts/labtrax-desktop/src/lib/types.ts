@@ -65,6 +65,8 @@ export interface LabCase {
   suggestedPracticeName?: string | null;
   /** Barcode assigned to the case pan. Cleared when the case is located to Complete. */
   casePanBarcode?: string | null;
+  /** Free-text general notes entered on the case. */
+  caseNotes?: string | null;
 }
 
 /**
