@@ -634,6 +634,9 @@ export function DashboardDropZone() {
 
   const runRxAnalyze = useCallback(
     async (file: File) => {
+      setRxProviderOrgId("");
+      setRxDraft({});
+      setRxProviderSearch("");
       setPhase({ kind: "analyzing", fileName: file.name });
       try {
         let images: string[] = [];
@@ -690,7 +693,7 @@ export function DashboardDropZone() {
         // practiceName so the user can confirm in one click in the common
         // case where the practice already exists.
         if (!rxLabOrgId && labOrg?.id) setRxLabOrgId(labOrg.id);
-        if (!rxProviderOrgId && rx.practiceName) {
+        if (rx.practiceName) {
           const needle = rx.practiceName.trim().toLowerCase();
           const match = providerOrgs.find((p) =>
             (p.displayName || p.name || "").toLowerCase().includes(needle),
