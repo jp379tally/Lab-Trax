@@ -40,6 +40,7 @@ import {
   printInvoicePdf,
   type InvoicePdfOptions,
 } from "@/lib/export";
+import { parseToothField } from "@/components/ToothChart";
 
 const STATUS_FILTERS = [
   { value: "all", label: "All" },
@@ -1297,7 +1298,7 @@ export function InvoiceEditor({
                   <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                     <th className="text-left font-medium px-3 py-2 w-44">Item</th>
                     <th className="text-left font-medium px-3 py-2">Description</th>
-                    <th className="text-right font-medium px-3 py-2 w-20">Qty</th>
+                    <th className="text-right font-medium px-3 py-2 w-28">Qty</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Unit price</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Total</th>
                     <th className="px-2 py-2 w-20" />
@@ -1400,10 +1401,12 @@ export function InvoiceEditor({
                                   (p) => p.label === v,
                                 );
                                 if (!picked) return;
+                                const toothCount = parseToothField(teeth).size;
                                 updateItem(idx, {
                                   item: picked.label,
                                   description: picked.label,
                                   unitPrice: picked.unitPrice,
+                                  quantity: toothCount > 1 ? toothCount : 1,
                                 });
                               }}
                               className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
