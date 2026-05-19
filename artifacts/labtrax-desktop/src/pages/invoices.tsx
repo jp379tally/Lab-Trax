@@ -1425,15 +1425,26 @@ export function InvoiceEditor({
                           );
                         })()}
                       </td>
-                      <td className="px-3 py-1.5">
-                        <input
-                          type="text"
+                      <td className="px-3 py-1.5 align-top">
+                        <textarea
                           value={it.description}
                           onChange={(e) =>
                             updateItem(idx, { description: e.target.value })
                           }
+                          onInput={(e) => {
+                            const el = e.currentTarget;
+                            el.style.height = "auto";
+                            el.style.height = `${el.scrollHeight}px`;
+                          }}
+                          ref={(el) => {
+                            if (el) {
+                              el.style.height = "auto";
+                              el.style.height = `${el.scrollHeight}px`;
+                            }
+                          }}
                           placeholder="Description"
-                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm"
+                          rows={2}
+                          className="w-full min-h-[3.5rem] px-2 py-1.5 rounded bg-background border border-input text-sm resize-none overflow-hidden"
                         />
                       </td>
                       <td className="px-3 py-1.5">
@@ -1463,7 +1474,7 @@ export function InvoiceEditor({
                       <td className="px-3 py-1.5 text-right tabular-nums font-medium">
                         {formatMoney(Number(it.quantity || 0) * Number(it.unitPrice || 0))}
                       </td>
-                      <td className="px-2 py-1.5">
+                      <td className="px-2 py-1.5 align-top">
                         <div className="flex items-center gap-0.5 justify-end">
                           <button
                             type="button"
