@@ -340,6 +340,33 @@ export const UndoDoctorMergeResponse = zod.object({
 });
 
 /**
+ * Sends an email or SMS notification to the provider organization's primary
+contact, informing them that a new note has been shared on the case. The
+note must have `visibility = shared_with_provider`. Only lab members may
+call this endpoint. Returns 422 when the provider org has no contact
+info for the requested method.
+
+ * @summary Notify the provider about a shared case note
+ */
+export const NotifyCaseNoteParams = zod.object({
+  caseId: zod.coerce.string(),
+  noteId: zod.coerce.string(),
+});
+
+export const NotifyCaseNoteBody = zod.object({
+  method: zod.enum(["email", "sms"]),
+});
+
+export const NotifyCaseNoteResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      ok: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
  * Partially update a case. All fields are optional. The caller must be
 an active member of the case's lab organization.
 `providerOrganizationId` is validated to be an active, non-deleted

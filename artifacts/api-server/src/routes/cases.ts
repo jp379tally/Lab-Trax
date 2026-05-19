@@ -1942,6 +1942,126 @@ router.post(
 );
 
 router.post(
+  "/:caseId/notes/:noteId/notify",
+  asyncHandler(async (req, res) => {
+    const caseId = String(req.params["caseId"] ?? "");
+    const noteId = String(req.params["noteId"] ?? "");
+
+    const found = await assertCaseAccess((req as any).auth.userId, caseId);
+
+    const labMember = await requireMembership(
+      (req as any).auth.userId,
+      found.labOrganizationId,
+    ).catch(() => null);
+    if (!labMember) {
+      throw new HttpError(403, "Only lab members can send provider notifications.");
+    }
+
+    const input = z
+      .object({ method: z.enum(["email", "sms"]) })
+      .parse(req.body);
+
+    const note = await db.query.caseNotes.findFirst({
+      where: and(eq(caseNotes.id, noteId), eq(caseNotes.caseId, caseId)),
+    });
+    if (!note) throw new HttpError(404, "Note not found.");
+    if (note.visibility !== "shared_with_provider") {
+      throw new HttpError(422, "Only notes shared with the provider can be notified.");
+    }
+
+    if (!found.providerOrganizationId) {
+      throw new HttpError(422, "This case has no provider organization.");
+    }
+    const providerOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, found.providerOrganizationId),
+    });
+    if (!providerOrg) throw new HttpError(404, "Provider organization not found.");
+
+    if (input.method === "email") {
+      if (!providerOrg.billingEmail) {
+        throw new HttpError(
+          422,
+          "The provider organization has no email address on file. Please add a billing email to the provider's profile.",
+        );
+      }
+      const { sendMail } = await import("../lib/mail.js");
+      const snippet =
+        note.noteText.length > 500
+          ? note.noteText.slice(0, 500) + "…"
+          : note.noteText;
+      await sendMail({
+        to: providerOrg.billingEmail,
+        subject: `LabTrax: New note on case ${found.caseNumber}`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+  <div style="background:#4A6CF7;color:white;padding:20px;border-radius:8px 8px 0 0;">
+    <h2 style="margin:0;">LabTrax</h2>
+    <p style="margin:4px 0 0;opacity:.85;">Case update from your lab</p>
+  </div>
+  <div style="padding:20px;border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;">
+    <p>A new note has been added to case <strong>${found.caseNumber}</strong>
+      (patient: ${found.patientFirstName} ${found.patientLastName}):</p>
+    <blockquote style="border-left:3px solid #4A6CF7;margin:16px 0;padding:12px 16px;background:#f5f7ff;border-radius:0 4px 4px 0;">
+      <p style="margin:0;white-space:pre-wrap;">${snippet}</p>
+    </blockquote>
+    <p style="color:#888;font-size:13px;">This note was shared with your practice by the dental laboratory. Please log in to LabTrax to view the full case details.</p>
+  </div>
+</div>`,
+        text: `LabTrax: New note on case ${found.caseNumber} (${found.patientFirstName} ${found.patientLastName})\n\n${snippet}`,
+      });
+    } else {
+      if (!providerOrg.phone) {
+        throw new HttpError(
+          422,
+          "The provider organization has no phone number on file. Please add a phone number to the provider's profile.",
+        );
+      }
+      const { normalizePhoneE164 } = await import("../lib/account-link-sms.js");
+      const phoneE164 = normalizePhoneE164(providerOrg.phone);
+      if (!phoneE164) {
+        throw new HttpError(
+          422,
+          "The provider organization's phone number is not a valid format.",
+        );
+      }
+      const sid = process.env["TWILIO_ACCOUNT_SID"];
+      const token = process.env["TWILIO_AUTH_TOKEN"];
+      const from = process.env["TWILIO_PHONE_NUMBER"];
+      if (!sid || !token || !from) {
+        throw new HttpError(503, "SMS is not configured on this server.");
+      }
+      const truncated =
+        note.noteText.length > 120
+          ? note.noteText.slice(0, 117) + "…"
+          : note.noteText;
+      const body = `LabTrax case ${found.caseNumber}: ${truncated}`;
+      const auth = Buffer.from(`${sid}:${token}`).toString("base64");
+      const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`;
+      const params = new URLSearchParams();
+      params.append("To", phoneE164);
+      params.append("From", from);
+      params.append("Body", body);
+      const resp = await globalThis.fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: params.toString(),
+      });
+      const smsData = (await resp.json()) as any;
+      if (smsData?.error_code || smsData?.code) {
+        throw new HttpError(
+          502,
+          `SMS failed: ${smsData.message ?? "Twilio error"}`,
+        );
+      }
+    }
+
+    return ok(res, { ok: true });
+  })
+);
+
+router.post(
   "/:caseId/location-changes",
   asyncHandler(async (req, res) => {
     const found = await assertCaseAccess(

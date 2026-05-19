@@ -489,6 +489,27 @@ to the top.
   offset?: number;
 };
 
+export type NotifyCaseNoteBodyMethod =
+  (typeof NotifyCaseNoteBodyMethod)[keyof typeof NotifyCaseNoteBodyMethod];
+
+export const NotifyCaseNoteBodyMethod = {
+  email: "email",
+  sms: "sms",
+} as const;
+
+export type NotifyCaseNoteBody = {
+  method: NotifyCaseNoteBodyMethod;
+};
+
+export type NotifyCaseNote200Data = {
+  ok?: boolean;
+};
+
+export type NotifyCaseNote200 = {
+  ok?: boolean;
+  data?: NotifyCaseNote200Data;
+};
+
 /**
  * Raw updated case row (Drizzle shape)
  */

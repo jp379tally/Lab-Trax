@@ -37,6 +37,8 @@ import type {
   ListOpenInvoicesParams,
   MarkAllNotificationsRead200,
   NotificationListResult,
+  NotifyCaseNote200,
+  NotifyCaseNoteBody,
   OpenInvoiceListResult,
   ReceivePaymentsInput,
   ReceivePaymentsResult,
@@ -790,6 +792,100 @@ export const useUndoDoctorMerge = <
   TContext
 > => {
   return useMutation(getUndoDoctorMergeMutationOptions(options));
+};
+
+/**
+ * Sends an email or SMS notification to the provider organization's primary
+contact, informing them that a new note has been shared on the case. The
+note must have `visibility = shared_with_provider`. Only lab members may
+call this endpoint. Returns 422 when the provider org has no contact
+info for the requested method.
+
+ * @summary Notify the provider about a shared case note
+ */
+export const getNotifyCaseNoteUrl = (caseId: string, noteId: string) => {
+  return `/api/cases/${caseId}/notes/${noteId}/notify`;
+};
+
+export const notifyCaseNote = async (
+  caseId: string,
+  noteId: string,
+  notifyCaseNoteBody: NotifyCaseNoteBody,
+  options?: RequestInit,
+): Promise<NotifyCaseNote200> => {
+  return customFetch<NotifyCaseNote200>(getNotifyCaseNoteUrl(caseId, noteId), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(notifyCaseNoteBody),
+  });
+};
+
+export const getNotifyCaseNoteMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof notifyCaseNote>>,
+    TError,
+    { caseId: string; noteId: string; data: BodyType<NotifyCaseNoteBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof notifyCaseNote>>,
+  TError,
+  { caseId: string; noteId: string; data: BodyType<NotifyCaseNoteBody> },
+  TContext
+> => {
+  const mutationKey = ["notifyCaseNote"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof notifyCaseNote>>,
+    { caseId: string; noteId: string; data: BodyType<NotifyCaseNoteBody> }
+  > = (props) => {
+    const { caseId, noteId, data } = props ?? {};
+
+    return notifyCaseNote(caseId, noteId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type NotifyCaseNoteMutationResult = NonNullable<
+  Awaited<ReturnType<typeof notifyCaseNote>>
+>;
+export type NotifyCaseNoteMutationBody = BodyType<NotifyCaseNoteBody>;
+export type NotifyCaseNoteMutationError = ErrorType<void>;
+
+/**
+ * @summary Notify the provider about a shared case note
+ */
+export const useNotifyCaseNote = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof notifyCaseNote>>,
+    TError,
+    { caseId: string; noteId: string; data: BodyType<NotifyCaseNoteBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof notifyCaseNote>>,
+  TError,
+  { caseId: string; noteId: string; data: BodyType<NotifyCaseNoteBody> },
+  TContext
+> => {
+  return useMutation(getNotifyCaseNoteMutationOptions(options));
 };
 
 /**

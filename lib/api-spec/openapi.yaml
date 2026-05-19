@@ -251,6 +251,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DoctorMergeUndoResult"
+  /cases/{caseId}/notes/{noteId}/notify:
+    post:
+      operationId: notifyCaseNote
+      tags: [cases]
+      summary: Notify the provider about a shared case note
+      description: |
+        Sends an email or SMS notification to the provider organization's primary
+        contact, informing them that a new note has been shared on the case. The
+        note must have `visibility = shared_with_provider`. Only lab members may
+        call this endpoint. Returns 422 when the provider org has no contact
+        info for the requested method.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: noteId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method]
+              properties:
+                method:
+                  type: string
+                  enum: [email, sms]
+      responses:
+        "200":
+          description: Notification sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+        "422":
+          description: Provider has no contact info for the requested method
+        "403":
+          description: Caller is not a lab member
   /cases/{caseId}:
     patch:
       operationId: updateCase

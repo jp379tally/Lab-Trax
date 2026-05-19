@@ -1375,10 +1375,16 @@ export function CaseDrawer({
   const [routeSuccess, setRouteSuccess] = useState(false);
 
   const [noteText, setNoteText] = useState("");
-  const [noteVis, setNoteVis] = useState<"internal_lab_only" | "shared_with_provider">(
-    "shared_with_provider"
-  );
+  const [shareWithProvider, setShareWithProvider] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
+  const [notifyModal, setNotifyModal] = useState<{
+    open: boolean;
+    noteId: string;
+    method: "email" | "sms" | null;
+    step: "choose" | "confirm_save" | "success";
+    sending: boolean;
+    error: string | null;
+  }>({ open: false, noteId: "", method: null, step: "choose", sending: false, error: null });
 
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -1601,19 +1607,55 @@ export function CaseDrawer({
     }
   }
 
+  const COMM_PREF_KEY = "labtrax_note_comm_pref_v1";
+
   const addNoteMutation = useMutation({
-    mutationFn: ({ text, visibility }: { text: string; visibility: string }) =>
-      apiFetch(`/cases/${labCase.id}/notes`, {
+    mutationFn: ({ text, shared }: { text: string; shared: boolean }) =>
+      apiFetch<{ id: string; visibility: string; noteText: string }>(`/cases/${labCase.id}/notes`, {
         method: "POST",
-        body: JSON.stringify({ noteText: text, visibility }),
+        body: JSON.stringify({
+          noteText: text,
+          visibility: shared ? "shared_with_provider" : "internal_lab_only",
+        }),
       }),
-    onSuccess: () => {
+    onSuccess: (result, variables) => {
       qc.invalidateQueries({ queryKey: ["case", labCase.id] });
       setNoteText("");
+      setShareWithProvider(false);
       setNoteError(null);
+      if (variables.shared && result?.id) {
+        const savedPref = localStorage.getItem(COMM_PREF_KEY) as "email" | "sms" | null;
+        setNotifyModal({
+          open: true,
+          noteId: result.id,
+          method: savedPref ?? null,
+          step: "choose",
+          sending: false,
+          error: null,
+        });
+      }
     },
     onError: (e: Error) => setNoteError(e.message),
   });
+
+  async function sendNoteNotification(noteId: string, method: "email" | "sms") {
+    setNotifyModal((m) => ({ ...m, sending: true, error: null }));
+    try {
+      await apiFetch(`/cases/${labCase.id}/notes/${noteId}/notify`, {
+        method: "POST",
+        body: JSON.stringify({ method }),
+      });
+      const savedPref = localStorage.getItem(COMM_PREF_KEY) as "email" | "sms" | null;
+      if (!savedPref) {
+        setNotifyModal((m) => ({ ...m, sending: false, method, step: "confirm_save" }));
+      } else {
+        localStorage.setItem(COMM_PREF_KEY, method);
+        setNotifyModal((m) => ({ ...m, sending: false, method, step: "success" }));
+      }
+    } catch (e: any) {
+      setNotifyModal((m) => ({ ...m, sending: false, error: e?.message ?? "Send failed." }));
+    }
+  }
 
   const addRestorationMutation = useMutation({
     mutationFn: () => {
@@ -2723,21 +2765,20 @@ export function CaseDrawer({
                   rows={3}
                   className="w-full text-sm bg-transparent resize-none focus:outline-none placeholder:text-muted-foreground"
                 />
-                <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-border">
-                  <select
-                    value={noteVis}
-                    onChange={(e) =>
-                      setNoteVis(e.target.value as "internal_lab_only" | "shared_with_provider")
-                    }
-                    className="h-7 px-2 rounded bg-secondary text-xs border border-transparent focus:outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    <option value="shared_with_provider">Shared with provider</option>
-                    <option value="internal_lab_only">Internal only</option>
-                  </select>
+                <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
+                  <input
+                    type="checkbox"
+                    checked={shareWithProvider}
+                    onChange={(e) => setShareWithProvider(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-border accent-primary"
+                  />
+                  <span className="text-xs text-muted-foreground">Share note with provider</span>
+                </label>
+                <div className="flex items-center justify-end gap-2 pt-1.5 border-t border-border">
                   <button
                     type="button"
                     disabled={!noteText.trim() || addNoteMutation.isPending}
-                    onClick={() => addNoteMutation.mutate({ text: noteText, visibility: noteVis })}
+                    onClick={() => addNoteMutation.mutate({ text: noteText, shared: shareWithProvider })}
                     className="h-7 px-3 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
                   >
                     {addNoteMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : "Add note"}
@@ -2745,6 +2786,120 @@ export function CaseDrawer({
                 </div>
                 {noteError && <p className="text-xs text-destructive">{noteError}</p>}
               </div>
+
+              {/* ── NOTIFY MODAL ── */}
+              {notifyModal.open && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { if (!notifyModal.sending) setNotifyModal((m) => ({ ...m, open: false })); }}>
+                  <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-sm mx-4 p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="text-sm font-semibold">Notify provider?</h3>
+                      <button type="button" onClick={() => { if (!notifyModal.sending) setNotifyModal((m) => ({ ...m, open: false })); }} className="text-muted-foreground hover:text-foreground transition-colors" aria-label="Close">
+                        <X size={16} />
+                      </button>
+                    </div>
+
+                    {notifyModal.step === "choose" && notifyModal.method === null && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-muted-foreground">The note was shared with the provider. How would you like to notify them?</p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={notifyModal.sending}
+                            onClick={() => void sendNoteNotification(notifyModal.noteId, "email")}
+                            className="flex-1 h-9 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm font-medium transition-colors disabled:opacity-50"
+                          >
+                            {notifyModal.sending ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Email"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={notifyModal.sending}
+                            onClick={() => void sendNoteNotification(notifyModal.noteId, "sms")}
+                            className="flex-1 h-9 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm font-medium transition-colors disabled:opacity-50"
+                          >
+                            {notifyModal.sending ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Text message"}
+                          </button>
+                        </div>
+                        {notifyModal.error && <p className="text-xs text-destructive">{notifyModal.error}</p>}
+                        <button type="button" onClick={() => setNotifyModal((m) => ({ ...m, open: false }))} className="text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-center">Skip for now</button>
+                      </div>
+                    )}
+
+                    {notifyModal.step === "choose" && notifyModal.method !== null && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-muted-foreground">The note was shared with the provider. Send a notification?</p>
+                        <button
+                          type="button"
+                          disabled={notifyModal.sending}
+                          onClick={() => void sendNoteNotification(notifyModal.noteId, notifyModal.method!)}
+                          className="w-full h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2"
+                        >
+                          {notifyModal.sending ? <Loader2 size={13} className="animate-spin" /> : `Send ${notifyModal.method === "email" ? "email" : "text message"}`}
+                        </button>
+                        {notifyModal.error && <p className="text-xs text-destructive">{notifyModal.error}</p>}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const other: "email" | "sms" = notifyModal.method === "email" ? "sms" : "email";
+                            setNotifyModal((m) => ({ ...m, method: other, error: null }));
+                          }}
+                          className="text-xs text-primary hover:underline w-full text-center"
+                        >
+                          Communication option: switch to {notifyModal.method === "email" ? "text message" : "email"}
+                        </button>
+                        <button type="button" onClick={() => setNotifyModal((m) => ({ ...m, open: false }))} className="text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-center">Skip for now</button>
+                      </div>
+                    )}
+
+                    {notifyModal.step === "confirm_save" && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-muted-foreground">
+                          <Check size={12} className="inline text-green-600 mr-1" />
+                          {notifyModal.method === "email" ? "Email sent." : "Text message sent."} Save this as your default notification method?
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              localStorage.setItem(COMM_PREF_KEY, notifyModal.method!);
+                              setNotifyModal((m) => ({ ...m, open: false }));
+                            }}
+                            className="flex-1 h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                          >
+                            Yes
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNotifyModal((m) => ({ ...m, open: false }))}
+                            className="flex-1 h-9 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm font-medium transition-colors"
+                          >
+                            No
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {notifyModal.step === "success" && (
+                      <div className="space-y-3">
+                        <p className="text-xs text-muted-foreground">
+                          <Check size={12} className="inline text-green-600 mr-1" />
+                          {notifyModal.method === "email" ? "Email sent." : "Text message sent."}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const other: "email" | "sms" = notifyModal.method === "email" ? "sms" : "email";
+                            setNotifyModal((m) => ({ ...m, method: other, step: "choose", error: null }));
+                          }}
+                          className="text-xs text-primary hover:underline w-full text-center"
+                        >
+                          Communication option: switch to {notifyModal.method === "email" ? "text message" : "email"}
+                        </button>
+                        <button type="button" onClick={() => setNotifyModal((m) => ({ ...m, open: false }))} className="w-full h-8 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-sm transition-colors">Close</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
