@@ -887,6 +887,7 @@ function BackupPanel() {
       setBackupResult(data);
       setBackupError(null);
       queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
     },
     onError: (err: Error) => {
       setBackupResult(null);
@@ -960,18 +961,28 @@ function BackupPanel() {
       {gate.blocked && <PlatformAdminSetupNotice />}
 
       {!gate.blocked && !scheduleQuery.isLoading && stale && (
-        <div className="flex items-start gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-          <div className="text-xs leading-snug space-y-0.5">
+        <div className="flex items-center gap-2.5 rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 px-3.5 py-3 text-amber-800 dark:text-amber-300">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <div className="flex-1 text-xs leading-snug space-y-0.5">
             <p className="font-semibold">
               {lastBackupAt ? "Backup overdue" : "No backup on record"}
             </p>
             <p className="text-amber-700 dark:text-amber-400">
               {lastBackupAt
-                ? `Last successful backup was ${Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / (24 * 60 * 60 * 1000))} day(s) ago. Run a backup now or enable automatic scheduling to protect your data.`
-                : "No successful backup has been recorded. Run a backup now or enable automatic scheduling to protect your data."}
+                ? `Last successful backup was ${Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / (24 * 60 * 60 * 1000))} day(s) ago.`
+                : "No successful backup has been recorded."}
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => backupNowMutation.mutate()}
+            disabled={backupNowMutation.isPending || (needsPath(nowDest) && !nowPath.trim())}
+            className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded text-xs font-semibold bg-amber-200 hover:bg-amber-300 text-amber-900 dark:bg-amber-800 dark:hover:bg-amber-700 dark:text-amber-100 disabled:opacity-60 transition-colors"
+          >
+            {backupNowMutation.isPending
+              ? <><Loader2 size={11} className="animate-spin" />Backing up…</>
+              : <><Download size={11} />Run backup now</>}
+          </button>
         </div>
       )}
 
