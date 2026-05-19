@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Router, type Request, type Response } from "express";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
@@ -16,6 +16,7 @@ import {
   invoices,
   iteroImportedOrders,
   labCases,
+  notifications,
   organizationConnections,
   organizationMemberships,
   organizations,
@@ -3125,6 +3126,114 @@ router.post(
         attachmentId: attachment?.id,
       },
     });
+
+    // Write notifications to lab admin(s) about the new iTero-imported case.
+    // This is best-effort — never blocks the response.
+    try {
+      const adminMembers = await db
+        .select({ userId: organizationMemberships.userId })
+        .from(organizationMemberships)
+        .where(
+          and(
+            eq(organizationMemberships.labId, body.labOrganizationId),
+            eq(organizationMemberships.status, "active"),
+            inArray(organizationMemberships.role, ["owner", "admin"])
+          )
+        );
+
+      if (adminMembers.length > 0) {
+        // Classify the alert type for this import:
+        //   "unknown doctor"   — AI couldn't extract a doctor name at all
+        //   "stand-in doctor"  — a doctor name was extracted but it isn't in
+        //                        the set of known doctors for this provider org
+        //   "unknown practice" — provider org has NO prior cases in this lab
+        //                        (brand-new / unrecognised practice relationship)
+        //   normal             — everything resolved as expected
+        const isUnknownDoctor =
+          doctorName === "Unknown Doctor" || !extracted.doctorName?.trim();
+
+        let isStandInDoctor = false;
+        let isUnknownPractice = false;
+
+        // Query prior-case history for this (lab, provider) pair, explicitly
+        // excluding the case we just created so the baseline reflects
+        // pre-import history only.
+        const priorCaseDoctorRows = await db
+          .selectDistinct({ doctorName: cases.doctorName })
+          .from(cases)
+          .where(
+            and(
+              eq(cases.labOrganizationId, body.labOrganizationId),
+              eq(cases.providerOrganizationId, body.providerOrganizationId),
+              ne(cases.id, createdCase.id),
+              notDeleted(cases),
+            )
+          );
+
+        const hasPriorCases = priorCaseDoctorRows.length > 0;
+
+        if (!hasPriorCases) {
+          // First-ever case from this practice at this lab — unknown practice.
+          isUnknownPractice = true;
+        } else if (!isUnknownDoctor) {
+          // Practice is known; check whether the extracted doctor is familiar.
+          const knownDoctors = new Set(
+            priorCaseDoctorRows
+              .map((r) => String(r.doctorName ?? "").trim().toLowerCase())
+              .filter(Boolean)
+          );
+          const normName = doctorName.trim().toLowerCase();
+          isStandInDoctor = knownDoctors.size > 0 && !knownDoctors.has(normName);
+        }
+
+        const isAlert = isUnknownDoctor || isStandInDoctor || isUnknownPractice;
+
+        const notifType = isAlert ? "alert" : "case_imported_from_itero";
+
+        let notifTitle: string;
+        let notifBody: string;
+        if (isUnknownDoctor) {
+          notifTitle = `iTero case imported — unknown doctor`;
+          notifBody = `Case ${createdCase.caseNumber} was auto-imported from iTero but the doctor name could not be identified. Please review and assign the correct provider.`;
+        } else if (isUnknownPractice) {
+          notifTitle = `iTero case imported — unknown practice`;
+          notifBody = `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was imported from iTero for a practice with no prior case history. Please verify the provider assignment.`;
+        } else if (isStandInDoctor) {
+          notifTitle = `iTero case imported — unrecognised doctor`;
+          notifBody = `Case ${createdCase.caseNumber} was imported from iTero with doctor "${doctorName}", who is not in the known provider list. This may be a stand-in — please review before sending.`;
+        } else {
+          notifTitle = `New iTero case: ${createdCase.caseNumber}`;
+          notifBody = `Case ${createdCase.caseNumber} for ${patientFirstName} ${patientLastName} was auto-imported from iTero and needs your review.`;
+        }
+
+        await db.insert(notifications).values(
+          adminMembers.map((m) => ({
+            userId: m.userId,
+            type: notifType,
+            title: notifTitle,
+            body: notifBody,
+            dataJson: {
+              caseId: createdCase.id,
+              caseNumber: createdCase.caseNumber,
+              iteroOrderId: body.iteroOrderId,
+              labOrganizationId: body.labOrganizationId,
+              alertReason: isUnknownDoctor
+                ? "unknown_doctor"
+                : isUnknownPractice
+                  ? "unknown_practice"
+                  : isStandInDoctor
+                    ? "stand_in_doctor"
+                    : null,
+            },
+          }))
+        );
+      }
+    } catch (notifErr) {
+      req.log?.warn?.(
+        { err: (notifErr as Error)?.message, caseId: createdCase.id },
+        "iTero import: failed to write admin notifications (non-fatal)"
+      );
+    }
 
     // After commit, run a duplicate-name check and stash any hits in
     // the new case's history. The reviewer can then decide on the AI-

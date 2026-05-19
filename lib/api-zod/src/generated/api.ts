@@ -16,6 +16,41 @@ export const HealthCheckResponse = zod.object({
 });
 
 /**
+ * Returns up to 50 notifications for the authenticated user, newest first.
+ * @summary List the calling user's notifications
+ */
+export const ListNotificationsResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .array(
+      zod.object({
+        id: zod.string(),
+        userId: zod.string(),
+        type: zod.string(),
+        title: zod.string(),
+        body: zod.string(),
+        dataJson: zod.unknown().nullish(),
+        readAt: zod.coerce.date().nullish(),
+        createdAt: zod.coerce.date(),
+      }),
+    )
+    .optional(),
+});
+
+/**
+ * Sets read_at = now() on every unread notification for the authenticated user.
+ * @summary Mark all notifications as read
+ */
+export const MarkAllNotificationsReadResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      ok: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
  * Auto-create a LabTrax case from an iTero Lab-Review prescription. The
 Rx file (PDF or image) is uploaded as multipart/form-data with the
 field name `file`. The server uses OpenAI to extract patient, doctor,

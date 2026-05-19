@@ -18,6 +18,8 @@ tags:
     description: Invoice + payment operations (LabTrax)
   - name: billing
     description: Subscription billing operations (LabTrax)
+  - name: notifications
+    description: In-app notification operations (LabTrax)
 paths:
   /healthz:
     get:
@@ -32,6 +34,38 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List the calling user's notifications
+      description: Returns up to 50 notifications for the authenticated user, newest first.
+      responses:
+        "200":
+          description: Notification list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationListResult"
+  /notifications/mark-all-read:
+    post:
+      operationId: markAllNotificationsRead
+      tags: [notifications]
+      summary: Mark all notifications as read
+      description: Sets read_at = now() on every unread notification for the authenticated user.
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
   /cases/import-from-itero-rx:
     post:
       operationId: importCaseFromIteroRx
@@ -409,6 +443,31 @@ components:
           type: object
           description: Partial map of priceKey → display label to upsert.
           additionalProperties: { type: string }
+    Notification:
+      type: object
+      required: [id, userId, type, title, body, createdAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        type: { type: string }
+        title: { type: string }
+        body: { type: string }
+        dataJson:
+          nullable: true
+        readAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    NotificationListResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Notification" }
     HealthStatus:
       type: object
       properties:

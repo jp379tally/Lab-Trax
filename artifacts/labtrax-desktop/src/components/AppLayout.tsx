@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { UpdateBanner } from "./UpdateBanner";
 import { Link, useLocation } from "wouter";
 import {
@@ -81,11 +81,42 @@ interface Props {
   children: ReactNode;
 }
 
+type Notification = {
+  id: string;
+  userId: string;
+  type: string;
+  title: string;
+  body: string;
+  dataJson?: unknown;
+  readAt: string | null;
+  createdAt: string;
+};
+
+function relativeTime(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+const POLL_INTERVAL_MS = 60_000;
+
 export function AppLayout({ children }: Props) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const [uploadsOpen, setUploadsOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationItems, setNotificationItems] = useState<Notification[]>([]);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [hasUnread, setHasUnread] = useState(false);
+  const markReadInflight = useRef(false);
+
   const { entries, activeCount, removeEntry, cancelEntry } = useUploads();
   const meQuery = useQuery({
     queryKey: ["auth", "me"],
@@ -125,6 +156,54 @@ export function AppLayout({ children }: Props) {
     "Guest";
 
   const role = user?.role === "admin" ? "Admin" : user?.role === "user" ? "User" : "Member";
+
+  const fetchUnreadCount = useCallback(async () => {
+    if (!user) return;
+    try {
+      const items = await apiFetch<Notification[]>("/notifications");
+      const unread = items.some((n) => !n.readAt);
+      setHasUnread(unread);
+    } catch {
+      /* ignore */
+    }
+  }, [user]);
+
+  useEffect(() => {
+    fetchUnreadCount();
+    const interval = setInterval(fetchUnreadCount, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [fetchUnreadCount]);
+
+  async function openNotifications() {
+    setNotificationsOpen(true);
+    setNotifLoading(true);
+    try {
+      const items = await apiFetch<Notification[]>("/notifications");
+      setNotificationItems(items);
+      setHasUnread(items.some((n) => !n.readAt));
+    } catch {
+      /* ignore */
+    } finally {
+      setNotifLoading(false);
+    }
+  }
+
+  async function closeNotifications() {
+    setNotificationsOpen(false);
+    if (markReadInflight.current) return;
+    markReadInflight.current = true;
+    try {
+      await apiFetch("/notifications/mark-all-read", { method: "POST" });
+      setNotificationItems((prev) =>
+        prev.map((n) => ({ ...n, readAt: n.readAt ?? new Date().toISOString() }))
+      );
+      setHasUnread(false);
+    } catch {
+      /* ignore */
+    } finally {
+      markReadInflight.current = false;
+    }
+  }
 
   function renderNavItem(item: NavItem, indent = false) {
     if (item.billingOnly && !hasBillingLab) return null;
@@ -375,14 +454,73 @@ export function AppLayout({ children }: Props) {
               </>
             )}
           </div>
-          <button
-            type="button"
-            className="relative h-9 w-9 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
-            aria-label="Notifications"
-          >
-            <Bell size={17} />
-            <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-destructive" />
-          </button>
+
+          {/* Notification Bell */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={notificationsOpen ? closeNotifications : openNotifications}
+              className="relative h-9 w-9 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+              aria-label="Notifications"
+            >
+              <Bell size={17} />
+              {hasUnread && (
+                <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-destructive" />
+              )}
+            </button>
+            {notificationsOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={closeNotifications}
+                />
+                <div className="absolute right-0 top-[calc(100%+6px)] w-80 z-50 bg-card border border-border rounded-md shadow-lg text-sm overflow-hidden">
+                  <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+                    <span className="font-medium text-xs">Notifications</span>
+                    {notifLoading && (
+                      <Loader2 size={12} className="animate-spin text-muted-foreground" />
+                    )}
+                  </div>
+                  {!notifLoading && notificationItems.length === 0 ? (
+                    <div className="px-3 py-6 text-center text-muted-foreground text-xs">
+                      No new alerts
+                    </div>
+                  ) : (
+                    <ul className="max-h-80 overflow-y-auto scrollbar-thin divide-y divide-border">
+                      {notificationItems.map((notif) => (
+                        <li
+                          key={notif.id}
+                          className={`px-3 py-2.5 ${
+                            !notif.readAt ? "bg-primary/5" : ""
+                          }`}
+                        >
+                          <div className="flex items-start gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                {!notif.readAt && (
+                                  <span className="shrink-0 h-1.5 w-1.5 rounded-full bg-primary mt-0.5" />
+                                )}
+                                <p className="text-xs font-medium leading-snug truncate">
+                                  {notif.title}
+                                </p>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2 leading-snug">
+                                {notif.body}
+                              </p>
+                            </div>
+                            <span className="shrink-0 text-[10px] text-muted-foreground/60 mt-0.5 whitespace-nowrap">
+                              {relativeTime(notif.createdAt)}
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
           <div className="relative">
             <button
               type="button"

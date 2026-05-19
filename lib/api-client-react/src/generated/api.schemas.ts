@@ -33,6 +33,22 @@ export interface ItemLabelsInput {
   labels: ItemLabelsInputLabels;
 }
 
+export interface Notification {
+  id: string;
+  userId: string;
+  type: string;
+  title: string;
+  body: string;
+  dataJson?: unknown | null;
+  readAt?: string | null;
+  createdAt: string;
+}
+
+export interface NotificationListResult {
+  ok?: boolean;
+  data?: Notification[];
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -295,6 +311,15 @@ export interface ReceivePaymentsResult {
   ok?: boolean;
   data?: ReceivePaymentsResultData;
 }
+
+export type MarkAllNotificationsRead200Data = {
+  ok?: boolean;
+};
+
+export type MarkAllNotificationsRead200 = {
+  ok?: boolean;
+  data?: MarkAllNotificationsRead200Data;
+};
 
 export type ImportCaseFromIteroRxBody = {
   /** Rx PDF or image (binary upload) */
