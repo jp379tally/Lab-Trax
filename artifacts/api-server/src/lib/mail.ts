@@ -386,6 +386,145 @@ export async function sendInstallerPublishFailureAlertEmail(
   }
 }
 
+export interface BackupNotificationParams {
+  adminEmails: string[];
+  triggeredBy: string;
+  success: true;
+  result: {
+    destination: string;
+    fileName: string;
+    size: number;
+    completedAt: string;
+    path?: string | null;
+  };
+}
+
+export interface BackupFailureNotificationParams {
+  adminEmails: string[];
+  triggeredBy: string;
+  success: false;
+  errorMessage: string;
+  destination?: string | null;
+}
+
+export type BackupEmailParams =
+  | BackupNotificationParams
+  | BackupFailureNotificationParams;
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function formatDestinationLabel(dest: string): string {
+  switch (dest) {
+    case "onedrive": return "OneDrive";
+    case "local": return "Local filesystem";
+    case "network": return "Network / SFTP";
+    default: return dest;
+  }
+}
+
+function formatTriggeredByBackupLabel(triggeredBy: string): string {
+  if (triggeredBy === "scheduler:daily") return "Daily scheduled backup";
+  if (triggeredBy === "scheduler:interval") return "Recurring interval backup";
+  if (triggeredBy.startsWith("admin:")) {
+    const name = triggeredBy.slice("admin:".length).trim();
+    return name ? `Manual (${name})` : "Manual";
+  }
+  return triggeredBy;
+}
+
+export async function sendBackupNotificationEmail(
+  params: BackupEmailParams,
+): Promise<void> {
+  if (params.adminEmails.length === 0) return;
+
+  const settingsUrl = `${getAppBaseUrl()}/desktop/settings`;
+  const triggeredByLabel = formatTriggeredByBackupLabel(params.triggeredBy);
+
+  if (params.success) {
+    const { result } = params;
+    const dateStr = result.completedAt.slice(0, 10);
+    const destLabel = formatDestinationLabel(result.destination);
+    const sizeLabel = formatBytes(result.size);
+    const subject = `LabTrax backup completed successfully on ${dateStr}`;
+
+    const rows: Array<{ label: string; value: string }> = [
+      { label: "Triggered by", value: triggeredByLabel },
+      { label: "Destination", value: destLabel },
+      { label: "File name", value: result.fileName },
+      { label: "Size", value: sizeLabel },
+      { label: "Completed at", value: result.completedAt },
+    ];
+    if (result.path) rows.push({ label: "Path", value: result.path });
+
+    const rowsHtml = rows
+      .map(
+        (r, i) =>
+          `<tr style="background:${i % 2 === 0 ? "#f5f5f5" : "transparent"};"><td style="padding:8px 12px;font-weight:bold;">${escapeHtml(r.label)}</td><td style="padding:8px 12px;word-break:break-all;">${escapeHtml(r.value)}</td></tr>`,
+      )
+      .join("");
+    const rowsText = rows.map((r) => `${r.label}: ${r.value}`).join("\n");
+
+    const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: #27ae60; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.85;">Backup completed successfully</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <div style="background:#eafaf1;border-left:4px solid #27ae60;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
+        Your LabTrax backup finished without errors.
+      </div>
+      <table style="border-collapse: collapse; width: 100%; font-size: 14px;">${rowsHtml}</table>
+      <p style="margin-top: 20px; font-size: 13px;">Manage your backup settings on the <a href="${settingsUrl}" style="color: #4A6CF7;">Settings page</a>.</p>
+    </div>
+  </div>`;
+
+    const text = `LabTrax Backup Completed Successfully\n\n${rowsText}\n\nManage backup settings: ${settingsUrl}`;
+
+    for (const email of params.adminEmails) {
+      await sendMail({ to: email, subject, html, text });
+    }
+  } else {
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const destLabel = params.destination
+      ? formatDestinationLabel(params.destination)
+      : "unknown";
+    const subject = `LabTrax backup FAILED on ${dateStr}`;
+
+    const html = `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="background: #c0392b; color: white; padding: 20px; border-radius: 8px 8px 0 0;">
+      <h2 style="margin: 0;">LabTrax</h2>
+      <p style="margin: 4px 0 0; opacity: 0.85;">Backup failed</p>
+    </div>
+    <div style="padding: 20px; border: 1px solid #eee; border-top: none; border-radius: 0 0 8px 8px;">
+      <div style="background:#fdf2f2;border-left:4px solid #c0392b;padding:12px 16px;border-radius:4px;margin-bottom:16px;">
+        <strong>The scheduled backup did not complete.</strong>
+      </div>
+      <table style="border-collapse: collapse; width: 100%; font-size: 14px; margin-bottom: 16px;">
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Triggered by</td><td style="padding:8px 12px;">${escapeHtml(triggeredByLabel)}</td></tr>
+        <tr><td style="padding:8px 12px;font-weight:bold;">Destination</td><td style="padding:8px 12px;">${escapeHtml(destLabel)}</td></tr>
+        <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Failed at</td><td style="padding:8px 12px;">${escapeHtml(new Date().toISOString())}</td></tr>
+      </table>
+      <h3 style="color:#c0392b;margin-top:0;">Error</h3>
+      <pre style="background:#1e1e1e;color:#f5f5f5;padding:12px;border-radius:4px;font-size:12px;white-space:pre-wrap;word-break:break-word;">${escapeHtml(params.errorMessage)}</pre>
+      <p style="margin-top: 20px; font-size: 13px;">Review your backup configuration on the <a href="${settingsUrl}" style="color: #4A6CF7;">Settings page</a>.</p>
+    </div>
+  </div>`;
+
+    const text = `LabTrax Backup FAILED\n\nTriggered by: ${triggeredByLabel}\nDestination: ${destLabel}\nFailed at: ${new Date().toISOString()}\n\nError:\n${params.errorMessage}\n\nReview backup settings: ${settingsUrl}`;
+
+    for (const email of params.adminEmails) {
+      await sendMail({ to: email, subject, html, text });
+    }
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

@@ -4,10 +4,11 @@ import { spawnSync } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import archiver from "archiver";
 import { db } from "@workspace/db";
-import { systemSettings } from "@workspace/db";
+import { systemSettings, users } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { uploadToOneDrive } from "./onedrive";
 import { logger } from "./logger";
+import { sendBackupNotificationEmail } from "./mail";
 
 export interface BackupCounts {
   users: number;
@@ -361,6 +362,22 @@ export async function getBackupScheduleConfig(): Promise<BackupScheduleConfig> {
   }
 }
 
+async function getAdminEmails(): Promise<string[]> {
+  try {
+    const admins = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.role, "admin"));
+    return admins.map((u) => u.email).filter((e): e is string => Boolean(e));
+  } catch (err: unknown) {
+    logger.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "[backup] Failed to load admin emails for notification; no notification will be sent",
+    );
+    return [];
+  }
+}
+
 // ── Daily backup scheduler ───────────────────────────────────────────────────
 // Runs once per day at the configured UTC hour (default 07:00 UTC ≈ 2-3am ET).
 // Override with BACKUP_HOUR_UTC env var (0–23) or the backup_hour_utc system_settings row.
@@ -406,11 +423,46 @@ export async function startDailyOneDriveBackup() {
         },
         "Daily OneDrive backup OK",
       );
+      try {
+        const adminEmails = await getAdminEmails();
+        await sendBackupNotificationEmail({
+          adminEmails,
+          triggeredBy: "scheduler:daily",
+          success: true,
+          result: {
+            destination: "onedrive",
+            fileName: result.fileName,
+            size: result.size,
+            completedAt: new Date().toISOString(),
+          },
+        });
+      } catch (mailErr: unknown) {
+        logger.error(
+          { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
+          "Daily OneDrive backup: success notification email failed",
+        );
+      }
     } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
       logger.error(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err: errMsg },
         "Daily OneDrive backup FAILED",
       );
+      try {
+        const adminEmails = await getAdminEmails();
+        await sendBackupNotificationEmail({
+          adminEmails,
+          triggeredBy: "scheduler:daily",
+          success: false,
+          errorMessage: errMsg,
+          destination: "onedrive",
+        });
+      } catch (mailErr: unknown) {
+        logger.error(
+          { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
+          "Daily OneDrive backup: failure notification email failed",
+        );
+      }
     } finally {
       // Re-schedule for the next day even if this run failed.
       setTimeout(tick, msUntilNext(hourUtc));
@@ -448,11 +500,47 @@ async function fireScheduledBackup() {
       { size: result.size, fileName: result.fileName },
       "Scheduled interval backup OK",
     );
+    try {
+      const adminEmails = await getAdminEmails();
+      await sendBackupNotificationEmail({
+        adminEmails,
+        triggeredBy: "scheduler:interval",
+        success: true,
+        result: {
+          destination: result.destination,
+          fileName: result.fileName,
+          size: result.size,
+          completedAt: result.completedAt,
+          path: result.path,
+        },
+      });
+    } catch (mailErr: unknown) {
+      logger.error(
+        { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
+        "Scheduled interval backup: success notification email failed",
+      );
+    }
   } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
     logger.error(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: errMsg },
       "Scheduled interval backup FAILED",
     );
+    try {
+      const adminEmails = await getAdminEmails();
+      await sendBackupNotificationEmail({
+        adminEmails,
+        triggeredBy: "scheduler:interval",
+        success: false,
+        errorMessage: errMsg,
+        destination: config.destination,
+      });
+    } catch (mailErr: unknown) {
+      logger.error(
+        { err: mailErr instanceof Error ? mailErr.message : String(mailErr) },
+        "Scheduled interval backup: failure notification email failed",
+      );
+    }
   }
 }
 
