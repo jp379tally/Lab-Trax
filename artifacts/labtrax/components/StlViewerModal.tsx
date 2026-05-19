@@ -23,6 +23,21 @@ interface StlViewerModalProps {
 }
 
 type LoadState = "downloading" | "rendering" | "error";
+type DisplayMode = "solid" | "wireframe" | "shaded";
+
+const DISPLAY_MODES: DisplayMode[] = ["solid", "wireframe", "shaded"];
+
+const MODE_LABELS: Record<DisplayMode, string> = {
+  solid: "Solid",
+  wireframe: "Wireframe",
+  shaded: "Shaded",
+};
+
+const MODE_ICONS: Record<DisplayMode, keyof typeof Ionicons.glyphMap> = {
+  solid: "cube-outline",
+  wireframe: "grid-outline",
+  shaded: "color-palette-outline",
+};
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -166,9 +181,24 @@ if(!parsed){
   geo.setAttribute('position',new THREE.BufferAttribute(parsed.vertices,3));
   geo.setAttribute('normal',new THREE.BufferAttribute(parsed.normals,3));
 
-  var mat=new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
-  var mesh=new THREE.Mesh(geo,mat);
+  // ── Materials for each display mode ────────────────────────────────────────
+  var solidMat=new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide});
+  var wireframeMat=new THREE.MeshPhongMaterial({color:0xe2e8f0,specular:0x444444,shininess:40,side:THREE.DoubleSide,wireframe:true});
+  var shadedMat=new THREE.MeshNormalMaterial({side:THREE.DoubleSide});
+
+  var mesh=new THREE.Mesh(geo,solidMat);
   scene.add(mesh);
+
+  // ── Display mode switcher (called from React Native via injectJavaScript) ──
+  window.setDisplayMode=function(mode){
+    if(mode==='solid'){
+      mesh.material=solidMat;
+    } else if(mode==='wireframe'){
+      mesh.material=wireframeMat;
+    } else if(mode==='shaded'){
+      mesh.material=shadedMat;
+    }
+  };
 
   // Center and fit camera
   geo.computeBoundingBox();
@@ -272,7 +302,9 @@ export default function StlViewerModal({
   const [loadState, setLoadState] = useState<LoadState>("downloading");
   const [htmlSource, setHtmlSource] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("solid");
   const hasFallenBack = useRef(false);
+  const webViewRef = useRef<WebView>(null);
 
   useEffect(() => {
     if (!visible) return;
@@ -280,6 +312,7 @@ export default function StlViewerModal({
     setLoadState("downloading");
     setHtmlSource(null);
     setErrorMsg("");
+    setDisplayMode("solid");
 
     let cancelled = false;
     (async () => {
@@ -343,6 +376,15 @@ export default function StlViewerModal({
     }
   }
 
+  function cycleDisplayMode() {
+    const currentIndex = DISPLAY_MODES.indexOf(displayMode);
+    const nextMode = DISPLAY_MODES[(currentIndex + 1) % DISPLAY_MODES.length]!;
+    setDisplayMode(nextMode);
+    webViewRef.current?.injectJavaScript(
+      `(function(){ if(typeof window.setDisplayMode==='function') window.setDisplayMode(${JSON.stringify(nextMode)}); })(); true;`
+    );
+  }
+
   return (
     <Modal
       visible={visible}
@@ -392,6 +434,7 @@ export default function StlViewerModal({
 
           {loadState === "rendering" && htmlSource != null && (
             <WebView
+              ref={webViewRef}
               style={styles.webview}
               source={{ html: htmlSource }}
               originWhitelist={["*"]}
@@ -414,9 +457,23 @@ export default function StlViewerModal({
           )}
         </View>
 
-        {/* Bottom action */}
+        {/* Bottom toolbar */}
         {loadState === "rendering" && (
           <View style={[styles.footer, { paddingBottom: insets.bottom + 4 }]}>
+            {/* Display mode toggle */}
+            <Pressable
+              style={({ pressed }) => [styles.modeBtn, pressed && { opacity: 0.7 }]}
+              onPress={cycleDisplayMode}
+              accessibilityLabel={`Display mode: ${MODE_LABELS[displayMode]}. Tap to cycle.`}
+            >
+              <Ionicons name={MODE_ICONS[displayMode]} size={16} color="#e4e4e7" />
+              <Text style={styles.modeBtnText}>{MODE_LABELS[displayMode]}</Text>
+            </Pressable>
+
+            {/* Divider */}
+            <View style={styles.footerDivider} />
+
+            {/* Share */}
             <Pressable
               style={({ pressed }) => [styles.shareBtn, pressed && { opacity: 0.7 }]}
               onPress={handleFallback}
@@ -503,11 +560,30 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
   },
   footer: {
+    flexDirection: "row",
+    alignItems: "center",
     paddingHorizontal: 16,
     paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "rgba(255,255,255,0.1)",
+    gap: 0,
+  },
+  modeBtn: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  modeBtnText: {
+    color: "#e4e4e7",
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+  },
+  footerDivider: {
+    flex: 1,
   },
   shareBtn: {
     flexDirection: "row",
