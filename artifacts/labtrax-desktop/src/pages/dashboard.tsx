@@ -723,7 +723,7 @@ function MediaCleanupCard() {
           </div>
         )}
 
-        {(nextRunLabel || nextBackupLabel) && (
+        {(nextRunLabel || nextBackupLabel || (backupScheduleQuery.isSuccess && backupScheduleQuery.data?.lastSuccessfulBackupAt && !isBackupStale(backupScheduleQuery.data.lastSuccessfulBackupAt))) && (
           <div className="pt-1 border-t border-border/60 space-y-1">
             {nextRunLabel && (
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -735,6 +735,12 @@ function MediaCleanupCard() {
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Clock size={11} className="shrink-0" />
                 Next backup: <span className="text-foreground font-medium">{nextBackupLabel}</span>
+              </div>
+            )}
+            {backupScheduleQuery.isSuccess && backupScheduleQuery.data?.lastSuccessfulBackupAt && !isBackupStale(backupScheduleQuery.data.lastSuccessfulBackupAt) && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <CheckCircle2 size={11} className="shrink-0 text-green-600 dark:text-green-400" />
+                Last backup: <span className="text-foreground font-medium">{relativeTime(backupScheduleQuery.data.lastSuccessfulBackupAt)}</span>
               </div>
             )}
           </div>
