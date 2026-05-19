@@ -219,9 +219,13 @@ if(!parsed){
   camera.updateProjectionMatrix();
 
   // ── Touch orbit controls ──────────────────────────────────────────────────
-  var spherical={theta:0,phi:Math.PI/3,radius:dist};
+  var INIT_THETA=0, INIT_PHI=Math.PI/3, INIT_RADIUS=dist;
+  var spherical={theta:INIT_THETA,phi:INIT_PHI,radius:INIT_RADIUS};
   var touch={startX:0,startY:0,lastTheta:0,lastPhi:Math.PI/3,pinchStart:0,pinchRadius:0};
   var isDragging=false;
+
+  // Active tween state
+  var tween=null;
 
   function updateCamera(){
     var x=spherical.radius*Math.sin(spherical.phi)*Math.sin(spherical.theta);
@@ -232,10 +236,40 @@ if(!parsed){
   }
   updateCamera();
 
+  // ── Reset view (animated tween back to initial position) ─────────────────
+  window.resetView=function(){
+    var startTheta=spherical.theta;
+    var startPhi=spherical.phi;
+    var startRadius=spherical.radius;
+    // Normalize theta diff to shortest arc
+    var dTheta=INIT_THETA-startTheta;
+    while(dTheta>Math.PI) dTheta-=2*Math.PI;
+    while(dTheta<-Math.PI) dTheta+=2*Math.PI;
+    var startTime=null;
+    var DURATION=380;
+    function ease(t){return t<0.5?2*t*t:(1-Math.pow(-2*t+2,2)/2);}
+    tween={active:true};
+    var thisTween=tween;
+    function step(ts){
+      if(!thisTween.active) return;
+      if(startTime===null) startTime=ts;
+      var elapsed=ts-startTime;
+      var t=Math.min(elapsed/DURATION,1);
+      var e=ease(t);
+      spherical.theta=startTheta+dTheta*e;
+      spherical.phi=startPhi+(INIT_PHI-startPhi)*e;
+      spherical.radius=startRadius+(INIT_RADIUS-startRadius)*e;
+      updateCamera();
+      if(t<1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  };
+
   var canvas=renderer.domElement;
 
   canvas.addEventListener('touchstart',function(e){
     e.preventDefault();
+    tween=null; // cancel any in-progress tween on user interaction
     if(e.touches.length===1){
       isDragging=true;
       touch.startX=e.touches[0].clientX;
@@ -385,6 +419,10 @@ export default function StlViewerModal({
     );
   }
 
+  function handleResetView() {
+    webViewRef.current?.injectJavaScript("window.resetView && window.resetView(); true;");
+  }
+
   return (
     <Modal
       visible={visible}
@@ -400,9 +438,20 @@ export default function StlViewerModal({
           <Text style={styles.title} numberOfLines={1}>
             {fileName}
           </Text>
+          {loadState === "rendering" && (
+            <Pressable
+              onPress={handleResetView}
+              style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
+              hitSlop={12}
+              accessibilityLabel="Reset view"
+              accessibilityRole="button"
+            >
+              <Ionicons name="locate-outline" size={20} color="#f4f4f5" />
+            </Pressable>
+          )}
           <Pressable
             onPress={onClose}
-            style={({ pressed }) => [styles.closeBtn, pressed && styles.closeBtnPressed]}
+            style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
             hitSlop={12}
           >
             <Ionicons name="close" size={22} color="#f4f4f5" />
@@ -508,7 +557,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
   },
-  closeBtn: {
+  headerBtn: {
     width: 34,
     height: 34,
     borderRadius: 17,
@@ -516,7 +565,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  closeBtnPressed: {
+  headerBtnPressed: {
     backgroundColor: "rgba(255,255,255,0.15)",
   },
   webviewContainer: {
