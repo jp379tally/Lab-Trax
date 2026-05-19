@@ -1048,6 +1048,37 @@ export default function ScanScreen() {
         console.log("AI compress: data URI suspiciously small, may be corrupted");
         const enhanced = await ensureHighQualityBase64(uri);
         if (enhanced !== uri && enhanced.length > uri.length) return enhanced;
+        return uri;
+      }
+      // Large data URI (full-res camera photo) — resize before sending to
+      // avoid hitting the AI proxy's payload limits. Write to a temp file,
+      // shrink to 1200 px wide, and read back as base64.
+      if (b64Len > 200000 && (Platform.OS as string) !== "web") {
+        try {
+          const FileSystem = await import("expo-file-system");
+          const tempUri = (FileSystem as any).cacheDirectory + "ai_resize_" + Date.now() + ".jpg";
+          const base64Only = commaIdx >= 0 ? uri.substring(commaIdx + 1) : uri;
+          await (FileSystem as any).writeAsStringAsync(tempUri, base64Only, {
+            encoding: (FileSystem as any).EncodingType.Base64,
+          });
+          const ImageManip = require("expo-image-manipulator");
+          if (ImageManip.manipulateAsync) {
+            const manipulated = await ImageManip.manipulateAsync(
+              tempUri,
+              [{ resize: { width: 1200 } }],
+              { compress: 0.82, format: ImageManip.SaveFormat?.JPEG || "jpeg" },
+            );
+            const resized = await (FileSystem as any).readAsStringAsync(manipulated.uri, {
+              encoding: (FileSystem as any).EncodingType.Base64,
+            });
+            if (resized && resized.length > 10000) {
+              console.log("AI compress: data URI resized from", b64Len, "to", resized.length, "chars");
+              return `data:image/jpeg;base64,${resized}`;
+            }
+          }
+        } catch (resizeErr: any) {
+          console.log("AI compress: data URI resize failed, using original:", resizeErr?.message);
+        }
       }
       return uri;
     }

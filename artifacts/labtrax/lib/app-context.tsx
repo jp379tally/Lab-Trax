@@ -1831,8 +1831,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      if (savedRole) {
+      if (savedRole && savedRole !== "admin") {
         setRoleState(savedRole as UserRole);
+      } else if (savedRole === "admin") {
+        // Admin vault must always be explicitly re-unlocked — never
+        // auto-restore from storage. Clear the stale value so it
+        // doesn't affect future boots either.
+        AsyncStorage.removeItem(ROLE_KEY).catch(() => {});
       }
 
       if (savedNotifs) {
