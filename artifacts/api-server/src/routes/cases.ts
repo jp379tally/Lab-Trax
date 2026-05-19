@@ -3931,9 +3931,10 @@ router.post(
 //
 // Accepts a full iTero export ZIP (e.g. OrthoCAD_Export_306682066.zip). The
 // server extracts the archive, finds the iTero_Rx_*.pdf, uses AI to create
-// the case (same flow as /import-from-itero-rx), then attaches every other
-// file in the ZIP to the new case. The iTero order ID is derived from the Rx
-// filename; the ZIP filename is used as a fallback.
+// the case (same flow as /import-from-itero-rx), then attaches only the Rx
+// PDF and any .ply scan files to the new case — all other files in the ZIP
+// are silently discarded. The iTero order ID is derived from the Rx filename;
+// the ZIP filename is used as a fallback.
 // ─────────────────────────────────────────────────────────────────────────────
 
 router.post(
@@ -4020,15 +4021,17 @@ router.post(
         if (entry === rxEntry) continue;
         const entryName = path.basename(entry.entryName);
         if (!entryName) continue;
+        // Only keep .ply scan files — all other entries are discarded.
+        const ext = path.extname(entryName).toLowerCase();
+        if (ext !== ".ply") continue;
         const entrySize = entry.header.size ?? 0;
         if (entrySize > ZIP_MAX_ENTRY_BYTES) {
           req.log?.warn(
             { name: entryName, size: entrySize },
-            "iTero ZIP: skipping oversized extra entry"
+            "iTero ZIP: skipping oversized .ply entry"
           );
           continue;
         }
-        const ext = path.extname(entryName).toLowerCase();
         const mimeType = EXT_TO_MIME[ext] ?? "application/octet-stream";
         otherEntries.push({ name: entryName, data: entry.getData(), mimeType });
       }
