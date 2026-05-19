@@ -12,8 +12,7 @@ import LoginPage from "@/pages/login";
 import DashboardPage from "@/pages/dashboard";
 import CasesPage from "@/pages/cases";
 import InvoicesPage from "@/pages/invoices";
-import DoctorsPage from "@/pages/doctors";
-import PracticesPage from "@/pages/practices";
+import AccountsPage from "@/pages/accounts";
 import StatementsPage from "@/pages/statements";
 import PricingPage from "@/pages/pricing";
 import ReportsPage from "@/pages/reports";
@@ -61,8 +60,9 @@ function AppLayoutWithUploads() {
         <Route path="/" component={DashboardPage} />
         <Route path="/cases" component={CasesPage} />
         <Route path="/invoices" component={InvoicesPage} />
-        <Route path="/doctors" component={DoctorsPage} />
-        <Route path="/practices" component={PracticesPage} />
+        <Route path="/accounts" component={AccountsPage} />
+        <Route path="/doctors" component={() => <Redirect to="/accounts" />} />
+        <Route path="/practices" component={() => <Redirect to="/accounts" />} />
         <Route path="/statements" component={StatementsPage} />
         <Route path="/pricing" component={PricingPage} />
         <Route path="/reports" component={ReportsPage} />

@@ -26,13 +26,13 @@ import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
 import { formatDate, formatMoney, relativeTime } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 
-interface MergeSourceInput {
+export interface MergeSourceInput {
   doctorName: string;
   providerOrganizationId: string | null;
   practiceName: string;
 }
 
-interface UndoToast {
+export interface UndoToast {
   auditLogIds: string[];
   message: string;
   expiresAt: number;
@@ -65,7 +65,7 @@ function bigramSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : inter / union;
 }
 
-interface DoctorRow {
+export interface DoctorRow {
   key: string;
   doctorName: string;
   practiceName: string;
@@ -546,7 +546,7 @@ interface PracticeFields {
   accountNumber: string;
 }
 
-function DoctorDrawer({
+export function DoctorDrawer({
   doctor,
   cases,
   onClose,
@@ -801,13 +801,13 @@ function EditPracticeSection({
   );
 }
 
-interface MergeDialogResult {
+export interface MergeDialogResult {
   auditLogIds: string[];
   message: string;
   undoWindowMs: number;
 }
 
-function MergeDialog({
+export function MergeDialog({
   labOrganizationId,
   initialSources,
   onClose,

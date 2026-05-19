@@ -331,7 +331,7 @@ interface CreatedDoctor {
   platformAccountNumber: string | null;
 }
 
-function AddPracticeDialog({
+export function AddPracticeDialog({
   adminLabOrgIds,
   onClose,
 }: {
@@ -753,7 +753,7 @@ interface PracticeFields {
   accountNumber: string;
 }
 
-function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => void }) {
+export function PracticeEditor({ org, onClose }: { org: Organization; onClose: () => void }) {
   const queryClient = useQueryClient();
   const { user: currentUser } = useAuth();
   const [error, setError] = useState<string | null>(null);

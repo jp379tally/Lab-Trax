@@ -3,6 +3,7 @@ import { UpdateBanner } from "./UpdateBanner";
 import { Link, useLocation } from "wouter";
 import {
   Bell,
+  Building2,
   CheckCircle,
   ChevronDown,
   CreditCard,
@@ -15,10 +16,8 @@ import {
   Receipt,
   Search,
   Settings,
-  Stethoscope,
   Tag,
   Upload,
-  Users,
   Wallet,
   Wrench,
   XCircle,
@@ -43,8 +42,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { label: "Dashboard", path: "/", icon: LayoutDashboard },
   { label: "Cases", path: "/cases", icon: FileText },
-  { label: "Doctors", path: "/doctors", icon: Stethoscope },
-  { label: "Practices", path: "/practices", icon: Users },
+  { label: "Accounts", path: "/accounts", icon: Building2 },
   { label: "Invoices", path: "/invoices", icon: Receipt },
   { label: "Financial", path: "/finance", icon: Wallet },
   { label: "Statements", path: "/statements", icon: CreditCard },
