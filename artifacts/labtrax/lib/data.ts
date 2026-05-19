@@ -638,6 +638,7 @@ export interface InvoiceLineItem {
   description: string;
   rate: number;
   amount: number;
+  toothNumber?: number | null;
 }
 
 export interface Invoice {

@@ -186,6 +186,7 @@ export interface InvoiceLineItem {
   id: string;
   invoiceId: string;
   caseRestorationId?: string | null;
+  toothNumber?: number | null;
   description: string;
   quantity: number;
   unitPrice: string | number;

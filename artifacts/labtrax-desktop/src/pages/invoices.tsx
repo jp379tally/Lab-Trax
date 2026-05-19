@@ -65,6 +65,7 @@ type DraftLine = {
   description: string;
   quantity: number;
   unitPrice: number;
+  toothNumber?: number | null;
 };
 
 function readDisplayMetadata(inv: Invoice | undefined | null): InvoiceDisplayMetadata {
@@ -670,6 +671,7 @@ export function InvoiceEditor({
         description: it.description,
         quantity: Number(it.quantity ?? 0),
         unitPrice: Number(it.unitPrice ?? 0),
+        toothNumber: (it as any).toothNumber ?? null,
       })),
     );
   }, [detailQuery.data]);
@@ -731,6 +733,7 @@ export function InvoiceEditor({
         notes: notes.trim() ? notes.trim() : null,
         displayMetadata,
         items: trimmedItems.map((it, idx) => ({
+          toothNumber: it.toothNumber ?? null,
           description: it.description,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
@@ -894,6 +897,7 @@ export function InvoiceEditor({
       status: statusValue.replace(/_/g, " "),
       items: items.map((it) => ({
         item: it.item,
+        toothNumber: it.toothNumber ?? null,
         description: it.description,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
@@ -1297,6 +1301,7 @@ export function InvoiceEditor({
                 <thead>
                   <tr className="bg-secondary/40 text-[11px] uppercase tracking-wide text-muted-foreground">
                     <th className="text-left font-medium px-3 py-2 w-44">Item</th>
+                    <th className="text-right font-medium px-3 py-2 w-16">Tooth #</th>
                     <th className="text-left font-medium px-3 py-2">Description</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Qty</th>
                     <th className="text-right font-medium px-3 py-2 w-28">Unit price</th>
@@ -1307,7 +1312,7 @@ export function InvoiceEditor({
                 <tbody>
                   {items.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                      <td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">
                         No line items. Click "Add line" to add one.
                       </td>
                     </tr>
@@ -1434,6 +1439,22 @@ export function InvoiceEditor({
                           );
                         })()}
                       </td>
+                      <td className="px-3 py-1.5">
+                        <input
+                          type="number"
+                          min={1}
+                          max={32}
+                          step={1}
+                          value={it.toothNumber ?? ""}
+                          onChange={(e) =>
+                            updateItem(idx, {
+                              toothNumber: e.target.value === "" ? null : Number(e.target.value),
+                            })
+                          }
+                          placeholder="—"
+                          className="w-full h-8 px-2 rounded bg-background border border-input text-sm text-right tabular-nums"
+                        />
+                      </td>
                       <td className="px-3 py-1.5 align-top">
                         <textarea
                           value={it.description}
@@ -1518,7 +1539,7 @@ export function InvoiceEditor({
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-border">
-                    <td colSpan={4} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    <td colSpan={5} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Subtotal
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
@@ -1527,7 +1548,7 @@ export function InvoiceEditor({
                     <td />
                   </tr>
                   <tr className="border-t border-border">
-                    <td colSpan={4} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    <td colSpan={5} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Tax
                     </td>
                     <td className="px-3 py-2 text-right">
@@ -1543,7 +1564,7 @@ export function InvoiceEditor({
                     <td />
                   </tr>
                   <tr className="border-t border-border">
-                    <td colSpan={4} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    <td colSpan={5} className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Discount
                     </td>
                     <td className="px-3 py-2 text-right">
@@ -1561,7 +1582,7 @@ export function InvoiceEditor({
                   {Number(credits || 0) > 0 && (
                     <tr className="border-t border-border">
                       <td
-                        colSpan={4}
+                        colSpan={5}
                         className="px-3 py-2 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium"
                       >
                         Credits applied
@@ -1573,7 +1594,7 @@ export function InvoiceEditor({
                     </tr>
                   )}
                   <tr className="border-t border-border bg-secondary/30">
-                    <td colSpan={4} className="px-3 py-2.5 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
+                    <td colSpan={5} className="px-3 py-2.5 text-right text-xs uppercase tracking-wide text-muted-foreground font-medium">
                       Total
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums font-semibold">

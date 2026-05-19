@@ -106,6 +106,7 @@ export function downloadStatementPdf(opts: StatementPdfOptions) {
 
 export interface InvoicePdfLineItem {
   item?: string | null;
+  toothNumber?: number | null;
   description: string;
   quantity: number | string;
   unitPrice: number | string;
@@ -321,9 +322,10 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
   // Line items
   autoTable(doc, {
     startY: y + 8,
-    head: [["Item", "Description", "Qty", "Unit price", "Total"]],
+    head: [["Item", "Tooth #", "Description", "Qty", "Unit price", "Total"]],
     body: opts.items.map((it) => [
       (it.item && String(it.item).trim()) || "—",
+      it.toothNumber != null ? String(it.toothNumber) : "—",
       it.description,
       String(it.quantity),
       fmtMoney(it.unitPrice as number | string),
@@ -332,10 +334,11 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
     styles: { fontSize: 9, cellPadding: 6 },
     headStyles: { fillColor: [40, 44, 52], textColor: 255 },
     columnStyles: {
-      0: { cellWidth: 110 },
-      2: { halign: "right", cellWidth: 40 },
-      3: { halign: "right", cellWidth: 80 },
-      4: { halign: "right", cellWidth: 80 },
+      0: { cellWidth: 100 },
+      1: { halign: "right", cellWidth: 44 },
+      3: { halign: "right", cellWidth: 36 },
+      4: { halign: "right", cellWidth: 76 },
+      5: { halign: "right", cellWidth: 76 },
     },
     margin: { left: margin, right: margin },
   });

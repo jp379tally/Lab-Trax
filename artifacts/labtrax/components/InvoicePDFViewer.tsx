@@ -565,7 +565,9 @@ export default function InvoicePDFViewer({ visible, onClose, invoice, editable =
                 {displayItems.map((li, idx) => (
                   <View key={idx} style={[s.tableRow, idx % 2 === 0 && s.tableRowAlt]}>
                     <View style={s.colItem2}>
-                      <Text style={s.tableCellBold} numberOfLines={1}>{li.item}</Text>
+                      <Text style={s.tableCellBold} numberOfLines={1}>
+                        {li.toothNumber != null ? `#${li.toothNumber} ` : ""}{li.item}
+                      </Text>
                       {li.description && li.description !== li.item ? (
                         <Text style={s.tableCellDesc} numberOfLines={1}>{li.description}</Text>
                       ) : null}

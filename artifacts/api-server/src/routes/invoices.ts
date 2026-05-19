@@ -686,9 +686,11 @@ router.post(
       const itemsToInsert = restorations.map((restoration, index) => {
         const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
         const label = backfillLabelCache[pk] ?? restoration.restorationType;
+        const toothInt = parseInt(restoration.toothNumber, 10);
         return {
           invoiceId: invoice.id,
           caseRestorationId: restoration.id,
+          toothNumber: Number.isInteger(toothInt) && toothInt >= 1 && toothInt <= 32 ? toothInt : null,
           description: buildLineItemDescription(restoration.toothNumber, label),
           quantity: restoration.quantity,
           unitPrice: restoration.unitPrice,
@@ -971,9 +973,11 @@ router.post(
       const itemsToInsert = restorations.map((restoration, index) => {
         const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
         const label = genLabelCache[pk] ?? restoration.restorationType;
+        const toothInt = parseInt(restoration.toothNumber, 10);
         return {
           invoiceId: targetInvoice.id,
           caseRestorationId: restoration.id,
+          toothNumber: Number.isInteger(toothInt) && toothInt >= 1 && toothInt <= 32 ? toothInt : null,
           description: buildLineItemDescription(restoration.toothNumber, label),
           quantity: restoration.quantity,
           unitPrice: restoration.unitPrice,
@@ -1839,6 +1843,7 @@ router.patch(
           .array(
             z.object({
               id: z.string().optional(),
+              toothNumber: z.coerce.number().int().min(1).max(32).nullable().optional(),
               description: z.string().min(1),
               quantity: z.coerce.number().min(0),
               unitPrice: z.coerce.number().min(0),
@@ -1884,6 +1889,7 @@ router.patch(
           await tx.insert(invoiceLineItems).values(
             input.items.map((it, idx) => ({
               invoiceId: invoice.id,
+              toothNumber: it.toothNumber ?? null,
               description: it.description,
               quantity: Math.max(0, Math.round(Number(it.quantity))),
               unitPrice: Number(it.unitPrice).toFixed(2),
@@ -2533,6 +2539,7 @@ router.post(
           items.map((it: any, idx: number) => ({
             invoiceId: newInvoice.id,
             caseRestorationId: it.caseRestorationId,
+            toothNumber: it.toothNumber ?? null,
             description: it.description,
             quantity: it.quantity,
             unitPrice: it.unitPrice,

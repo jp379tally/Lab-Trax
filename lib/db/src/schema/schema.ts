@@ -898,6 +898,7 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
     () => caseRestorations.id,
     { onDelete: "set null" }
   ),
+  toothNumber: integer("tooth_number"),
   description: text("description").notNull(),
   quantity: integer("quantity").default(1).notNull(),
   unitPrice: decimal("unit_price", { precision: 10, scale: 2 })

@@ -102,6 +102,7 @@ export async function syncInvoiceFromRestorations(args: {
         itemsToInsert.map((item, idx) => ({
           invoiceId: invoice.id,
           caseRestorationId: item.caseRestorationId,
+          toothNumber: item.toothNumber,
           description: item.description,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -164,6 +165,7 @@ export async function syncInvoiceFromRestorations(args: {
 
 interface SyncLineItem {
   caseRestorationId: string | null;
+  toothNumber: number | null;
   description: string;
   quantity: number;
   unitPrice: string;
@@ -256,6 +258,7 @@ function buildBridgeAwareLineItems(
   if (connectors.size === 0) {
     return restorations.map((r) => ({
       caseRestorationId: r.id,
+      toothNumber: parseToothInt(r.toothNumber),
       description: buildBasicDescription(r, noChargeRemake),
       quantity: r.quantity,
       unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
@@ -323,6 +326,7 @@ function buildBridgeAwareLineItems(
 
     items.push({
       caseRestorationId: abutment?.id ?? groupRestorations[0]?.id ?? null,
+      toothNumber: null,
       description: finalDesc,
       quantity: units,
       unitPrice: perUnitStr,
@@ -337,6 +341,7 @@ function buildBridgeAwareLineItems(
     if (usedRestorationIds.has(r.id)) continue;
     items.push({
       caseRestorationId: r.id,
+      toothNumber: parseToothInt(r.toothNumber),
       description: buildBasicDescription(r, noChargeRemake),
       quantity: r.quantity,
       unitPrice: noChargeRemake ? "0.00" : r.unitPrice,
@@ -347,6 +352,11 @@ function buildBridgeAwareLineItems(
   }
 
   return items;
+}
+
+function parseToothInt(toothNumber: string): number | null {
+  const n = parseInt(toothNumber, 10);
+  return Number.isInteger(n) && n >= 1 && n <= 32 ? n : null;
 }
 
 function buildBasicDescription(
