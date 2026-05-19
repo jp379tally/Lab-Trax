@@ -1712,21 +1712,28 @@ router.patch(
       })
       .parse(req.body);
 
-    if (input.providerOrganizationId) {
-      const newOrg = await db.query.organizations.findFirst({
+    if (input.providerOrganizationId !== undefined) {
+      await requireAnyRole(
+        (req as any).auth.userId,
+        invoice.labOrganizationId,
+        BILLING_ROLES
+      );
+      const newPractice = await db.query.organizations.findFirst({
         where: eq(organizations.id, input.providerOrganizationId),
       });
-      if (!newOrg || newOrg.type !== "provider") {
-        throw new HttpError(400, "Invalid provider organization.");
+      if (!newPractice || newPractice.deletedAt) {
+        throw new HttpError(404, "Practice not found.");
       }
-      if (
-        newOrg.parentLabOrganizationId !== invoice.labOrganizationId &&
-        newOrg.id !== invoice.labOrganizationId
-      ) {
-        throw new HttpError(
-          403,
-          "Provider does not belong to this lab."
-        );
+      if (newPractice.isActive === false) {
+        throw new HttpError(400, "Cannot reassign invoice to an inactive practice.");
+      }
+      if (newPractice.type !== "provider" && newPractice.type !== "practice") {
+        throw new HttpError(400, "Target organization is not a practice or provider.");
+      }
+      const practiceLabId =
+        newPractice.parentLabOrganizationId ?? newPractice.id;
+      if (practiceLabId !== invoice.labOrganizationId && newPractice.id !== invoice.labOrganizationId) {
+        throw new HttpError(400, "Practice does not belong to the same lab.");
       }
     }
 
@@ -1833,6 +1840,24 @@ router.patch(
       beforeJson: invoice,
       afterJson: updated,
     });
+
+    if (
+      input.providerOrganizationId !== undefined &&
+      input.providerOrganizationId !== invoice.providerOrganizationId
+    ) {
+      await writeAuditLog({
+        req,
+        organizationId: invoice.labOrganizationId,
+        action: "invoice_reassigned",
+        entityType: "invoice",
+        entityId: invoice.id,
+        metadataJson: {
+          invoiceNumber: updated.invoiceNumber,
+          fromProviderOrganizationId: invoice.providerOrganizationId,
+          toProviderOrganizationId: input.providerOrganizationId,
+        },
+      });
+    }
 
     // Mirror invoice lifecycle changes onto the case History tab so users
     // see edits and voids without digging into the audit log.

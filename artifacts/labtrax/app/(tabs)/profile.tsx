@@ -248,6 +248,23 @@ export default function ProfileScreen() {
           })()}
           <Pressable
             style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+            onPress={() => router.push("/customers" as any)}
+            testID="customers-button"
+          >
+            <View style={[styles.menuIcon, { backgroundColor: "#F0FDF4" }]}>
+              <Ionicons name="people-outline" size={18} color="#16A34A" />
+            </View>
+            <View style={styles.menuInfo}>
+              <Text style={styles.menuTitle}>Customers</Text>
+              <Text style={styles.menuSub}>
+                View practices and open balances
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+          </Pressable>
+          <View style={styles.menuDivider} />
+          <Pressable
+            style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
             onPress={() => router.push("/link-labs" as any)}
             testID="link-labs-button"
           >

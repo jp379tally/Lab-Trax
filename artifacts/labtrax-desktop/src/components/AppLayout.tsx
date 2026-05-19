@@ -19,6 +19,7 @@ import {
   Settings,
   Tag,
   Upload,
+  Users,
   Wallet,
   Wrench,
   XCircle,
@@ -56,6 +57,7 @@ const NAV: (NavItem | NavGroup)[] = [
     icon: Wallet,
     children: [
       { label: "Invoices", path: "/invoices", icon: Receipt },
+      { label: "Customer Center", path: "/customer-center", icon: Users },
       { label: "Statements", path: "/statements", icon: CreditCard },
       { label: "Bank Register", path: "/finance", icon: Wallet },
     ],

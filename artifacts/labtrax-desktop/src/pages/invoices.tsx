@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/lib/auth-context";
 import {
   AlertCircle,
   ArrowDown,
@@ -432,17 +433,34 @@ export function InvoiceEditor({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const isAdmin =
+    user?.role === "owner" ||
+    user?.role === "admin" ||
+    user?.role === "billing";
 
   const detailQuery = useQuery({
     queryKey: ["invoice", invoice.id],
     queryFn: () => apiFetch<Invoice>(`/invoices/${invoice.id}`),
   });
 
-  const orgsQuery = useQuery({
+  const practicesQuery = useQuery({
     queryKey: ["organizations"],
     queryFn: () => apiFetch<Organization[]>("/organizations"),
+    enabled: isAdmin,
+    staleTime: 60_000,
   });
-  const practiceOrgs = (orgsQuery.data ?? []).filter((o) => o.type === "provider");
+  const practices = useMemo(
+    () =>
+      (practicesQuery.data ?? []).filter(
+        (o) =>
+          (o.type === "provider" || o.type === "practice") &&
+          !o.deletedAt &&
+          (o.parentLabOrganizationId === invoice.labOrganizationId ||
+            o.id === invoice.providerOrganizationId),
+      ),
+    [practicesQuery.data, invoice.labOrganizationId, invoice.providerOrganizationId],
+  );
 
   // Per-doctor priced item catalog used by the "Item" dropdown so
   // picking "Zirconia Crown" auto-fills its description and the
@@ -473,6 +491,10 @@ export function InvoiceEditor({
       : "open",
   );
   const [providerId, setProviderId] = useState(invoice.providerOrganizationId);
+  const [reassignConfirm, setReassignConfirm] = useState<{
+    targetId: string;
+    targetName: string;
+  } | null>(null);
   const [issuedAt, setIssuedAt] = useState<string>(toInputDate(invoice.issuedAt));
   const [dueAt, setDueAt] = useState<string>(
     toInputDate(invoice.dueAt ?? invoice.dueDate),
@@ -578,7 +600,6 @@ export function InvoiceEditor({
         tax,
         discount,
         notes: notes.trim() ? notes.trim() : null,
-        providerOrganizationId: providerId,
         displayMetadata,
         items: trimmedItems.map((it, idx) => ({
           description: it.description,
@@ -626,6 +647,24 @@ export function InvoiceEditor({
       { item: "", description: "", quantity: 1, unitPrice: 0 },
     ]);
   }
+
+  const reassignMutation = useMutation({
+    mutationFn: (newProviderId: string) =>
+      apiFetch<Invoice>(`/invoices/${invoice.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ providerOrganizationId: newProviderId }),
+      }),
+    onSuccess: (updated) => {
+      setProviderId(updated.providerOrganizationId);
+      setReassignConfirm(null);
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoice.id] });
+    },
+    onError: (err: Error) => {
+      setReassignConfirm(null);
+      setError(err.message || "Reassignment failed.");
+    },
+  });
 
   const [emailOpen, setEmailOpen] = useState(false);
   const [recordPaymentOpen, setRecordPaymentOpen] = useState(false);
@@ -962,25 +1001,52 @@ export function InvoiceEditor({
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
                 Client / Provider
               </label>
-              <select
-                value={providerId}
-                onChange={(e) => setProviderId(e.target.value)}
-                className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
-                disabled={orgsQuery.isLoading}
-              >
-                {practiceOrgs.length === 0 && (
-                  <option value={providerId}>
-                    {detailQuery.data?.providerOrganization?.name ||
+              {isAdmin ? (
+                <select
+                  value={providerId}
+                  onChange={(e) => {
+                    const targetId = e.target.value;
+                    if (targetId === providerId) return;
+                    const targetOrg = practices.find((p) => p.id === targetId);
+                    setReassignConfirm({
+                      targetId,
+                      targetName: targetOrg?.displayName || targetOrg?.name || targetId,
+                    });
+                  }}
+                  className="w-full h-9 px-2.5 rounded-md bg-background border border-input text-sm"
+                  disabled={practicesQuery.isLoading || reassignMutation.isPending}
+                >
+                  {practices.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.displayName || p.name}
+                    </option>
+                  ))}
+                  {practices.length === 0 && (
+                    <option value={providerId}>
+                      {detailQuery.data?.providerOrganization?.name ||
+                        invoice.providerOrganization?.name ||
+                        providerId}
+                    </option>
+                  )}
+                </select>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={
+                      detailQuery.data?.providerOrganization?.name ||
                       invoice.providerOrganization?.name ||
-                      providerId}
-                  </option>
-                )}
-                {practiceOrgs.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.displayName || o.name}
-                  </option>
-                ))}
-              </select>
+                      providerId
+                    }
+                    disabled
+                    readOnly
+                    className="w-full h-9 px-2.5 rounded-md bg-secondary/40 border border-input text-sm text-muted-foreground cursor-not-allowed"
+                  />
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    Admins can reassign invoices to a different practice.
+                  </p>
+                </>
+              )}
             </div>
             <div>
               <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
@@ -1463,6 +1529,41 @@ export function InvoiceEditor({
             voidMutation.mutate({ kind: voidDialog, reason })
           }
         />
+      )}
+      {reassignConfirm && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-lg w-full max-w-md p-5 space-y-4">
+            <h3 className="text-base font-semibold">Reassign invoice?</h3>
+            <p className="text-sm text-muted-foreground">
+              This invoice will be moved to{" "}
+              <span className="font-medium text-foreground">
+                {reassignConfirm.targetName}
+              </span>
+              . The change is saved immediately and logged in the audit trail.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setReassignConfirm(null)}
+                disabled={reassignMutation.isPending}
+                className="h-9 px-4 rounded-md bg-secondary text-secondary-foreground text-sm font-medium hover:bg-secondary/80 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => reassignMutation.mutate(reassignConfirm.targetId)}
+                disabled={reassignMutation.isPending}
+                className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {reassignMutation.isPending && (
+                  <Loader2 size={14} className="animate-spin" />
+                )}
+                Reassign
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
