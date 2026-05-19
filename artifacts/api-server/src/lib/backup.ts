@@ -163,9 +163,17 @@ export async function buildBackupZipBuffer(triggeredBy: string): Promise<{
   return { buffer, fileName };
 }
 
-export async function runOneDriveBackup(triggeredBy: string): Promise<BackupResult> {
-  const { buffer, fileName } = await buildBackupZipBuffer(triggeredBy);
-  const result = await uploadToOneDrive(buffer, fileName, "LabTrax Backups");
+export async function runOneDriveBackup(
+  triggeredBy: string,
+  options?: {
+    conflictBehavior?: "replace" | "rename" | "fail";
+    fileName?: string;
+  },
+): Promise<BackupResult> {
+  const { buffer, fileName: generatedFileName } = await buildBackupZipBuffer(triggeredBy);
+  const targetFileName = options?.fileName ?? generatedFileName;
+  const conflictBehavior = options?.conflictBehavior ?? "rename";
+  const result = await uploadToOneDrive(buffer, targetFileName, "LabTrax Backups", conflictBehavior);
   return {
     fileName: result.name,
     size: result.size,
@@ -955,15 +963,12 @@ export function start15MinRollingBackup(): void {
     const runAt = new Date().toISOString();
     try {
       logger.info({ startedAt: runAt }, "[backup] Rolling OneDrive backup starting");
-      const { buffer } = await buildBackupZipBuffer("scheduler:rolling");
-      const uploaded = await uploadToOneDrive(
-        buffer,
-        "labtrax-rolling-backup.zip.enc",
-        "LabTrax Backups",
-        "replace",
-      );
+      const result = await runOneDriveBackup("scheduler:rolling", {
+        conflictBehavior: "replace",
+        fileName: "labtrax-rolling-backup.zip.enc",
+      });
       logger.info(
-        { fileName: uploaded.name, size: uploaded.size },
+        { fileName: result.fileName, size: result.size },
         "[backup] Rolling OneDrive backup OK",
       );
       await db

@@ -123,13 +123,14 @@ export async function deleteFromOneDrive(
  * @param conflictBehavior
  *   - "rename"  (default) – create a new file with a disambiguated name if one exists.
  *   - "replace" – silently overwrite the existing file; used for the rolling backup so
- *                 only one LabTrax-Rolling-Backup.zip ever exists on OneDrive.
+ *                 only one labtrax-rolling-backup.zip.enc ever exists on OneDrive.
+ *   - "fail"    – return an error if a file with the same name already exists.
  */
 export async function uploadToOneDrive(
   fileBuffer: Buffer,
   fileName: string,
   folderPath = "LabTrax Backups",
-  conflictBehavior: "replace" | "rename" = "rename"
+  conflictBehavior: "replace" | "rename" | "fail" = "rename"
 ): Promise<{ webUrl: string; name: string; size: number }> {
   const token = await getOneDriveAccessToken();
   const uploadPath = `/${folderPath}/${fileName}`;
