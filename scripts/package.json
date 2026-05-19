@@ -13,10 +13,13 @@
     "lint-protected-tables": "tsx ./src/lint-protected-tables.ts",
     "backfill-platform-account-numbers": "tsx ./src/backfill-platform-account-numbers.ts",
     "backfill-restoration-buckets": "tsx ./src/backfill-restoration-buckets.ts",
+    "seed-stripe-products": "tsx ./src/seedStripeProducts.ts",
+    "seed-revenuecat": "tsx ./src/seedRevenueCat.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",
+    "@replit/revenuecat-sdk": "^4.2.0",
     "@workspace/db": "workspace:*",
     "drizzle-orm": "catalog:"
   },

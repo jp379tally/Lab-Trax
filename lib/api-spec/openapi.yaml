@@ -16,6 +16,8 @@ tags:
     description: Doctor / merge operations (LabTrax)
   - name: invoices
     description: Invoice + payment operations (LabTrax)
+  - name: billing
+    description: Subscription billing operations (LabTrax)
 paths:
   /healthz:
     get:

@@ -37,6 +37,7 @@ import {
   matchAndInviteCrossLabDoctors,
   resolveLabNameForUser,
 } from "../lib/match-and-invite";
+import { startBillingTrial } from "../lib/entitlement";
 
 const router = Router();
 
@@ -459,6 +460,28 @@ router.post(
       });
       organizationInfo = { id: org.id, name: org.displayName || org.name };
       responseMessage = `${org.displayName || org.name} created and linked to your account.`;
+
+      // Start billing trial for the new organization. Best-effort — never
+      // blocks registration. Trial begins the moment the org is created.
+      const billingSubjectType = orgType === "lab" ? "lab_org" : "provider_org";
+      startBillingTrial(billingSubjectType, org.id, user.id).catch(
+        (err: any) => {
+          req.log?.warn?.(
+            { err: err?.message },
+            "[billing] Failed to start org billing trial (non-fatal)"
+          );
+        }
+      );
+    } else if (!joinTargetOrg) {
+      // Solo user who didn't create or join an org yet (e.g. a provider
+      // who will claim their practice later). Give them a user-level trial
+      // so they can explore the app before attaching to an org.
+      startBillingTrial("user", user.id, user.id).catch((err: any) => {
+        req.log?.warn?.(
+          { err: err?.message },
+          "[billing] Failed to start user billing trial (non-fatal)"
+        );
+      });
     }
 
     // Cross-lab account-link: if the new provider user matches an existing

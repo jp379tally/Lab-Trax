@@ -265,6 +265,21 @@ export default function ProfileScreen() {
           <View style={styles.menuDivider} />
           <Pressable
             style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
+            onPress={() => router.push("/subscription" as any)}
+            testID="subscription-button"
+          >
+            <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
+              <Ionicons name="flash" size={18} color="#7C3AED" />
+            </View>
+            <View style={styles.menuInfo}>
+              <Text style={styles.menuTitle}>Subscription</Text>
+              <Text style={styles.menuSub}>Manage your plan and billing</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.light.textSecondary} />
+          </Pressable>
+          <View style={styles.menuDivider} />
+          <Pressable
+            style={({ pressed }) => [styles.menuItem, pressed && { opacity: 0.7 }]}
             onPress={() => {
               setShowChangePassword(true);
               setCurrentPasswordInput("");

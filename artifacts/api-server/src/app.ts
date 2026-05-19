@@ -12,6 +12,8 @@ import { HttpError } from "./lib/http";
 import { startStatementScheduler } from "./lib/statements";
 import { startDailyOrphanedMediaCleanup } from "./lib/case-media";
 import { startDailyOneDriveBackup } from "./lib/backup";
+import { startBillingJobs } from "./lib/billing-jobs";
+import { handleStripeWebhook } from "./routes/billing";
 import {
   getDesktopInstallerHandle,
   openDesktopInstallerStream,
@@ -211,6 +213,30 @@ app.get("/downloads/{*rest}", (_req: Request, res: Response) => {
   res.status(404).json({ ok: false, message: "Not found." });
 });
 
+// ─── Stripe webhook — MUST be registered before express.json() ───────────────
+// Stripe sends the payload as raw JSON bytes and signs it. If express.json()
+// parses the body first the signature check fails. We capture the raw Buffer
+// here and delegate processing to the billing route handler.
+app.post(
+  "/api/billing/webhook/stripe",
+  express.raw({ type: "application/json" }),
+  async (req: Request, res: Response) => {
+    const sig = req.headers["stripe-signature"];
+    if (!sig || !Buffer.isBuffer(req.body)) {
+      res.status(400).json({ ok: false, message: "Invalid webhook request" });
+      return;
+    }
+    const sigStr = Array.isArray(sig) ? sig[0]! : sig;
+    const result = await handleStripeWebhook(req.body as Buffer, sigStr);
+    if (!result.received) {
+      res.status(400).json({ ok: false, message: result.error ?? "Webhook processing failed" });
+      return;
+    }
+    res.status(200).json({ received: true });
+  }
+);
+// ─────────────────────────────────────────────────────────────────────────────
+
 app.use(
   pinoHttp({
     logger,
@@ -239,6 +265,7 @@ app.use("/api", requireCsrf, router);
 
 startStatementScheduler();
 startDailyOrphanedMediaCleanup();
+startBillingJobs();
 // OneDrive backup scheduler — only active when the connector is available.
 if (process.env.REPLIT_CONNECTORS_HOSTNAME) {
   startDailyOneDriveBackup();

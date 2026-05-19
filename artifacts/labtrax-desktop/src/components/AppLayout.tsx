@@ -22,6 +22,7 @@ import {
   Wrench,
   XCircle,
   HardDrive,
+  Zap,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads } from "@/lib/uploads-context";
@@ -53,6 +54,7 @@ const NAV: NavItem[] = [
 const BILLING_ROLES = new Set(["owner", "admin", "billing"]);
 
 const SECONDARY: NavItem[] = [
+  { label: "Subscription", path: "/billing", icon: Zap },
   { label: "Admin Settings", path: "/settings", icon: Settings },
   { label: "Maintenance", path: "/maintenance", icon: HardDrive, adminOnly: true },
   { label: "Download Desktop App", path: "/download", icon: MonitorDown },

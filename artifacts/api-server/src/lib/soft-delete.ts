@@ -11,6 +11,7 @@ import {
   organizations,
   organizationMemberships,
   users,
+  subscriptions,
 } from "@workspace/db";
 import { writeAuditLog } from "./audit";
 import type { Request } from "express";
@@ -38,6 +39,7 @@ export const PROTECTED_TABLES = {
   organizations,
   lab_memberships: organizationMemberships,
   users,
+  subscriptions,
 } as const;
 
 export type ProtectedTableName = keyof typeof PROTECTED_TABLES;
@@ -65,6 +67,7 @@ export const PROTECTED_DRIZZLE_EXPORTS: ReadonlyArray<string> = [
   "organizations",
   "organizationMemberships",
   "users",
+  "subscriptions",
 ];
 
 type SoftDeletableTable = (typeof PROTECTED_TABLES)[ProtectedTableName];

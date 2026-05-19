@@ -120,6 +120,59 @@ allocated atomically per `(year, entityType)` via
 - `DEFAULT_OBJECT_STORAGE_BUCKET_ID`, `PRIVATE_OBJECT_DIR`, `PUBLIC_OBJECT_SEARCH_PATHS` — App Storage configuration (auto-set when Object Storage is provisioned). The API server reads/writes the desktop installer zip in App Storage via these.
 - `GITHUB_REPO_URL` — optional; GitHub repository URL (e.g. `https://github.com/your-org/your-repo`); when set, the Settings → Desktop App panel shows a direct link to the repo's Actions tab so admins can trigger installer builds in one click
 - `PLATFORM_ADMIN_SECRET` — **required in production**; a strong secret string that must be sent as `X-Platform-Admin-Secret` header to access all `/api/admin/*` platform-wide endpoints (backup, cleanup, system settings). If unset, all admin endpoints return 403.
+- `SUBSCRIPTION_TRIAL_DAYS` — length of the free trial in days (default: `14`); applies to new lab orgs, provider orgs, and solo users at signup
+- `SUBSCRIPTION_GRACE_DAYS` — read-only grace period after trial or payment failure before account is locked (default: `7`)
+- `STRIPE_PRICE_ID` — default Stripe price ID used when no specific price is requested at checkout; run `pnpm --filter @workspace/scripts run seed-stripe-products` to create products and get this value
+- `STRIPE_WEBHOOK_SECRET` — Stripe webhook signing secret; stored in the Stripe Replit integration's `webhook_secret` field (see Stripe integration connector)
+- `EXPO_PUBLIC_REVENUECAT_IOS_API_KEY` — RevenueCat iOS public API key for in-app purchases on iPhone/iPad
+- `EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY` — RevenueCat Android public API key for Google Play billing
+
+## Subscription billing (Task #416)
+
+LabTrax uses a free-trial + recurring subscription model. Every new lab org, provider org, or solo user gets a 14-day trial automatically on signup.
+
+### Trial and access lifecycle
+
+| Status | Access | Notes |
+|--------|--------|-------|
+| `trialing` | Full | 14-day trial starts at signup |
+| `active` | Full | Paying subscriber |
+| `past_due` | Full | Last payment failed; grace before locking |
+| `grace` | Read-only | Trial expired without payment; `SUBSCRIPTION_GRACE_DAYS` days |
+| `locked` | Locked | Grace period elapsed; subscribe to restore |
+| `canceled` | Locked | Manually canceled; resubscribe to restore |
+| `legacy_free` | Full | Account predates billing; grandfathered in |
+
+### Payment providers
+
+- **Desktop / web** — Stripe hosted checkout. Webhooks at `POST /api/billing/webhook/stripe` (raw body, verified by signing secret).
+- **iOS / Android** — RevenueCat (wraps Apple IAP and Google Play). Webhooks at `POST /api/billing/webhook/revenuecat`.
+
+### Server-side files
+
+| File | Purpose |
+|------|---------|
+| `artifacts/api-server/src/lib/entitlement.ts` | `getEntitlement()`, `startBillingTrial()`, `transitionSubscription()` |
+| `artifacts/api-server/src/lib/billing-jobs.ts` | Daily cron: trial reminders (7/3/1 day), grace, lock |
+| `artifacts/api-server/src/lib/stripeClient.ts` | Stripe client + webhook verification via Replit connector |
+| `artifacts/api-server/src/routes/billing.ts` | REST routes + webhook handlers |
+
+### REST endpoints (`/api/billing/…`)
+
+- `GET /subscription` — returns current entitlement for the caller
+- `GET /plans` — lists active Stripe prices (empty when Stripe not configured)
+- `POST /checkout-session` — creates Stripe checkout session → returns `{ url }`
+- `POST /portal-session` — opens Stripe customer portal → returns `{ url }`
+- `POST /webhook/stripe` — Stripe event receiver (raw body, no auth)
+- `POST /webhook/revenuecat` — RevenueCat event receiver (shared secret header)
+
+### Setup checklist
+
+1. Connect the Stripe integration in the Replit Integrations tab
+2. Run `pnpm --filter @workspace/scripts run seed-stripe-products` — creates products/prices and prints `STRIPE_PRICE_ID`
+3. Set `STRIPE_PRICE_ID` in environment secrets
+4. In Stripe dashboard → Webhooks, add the webhook URL and set the secret as `STRIPE_WEBHOOK_SECRET` in the Stripe connector (or as an env var)
+5. For mobile: follow `pnpm --filter @workspace/scripts run seed-revenuecat` instructions
 
 ## Desktop installer download
 

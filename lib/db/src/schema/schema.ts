@@ -1521,6 +1521,119 @@ export const labItemLabels = pgTable(
   })
 );
 
+/**
+ * Subscription lifecycle for labs and providers (Task #416).
+ *
+ * Subject identity:
+ *   - Lab: subjectType = "lab_org",      subjectId = lab organization id
+ *   - Provider with org: subjectType = "provider_org", subjectId = provider org id
+ *   - Provider without org: subjectType = "provider_user", subjectId = user id
+ *
+ * Status FSM:
+ *   trialing → active (payment on file, renewal succeeds)
+ *   trialing → grace  (trial expired, no payment / first failure)
+ *   grace    → locked (grace period elapsed)
+ *   active   → past_due (renewal failed)
+ *   past_due → active  (payment recovered)
+ *   past_due → grace   (retries exhausted)
+ *   active / past_due / grace → canceled
+ *   legacy_free = existing accounts before billing cutover
+ */
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    subjectType: text("subject_type").notNull(),
+    subjectId: varchar("subject_id").notNull(),
+    provider: text("provider").default("none").notNull(),
+    stripeCustomerId: text("stripe_customer_id"),
+    stripeSubscriptionId: text("stripe_subscription_id"),
+    revenueCatAppUserId: text("revenue_cat_app_user_id"),
+    status: text("status").default("trialing").notNull(),
+    trialStartAt: timestamp("trial_start_at", { withTimezone: true }),
+    trialEndAt: timestamp("trial_end_at", { withTimezone: true }),
+    currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false).notNull(),
+    paymentMethodOnFile: boolean("payment_method_on_file")
+      .default(false)
+      .notNull(),
+    lastReminderSentAt: timestamp("last_reminder_sent_at", {
+      withTimezone: true,
+    }),
+    lastReminderKind: text("last_reminder_kind"),
+    gracePeriodStartAt: timestamp("grace_period_start_at", {
+      withTimezone: true,
+    }),
+    canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedByUserId: varchar("deleted_by_user_id"),
+  },
+  (table) => ({
+    subjectUnique: uniqueIndex("subscriptions_subject_unique").on(
+      table.subjectType,
+      table.subjectId
+    ).where(sql`deleted_at IS NULL`),
+    stripeCustomerIdx: index("subscriptions_stripe_customer_idx").on(
+      table.stripeCustomerId
+    ),
+    stripeSubIdx: index("subscriptions_stripe_sub_idx").on(
+      table.stripeSubscriptionId
+    ),
+    rcUserIdx: index("subscriptions_rc_user_idx").on(
+      table.revenueCatAppUserId
+    ),
+    statusIdx: index("subscriptions_status_idx").on(table.status),
+    trialEndIdx: index("subscriptions_trial_end_idx").on(table.trialEndAt),
+  })
+);
+
+/**
+ * Append-only log of every billing webhook / state-change event.
+ * Never delete rows from this table — it is the audit trail for all billing events.
+ */
+export const subscriptionEvents = pgTable(
+  "subscription_events",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    subscriptionId: varchar("subscription_id").references(
+      () => subscriptions.id,
+      { onDelete: "set null" }
+    ),
+    subjectType: text("subject_type"),
+    subjectId: varchar("subject_id"),
+    eventType: text("event_type").notNull(),
+    provider: text("provider"),
+    externalEventId: text("external_event_id"),
+    statusBefore: text("status_before"),
+    statusAfter: text("status_after"),
+    rawPayloadJson: jsonb("raw_payload_json"),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    subIdx: index("subscription_events_sub_idx").on(table.subscriptionId),
+    subjectIdx: index("subscription_events_subject_idx").on(table.subjectId),
+    eventTypeIdx: index("subscription_events_event_type_idx").on(
+      table.eventType
+    ),
+    createdAtIdx: index("subscription_events_created_at_idx").on(
+      table.createdAt
+    ),
+    externalEventUnique: uniqueIndex(
+      "subscription_events_external_event_unique"
+    )
+      .on(table.provider, table.externalEventId)
+      .where(
+        sql`external_event_id IS NOT NULL AND provider IS NOT NULL`
+      ),
+  })
+);
+
 export const insertUserSchema = createInsertSchema(users).pick({
   username: true,
   password: true,
@@ -1529,3 +1642,5 @@ export const insertUserSchema = createInsertSchema(users).pick({
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type LabCaseRow = typeof labCases.$inferSelect;
+export type Subscription = typeof subscriptions.$inferSelect;
+export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;

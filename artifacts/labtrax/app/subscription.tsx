@@ -1,0 +1,636 @@
+import React, { useEffect, useState, useCallback } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  Platform,
+  StyleSheet,
+  Alert,
+} from "react-native";
+import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { useTheme } from "@/lib/theme-context";
+import { resilientFetch, getApiUrl } from "@/lib/query-client";
+
+interface Entitlement {
+  status:
+    | "trialing"
+    | "active"
+    | "past_due"
+    | "grace"
+    | "locked"
+    | "canceled"
+    | "legacy_free";
+  accessLevel: "full" | "read_only" | "locked";
+  trialDaysRemaining: number | null;
+  graceDaysRemaining: number | null;
+  currentPeriodEnd: string | null;
+  hasPaymentMethod: boolean;
+  subjectType: string;
+  subjectId: string;
+  subscriptionId: string | null;
+}
+
+interface Plan {
+  id: string;
+  currency: string;
+  unitAmount: number | null;
+  interval: string | null;
+  productName: string | null;
+}
+
+type StatusMeta = {
+  title: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  color: string;
+  bg: string;
+  desc: string;
+};
+
+const STATUS_META: Record<string, StatusMeta> = {
+  trialing: {
+    title: "Free Trial",
+    icon: "time-outline",
+    color: "#2563EB",
+    bg: "#EFF6FF",
+    desc: "You're on a free trial. Add a payment method to keep access when it ends.",
+  },
+  active: {
+    title: "Active",
+    icon: "checkmark-circle",
+    color: "#16A34A",
+    bg: "#F0FDF4",
+    desc: "Your subscription is active and in good standing.",
+  },
+  past_due: {
+    title: "Payment Issue",
+    icon: "alert-circle",
+    color: "#D97706",
+    bg: "#FFFBEB",
+    desc: "Your last payment failed. Update your payment method to avoid losing access.",
+  },
+  grace: {
+    title: "Grace Period",
+    icon: "shield-outline",
+    color: "#EA580C",
+    bg: "#FFF7ED",
+    desc: "Your trial ended. You have read-only access. Subscribe to restore full access.",
+  },
+  locked: {
+    title: "Locked",
+    icon: "lock-closed",
+    color: "#DC2626",
+    bg: "#FEF2F2",
+    desc: "Your account is locked. Subscribe to restore access to your data.",
+  },
+  canceled: {
+    title: "Canceled",
+    icon: "refresh-circle-outline",
+    color: "#6B7280",
+    bg: "#F9FAFB",
+    desc: "Your subscription was canceled. Subscribe again to restore access.",
+  },
+  legacy_free: {
+    title: "Legacy Access",
+    icon: "flash",
+    color: "#7C3AED",
+    bg: "#F5F3FF",
+    desc: "You have legacy free access — billing doesn't apply to your account.",
+  },
+};
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function fmtPrice(unitAmount: number | null, currency: string, interval: string | null): string {
+  if (unitAmount == null) return "—";
+  const price = (unitAmount / 100).toFixed(2);
+  const curr = currency.toUpperCase();
+  const per = interval === "month" ? "/mo" : interval === "year" ? "/yr" : "";
+  return `$${price} ${curr}${per}`;
+}
+
+export default function SubscriptionScreen() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [subResp, plansResp] = await Promise.all([
+        resilientFetch("/api/billing/subscription"),
+        resilientFetch("/api/billing/plans"),
+      ]);
+      const subJson = await subResp.json().catch(() => ({}));
+      const plansJson = await plansResp.json().catch(() => ({}));
+      setEntitlement(subJson?.entitlement ?? null);
+      setPlans(plansJson?.plans ?? []);
+    } catch (err: any) {
+      setError("Failed to load subscription info.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const meta = entitlement ? (STATUS_META[entitlement.status] ?? STATUS_META.legacy_free) : null;
+
+  const needsPayment =
+    entitlement?.status === "trialing" ||
+    entitlement?.status === "grace" ||
+    entitlement?.status === "locked" ||
+    entitlement?.status === "past_due" ||
+    entitlement?.status === "canceled";
+
+  async function handleSubscribe(priceId?: string) {
+    setActionLoading(true);
+    try {
+      const body = priceId ? JSON.stringify({ priceId }) : "{}";
+      const resp = await resilientFetch("/api/billing/checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (json?.url) {
+        if (Platform.OS === "web") {
+          window.open(json.url, "_blank");
+        } else {
+          const { Linking } = await import("react-native");
+          await Linking.openURL(json.url);
+        }
+      } else {
+        Alert.alert("Error", json?.message ?? "Failed to start checkout");
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err?.message ?? "Failed to start checkout");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleManage() {
+    setActionLoading(true);
+    try {
+      const resp = await resilientFetch("/api/billing/portal-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (json?.url) {
+        if (Platform.OS === "web") {
+          window.open(json.url, "_blank");
+        } else {
+          const { Linking } = await import("react-native");
+          await Linking.openURL(json.url);
+        }
+      } else {
+        Alert.alert("Error", json?.message ?? "Failed to open billing portal");
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err?.message ?? "Failed to open billing portal");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  return (
+    <View style={[styles.root, { backgroundColor: colors.background }]}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: insets.top + 12,
+            backgroundColor: colors.backgroundSolid,
+            borderBottomColor: isDark ? "#333" : "#E2E8F0",
+          },
+        ]}
+      >
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.6 }]}
+        >
+          <Ionicons name="arrow-back" size={22} color={colors.text} />
+        </Pressable>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>
+          Subscription
+        </Text>
+        <Pressable
+          onPress={load}
+          style={({ pressed }) => [styles.refreshBtn, pressed && { opacity: 0.6 }]}
+        >
+          <Ionicons name="refresh" size={20} color={colors.textSecondary} />
+        </Pressable>
+      </View>
+
+      <ScrollView
+        contentContainerStyle={{
+          padding: 20,
+          paddingBottom: insets.bottom + 40,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        {loading ? (
+          <View style={styles.center}>
+            <ActivityIndicator size="large" color={colors.tint} />
+          </View>
+        ) : error ? (
+          <View style={styles.errorBox}>
+            <Ionicons name="alert-circle" size={20} color="#DC2626" />
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        ) : entitlement && meta ? (
+          <View style={{ gap: 20 }}>
+            {/* Status card */}
+            <View
+              style={[
+                styles.statusCard,
+                { backgroundColor: meta.bg, borderColor: meta.color + "33" },
+              ]}
+            >
+              <View
+                style={[
+                  styles.statusIconWrap,
+                  { backgroundColor: meta.color + "20" },
+                ]}
+              >
+                <Ionicons name={meta.icon} size={24} color={meta.color} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Text style={[styles.statusTitle, { color: meta.color }]}>
+                    {meta.title}
+                  </Text>
+                  {entitlement.status === "trialing" &&
+                    entitlement.trialDaysRemaining !== null && (
+                      <View
+                        style={[
+                          styles.badge,
+                          { backgroundColor: "#DBEAFE" },
+                        ]}
+                      >
+                        <Text style={[styles.badgeText, { color: "#1D4ED8" }]}>
+                          {entitlement.trialDaysRemaining}d left
+                        </Text>
+                      </View>
+                    )}
+                  {entitlement.status === "grace" &&
+                    entitlement.graceDaysRemaining !== null && (
+                      <View
+                        style={[
+                          styles.badge,
+                          { backgroundColor: "#FFEDD5" },
+                        ]}
+                      >
+                        <Text style={[styles.badgeText, { color: "#C2410C" }]}>
+                          {entitlement.graceDaysRemaining}d read-only
+                        </Text>
+                      </View>
+                    )}
+                </View>
+                <Text style={[styles.statusDesc, { color: isDark ? "#AAA" : "#555" }]}>
+                  {meta.desc}
+                </Text>
+              </View>
+            </View>
+
+            {/* CTA */}
+            {needsPayment && (
+              <View style={{ gap: 12 }}>
+                {plans.length > 0 ? (
+                  <>
+                    <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
+                      CHOOSE A PLAN
+                    </Text>
+                    {plans.map((plan) => (
+                      <Pressable
+                        key={plan.id}
+                        style={({ pressed }) => [
+                          styles.planCard,
+                          {
+                            backgroundColor: colors.backgroundSolid,
+                            borderColor: isDark ? "#444" : "#E2E8F0",
+                          },
+                          pressed && { opacity: 0.75 },
+                        ]}
+                        onPress={() => handleSubscribe(plan.id)}
+                        disabled={actionLoading}
+                      >
+                        <Text style={[styles.planName, { color: colors.text }]}>
+                          {plan.productName ?? "LabTrax Pro"}
+                        </Text>
+                        <Text style={[styles.planPrice, { color: colors.tint }]}>
+                          {fmtPrice(plan.unitAmount, plan.currency, plan.interval)}
+                        </Text>
+                        {actionLoading ? (
+                          <ActivityIndicator size="small" color={colors.tint} />
+                        ) : (
+                          <Ionicons
+                            name="arrow-forward-circle"
+                            size={22}
+                            color={colors.tint}
+                          />
+                        )}
+                      </Pressable>
+                    ))}
+                  </>
+                ) : (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.primaryBtn,
+                      { backgroundColor: colors.tint },
+                      pressed && { opacity: 0.8 },
+                    ]}
+                    onPress={() => handleSubscribe()}
+                    disabled={actionLoading}
+                  >
+                    {actionLoading ? (
+                      <ActivityIndicator size="small" color="#FFF" />
+                    ) : (
+                      <Ionicons name="arrow-forward-circle" size={20} color="#FFF" />
+                    )}
+                    <Text style={styles.primaryBtnText}>
+                      {entitlement.status === "locked" || entitlement.status === "canceled"
+                        ? "Reactivate Subscription"
+                        : "Start Subscription"}
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
+
+            {(entitlement.status === "active" || entitlement.status === "past_due") && (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.secondaryBtn,
+                  {
+                    borderColor: isDark ? "#555" : "#D1D5DB",
+                    backgroundColor: colors.backgroundSolid,
+                  },
+                  pressed && { opacity: 0.7 },
+                ]}
+                onPress={handleManage}
+                disabled={actionLoading}
+              >
+                {actionLoading ? (
+                  <ActivityIndicator size="small" color={colors.tint} />
+                ) : (
+                  <Ionicons name="card-outline" size={18} color={colors.tint} />
+                )}
+                <Text style={[styles.secondaryBtnText, { color: colors.tint }]}>
+                  Manage Subscription
+                </Text>
+              </Pressable>
+            )}
+
+            {/* Details */}
+            <View
+              style={[
+                styles.detailsCard,
+                {
+                  backgroundColor: colors.backgroundSolid,
+                  borderColor: isDark ? "#333" : "#E2E8F0",
+                },
+              ]}
+            >
+              <DetailRow
+                label="Status"
+                value={meta.title}
+                colors={colors}
+                isDark={isDark}
+              />
+              <DetailRow
+                label="Payment method"
+                value={entitlement.hasPaymentMethod ? "On file" : "None"}
+                highlight={entitlement.hasPaymentMethod}
+                colors={colors}
+                isDark={isDark}
+              />
+              {entitlement.status === "trialing" &&
+                entitlement.trialDaysRemaining !== null && (
+                  <DetailRow
+                    label="Trial ends"
+                    value={
+                      entitlement.trialDaysRemaining > 0
+                        ? `In ${entitlement.trialDaysRemaining} day${entitlement.trialDaysRemaining !== 1 ? "s" : ""}`
+                        : "Today"
+                    }
+                    colors={colors}
+                    isDark={isDark}
+                    last
+                  />
+                )}
+              {entitlement.currentPeriodEnd && (
+                <DetailRow
+                  label={entitlement.status === "active" ? "Next renewal" : "Period end"}
+                  value={fmtDate(entitlement.currentPeriodEnd)}
+                  colors={colors}
+                  isDark={isDark}
+                  last
+                />
+              )}
+            </View>
+          </View>
+        ) : null}
+      </ScrollView>
+    </View>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  highlight,
+  last,
+  colors,
+  isDark,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+  last?: boolean;
+  colors: any;
+  isDark: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.detailRow,
+        !last && {
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: isDark ? "#333" : "#E5E7EB",
+        },
+      ]}
+    >
+      <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>
+        {label}
+      </Text>
+      <Text
+        style={[
+          styles.detailValue,
+          { color: highlight ? "#16A34A" : colors.text },
+        ]}
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  backBtn: { padding: 4 },
+  refreshBtn: { padding: 4, marginLeft: "auto" },
+  headerTitle: {
+    fontSize: 17,
+    fontFamily: "Inter_600SemiBold",
+    flex: 1,
+    textAlign: "center",
+  },
+  center: { alignItems: "center", marginTop: 60 },
+  errorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 14,
+    backgroundColor: "#FEF2F2",
+    borderRadius: 12,
+  },
+  errorText: { color: "#B91C1C", fontFamily: "Inter_500Medium", fontSize: 14, flex: 1 },
+  statusCard: {
+    flexDirection: "row",
+    gap: 14,
+    padding: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  statusIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusTitle: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 16,
+  },
+  statusDesc: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 20,
+  },
+  badgeText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 11,
+  },
+  sectionLabel: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 11,
+    letterSpacing: 0.8,
+  },
+  planCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 12,
+  },
+  planName: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 15,
+    flex: 1,
+  },
+  planPrice: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 16,
+  },
+  primaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  primaryBtnText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 15,
+    color: "#FFF",
+  },
+  secondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  secondaryBtnText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 15,
+  },
+  detailsCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  detailRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    gap: 12,
+  },
+  detailLabel: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+  },
+  detailValue: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+    textAlign: "right",
+    flex: 1,
+  },
+});
