@@ -123,6 +123,8 @@ export default function CaseDetailScreen() {
     uploaderName?: string | null;
   };
   const [fullCaseData, setFullCaseData] = useState<FullCaseData | null>(null);
+  const [originalActivityLog, setOriginalActivityLog] = useState<ActivityEntry[]>([]);
+  const [originalCaseNumber, setOriginalCaseNumber] = useState<string | null>(null);
   const [serverAttachments, setServerAttachments] = useState<CaseAttachment[]>([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachmentsFetchError, setAttachmentsFetchError] = useState(false);
@@ -341,6 +343,99 @@ export default function CaseDetailScreen() {
       .catch(() => {});
     return () => { cancelled = true; };
   }, [id]);
+
+  // Fetch the original case's activity log so the history section can show
+  // the full timeline (original case history → remake history).
+  //
+  // Strategy:
+  // 1. Fetch GET /api/cases/:id (the current case). For canonical remake cases
+  //    the server already returns `originalCaseEvents` (CaseEvent[]) in the
+  //    response — convert them to ActivityEntry format and use them.
+  // 2. If the canonical endpoint is unavailable or returns no originalCaseEvents
+  //    (legacy mobile case), fall back to fetching the original case via
+  //    GET /api/legacy/cases/:remakeOfCaseId and reading its activityLog.
+  const remakeOfCaseId = caseItemBase?.remakeOfCaseId;
+
+  function caseEventToActivityEntry(e: {
+    id?: string;
+    eventType?: string;
+    occurredAt?: string;
+    createdAt?: string;
+    actorInitials?: string | null;
+    metadataJson?: Record<string, unknown>;
+  }, idx: number): ActivityEntry {
+    const ts = e.occurredAt || e.createdAt
+      ? new Date(e.occurredAt ?? e.createdAt ?? 0).getTime()
+      : idx;
+    const meta: Record<string, unknown> = e.metadataJson ?? {};
+    const et = e.eventType ?? "";
+    let type: ActivityEntry["type"] = "created";
+    let description = et.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    if (et === "status_changed") {
+      type = "station_change";
+      const to = meta.toStatus ?? meta.newStatus;
+      description = to ? `Case moved to ${String(to)}` : "Status changed";
+    } else if (et === "note_added") {
+      type = "note";
+      description = String(meta.content ?? meta.text ?? "Note");
+    } else if (et.includes("attachment")) {
+      type = "photo";
+      description = String(meta.fileName ?? "Attachment");
+    } else if (et.includes("invoice")) {
+      type = "invoice_attached";
+      description = String(meta.invoiceNumber ?? "Invoice");
+    } else if (et === "case_created" || et === "remake_of" || et === "case_created_from_itero") {
+      type = "created";
+    }
+    return {
+      id: e.id ?? `event-${idx}`,
+      type,
+      timestamp: ts,
+      description,
+      user: e.actorInitials ?? undefined,
+    };
+  }
+
+  React.useEffect(() => {
+    if (!id || !remakeOfCaseId) {
+      setOriginalActivityLog([]);
+      setOriginalCaseNumber(null);
+      return;
+    }
+    setOriginalActivityLog([]);
+    setOriginalCaseNumber(null);
+    let cancelled = false;
+
+    async function fetchOriginalHistory() {
+      // Try canonical endpoint first — returns originalCaseEvents for remake cases.
+      const canonicalRes = await resilientFetch(`/api/cases/${encodeURIComponent(id as string)}`).catch(() => null);
+      if (!cancelled && canonicalRes && canonicalRes.ok) {
+        const data = await canonicalRes.json().catch(() => null);
+        const events: unknown[] = Array.isArray(data?.originalCaseEvents) ? data.originalCaseEvents : [];
+        if (events.length > 0) {
+          const entries = (events as Parameters<typeof caseEventToActivityEntry>[0][]).map(caseEventToActivityEntry);
+          setOriginalActivityLog(entries);
+          setOriginalCaseNumber(data?.remakeOriginal?.caseNumber ?? null);
+          return;
+        }
+      }
+
+      // Fallback: fetch the original (legacy) case directly.
+      if (cancelled) return;
+      const legacyRes = await resilientFetch(`/api/legacy/cases/${encodeURIComponent(remakeOfCaseId as string)}`).catch(() => null);
+      if (cancelled || !legacyRes || !legacyRes.ok) return;
+      const legacyData = await legacyRes.json().catch(() => null);
+      if (cancelled) return;
+      const originalCase = legacyData?.case;
+      if (!originalCase) return;
+      const log: ActivityEntry[] = Array.isArray(originalCase.activityLog) ? originalCase.activityLog : [];
+      setOriginalActivityLog(log);
+      setOriginalCaseNumber(originalCase.caseNumber ?? null);
+    }
+
+    void fetchOriginalHistory();
+    return () => { cancelled = true; };
+  }, [id, remakeOfCaseId]);
 
   React.useEffect(() => {
     if (!id) return;
@@ -1807,26 +1902,47 @@ export default function CaseDetailScreen() {
           </Pressable>
         </View>
         <View style={styles.timeline}>
-          {(caseItem.activityLog && caseItem.activityLog.length > 0
-            ? (() => {
-                const sorted = [...caseItem.activityLog].sort((a, b) => b.timestamp - a.timestamp);
-                const photoTimestamps = sorted.filter(e => e.type === "photo" || e.type === "video").map(e => e.timestamp);
-                return sorted.filter(entry => {
-                  if (entry.type !== "note") return true;
-                  return !photoTimestamps.some(pt => Math.abs(pt - entry.timestamp) < 5000);
-                });
-              })()
-            : [...(caseItem.routeHistory ?? [])].sort((a, b) => b.timestamp - a.timestamp).map((rh) => ({
-                id: String(rh.timestamp),
-                type: "station_change" as const,
-                timestamp: rh.timestamp,
-                description: `Case moved to ${getStationInfo(rh.station, customStationLabels).label}`,
-                station: rh.station,
-                user: undefined as string | undefined,
-              }))
-          ).map((entry, idx, arr) => {
+          {(() => {
+            type TaggedEntry = ActivityEntry & { _source: "original" | "current" };
+
+            const sortedOriginal: TaggedEntry[] = [...originalActivityLog]
+              .sort((a, b) => a.timestamp - b.timestamp)
+              .map(e => ({ ...e, _source: "original" as const }));
+            const hasOriginal = sortedOriginal.length > 0;
+
+            // When combined with original entries the whole timeline reads
+            // chronologically (oldest → newest). For non-remake cases the
+            // existing newest-first order is preserved.
+            const sortCurrentAsc = hasOriginal;
+            const currentRaw: ActivityEntry[] = caseItem.activityLog && caseItem.activityLog.length > 0
+              ? (() => {
+                  const sorted = [...caseItem.activityLog].sort((a, b) =>
+                    sortCurrentAsc ? a.timestamp - b.timestamp : b.timestamp - a.timestamp
+                  );
+                  const photoTimestamps = sorted.filter(e => e.type === "photo" || e.type === "video").map(e => e.timestamp);
+                  return sorted.filter(entry => {
+                    if (entry.type !== "note") return true;
+                    return !photoTimestamps.some(pt => Math.abs(pt - entry.timestamp) < 5000);
+                  });
+                })()
+              : [...(caseItem.routeHistory ?? [])].sort((a, b) =>
+                  sortCurrentAsc ? a.timestamp - b.timestamp : b.timestamp - a.timestamp
+                ).map((rh) => ({
+                  id: String(rh.timestamp),
+                  type: "station_change" as const,
+                  timestamp: rh.timestamp,
+                  description: `Case moved to ${getStationInfo(rh.station, customStationLabels).label}`,
+                  station: rh.station,
+                  user: undefined as string | undefined,
+                }));
+
+            const currentEntries: TaggedEntry[] = currentRaw.map(e => ({ ...e, _source: "current" as const }));
+            const allEntries: TaggedEntry[] = [...sortedOriginal, ...currentEntries];
+
+            return allEntries.map((entry, idx, arr) => {
             const isLast = idx === arr.length - 1;
-            const isFirst = idx === 0;
+            const isFirstCurrentEntry = hasOriginal && entry._source === "current" && (idx === 0 || arr[idx - 1]?._source === "original");
+            const isFirst = !hasOriginal ? idx === 0 : isFirstCurrentEntry;
             const isStation = entry.type === "station_change" || entry.type === "created" || entry.type === "scan";
             const isNote = entry.type === "note";
             const isPhoto = entry.type === "photo";
@@ -1882,7 +1998,17 @@ export default function CaseDetailScreen() {
               : (isStation ? "" : (role === "admin" ? "A" : "U"));
 
             return (
-              <View key={entry.id || idx} style={styles.timelineItem}>
+              <React.Fragment key={entry.id || String(idx)}>
+                {isFirstCurrentEntry && (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 10, paddingHorizontal: 4 }}>
+                    <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
+                    <Text style={{ fontSize: 10, fontFamily: "Inter_600SemiBold", color: Colors.light.textSecondary, textTransform: "uppercase", letterSpacing: 0.8 }}>
+                      Case {caseItem.caseNumber}
+                    </Text>
+                    <View style={{ flex: 1, height: 1, backgroundColor: Colors.light.border }} />
+                  </View>
+                )}
+              <View style={[styles.timelineItem, entry._source === "original" && { opacity: 0.6 }]}>
                 <View style={styles.timelineLine}>
                   <View
                     style={[
@@ -2102,13 +2228,24 @@ export default function CaseDetailScreen() {
                       })()}
                     </Pressable>
                   )}
-                  <Text style={styles.timelineTime}>
-                    {formatTimestamp(entry.timestamp)}
-                  </Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Text style={styles.timelineTime}>
+                      {formatTimestamp(entry.timestamp)}
+                    </Text>
+                    {entry._source === "original" && (
+                      <View style={{ backgroundColor: "#F1F5F9", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                        <Text style={{ fontSize: 9, fontFamily: "Inter_600SemiBold", color: "#64748B", textTransform: "uppercase", letterSpacing: 0.4 }}>
+                          {originalCaseNumber ?? "Original"}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                 </View>
               </View>
+              </React.Fragment>
             );
-          })}
+          });
+          })()}
         </View>
 
         <View style={styles.actionSection}>
