@@ -510,20 +510,80 @@ export async function checkAndAlertBackupStaleness(): Promise<void> {
       return;
     }
 
-    await sendBackupStaleAlertEmail({
-      adminEmails,
-      lastSuccessfulAt,
-      daysSinceBackup: isFinite(daysSince) ? daysSince : 0,
-    });
+    // Atomically claim the send slot before sending the email so that only one
+    // server instance sends the alert when multiple instances run concurrently.
+    // We do a conditional write that only succeeds when the stored value still
+    // matches what we read earlier (compare-and-swap). If another instance
+    // already claimed the slot, rowCount will be 0 and we bail out.
+    const claimTime = new Date();
+    const claimValue = claimTime.toISOString();
+    let claimed = false;
 
-    const sentAt = new Date().toISOString();
-    await db
-      .insert(systemSettings)
-      .values({ key: SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT, value: sentAt })
-      .onConflictDoUpdate({
-        target: systemSettings.key,
-        set: { value: sentAt, updatedAt: new Date() },
+    if (lastSentRaw === null) {
+      // No row yet — INSERT and ignore if another instance races us to it.
+      const insertResult = await db
+        .insert(systemSettings)
+        .values({ key: SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT, value: claimValue })
+        .onConflictDoNothing();
+      claimed = (insertResult.rowCount ?? 0) > 0;
+    } else {
+      // Row exists — UPDATE only when the stored value still equals lastSentRaw.
+      const updateResult = await db
+        .update(systemSettings)
+        .set({ value: claimValue, updatedAt: claimTime })
+        .where(
+          sql`${systemSettings.key} = ${SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT} AND ${systemSettings.value} = ${lastSentRaw}`,
+        );
+      claimed = (updateResult.rowCount ?? 0) > 0;
+    }
+
+    if (!claimed) {
+      logger.info(
+        "[backup] Stale backup alert claim lost to a concurrent instance; skipping duplicate send",
+      );
+      return;
+    }
+
+    try {
+      await sendBackupStaleAlertEmail({
+        adminEmails,
+        lastSuccessfulAt,
+        daysSinceBackup: isFinite(daysSince) ? daysSince : 0,
       });
+    } catch (sendErr: unknown) {
+      // Email delivery failed after we claimed the slot. Best-effort: roll back
+      // the claim so the next scheduled invocation can retry rather than being
+      // silenced for the full rate-limit window with no alert delivered.
+      logger.error(
+        { err: sendErr instanceof Error ? sendErr.message : String(sendErr) },
+        "[backup] Stale backup alert email failed; rolling back claim",
+      );
+      try {
+        if (lastSentRaw === null) {
+          // We did an INSERT — delete the row to restore the "no prior alert" state.
+          await db
+            .delete(systemSettings)
+            .where(
+              sql`${systemSettings.key} = ${SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT} AND ${systemSettings.value} = ${claimValue}`,
+            );
+        } else {
+          // We did an UPDATE — restore the previous value so the next invocation
+          // can attempt to send again.
+          await db
+            .update(systemSettings)
+            .set({ value: lastSentRaw, updatedAt: new Date() })
+            .where(
+              sql`${systemSettings.key} = ${SETTING_BACKUP_STALE_ALERT_LAST_SENT_AT} AND ${systemSettings.value} = ${claimValue}`,
+            );
+        }
+      } catch (rollbackErr: unknown) {
+        logger.warn(
+          { err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr) },
+          "[backup] Stale backup alert claim rollback failed; rate-limit window may be consumed without a delivery",
+        );
+      }
+      throw sendErr;
+    }
 
     logger.info(
       { adminEmailCount: adminEmails.length, daysSinceBackup: isFinite(daysSince) ? daysSince.toFixed(1) : "never" },
@@ -701,54 +761,6 @@ async function fireScheduledBackup() {
       );
     }
   }
-}
-
-// ── 15-minute rolling OneDrive backup ────────────────────────────────────────
-// Fires every 15 minutes when the OneDrive connector is available and
-// rolling backup is enabled (default: enabled). Results and errors are stored
-// in system_settings under the SETTING_ROLLING_BACKUP_* keys so the admin
-// Settings → Backup panel can surface the last run status.
-
-const ROLLING_BACKUP_INTERVAL_MS = 15 * 60 * 1000;
-let _rollingBackupTimer: ReturnType<typeof setInterval> | null = null;
-
-async function fireRollingBackup(): Promise<void> {
-  try {
-    const rows = await db
-      .select()
-      .from(systemSettings)
-      .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
-    const enabledRaw = rows[0]?.value ?? null;
-    const enabled = enabledRaw === null ? true : enabledRaw !== "false";
-    if (!enabled) return;
-
-    logger.info({ startedAt: new Date().toISOString() }, "Rolling 15-min backup starting");
-    await runOneDriveBackup("scheduler:rolling");
-    const now = new Date().toISOString();
-    await db
-      .insert(systemSettings)
-      .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: now })
-      .onConflictDoUpdate({ target: systemSettings.key, set: { value: now, updatedAt: new Date() } });
-    await db.delete(systemSettings).where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_LAST_ERROR));
-    logger.info({ completedAt: now }, "Rolling 15-min backup OK");
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ err: msg }, "Rolling 15-min backup FAILED");
-    try {
-      await db
-        .insert(systemSettings)
-        .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: msg })
-        .onConflictDoUpdate({ target: systemSettings.key, set: { value: msg, updatedAt: new Date() } });
-    } catch {
-      // ignore secondary DB error
-    }
-  }
-}
-
-export function start15MinRollingBackup(): void {
-  if (_rollingBackupTimer !== null) return;
-  logger.info({ intervalMinutes: 15 }, "Rolling 15-min OneDrive backup scheduler started");
-  _rollingBackupTimer = setInterval(() => { void fireRollingBackup(); }, ROLLING_BACKUP_INTERVAL_MS);
 }
 
 export async function restartScheduledBackupJob(): Promise<void> {
