@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   CheckSquare,
   ChevronDown,
   ChevronUp,
   GitMerge,
   Loader2,
   Search,
+  Sparkles,
   Square,
   Stethoscope,
   Undo2,
@@ -76,6 +78,7 @@ export interface DoctorRow {
   rushCases: number;
   totalBilled: number;
   lastCaseAt: string | null;
+  hasAiImportedCase: boolean;
 }
 
 type SortKey =
@@ -205,7 +208,13 @@ export default function DoctorsPage() {
           rushCases: c.priority === "rush" ? 1 : 0,
           totalBilled: billed,
           lastCaseAt: created,
+          hasAiImportedCase: !!(c.aiImportSource || c.needsAiReview),
         });
+      }
+      // If any case for this doctor/practice combo was AI-imported, flag the row.
+      if (c.aiImportSource || c.needsAiReview) {
+        const row = map.get(key);
+        if (row) row.hasAiImportedCase = true;
       }
     }
     // Annotate practice names from /organizations first (most authoritative,
@@ -276,6 +285,13 @@ export default function DoctorsPage() {
     );
   }
 
+  // Doctors that were AI-imported and still have no identifiable practice.
+  // These need the lab's attention so billing can be routed correctly.
+  const unknownPracticeAiDoctors = useMemo(
+    () => rows.filter((r) => r.practiceName === "Unknown practice" && r.hasAiImportedCase),
+    [rows],
+  );
+
   const isLoading = casesQuery.isLoading || invoicesQuery.isLoading;
   const error = (casesQuery.error || invoicesQuery.error) as Error | null;
 
@@ -292,6 +308,33 @@ export default function DoctorsPage() {
           {filtered.length} of {rows.length}
         </div>
       </div>
+
+      {unknownPracticeAiDoctors.length > 0 && (
+        <div className="mb-5 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-4 py-3.5 flex items-start gap-3">
+          <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+              {unknownPracticeAiDoctors.length === 1
+                ? "1 AI-imported doctor needs a practice assignment"
+                : `${unknownPracticeAiDoctors.length} AI-imported doctors need practice assignments`}
+            </p>
+            <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+              A prescription was scanned via AI but the practice could not be identified.
+              Assign each doctor to an existing practice (or create a new one) so billing routes correctly.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setPracticeFilter("all");
+              setSearch("Unknown practice");
+            }}
+            className="shrink-0 text-xs font-medium text-amber-800 dark:text-amber-300 underline underline-offset-2 hover:text-amber-900 dark:hover:text-amber-100"
+          >
+            Show all
+          </button>
+        </div>
+      )}
 
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
@@ -437,13 +480,50 @@ export default function DoctorsPage() {
                   </td>
                   <td className="px-5 py-3">
                     <div className="flex items-center gap-2.5">
-                      <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-                        <Stethoscope size={13} />
+                      <div className={`h-7 w-7 rounded-full flex items-center justify-center ${r.practiceName === "Unknown practice" && r.hasAiImportedCase ? "bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400" : "bg-primary/10 text-primary"}`}>
+                        {r.practiceName === "Unknown practice" && r.hasAiImportedCase ? (
+                          <Sparkles size={13} />
+                        ) : (
+                          <Stethoscope size={13} />
+                        )}
                       </div>
                       <div className="font-medium">{r.doctorName}</div>
                     </div>
                   </td>
-                  <td className="py-3 text-muted-foreground">{r.practiceName}</td>
+                  <td className="py-3">
+                    {r.practiceName === "Unknown practice" && r.hasAiImportedCase ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-amber-600 dark:text-amber-400 text-xs font-medium inline-flex items-center gap-1">
+                          <AlertTriangle size={11} />
+                          Unknown practice
+                        </span>
+                        {canSelect && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMergeDialog({
+                                labOrganizationId: r.labOrganizationId,
+                                sources: [
+                                  {
+                                    doctorName: r.doctorName,
+                                    providerOrganizationId: r.practiceId || null,
+                                    practiceName: r.practiceName,
+                                  },
+                                ],
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 hover:bg-amber-100 dark:hover:bg-amber-800/40"
+                          >
+                            <GitMerge size={10} />
+                            Assign practice
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">{r.practiceName}</span>
+                    )}
+                  </td>
                   <td className="py-3 text-right tabular-nums">{r.totalCases}</td>
                   <td className="py-3 text-right tabular-nums">{r.openCases}</td>
                   <td className="py-3 text-right tabular-nums">
@@ -492,6 +572,7 @@ export default function DoctorsPage() {
           onMerged={(result) => {
             queryClientPage.invalidateQueries({ queryKey: ["cases"] });
             queryClientPage.invalidateQueries({ queryKey: ["invoices"] });
+            queryClientPage.invalidateQueries({ queryKey: ["organizations"] });
             setPicked(new Set());
             setSelected(null);
             setMergeDialog(null);
@@ -818,16 +899,35 @@ export function MergeDialog({
   onClose: () => void;
   onMerged: (r: MergeDialogResult) => void;
 }) {
-  const [sources, setSources] = useState<MergeSourceInput[]>(initialSources);
+  // Smart initialization: when the selection contains a mix of doctors with a
+  // known practice and doctors with "Unknown practice", automatically promote
+  // the known-practice doctor(s) to be the TARGET and keep only the
+  // unknown-practice doctors as SOURCES. This is the most common intent —
+  // the user wants to fold the ghost/unknown entry into the real one so the
+  // correct practice gets billed.
+  const _knownPracticeSources = initialSources.filter(
+    (s) => !!s.providerOrganizationId,
+  );
+  const _unknownPracticeSources = initialSources.filter(
+    (s) => !s.providerOrganizationId,
+  );
+  const _mixedSelection =
+    _knownPracticeSources.length > 0 && _unknownPracticeSources.length > 0;
+  const _autoTarget = _mixedSelection
+    ? _knownPracticeSources[0]
+    : initialSources[0];
+  const _autoSources = _mixedSelection ? _unknownPracticeSources : initialSources;
+
+  const [sources, setSources] = useState<MergeSourceInput[]>(_autoSources);
   const [targetMode, setTargetMode] = useState<"existing" | "new">("existing");
   const [targetName, setTargetName] = useState<string>(
-    initialSources[0]?.doctorName ?? "",
+    _autoTarget?.doctorName ?? "",
   );
   const [targetProviderId, setTargetProviderId] = useState<string | null>(
-    initialSources[0]?.providerOrganizationId ?? null,
+    _autoTarget?.providerOrganizationId ?? null,
   );
   const [targetPracticeName, setTargetPracticeName] = useState<string>(
-    initialSources[0]?.practiceName ?? "",
+    _autoTarget?.practiceName ?? "",
   );
   const [includeSoftDeleted, setIncludeSoftDeleted] = useState(false);
   const [searchInput, setSearchInput] = useState("");

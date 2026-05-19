@@ -148,6 +148,50 @@ export interface DoctorSearchResult {
   data?: DoctorSearchResultData;
 }
 
+export type UpdateCaseInputStatus =
+  (typeof UpdateCaseInputStatus)[keyof typeof UpdateCaseInputStatus];
+
+export const UpdateCaseInputStatus = {
+  received: "received",
+  in_design: "in_design",
+  in_milling: "in_milling",
+  in_porcelain: "in_porcelain",
+  qc: "qc",
+  shipped: "shipped",
+  delivered: "delivered",
+  on_hold: "on_hold",
+  remake: "remake",
+  cancelled: "cancelled",
+} as const;
+
+export type UpdateCaseInputPriority =
+  (typeof UpdateCaseInputPriority)[keyof typeof UpdateCaseInputPriority];
+
+export const UpdateCaseInputPriority = {
+  normal: "normal",
+  rush: "rush",
+} as const;
+
+export interface UpdateCaseInput {
+  status?: UpdateCaseInputStatus;
+  priority?: UpdateCaseInputPriority;
+  dueDate?: string;
+  doctorName?: string;
+  patientFirstName?: string;
+  patientLastName?: string;
+  /** Re-assign the case to a different provider organization.
+Must be an active provider org that belongs to the same lab
+as the case (validated server-side).
+ */
+  providerOrganizationId?: string;
+  /** When `true`, clears the AI-generated `suggestedDoctorName` and
+`suggestedProviderOrgId` fields without affecting any other
+case fields. Used by the "Keep as-is" action in the desktop
+review banner.
+ */
+  clearSuggestion?: boolean;
+}
+
 export type IteroImportResultData = {
   deduped?: boolean;
   caseId?: string | null;
@@ -155,6 +199,19 @@ export type IteroImportResultData = {
   needsAiReview?: boolean;
   attachmentId?: string | null;
   iteroOrderId?: string;
+  /** Present when the AI-extracted doctor name closely matches
+(but does not exactly equal) an existing doctor on file.
+Shown as a "Did you mean?" prompt in the desktop review
+banner. Cleared via `PATCH /cases/{caseId}` with
+`clearSuggestion: true`.
+ */
+  suggestedDoctorName?: string | null;
+  /** Provider org id of the suggested match doctor. */
+  suggestedProviderOrgId?: string | null;
+  /** Display name of the suggested provider org, resolved
+server-side so the desktop banner needs no extra round-trip.
+ */
+  suggestedPracticeName?: string | null;
 };
 
 export interface IteroImportResult {
@@ -274,6 +331,17 @@ to the top.
  * @minimum 0
  */
   offset?: number;
+};
+
+/**
+ * Raw updated case row (Drizzle shape)
+ */
+export type UpdateCase200Data = { [key: string]: unknown };
+
+export type UpdateCase200 = {
+  ok?: boolean;
+  /** Raw updated case row (Drizzle shape) */
+  data?: UpdateCase200Data;
 };
 
 export type AcknowledgeAiReview200Data = {

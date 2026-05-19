@@ -47,6 +47,37 @@ import { asyncHandler } from "../middlewares/async-handler";
 import { requireAuth } from "../middlewares/auth";
 import { getProviderOrgIdsForUserAndLinks } from "../lib/cross-lab-doctor";
 
+// ---------------------------------------------------------------------------
+// Bigram similarity helpers — used for AI-extracted doctor name suggestions.
+// Intentionally self-contained so no dependency on the doctors route.
+// ---------------------------------------------------------------------------
+function _normalizeDoctorForSim(name: string): string {
+  return (name ?? "")
+    .toLowerCase()
+    .replace(/\bdr\.?\s*/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function _bigramSimilarity(a: string, b: string): number {
+  const an = _normalizeDoctorForSim(a);
+  const bn = _normalizeDoctorForSim(b);
+  if (!an || !bn) return 0;
+  if (an === bn) return 1;
+  const bigrams = (s: string): Set<string> => {
+    const set = new Set<string>();
+    const p = ` ${s} `;
+    for (let i = 0; i < p.length - 1; i++) set.add(p.slice(i, i + 2));
+    return set;
+  };
+  const A = bigrams(an);
+  const B = bigrams(bn);
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
 const router = Router();
 router.use(requireAuth);
 
@@ -1446,8 +1477,19 @@ router.get(
       });
     }
 
+    // Resolve the suggested practice name so the desktop banner can display it
+    // without a second round-trip.
+    let suggestedPracticeName: string | null = null;
+    if (found.suggestedProviderOrgId) {
+      const suggestedOrg = await db.query.organizations.findFirst({
+        where: eq(organizations.id, found.suggestedProviderOrgId),
+      });
+      suggestedPracticeName = suggestedOrg?.name ?? null;
+    }
+
     return ok(res, {
       ...found,
+      suggestedPracticeName,
       restorations,
       notes: enrichedNotes,
       attachments: visibleAttachmentsFor(enrichedAttachments, isLabMember),
@@ -1734,6 +1776,9 @@ const updateCaseSchema = z.object({
   doctorName: z.string().optional(),
   patientFirstName: z.string().optional(),
   patientLastName: z.string().optional(),
+  providerOrganizationId: z.string().optional(),
+  /** When true, clears suggestedDoctorName + suggestedProviderOrgId on the case. */
+  clearSuggestion: z.boolean().optional(),
 });
 
 router.patch(
@@ -1759,6 +1804,32 @@ router.patch(
       updates.patientFirstName = input.patientFirstName;
     if (input.patientLastName !== undefined)
       updates.patientLastName = input.patientLastName;
+    if (input.providerOrganizationId !== undefined) {
+      // Validate that the requested provider org exists, is not deleted, and
+      // belongs to the same lab as the case. This prevents a lab member from
+      // re-pointing a case to an unrelated provider org via a crafted payload.
+      const targetOrg = await db.query.organizations.findFirst({
+        where: and(
+          eq(organizations.id, input.providerOrganizationId),
+          isNull(organizations.deletedAt)
+        ),
+      });
+      if (
+        !targetOrg ||
+        targetOrg.type !== "provider" ||
+        targetOrg.parentLabOrganizationId !== found.labOrganizationId
+      ) {
+        throw new HttpError(
+          400,
+          "providerOrganizationId must be an active provider organization belonging to this lab."
+        );
+      }
+      updates.providerOrganizationId = input.providerOrganizationId;
+    }
+    if (input.clearSuggestion) {
+      updates.suggestedDoctorName = null;
+      updates.suggestedProviderOrgId = null;
+    }
 
     const [updated] = await db
       .update(cases)
@@ -2661,6 +2732,43 @@ router.post(
       (extracted.doctorName?.trim() || body.doctorNameHint?.trim() ||
         "Unknown Doctor");
 
+    // ── Suggest an existing doctor when AI name is similar but not exact ──
+    // Query distinct (doctorName, providerOrganizationId) groups for this lab,
+    // compute bigram similarity, and surface the closest match above 0.4 as a
+    // "Did you mean?" prompt in the desktop review banner.
+    let suggestedDoctorName: string | null = null;
+    let suggestedProviderOrgId: string | null = null;
+    if (doctorName !== "Unknown Doctor") {
+      const existingGroups = await db
+        .selectDistinct({
+          doctorName: cases.doctorName,
+          providerOrganizationId: cases.providerOrganizationId,
+        })
+        .from(cases)
+        .where(
+          and(
+            eq(cases.labOrganizationId, body.labOrganizationId),
+            notDeleted(cases)
+          )
+        );
+
+      let bestSim = 0;
+      let bestMatch: { doctorName: string; providerOrganizationId: string } | null = null;
+      const normExtracted = _normalizeDoctorForSim(doctorName);
+      for (const g of existingGroups) {
+        if (_normalizeDoctorForSim(g.doctorName) === normExtracted) continue;
+        const sim = _bigramSimilarity(doctorName, g.doctorName);
+        if (sim >= 0.4 && sim > bestSim) {
+          bestSim = sim;
+          bestMatch = g;
+        }
+      }
+      if (bestMatch) {
+        suggestedDoctorName = bestMatch.doctorName;
+        suggestedProviderOrgId = bestMatch.providerOrganizationId;
+      }
+    }
+
     let dueDate: Date | null = null;
     if (extracted.dueDate) {
       const parsed = new Date(extracted.dueDate);
@@ -2779,6 +2887,8 @@ router.post(
           needsAiReview: true,
           aiImportSource: "itero",
           externalPatientId: body.iteroOrderId,
+          suggestedDoctorName,
+          suggestedProviderOrgId,
         })
         .returning();
 

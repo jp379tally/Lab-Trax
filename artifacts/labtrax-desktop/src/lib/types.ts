@@ -48,6 +48,16 @@ export interface LabCase {
   remakeReason?: string | null;
   /** True = chargeable remake, false = no-charge remake, null = unspecified. */
   remakeCharged?: boolean | null;
+  /**
+   * When the AI assigned a doctor name that closely matches (but doesn't
+   * exactly equal) an existing doctor on file, this is the suggested
+   * match. Shown as a "Did you mean?" prompt in the AI-review banner.
+   */
+  suggestedDoctorName?: string | null;
+  /** Provider org id of the suggested match doctor. */
+  suggestedProviderOrgId?: string | null;
+  /** Practice display name of the suggested match (resolved by the server). */
+  suggestedPracticeName?: string | null;
 }
 
 /**

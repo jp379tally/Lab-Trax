@@ -251,6 +251,7 @@ export default function AccountsPage() {
           rushCases: c.priority === "rush" ? 1 : 0,
           totalBilled: billed,
           lastCaseAt: created,
+          hasAiImportedCase: !!(c.aiImportSource || c.needsAiReview),
         });
       }
     }

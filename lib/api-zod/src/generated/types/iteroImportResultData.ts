@@ -13,4 +13,17 @@ export type IteroImportResultData = {
   needsAiReview?: boolean;
   attachmentId?: string | null;
   iteroOrderId?: string;
+  /** Present when the AI-extracted doctor name closely matches
+(but does not exactly equal) an existing doctor on file.
+Shown as a "Did you mean?" prompt in the desktop review
+banner. Cleared via `PATCH /cases/{caseId}` with
+`clearSuggestion: true`.
+ */
+  suggestedDoctorName?: string | null;
+  /** Provider org id of the suggested match doctor. */
+  suggestedProviderOrgId?: string | null;
+  /** Display name of the suggested provider org, resolved
+server-side so the desktop banner needs no extra round-trip.
+ */
+  suggestedPracticeName?: string | null;
 };

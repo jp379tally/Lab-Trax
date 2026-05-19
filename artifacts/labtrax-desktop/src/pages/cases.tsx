@@ -1519,6 +1519,36 @@ export function CaseDrawer({
     },
   });
 
+  const acceptSuggestionMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          doctorName: data?.suggestedDoctorName,
+          ...(data?.suggestedProviderOrgId
+            ? { providerOrganizationId: data.suggestedProviderOrgId }
+            : {}),
+          clearSuggestion: true,
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+    },
+  });
+
+  const dismissSuggestionMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ clearSuggestion: true }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+    },
+  });
+
   const [aiDupes, setAiDupes] = useState<PatientSimilarityHit[] | null>(null);
   const [aiDupesLoading, setAiDupesLoading] = useState(false);
   const [aiDupeSelectedId, setAiDupeSelectedId] = useState<string>("");
@@ -1865,6 +1895,44 @@ export function CaseDrawer({
                 Mark as reviewed
               </button>
             </div>
+
+            {/* "Did you mean?" doctor suggestion banner */}
+            {data.suggestedDoctorName && (
+              <div className="mt-3 ml-7 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2.5 flex items-start gap-2.5">
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+                    Did you mean{" "}
+                    <span className="font-bold">{data.suggestedDoctorName}</span>
+                    {data.suggestedPracticeName ? (
+                      <span className="font-normal"> at {data.suggestedPracticeName}</span>
+                    ) : null}
+                    ?
+                  </div>
+                  <div className="text-[11px] text-amber-700/70 dark:text-amber-200/60 mt-0.5">
+                    The AI extracted a name that closely matches an existing doctor. Select the correct one below.
+                  </div>
+                </div>
+                <div className="flex gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => acceptSuggestionMutation.mutate()}
+                    disabled={acceptSuggestionMutation.isPending || dismissSuggestionMutation.isPending}
+                    className="inline-flex items-center gap-1 h-7 px-2.5 rounded bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium disabled:opacity-60"
+                  >
+                    {acceptSuggestionMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : null}
+                    Use this doctor
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => dismissSuggestionMutation.mutate()}
+                    disabled={acceptSuggestionMutation.isPending || dismissSuggestionMutation.isPending}
+                    className="inline-flex items-center h-7 px-2.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-800 dark:text-amber-200 text-xs font-medium disabled:opacity-60"
+                  >
+                    Keep as-is
+                  </button>
+                </div>
+              </div>
+            )}
 
             {aiDupes && (
               <div className="mt-3 ml-7 rounded-md border border-amber-500/30 bg-card p-3 space-y-3">

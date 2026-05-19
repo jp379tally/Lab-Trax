@@ -45,6 +45,22 @@ export const ImportCaseFromIteroRxResponse = zod.object({
       needsAiReview: zod.boolean().optional(),
       attachmentId: zod.string().nullish(),
       iteroOrderId: zod.string().optional(),
+      suggestedDoctorName: zod
+        .string()
+        .nullish()
+        .describe(
+          'Present when the AI-extracted doctor name closely matches\n(but does not exactly equal) an existing doctor on file.\nShown as a \"Did you mean?\" prompt in the desktop review\nbanner. Cleared via `PATCH \/cases\/{caseId}` with\n`clearSuggestion: true`.\n',
+        ),
+      suggestedProviderOrgId: zod
+        .string()
+        .nullish()
+        .describe("Provider org id of the suggested match doctor."),
+      suggestedPracticeName: zod
+        .string()
+        .nullish()
+        .describe(
+          "Display name of the suggested provider org, resolved\nserver-side so the desktop banner needs no extra round-trip.\n",
+        ),
     })
     .optional(),
 });
@@ -286,6 +302,63 @@ export const UndoDoctorMergeResponse = zod.object({
       sourceProviderOrganizationId: zod.string().nullish(),
     })
     .optional(),
+});
+
+/**
+ * Partially update a case. All fields are optional. The caller must be
+an active member of the case's lab organization.
+`providerOrganizationId` is validated to be an active, non-deleted
+provider org belonging to the same lab before it is applied.
+`clearSuggestion: true` erases the AI-generated doctor suggestion
+without affecting any other fields.
+
+ * @summary Update case fields
+ */
+export const UpdateCaseParams = zod.object({
+  caseId: zod.coerce.string(),
+});
+
+export const UpdateCaseBody = zod.object({
+  status: zod
+    .enum([
+      "received",
+      "in_design",
+      "in_milling",
+      "in_porcelain",
+      "qc",
+      "shipped",
+      "delivered",
+      "on_hold",
+      "remake",
+      "cancelled",
+    ])
+    .optional(),
+  priority: zod.enum(["normal", "rush"]).optional(),
+  dueDate: zod.coerce.date().optional(),
+  doctorName: zod.string().optional(),
+  patientFirstName: zod.string().optional(),
+  patientLastName: zod.string().optional(),
+  providerOrganizationId: zod
+    .string()
+    .optional()
+    .describe(
+      "Re-assign the case to a different provider organization.\nMust be an active provider org that belongs to the same lab\nas the case (validated server-side).\n",
+    ),
+  clearSuggestion: zod
+    .boolean()
+    .optional()
+    .describe(
+      'When `true`, clears the AI-generated `suggestedDoctorName` and\n`suggestedProviderOrgId` fields without affecting any other\ncase fields. Used by the \"Keep as-is\" action in the desktop\nreview banner.\n',
+    ),
+});
+
+export const UpdateCaseResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({})
+    .passthrough()
+    .optional()
+    .describe("Raw updated case row (Drizzle shape)"),
 });
 
 /**

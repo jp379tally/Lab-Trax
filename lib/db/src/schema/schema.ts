@@ -459,6 +459,11 @@ export const cases = pgTable(
     remakeOfCaseId: varchar("remake_of_case_id"),
     remakeReason: text("remake_reason"),
     remakeCharged: boolean("remake_charged"),
+    suggestedDoctorName: text("suggested_doctor_name"),
+    suggestedProviderOrgId: varchar("suggested_provider_org_id").references(
+      () => organizations.id,
+      { onDelete: "set null" }
+    ),
   },
   (table) => ({
     caseNumberUnique: uniqueIndex("cases_case_number_unique").on(

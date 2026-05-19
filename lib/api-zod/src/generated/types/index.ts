@@ -42,3 +42,8 @@ export * from "./receivePaymentsResultData";
 export * from "./receivePaymentsResultDataInvoicesItem";
 export * from "./receivePaymentsResultDataPaymentsItem";
 export * from "./searchDoctorsParams";
+export * from "./updateCase200";
+export * from "./updateCase200Data";
+export * from "./updateCaseInput";
+export * from "./updateCaseInputPriority";
+export * from "./updateCaseInputStatus";

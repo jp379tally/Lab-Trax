@@ -215,6 +215,47 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DoctorMergeUndoResult"
+  /cases/{caseId}:
+    patch:
+      operationId: updateCase
+      tags: [cases]
+      summary: Update case fields
+      description: |
+        Partially update a case. All fields are optional. The caller must be
+        an active member of the case's lab organization.
+        `providerOrganizationId` is validated to be an active, non-deleted
+        provider org belonging to the same lab before it is applied.
+        `clearSuggestion: true` erases the AI-generated doctor suggestion
+        without affecting any other fields.
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCaseInput"
+      responses:
+        "200":
+          description: Updated case row
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    description: Raw updated case row (Drizzle shape)
+        "400":
+          description: Validation error or invalid providerOrganizationId
+        "403":
+          description: Caller is not a member of the case's lab
+        "404":
+          description: Case not found or caller lacks access
   /cases/{caseId}/ai-review:
     patch:
       operationId: acknowledgeAiReview
@@ -528,6 +569,32 @@ components:
             total: { type: integer }
             offset: { type: integer }
             limit: { type: integer }
+    UpdateCaseInput:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [received, in_design, in_milling, in_porcelain, qc, shipped, delivered, on_hold, remake, cancelled]
+        priority:
+          type: string
+          enum: [normal, rush]
+        dueDate: { type: string, format: date-time }
+        doctorName: { type: string }
+        patientFirstName: { type: string }
+        patientLastName: { type: string }
+        providerOrganizationId:
+          type: string
+          description: |
+            Re-assign the case to a different provider organization.
+            Must be an active provider org that belongs to the same lab
+            as the case (validated server-side).
+        clearSuggestion:
+          type: boolean
+          description: |
+            When `true`, clears the AI-generated `suggestedDoctorName` and
+            `suggestedProviderOrgId` fields without affecting any other
+            case fields. Used by the "Keep as-is" action in the desktop
+            review banner.
     IteroImportResult:
       type: object
       properties:
@@ -541,6 +608,25 @@ components:
             needsAiReview: { type: boolean }
             attachmentId: { type: string, nullable: true }
             iteroOrderId: { type: string }
+            suggestedDoctorName:
+              type: string
+              nullable: true
+              description: |
+                Present when the AI-extracted doctor name closely matches
+                (but does not exactly equal) an existing doctor on file.
+                Shown as a "Did you mean?" prompt in the desktop review
+                banner. Cleared via `PATCH /cases/{caseId}` with
+                `clearSuggestion: true`.
+            suggestedProviderOrgId:
+              type: string
+              nullable: true
+              description: Provider org id of the suggested match doctor.
+            suggestedPracticeName:
+              type: string
+              nullable: true
+              description: |
+                Display name of the suggested provider org, resolved
+                server-side so the desktop banner needs no extra round-trip.
     OpenInvoice:
       type: object
       required:

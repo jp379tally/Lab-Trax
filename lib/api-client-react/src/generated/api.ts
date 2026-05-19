@@ -34,6 +34,8 @@ import type {
   ReceivePaymentsInput,
   ReceivePaymentsResult,
   SearchDoctorsParams,
+  UpdateCase200,
+  UpdateCaseInput,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -618,6 +620,100 @@ export const useUndoDoctorMerge = <
   TContext
 > => {
   return useMutation(getUndoDoctorMergeMutationOptions(options));
+};
+
+/**
+ * Partially update a case. All fields are optional. The caller must be
+an active member of the case's lab organization.
+`providerOrganizationId` is validated to be an active, non-deleted
+provider org belonging to the same lab before it is applied.
+`clearSuggestion: true` erases the AI-generated doctor suggestion
+without affecting any other fields.
+
+ * @summary Update case fields
+ */
+export const getUpdateCaseUrl = (caseId: string) => {
+  return `/api/cases/${caseId}`;
+};
+
+export const updateCase = async (
+  caseId: string,
+  updateCaseInput: UpdateCaseInput,
+  options?: RequestInit,
+): Promise<UpdateCase200> => {
+  return customFetch<UpdateCase200>(getUpdateCaseUrl(caseId), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateCaseInput),
+  });
+};
+
+export const getUpdateCaseMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateCase>>,
+    TError,
+    { caseId: string; data: BodyType<UpdateCaseInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateCase>>,
+  TError,
+  { caseId: string; data: BodyType<UpdateCaseInput> },
+  TContext
+> => {
+  const mutationKey = ["updateCase"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateCase>>,
+    { caseId: string; data: BodyType<UpdateCaseInput> }
+  > = (props) => {
+    const { caseId, data } = props ?? {};
+
+    return updateCase(caseId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateCaseMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateCase>>
+>;
+export type UpdateCaseMutationBody = BodyType<UpdateCaseInput>;
+export type UpdateCaseMutationError = ErrorType<void>;
+
+/**
+ * @summary Update case fields
+ */
+export const useUpdateCase = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateCase>>,
+    TError,
+    { caseId: string; data: BodyType<UpdateCaseInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateCase>>,
+  TError,
+  { caseId: string; data: BodyType<UpdateCaseInput> },
+  TContext
+> => {
+  return useMutation(getUpdateCaseMutationOptions(options));
 };
 
 /**
