@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, Link2, Loader2, Mail, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, Link2, Loader2, Mail, MailX, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
@@ -70,6 +70,7 @@ export default function PracticesPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [showArchived, setShowArchived] = useState(false);
+  const [missingEmailOnly, setMissingEmailOnly] = useState(false);
   const [editing, setEditing] = useState<Organization | null>(null);
   const [adding, setAdding] = useState(false);
 
@@ -120,12 +121,21 @@ export default function PracticesPage() {
     [orgs]
   );
 
+  const missingEmailCount = useMemo(
+    () =>
+      orgs.filter(
+        (o) => o.type === "provider" && !o.deletedAt && !o.billingEmail
+      ).length,
+    [orgs]
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return orgs
       .filter((o) => {
         if (!showArchived && o.deletedAt) return false;
         if (typeFilter !== "all" && o.type !== typeFilter) return false;
+        if (missingEmailOnly && (o.type !== "provider" || !!o.billingEmail)) return false;
         if (!q) return true;
         return (
           o.name.toLowerCase().includes(q) ||
@@ -134,7 +144,11 @@ export default function PracticesPage() {
         );
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [orgs, search, typeFilter, showArchived]);
+  }, [orgs, search, typeFilter, showArchived, missingEmailOnly]);
+
+  useEffect(() => {
+    if (missingEmailCount === 0) setMissingEmailOnly(false);
+  }, [missingEmailCount]);
 
   const isLoading = orgsQuery.isLoading;
   const error = orgsQuery.error as Error | null;
@@ -163,6 +177,23 @@ export default function PracticesPage() {
           )}
         </div>
       </div>
+
+      {missingEmailCount > 0 && !missingEmailOnly && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-warning/40 bg-warning/8 px-4 py-3 text-sm">
+          <MailX size={15} className="shrink-0 text-warning" />
+          <span className="text-foreground">
+            <span className="font-medium">{missingEmailCount} provider {missingEmailCount === 1 ? "practice" : "practices"}</span>{" "}
+            {missingEmailCount === 1 ? "is" : "are"} missing a billing email — statements can't be sent to {missingEmailCount === 1 ? "it" : "them"}.
+          </span>
+          <button
+            type="button"
+            onClick={() => setMissingEmailOnly(true)}
+            className="ml-auto shrink-0 text-xs font-medium text-warning underline-offset-2 hover:underline"
+          >
+            Show {missingEmailCount === 1 ? "it" : "them"}
+          </button>
+        </div>
+      )}
 
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">
@@ -194,6 +225,21 @@ export default function PracticesPage() {
             />
             Show archived{archivedCount > 0 ? ` (${archivedCount})` : ""}
           </label>
+          {missingEmailCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setMissingEmailOnly((v) => !v)}
+              className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium border transition-colors ${
+                missingEmailOnly
+                  ? "bg-warning/15 border-warning/40 text-warning"
+                  : "border-border text-muted-foreground hover:bg-secondary"
+              }`}
+            >
+              <MailX size={12} />
+              No email ({missingEmailCount})
+              {missingEmailOnly && <X size={11} className="ml-0.5" />}
+            </button>
+          )}
         </div>
 
         <div className="overflow-x-auto">
@@ -266,7 +312,14 @@ export default function PracticesPage() {
                       </span>
                     </td>
                     <td className="py-3 text-muted-foreground">
-                      <div className="text-xs">{o.billingEmail || "—"}</div>
+                      {o.type === "provider" && !o.billingEmail ? (
+                        <div className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-warning bg-warning/10 border border-warning/30 rounded px-1.5 py-0.5">
+                          <MailX size={10} />
+                          No email
+                        </div>
+                      ) : (
+                        <div className="text-xs">{o.billingEmail || "—"}</div>
+                      )}
                       <div className="text-xs">{o.phone || ""}</div>
                     </td>
                     <td className="py-3 text-muted-foreground text-xs">
