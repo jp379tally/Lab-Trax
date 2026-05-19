@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, Search, Send, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, ChevronDown, ChevronUp, Download, Eye, History, Loader2, Mail, MessageSquare, Printer, Receipt, Search, Send, X } from "lucide-react";
 import { ApiError, apiFetch } from "@/lib/api";
 import { useLabOrganizations, useSelectedOrg } from "@/lib/finance";
 import type { Invoice, Organization } from "@/lib/types";
@@ -112,6 +112,17 @@ export default function StatementsPage() {
     scheduleQuery.data?.includedOrgIds && scheduleQuery.data.includedOrgIds.length > 0
       ? scheduleQuery.data.includedOrgIds.length
       : null;
+
+  const scheduleMissingEmailCount = useMemo(() => {
+    const orgs = organizationsQuery.data ?? [];
+    const practices = orgs.filter((o) => o.parentLabOrganizationId === orgId);
+    const includedIds = scheduleQuery.data?.includedOrgIds;
+    const targeted =
+      includedIds && includedIds.length > 0
+        ? practices.filter((p) => includedIds.includes(p.id))
+        : practices;
+    return targeted.filter((p) => !p.billingEmail).length;
+  }, [organizationsQuery.data, scheduleQuery.data, orgId]);
 
   const invoices = invoicesQuery.data ?? [];
 
@@ -245,12 +256,22 @@ export default function StatementsPage() {
           >
             <CalendarClock size={14} />
             <span className="flex flex-col items-start leading-tight">
-              <span>Auto-send</span>
+              <span className="flex items-center gap-1">
+                Auto-send
+                {scheduleMissingEmailCount > 0 && (
+                  <AlertTriangle size={12} className="text-warning shrink-0" />
+                )}
+              </span>
               <span className={`text-[10px] font-normal text-primary leading-none ${scheduleFilterCount !== null ? "" : "invisible"}`}>
                 {scheduleFilterCount !== null
                   ? `${scheduleFilterCount} of ${practiceCountForOrg || scheduleFilterCount} practice${scheduleFilterCount === 1 ? "" : "s"}`
                   : "placeholder"}
               </span>
+              {scheduleMissingEmailCount > 0 && (
+                <span className="text-[10px] font-normal text-warning leading-none">
+                  {scheduleMissingEmailCount} missing email
+                </span>
+              )}
             </span>
           </button>
           <button
