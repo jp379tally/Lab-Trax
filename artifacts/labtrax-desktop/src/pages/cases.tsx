@@ -3439,6 +3439,17 @@ export function CaseDrawer({
                                     : "Shared with provider"}
                                 </div>
                               )}
+                              {eventType === "remade_by" && metadata.remakeCaseId && (
+                                <div className="mt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => onOpenCaseId?.(String(metadata.remakeCaseId))}
+                                    className="text-xs text-blue-600 dark:text-blue-400 underline hover:text-blue-800 dark:hover:text-blue-200 font-mono"
+                                  >
+                                    {data?.remakeChildren?.find((c) => c.id === metadata.remakeCaseId)?.caseNumber ?? "Open remake →"}
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
