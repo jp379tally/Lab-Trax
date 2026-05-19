@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
+  ArrowRightLeft,
   Building2,
   CalendarDays,
   ChevronLeft,
@@ -12,7 +13,8 @@ import {
   Phone,
   Search,
 } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import type { Invoice, Organization } from "@/lib/types";
 import { formatDate, formatMoney } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -95,6 +97,11 @@ const LEFT_DEFAULT = 300;
 
 export default function CustomerCenterPage() {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  const isAdmin =
+    user?.role === "owner" ||
+    user?.role === "admin";
 
   const orgsQuery = useQuery({
     queryKey: ["organizations"],
@@ -127,6 +134,46 @@ export default function CustomerCenterPage() {
   const startX = useRef(0);
   const startW = useRef(LEFT_DEFAULT);
 
+  // Bulk reassign dialog state
+  const [reassignOpen, setReassignOpen] = useState(false);
+  const [reassignTargetId, setReassignTargetId] = useState<string>("");
+  const [reassignError, setReassignError] = useState<string | null>(null);
+  const [reassignSuccess, setReassignSuccess] = useState<string | null>(null);
+
+  const reassignMutation = useMutation({
+    mutationFn: async ({
+      labOrganizationId,
+      fromProviderOrganizationId,
+      toProviderOrganizationId,
+    }: {
+      labOrganizationId: string;
+      fromProviderOrganizationId: string;
+      toProviderOrganizationId: string;
+    }) => {
+      return apiFetch<{ movedCount: number }>("/invoices/bulk-reassign", {
+        method: "POST",
+        body: JSON.stringify({
+          labOrganizationId,
+          fromProviderOrganizationId,
+          toProviderOrganizationId,
+        }),
+      });
+    },
+    onSuccess: (data) => {
+      setReassignSuccess(
+        data.movedCount === 0
+          ? "No invoices to move."
+          : `Moved ${data.movedCount} invoice${data.movedCount !== 1 ? "s" : ""} successfully.`,
+      );
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+    onError: (err) => {
+      setReassignError(
+        err instanceof ApiError ? err.message : "Reassignment failed.",
+      );
+    },
+  });
+
   function onDividerMouseDown(e: React.MouseEvent) {
     dragging.current = true;
     startX.current = e.clientX;
@@ -150,6 +197,32 @@ export default function CustomerCenterPage() {
   const orgs = orgsQuery.data ?? [];
   const openInvoices = openInvoicesQuery.data ?? [];
   const selectedPracticeInvoices = practiceInvoicesQuery.data ?? [];
+
+  const labOrgId = useMemo(
+    () => orgs.find((o) => o.type === "lab")?.id ?? "",
+    [orgs],
+  );
+
+  const nonVoidedCount = useMemo(
+    () => selectedPracticeInvoices.filter((inv) => inv.status !== "void").length,
+    [selectedPracticeInvoices],
+  );
+
+  // All practices other than the selected one — target options for reassignment
+  const otherPractices = useMemo(
+    () =>
+      orgs
+        .filter(
+          (o) =>
+            o.type === "provider" &&
+            !o.deletedAt &&
+            o.id !== selectedId,
+        )
+        .sort((a, b) =>
+          (a.displayName || a.name).localeCompare(b.displayName || b.name),
+        ),
+    [orgs, selectedId],
+  );
 
   const practiceOpenBalance = useMemo(() => {
     const map = new Map<string, number>();
@@ -522,6 +595,22 @@ export default function CustomerCenterPage() {
                 {practiceInvoices.length} row
                 {practiceInvoices.length !== 1 ? "s" : ""}
               </span>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReassignTargetId("");
+                    setReassignError(null);
+                    setReassignSuccess(null);
+                    reassignMutation.reset();
+                    setReassignOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 h-7 px-2.5 rounded bg-secondary text-xs text-muted-foreground hover:bg-secondary/80 hover:text-foreground transition-colors border border-border"
+                >
+                  <ArrowRightLeft size={11} />
+                  Reassign all invoices…
+                </button>
+              )}
             </div>
 
             {/* Transaction table */}
@@ -628,6 +717,126 @@ export default function CustomerCenterPage() {
             queryClient.invalidateQueries({ queryKey: ["invoices"] });
           }}
         />
+      )}
+
+      {/* Bulk reassign dialog */}
+      {reassignOpen && selected && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-card border border-border rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="h-8 w-8 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                <ArrowRightLeft size={15} />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold">Reassign all invoices</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Move invoices from{" "}
+                  <span className="font-medium text-foreground">
+                    {selected.displayName || selected.name}
+                  </span>{" "}
+                  to another practice
+                </p>
+              </div>
+            </div>
+
+            {!reassignSuccess ? (
+              <>
+                <div className="rounded-md bg-secondary/60 px-4 py-3 mb-4 text-sm">
+                  <span className="font-medium tabular-nums text-foreground">
+                    {nonVoidedCount}
+                  </span>{" "}
+                  <span className="text-muted-foreground">
+                    non-void invoice{nonVoidedCount !== 1 ? "s" : ""} will be moved.
+                  </span>
+                </div>
+
+                <div className="mb-4">
+                  <label className="block text-xs font-medium mb-1.5">
+                    Destination practice
+                  </label>
+                  <select
+                    value={reassignTargetId}
+                    onChange={(e) => {
+                      setReassignTargetId(e.target.value);
+                      setReassignError(null);
+                    }}
+                    className="w-full h-9 px-3 rounded-md bg-secondary text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                    disabled={reassignMutation.isPending}
+                  >
+                    <option value="">Select a practice…</option>
+                    {otherPractices.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.displayName || p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {reassignError && (
+                  <div className="mb-4 text-xs text-destructive flex items-center gap-1.5">
+                    <AlertCircle size={12} />
+                    {reassignError}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReassignOpen(false)}
+                    disabled={reassignMutation.isPending}
+                    className="h-8 px-3 rounded text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!reassignTargetId || reassignMutation.isPending || nonVoidedCount === 0}
+                    onClick={() => {
+                      if (!reassignTargetId || !labOrgId) return;
+                      setReassignError(null);
+                      reassignMutation.mutate({
+                        labOrganizationId: labOrgId,
+                        fromProviderOrganizationId: selected.id,
+                        toProviderOrganizationId: reassignTargetId,
+                      });
+                    }}
+                    className="h-8 px-4 rounded bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                  >
+                    {reassignMutation.isPending ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        Moving…
+                      </>
+                    ) : (
+                      <>
+                        <ArrowRightLeft size={12} />
+                        Move {nonVoidedCount} invoice{nonVoidedCount !== 1 ? "s" : ""}
+                      </>
+                    )}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="rounded-md bg-green-500/10 border border-green-500/20 px-4 py-3 mb-4 text-sm text-green-600 dark:text-green-400">
+                  {reassignSuccess}
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReassignOpen(false);
+                      setSelectedId(null);
+                    }}
+                    className="h-8 px-4 rounded bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

@@ -3,10 +3,11 @@ import multer from "multer";
 import fs from "fs";
 import path from "path";
 import { randomBytes } from "crypto";
-import { and, asc, desc, eq, gte, lte, or, sql, sum } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, ne, or, sql, sum } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import {
+  auditLogs,
   bankAccounts,
   bankTransactionInvoices,
   bankTransactions,
@@ -754,6 +755,143 @@ router.post(
 
     return ok(res, summary);
   })
+);
+
+// Admin-only bulk reassignment: move all non-voided invoices from one
+// provider organization to another within the same lab, in a single
+// transaction with one audit log entry per invoice.
+const bulkReassignSchema = z.object({
+  labOrganizationId: z.string().min(1),
+  fromProviderOrganizationId: z.string().min(1),
+  toProviderOrganizationId: z.string().min(1),
+});
+
+router.post(
+  "/bulk-reassign",
+  asyncHandler(async (req, res) => {
+    const input = bulkReassignSchema.parse(req.body);
+
+    if (input.fromProviderOrganizationId === input.toProviderOrganizationId) {
+      throw new HttpError(400, "Source and destination practice must be different.");
+    }
+
+    await requireAnyRole(
+      (req as any).auth.userId,
+      input.labOrganizationId,
+      ADMIN_ROLES,
+    );
+
+    // Verify both provider orgs exist and belong to this lab
+    const [fromOrg, toOrg] = await Promise.all([
+      db.query.organizations.findFirst({
+        where: eq(organizations.id, input.fromProviderOrganizationId),
+      }),
+      db.query.organizations.findFirst({
+        where: eq(organizations.id, input.toProviderOrganizationId),
+      }),
+    ]);
+
+    if (!fromOrg || fromOrg.deletedAt) throw new HttpError(404, "Source practice not found.");
+    if (!toOrg || toOrg.deletedAt) throw new HttpError(404, "Destination practice not found.");
+
+    if (fromOrg.type !== "provider" && fromOrg.type !== "practice") {
+      throw new HttpError(400, "Source organization is not a practice or provider.");
+    }
+    if (toOrg.type !== "provider" && toOrg.type !== "practice") {
+      throw new HttpError(400, "Destination organization is not a practice or provider.");
+    }
+    if (toOrg.isActive === false) {
+      throw new HttpError(400, "Cannot reassign invoices to an inactive practice.");
+    }
+
+    // Enforce same-lab ownership using the same check as single-invoice reassignment.
+    // A provider org's lab is its parentLabOrganizationId (or itself for legacy rows).
+    const fromLabId = fromOrg.parentLabOrganizationId ?? fromOrg.id;
+    const toLabId = toOrg.parentLabOrganizationId ?? toOrg.id;
+    if (
+      fromLabId !== input.labOrganizationId &&
+      fromOrg.id !== input.labOrganizationId
+    ) {
+      throw new HttpError(400, "Source practice does not belong to the specified lab.");
+    }
+    if (
+      toLabId !== input.labOrganizationId &&
+      toOrg.id !== input.labOrganizationId
+    ) {
+      throw new HttpError(400, "Destination practice does not belong to the specified lab.");
+    }
+
+    // Find all non-voided, non-deleted invoices belonging to this lab + from-practice
+    const toMove = await db.query.invoices.findMany({
+      where: and(
+        eq(invoices.labOrganizationId, input.labOrganizationId),
+        eq(invoices.providerOrganizationId, input.fromProviderOrganizationId),
+        ne(invoices.status, "void"),
+        isNull(invoices.deletedAt),
+      ),
+    });
+
+    if (toMove.length === 0) {
+      return ok(res, { movedCount: 0 });
+    }
+
+    const movedIds = toMove.map((inv) => inv.id);
+    const actorUserId: string = (req as any).auth.userId;
+    const actorIp: string | null = req.ip ?? null;
+    const actorUserAgent: string | null = req.get("user-agent") ?? null;
+    const fromName = fromOrg.displayName || fromOrg.name;
+    const toName = toOrg.displayName || toOrg.name;
+    const now = new Date();
+
+    // Perform update + audit inserts atomically in one transaction
+    await db.transaction(async (tx) => {
+      await tx
+        .update(invoices)
+        .set({
+          providerOrganizationId: input.toProviderOrganizationId,
+          updatedByUserId: actorUserId,
+        })
+        .where(
+          and(
+            inArray(invoices.id, movedIds),
+            eq(invoices.labOrganizationId, input.labOrganizationId),
+          ),
+        );
+
+      // One audit log row per invoice, all within the same transaction
+      await tx.insert(auditLogs).values(
+        toMove.map((inv) => ({
+          userId: actorUserId,
+          organizationId: input.labOrganizationId,
+          action: "invoice_bulk_reassigned",
+          entityType: "invoice",
+          entityId: inv.id,
+          ipAddress: actorIp,
+          userAgent: actorUserAgent,
+          metadataJson: {
+            invoiceNumber: inv.invoiceNumber,
+            fromProviderOrganizationId: input.fromProviderOrganizationId,
+            fromProviderOrganizationName: fromName,
+            toProviderOrganizationId: input.toProviderOrganizationId,
+            toProviderOrganizationName: toName,
+          },
+          createdAt: now,
+        })),
+      );
+    });
+
+    req.log?.info?.(
+      {
+        labOrganizationId: input.labOrganizationId,
+        from: input.fromProviderOrganizationId,
+        to: input.toProviderOrganizationId,
+        count: toMove.length,
+      },
+      "[INVOICE BULK REASSIGN] completed",
+    );
+
+    return ok(res, { movedCount: toMove.length });
+  }),
 );
 
 router.post(
