@@ -141,6 +141,9 @@ export default function CaseDetailScreen() {
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  type DownloadResumable = ReturnType<typeof FileSystem.createDownloadResumable>;
+  const [pausedAttachments, setPausedAttachments] = useState<Map<string, { resumable: DownloadResumable; progress: number }>>(new Map());
+  const activeDownloadResumableRef = useRef<Map<string, DownloadResumable>>(new Map());
   const [attachmentsFetchError, setAttachmentsFetchError] = useState(false);
   const [showRouting, setShowRouting] = useState(false);
   const [showNoteModal, setShowNoteModal] = useState(false);
@@ -1850,6 +1853,40 @@ export default function CaseDetailScreen() {
                       // For other 3D formats, fall through to the share sheet
                       const cacheDir = FileSystem.Paths.cache.uri;
                       const localUri = cacheDir.endsWith("/") ? cacheDir + att.fileName : cacheDir + "/" + att.fileName;
+
+                      const paused = pausedAttachments.get(att.id);
+                      if (paused) {
+                        setPausedAttachments(prev => {
+                          const next = new Map(prev);
+                          next.delete(att.id);
+                          return next;
+                        });
+                        setDownloadingAttachmentId(att.id);
+                        setDownloadProgress(paused.progress);
+                        activeDownloadResumableRef.current.set(att.id, paused.resumable);
+                        try {
+                          const downloadRes = await paused.resumable.resumeAsync();
+                          activeDownloadResumableRef.current.delete(att.id);
+                          if (!downloadRes || downloadRes.status !== 200) {
+                            Alert.alert("Download failed", "Could not resume the scan file download.");
+                            return;
+                          }
+                          const canShare = await Sharing.isAvailableAsync();
+                          if (canShare) {
+                            await Sharing.shareAsync(downloadRes.uri, { mimeType, dialogTitle: att.fileName });
+                          } else {
+                            Alert.alert("Sharing not available", "Install a 3D viewer app (e.g. Formlabs, Meshmixer) to open .stl and other scan files.");
+                          }
+                        } catch {
+                          Alert.alert("Unable to resume", "Could not resume the download. Please try again.");
+                        } finally {
+                          activeDownloadResumableRef.current.delete(att.id);
+                          setDownloadingAttachmentId(null);
+                          setDownloadProgress(0);
+                        }
+                        return;
+                      }
+
                       setDownloadingAttachmentId(att.id);
                       setDownloadProgress(0);
                       try {
@@ -1865,7 +1902,9 @@ export default function CaseDetailScreen() {
                             }
                           },
                         );
+                        activeDownloadResumableRef.current.set(att.id, downloadResumable);
                         const downloadRes = await downloadResumable.downloadAsync();
+                        activeDownloadResumableRef.current.delete(att.id);
                         if (!downloadRes || downloadRes.status !== 200) {
                           Alert.alert("Download failed", "Could not download the scan file.");
                           return;
@@ -1885,6 +1924,7 @@ export default function CaseDetailScreen() {
                       } catch {
                         Alert.alert("Unable to open", "Could not download or share this scan file.");
                       } finally {
+                        activeDownloadResumableRef.current.delete(att.id);
                         setDownloadingAttachmentId(null);
                         setDownloadProgress(0);
                       }
@@ -1935,49 +1975,136 @@ export default function CaseDetailScreen() {
                       setDownloadProgress(0);
                     }
                   }}
-                  style={({ pressed }) => ({
-                    flexDirection: "row" as const,
-                    alignItems: "center" as const,
-                    gap: 10,
-                    paddingVertical: 10,
-                    paddingHorizontal: 12,
-                    backgroundColor: pressed ? "rgba(0,0,0,0.04)" : "#F8FAFC",
-                    borderRadius: 10,
-                    marginTop: 6,
-                    borderWidth: 1,
-                    borderColor: Colors.light.border,
-                  })}
+                  style={({ pressed }) => {
+                    const isPaused = pausedAttachments.has(att.id);
+                    return {
+                      flexDirection: "row" as const,
+                      alignItems: "center" as const,
+                      gap: 10,
+                      paddingVertical: 10,
+                      paddingHorizontal: 12,
+                      backgroundColor: pressed
+                        ? "rgba(0,0,0,0.04)"
+                        : isPaused
+                        ? "#FFF7ED"
+                        : "#F8FAFC",
+                      borderRadius: 10,
+                      marginTop: 6,
+                      borderWidth: 1,
+                      borderColor: isPaused ? "#FED7AA" : Colors.light.border,
+                    };
+                  }}
                 >
-                  <Ionicons name={iconName} size={22} color={downloadingAttachmentId === att.id ? Colors.light.textSecondary : Colors.light.tint} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>
-                      {att.fileName}
-                    </Text>
-                    <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
-                      {downloadingAttachmentId === att.id
-                        ? (downloadProgress > 0
-                            ? `Downloading… ${Math.round(downloadProgress * 100)}%`
-                            : "Downloading…")
-                        : [
-                            fileTypeLabel,
-                            att.uploaderName,
-                            att.createdAt
-                              ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-                              : null,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
-                    </Text>
-                    {downloadingAttachmentId === att.id && downloadProgress > 0 && (
-                      <View style={{ height: 3, backgroundColor: "rgba(0,0,0,0.08)", borderRadius: 2, marginTop: 5, overflow: "hidden" }}>
-                        <View style={{ height: 3, backgroundColor: Colors.light.tint, borderRadius: 2, width: `${Math.round(downloadProgress * 100)}%` }} />
-                      </View>
-                    )}
-                  </View>
-                  {downloadingAttachmentId === att.id
-                    ? <ActivityIndicator size="small" color={Colors.light.tint} />
-                    : <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={Colors.light.textTertiary} />
-                  }
+                  {(() => {
+                    const isDownloading = downloadingAttachmentId === att.id;
+                    const isPaused = pausedAttachments.has(att.id);
+                    const pausedEntry = pausedAttachments.get(att.id);
+                    const shownProgress = isDownloading ? downloadProgress : (pausedEntry?.progress ?? 0);
+                    return (
+                      <>
+                        <Ionicons
+                          name={iconName}
+                          size={22}
+                          color={isDownloading || isPaused ? Colors.light.textSecondary : Colors.light.tint}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13, fontFamily: "Inter_500Medium", color: Colors.light.text }} numberOfLines={1}>
+                            {att.fileName}
+                          </Text>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_400Regular", color: Colors.light.textSecondary, marginTop: 1 }}>
+                            {isDownloading
+                              ? (downloadProgress > 0
+                                  ? `Downloading… ${Math.round(downloadProgress * 100)}%`
+                                  : "Downloading…")
+                              : isPaused
+                              ? `Paused · ${Math.round((pausedEntry?.progress ?? 0) * 100)}%`
+                              : [
+                                  fileTypeLabel,
+                                  att.uploaderName,
+                                  att.createdAt
+                                    ? new Date(att.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                                    : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")}
+                          </Text>
+                          {(isDownloading || isPaused) && shownProgress > 0 && (
+                            <View style={{ height: 3, backgroundColor: "rgba(0,0,0,0.08)", borderRadius: 2, marginTop: 5, overflow: "hidden" }}>
+                              <View style={{ height: 3, backgroundColor: isPaused ? "#F97316" : Colors.light.tint, borderRadius: 2, width: `${Math.round(shownProgress * 100)}%` }} />
+                            </View>
+                          )}
+                        </View>
+                        {isDownloading ? (
+                          <Pressable
+                            hitSlop={10}
+                            onPress={async (e) => {
+                              e.stopPropagation?.();
+                              const resumable = activeDownloadResumableRef.current.get(att.id);
+                              if (!resumable) return;
+                              const capturedProgress = downloadProgress;
+                              try {
+                                await resumable.pauseAsync();
+                              } catch {
+                                // ignore pause errors
+                              }
+                              activeDownloadResumableRef.current.delete(att.id);
+                              setPausedAttachments(prev => {
+                                const next = new Map(prev);
+                                next.set(att.id, { resumable, progress: capturedProgress });
+                                return next;
+                              });
+                              setDownloadingAttachmentId(null);
+                              setDownloadProgress(0);
+                            }}
+                          >
+                            <Ionicons name="pause-circle-outline" size={22} color={Colors.light.tint} />
+                          </Pressable>
+                        ) : isPaused ? (
+                          <Pressable
+                            hitSlop={10}
+                            onPress={async (e) => {
+                              e.stopPropagation?.();
+                              const pausedEntry2 = pausedAttachments.get(att.id);
+                              if (!pausedEntry2) return;
+                              const mimeType2 = att.fileType || "application/octet-stream";
+                              setPausedAttachments(prev => {
+                                const next = new Map(prev);
+                                next.delete(att.id);
+                                return next;
+                              });
+                              setDownloadingAttachmentId(att.id);
+                              setDownloadProgress(pausedEntry2.progress);
+                              activeDownloadResumableRef.current.set(att.id, pausedEntry2.resumable);
+                              try {
+                                const downloadRes = await pausedEntry2.resumable.resumeAsync();
+                                activeDownloadResumableRef.current.delete(att.id);
+                                if (!downloadRes || downloadRes.status !== 200) {
+                                  Alert.alert("Download failed", "Could not resume the scan file download.");
+                                  return;
+                                }
+                                const canShare = await Sharing.isAvailableAsync();
+                                if (canShare) {
+                                  await Sharing.shareAsync(downloadRes.uri, { mimeType: mimeType2, dialogTitle: att.fileName });
+                                } else {
+                                  Alert.alert("Sharing not available", "Install a 3D viewer app to open scan files.");
+                                }
+                              } catch {
+                                Alert.alert("Unable to resume", "Could not resume the download. Please try again.");
+                              } finally {
+                                activeDownloadResumableRef.current.delete(att.id);
+                                setDownloadingAttachmentId(null);
+                                setDownloadProgress(0);
+                              }
+                            }}
+                          >
+                            <Ionicons name="play-circle-outline" size={22} color="#F97316" />
+                          </Pressable>
+                        ) : (
+                          <Ionicons name={is3D ? "share-outline" : "open-outline"} size={16} color={Colors.light.textTertiary} />
+                        )}
+                      </>
+                    );
+                  })()}
                 </Pressable>
               );
             })}
