@@ -3355,7 +3355,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   function findCaseByBarcode(barcode: string): LabCase | undefined {
-    return cases.find((c) => c.assignedBarcode === barcode && c.status !== "COMPLETE");
+    if (!barcode) return undefined;
+    const q = barcode.trim();
+    // Match by assigned barcode first, then fall back to case number so that
+    // scanning a QR code printed with the case number also works.
+    return (
+      cases.find((c) => c.assignedBarcode === q && c.status !== "COMPLETE") ??
+      cases.find((c) => (c.caseNumber || "").trim() === q && c.status !== "COMPLETE")
+    );
   }
 
   function findAllCasesByBarcode(barcode: string): LabCase[] {

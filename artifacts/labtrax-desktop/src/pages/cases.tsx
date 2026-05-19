@@ -846,6 +846,8 @@ export default function CasesPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["cases"],
     queryFn: () => apiFetch<LabCase[]>("/cases"),
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   });
 
   const [search, setSearch] = useState("");
@@ -1326,6 +1328,8 @@ export function CaseDrawer({
   const { data, isLoading } = useQuery({
     queryKey: ["case", labCase.id],
     queryFn: () => apiFetch<DetailedCase>(`/cases/${labCase.id}`),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   const invoiceQuery = useQuery({
