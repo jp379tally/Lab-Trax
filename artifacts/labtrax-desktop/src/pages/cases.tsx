@@ -862,14 +862,18 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-const CASES_FILTER_STORAGE_KEY = "cases_filters_v1";
+const CASES_FILTER_STORAGE_KEY = "cases_filters_v2";
 const CASES_SCROLL_STORAGE_KEY = "cases_scroll_v1";
+
+type DateRangeFilter = "all" | "30" | "60" | "90" | "custom";
 
 function readCasesFilters(): {
   search: string;
   statusFilter: string;
   priorityFilter: string;
-  yearFilter: string;
+  dateRangeFilter: DateRangeFilter;
+  customStartDate: string;
+  customEndDate: string;
   sortKey: SortKey;
   sortDir: "asc" | "desc";
 } {
@@ -881,7 +885,9 @@ function readCasesFilters(): {
     search: "",
     statusFilter: "all",
     priorityFilter: "all",
-    yearFilter: "all",
+    dateRangeFilter: "all",
+    customStartDate: "",
+    customEndDate: "",
     sortKey: "createdAt",
     sortDir: "desc",
   };
@@ -900,7 +906,9 @@ export default function CasesPage() {
   const [search, setSearch] = useState(initialFilters.current.search);
   const [statusFilter, setStatusFilter] = useState<string>(initialFilters.current.statusFilter);
   const [priorityFilter, setPriorityFilter] = useState<string>(initialFilters.current.priorityFilter);
-  const [yearFilter, setYearFilter] = useState<string>(initialFilters.current.yearFilter);
+  const [dateRangeFilter, setDateRangeFilter] = useState<DateRangeFilter>(initialFilters.current.dateRangeFilter);
+  const [customStartDate, setCustomStartDate] = useState<string>(initialFilters.current.customStartDate);
+  const [customEndDate, setCustomEndDate] = useState<string>(initialFilters.current.customEndDate);
   const [sortKey, setSortKey] = useState<SortKey>(initialFilters.current.sortKey);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initialFilters.current.sortDir);
   const [selected, setSelected] = useState<LabCase | null>(null);
@@ -908,24 +916,14 @@ export default function CasesPage() {
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
 
-  const availableYears = useMemo(() => {
-    const years = new Set<number>();
-    for (const c of data ?? []) {
-      if (!c.createdAt) continue;
-      const d = new Date(c.createdAt);
-      if (!Number.isNaN(d.getTime())) years.add(d.getFullYear());
-    }
-    return Array.from(years).sort((a, b) => b - a);
-  }, [data]);
-
   useEffect(() => {
     try {
       sessionStorage.setItem(
         CASES_FILTER_STORAGE_KEY,
-        JSON.stringify({ search, statusFilter, priorityFilter, yearFilter, sortKey, sortDir }),
+        JSON.stringify({ search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir }),
       );
     } catch {}
-  }, [search, statusFilter, priorityFilter, yearFilter, sortKey, sortDir]);
+  }, [search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir]);
 
   useEffect(() => {
     const el = pageRef.current?.closest("main") as HTMLElement | null;
@@ -965,15 +963,39 @@ export default function CasesPage() {
   const filtered = useMemo(() => {
     const rows = data ?? [];
     const q = search.trim().toLowerCase();
-    const yearNum = yearFilter === "all" ? null : Number(yearFilter);
+
+    let startDate: Date | null = null;
+    let endDate: Date | null = null;
+
+    if (dateRangeFilter === "30" || dateRangeFilter === "60" || dateRangeFilter === "90") {
+      const days = Number(dateRangeFilter);
+      const now = new Date();
+      startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - days + 1);
+      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    } else if (dateRangeFilter === "custom") {
+      if (customStartDate) {
+        const [y, m, d] = customStartDate.split("-").map(Number);
+        startDate = new Date(y, m - 1, d);
+      }
+      if (customEndDate) {
+        const [y, m, d] = customEndDate.split("-").map(Number);
+        endDate = new Date(y, m - 1, d + 1);
+      } else {
+        const now = new Date();
+        endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      }
+    }
+
     return rows
       .filter((c) => {
         if (statusFilter !== "all" && c.status !== statusFilter) return false;
         if (priorityFilter !== "all" && c.priority !== priorityFilter) return false;
-        if (yearNum !== null) {
+        if (startDate !== null || endDate !== null) {
           if (!c.createdAt) return false;
           const d = new Date(c.createdAt);
-          if (Number.isNaN(d.getTime()) || d.getFullYear() !== yearNum) return false;
+          if (Number.isNaN(d.getTime())) return false;
+          if (startDate !== null && d < startDate) return false;
+          if (endDate !== null && d >= endDate) return false;
         }
         if (!q) return true;
         return (
@@ -992,7 +1014,7 @@ export default function CasesPage() {
         const vb = (b[sortKey] || "") as string;
         return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
       });
-  }, [data, search, statusFilter, priorityFilter, yearFilter, sortKey, sortDir]);
+  }, [data, search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir]);
 
   const distinctDoctorNames = useMemo(() => {
     const names = new Set<string>();
@@ -1096,17 +1118,42 @@ export default function CasesPage() {
             <option value="rush">Rush</option>
           </select>
           <select
-            value={yearFilter}
-            onChange={(e) => setYearFilter(e.target.value)}
+            value={dateRangeFilter}
+            onChange={(e) => {
+              setDateRangeFilter(e.target.value as DateRangeFilter);
+              if (e.target.value !== "custom") {
+                setCustomStartDate("");
+                setCustomEndDate("");
+              }
+            }}
             className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
           >
-            <option value="all">All years</option>
-            {availableYears.map((y) => (
-              <option key={y} value={String(y)}>
-                {y}
-              </option>
-            ))}
+            <option value="all">All time</option>
+            <option value="30">Last 30 days</option>
+            <option value="60">Last 60 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="custom">Custom…</option>
           </select>
+          {dateRangeFilter === "custom" && (
+            <div className="flex items-center gap-1.5">
+              <input
+                type="date"
+                value={customStartDate}
+                onChange={(e) => setCustomStartDate(e.target.value)}
+                className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+                aria-label="Start date"
+              />
+              <span className="text-muted-foreground text-xs">–</span>
+              <input
+                type="date"
+                value={customEndDate}
+                min={customStartDate || undefined}
+                onChange={(e) => setCustomEndDate(e.target.value)}
+                className="h-9 px-2.5 rounded-md bg-secondary text-sm border border-transparent focus:bg-card focus:border-border focus:outline-none"
+                aria-label="End date"
+              />
+            </div>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
