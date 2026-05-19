@@ -27,9 +27,9 @@ import OpenAI, { toFile } from "openai";
 import nodemailer from "nodemailer";
 import sharp from "sharp";
 import { db } from "@workspace/db";
-import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads } from "@workspace/db";
+import { users, labCases, labPendingFiles, labPendingFileNoteEdits, organizations, organizationMemberships, cases as casesTable, caseAttachments, caseEvents, mediaCleanupRuns, systemSettings, installerChangelog, installerUploads, subscriptions } from "@workspace/db";
 import { notDeleted } from "../lib/soft-delete";
-import { eq, and, inArray, or, isNull, sql, desc } from "drizzle-orm";
+import { eq, and, inArray, or, isNull, sql, desc, count, type SQL } from "drizzle-orm";
 import { hashPassword } from "../lib/crypto";
 import { HttpError } from "../lib/http";
 import { requireAuth, optionalAuth } from "../middlewares/auth";
@@ -4363,6 +4363,127 @@ Important rules:
       return res.json({ success: true });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to reset installer settings." });
+    }
+  });
+
+  // ── Admin: Subscriptions list ─────────────────────────────────────────────
+  // Returns a paginated list of all subscription rows with provider, status,
+  // currentPeriodEnd, and masked IDs. Platform-admin-secret gated.
+  router.get("/admin/subscriptions", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const rawLimit = parseInt(req.query.limit as string, 10);
+    const rawOffset = parseInt(req.query.offset as string, 10);
+    const limit = Math.min(Math.max(Number.isNaN(rawLimit) ? 50 : rawLimit, 1), 100);
+    const offset = Math.max(Number.isNaN(rawOffset) ? 0 : rawOffset, 0);
+    const providerFilter = req.query.provider as string | undefined;
+    const statusFilter = req.query.status as string | undefined;
+
+    const conditions: SQL<unknown>[] = [isNull(subscriptions.deletedAt)];
+    const validProviders = ["stripe", "revenuecat", "none"];
+    if (providerFilter && validProviders.includes(providerFilter)) {
+      conditions.push(eq(subscriptions.provider, providerFilter));
+    }
+    const validStatuses = ["trialing", "active", "past_due", "grace", "locked", "canceled", "legacy_free"];
+    if (statusFilter && validStatuses.includes(statusFilter)) {
+      conditions.push(eq(subscriptions.status, statusFilter));
+    }
+
+    const whereClause = and(...conditions);
+
+    try {
+      const [rows, [{ total }]] = await Promise.all([
+        db
+          .select()
+          .from(subscriptions)
+          .where(whereClause)
+          .orderBy(desc(subscriptions.createdAt))
+          .limit(limit)
+          .offset(offset),
+        db.select({ total: count() }).from(subscriptions).where(whereClause),
+      ]);
+
+      // subjectType values: "lab_org" | "provider_org" (→ organizations table)
+      //                      "user" (→ users table)
+      const ORG_SUBJECT_TYPES = new Set(["lab_org", "provider_org"]);
+
+      const orgIds = rows
+        .filter((r) => ORG_SUBJECT_TYPES.has(r.subjectType))
+        .map((r) => r.subjectId)
+        .filter(Boolean);
+      // Treat any subject that is not an org type as a user record
+      // (covers "user", "provider_user", and any future variants)
+      const userIds = rows
+        .filter((r) => !ORG_SUBJECT_TYPES.has(r.subjectType))
+        .map((r) => r.subjectId)
+        .filter(Boolean);
+
+      const [orgRows, userRows] = await Promise.all([
+        orgIds.length > 0
+          ? db
+              .select({ id: organizations.id, name: organizations.name, type: organizations.type })
+              .from(organizations)
+              .where(inArray(organizations.id, orgIds))
+          : ([] as { id: string; name: string; type: string }[]),
+        userIds.length > 0
+          ? db
+              .select({
+                id: users.id,
+                username: users.username,
+                firstName: users.firstName,
+                lastName: users.lastName,
+                email: users.email,
+              })
+              .from(users)
+              .where(inArray(users.id, userIds))
+          : ([] as { id: string; username: string; firstName: string | null; lastName: string | null; email: string | null }[]),
+      ]);
+
+      const orgMap = new Map(orgRows.map((o) => [o.id, { name: o.name, type: o.type }]));
+      const userMap = new Map(
+        userRows.map((u) => [
+          u.id,
+          {
+            name: [u.firstName, u.lastName].filter(Boolean).join(" ") || u.username,
+            email: u.email,
+          },
+        ])
+      );
+
+      function maskId(id: string | null | undefined): string | null {
+        if (!id) return null;
+        if (id.length <= 8) return "****";
+        return id.slice(0, 4) + "****" + id.slice(-4);
+      }
+
+      const items = rows.map((r) => {
+        const isOrg = ORG_SUBJECT_TYPES.has(r.subjectType);
+        const orgInfo = isOrg ? orgMap.get(r.subjectId) : null;
+        const userInfo = !isOrg ? userMap.get(r.subjectId) : null;
+        return {
+          id: r.id,
+          subjectType: r.subjectType,
+          subjectId: r.subjectId,
+          subjectName: orgInfo?.name ?? userInfo?.name ?? r.subjectId,
+          subjectOrgType: orgInfo?.type ?? null,
+          subjectEmail: userInfo?.email ?? null,
+          provider: r.provider,
+          status: r.status,
+          currentPeriodEnd: r.currentPeriodEnd?.toISOString() ?? null,
+          cancelAtPeriodEnd: r.cancelAtPeriodEnd,
+          paymentMethodOnFile: r.paymentMethodOnFile,
+          revenueCatAppUserId: maskId(r.revenueCatAppUserId),
+          stripeCustomerId: maskId(r.stripeCustomerId),
+          stripeSubscriptionId: maskId(r.stripeSubscriptionId),
+          createdAt: r.createdAt.toISOString(),
+        };
+      });
+
+      return res.json({ ok: true, items, total, limit, offset });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to fetch subscriptions." });
     }
   });
 

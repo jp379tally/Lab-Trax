@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, Download, ExternalLink, Github, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, BellRing, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, Github, HardDrive, History, KeyRound, Loader2, LogOut, Monitor, Package, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,9 +31,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage" | "desktop" | "itero" | "platform-admin";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "storage" | "desktop" | "itero" | "platform-admin" | "subscriptions";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "storage", "desktop", "itero", "platform-admin"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "storage", "desktop", "itero", "platform-admin", "subscriptions"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -62,6 +62,7 @@ export default function SettingsPage() {
     { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
     { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin && hasPlatformAdminBridge },
+    { key: "subscriptions", label: "Subscriptions", icon: CreditCard, show: isAdmin && hasPlatformAdminBridge },
   ];
   const [tab, setTab] = useState<TabKey>(readInitialTab);
 
@@ -107,6 +108,7 @@ export default function SettingsPage() {
           {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
           {tab === "itero" && isAdmin && <IteroPanel />}
           {tab === "platform-admin" && isAdmin && hasPlatformAdminBridge && <PlatformAdminPanel />}
+          {tab === "subscriptions" && isAdmin && hasPlatformAdminBridge && <SubscriptionsPanel />}
         </div>
       </div>
     </div>
@@ -3373,6 +3375,252 @@ function IteroPanel() {
           )}
         </section>
       </div>
+    </PanelShell>
+  );
+}
+
+// ── Subscriptions Panel ────────────────────────────────────────────────────
+
+interface SubscriptionItem {
+  id: string;
+  subjectType: string;
+  subjectId: string;
+  subjectName: string;
+  subjectOrgType: string | null;
+  subjectEmail: string | null;
+  provider: string;
+  status: string;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  paymentMethodOnFile: boolean;
+  revenueCatAppUserId: string | null;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  createdAt: string;
+}
+
+interface SubscriptionsResponse {
+  ok: boolean;
+  items: SubscriptionItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+const PROVIDER_LABELS: Record<string, { label: string; cls: string }> = {
+  stripe: { label: "Stripe", cls: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300" },
+  revenuecat: { label: "RevenueCat", cls: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300" },
+  none: { label: "None", cls: "bg-secondary text-muted-foreground" },
+};
+
+const STATUS_LABELS: Record<string, { label: string; cls: string }> = {
+  trialing: { label: "Trialing", cls: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300" },
+  active: { label: "Active", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300" },
+  past_due: { label: "Past due", cls: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300" },
+  grace: { label: "Grace", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" },
+  locked: { label: "Locked", cls: "bg-destructive/10 text-destructive" },
+  canceled: { label: "Canceled", cls: "bg-secondary text-muted-foreground" },
+  legacy_free: { label: "Legacy free", cls: "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300" },
+};
+
+const PAGE_SIZE = 50;
+
+function SubscriptionsPanel() {
+  const [page, setPage] = useState(0);
+  const [providerFilter, setProviderFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE) });
+  if (providerFilter) params.set("provider", providerFilter);
+  if (statusFilter) params.set("status", statusFilter);
+
+  const query = useQuery<SubscriptionsResponse>({
+    queryKey: ["admin-subscriptions", page, providerFilter, statusFilter],
+    queryFn: () => apiFetch<SubscriptionsResponse>(`/admin/subscriptions?${params.toString()}`),
+    retry: false,
+  });
+
+  const { blocked } = usePlatformAdminGate([query.error]);
+
+  if (blocked) {
+    return (
+      <PanelShell title="Subscriptions" subtitle="View all billing subscriptions across the platform.">
+        <PlatformAdminSetupNotice />
+      </PanelShell>
+    );
+  }
+
+  const data = query.data;
+  const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
+
+  function fmtDate(iso: string | null | undefined) {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+
+  function ProviderBadge({ provider }: { provider: string }) {
+    const meta = PROVIDER_LABELS[provider] ?? { label: provider, cls: "bg-secondary text-muted-foreground" };
+    return <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold ${meta.cls}`}>{meta.label}</span>;
+  }
+
+  function StatusBadge({ status }: { status: string }) {
+    const meta = STATUS_LABELS[status] ?? { label: status, cls: "bg-secondary text-muted-foreground" };
+    return <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold ${meta.cls}`}>{meta.label}</span>;
+  }
+
+  return (
+    <PanelShell
+      title="Subscriptions"
+      subtitle="All billing subscriptions across the platform — provider, status, and renewal date."
+    >
+      {/* Filters */}
+      <div className="flex gap-3 flex-wrap items-center">
+        <div className="flex items-center gap-1.5">
+          <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Provider</label>
+          <select
+            value={providerFilter}
+            onChange={(e) => { setProviderFilter(e.target.value); setPage(0); }}
+            className="h-8 px-2 text-sm rounded-md border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="">All</option>
+            <option value="stripe">Stripe</option>
+            <option value="revenuecat">RevenueCat</option>
+            <option value="none">None</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <label className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">Status</label>
+          <select
+            value={statusFilter}
+            onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }}
+            className="h-8 px-2 text-sm rounded-md border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="">All</option>
+            <option value="trialing">Trialing</option>
+            <option value="active">Active</option>
+            <option value="past_due">Past due</option>
+            <option value="grace">Grace</option>
+            <option value="locked">Locked</option>
+            <option value="canceled">Canceled</option>
+            <option value="legacy_free">Legacy free</option>
+          </select>
+        </div>
+        {data && (
+          <span className="ml-auto text-xs text-muted-foreground">
+            {data.total} total
+          </span>
+        )}
+      </div>
+
+      {/* Error */}
+      {query.isError && (
+        <Alert tone="danger">{(query.error as Error)?.message ?? "Failed to load subscriptions."}</Alert>
+      )}
+
+      {/* Loading */}
+      {query.isLoading && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
+          <Loader2 size={14} className="animate-spin" />
+          Loading…
+        </div>
+      )}
+
+      {/* Table */}
+      {data && data.items.length === 0 && (
+        <p className="text-sm text-muted-foreground py-4">No subscriptions found.</p>
+      )}
+
+      {data && data.items.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-secondary/40 text-left">
+                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Account</th>
+                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Provider</th>
+                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Status</th>
+                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Renews / Expires</th>
+                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">RC App User ID</th>
+                <th className="px-3 py-2 text-[11px] uppercase tracking-wide font-medium text-muted-foreground whitespace-nowrap">Stripe Customer</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.map((item, idx) => (
+                <tr
+                  key={item.id}
+                  className={`border-b border-border last:border-0 ${idx % 2 === 0 ? "" : "bg-secondary/20"}`}
+                >
+                  <td className="px-3 py-2.5 min-w-[160px]">
+                    <div className="font-medium text-foreground truncate max-w-[200px]" title={item.subjectName}>
+                      {item.subjectName}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground capitalize">
+                      {["lab_org", "provider_org"].includes(item.subjectType) && item.subjectOrgType
+                        ? item.subjectOrgType
+                        : item.subjectType.replace(/_/g, " ")}
+                      {item.subjectEmail && <span className="ml-1">· {item.subjectEmail}</span>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    <ProviderBadge provider={item.provider} />
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    <StatusBadge status={item.status} />
+                    {item.cancelAtPeriodEnd && (
+                      <span className="ml-1 text-[10px] text-muted-foreground">(cancels)</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                    {fmtDate(item.currentPeriodEnd)}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {item.revenueCatAppUserId ? (
+                      <code className="text-[11px] font-mono text-muted-foreground bg-secondary/60 px-1.5 py-0.5 rounded">
+                        {item.revenueCatAppUserId}
+                      </code>
+                    ) : (
+                      <span className="text-[11px] text-muted-foreground/50">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {item.stripeCustomerId ? (
+                      <code className="text-[11px] font-mono text-muted-foreground bg-secondary/60 px-1.5 py-0.5 rounded">
+                        {item.stripeCustomerId}
+                      </code>
+                    ) : (
+                      <span className="text-[11px] text-muted-foreground/50">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center gap-3 justify-end pt-1">
+          <button
+            type="button"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            className="h-8 px-3 rounded-md bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span className="text-xs text-muted-foreground">
+            Page {page + 1} of {totalPages}
+          </span>
+          <button
+            type="button"
+            disabled={page >= totalPages - 1}
+            onClick={() => setPage((p) => p + 1)}
+            className="h-8 px-3 rounded-md bg-secondary text-foreground text-xs font-medium hover:bg-secondary/80 disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      )}
     </PanelShell>
   );
 }
