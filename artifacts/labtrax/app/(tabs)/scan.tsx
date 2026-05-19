@@ -2070,49 +2070,43 @@ export default function ScanScreen() {
   }
 
   async function handleCapturePhotoFromCamera() {
+    let capturedPhotoUri: string | null = null;
+
     if (cameraRef.current) {
       try {
         const photo = await cameraRef.current.takePictureAsync();
         if (photo?.uri) {
-          setCasePhotos((prev) => [...prev, photo.uri]);
-          setCaseAttachments((prev) => [...prev, { id: generateId(), uri: photo.uri, kind: "image" as const }]);
-          const entry: ActivityEntry = {
-            id: generateId(),
-            type: "photo",
-            timestamp: Date.now(),
-            description: "Photo captured from camera",
-            imageUri: photo.uri,
-            user: userInitials,
-          };
-          appendActivityEntry(entry);
-          if ((Platform.OS as string) !== "web") {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          }
-          return;
+          capturedPhotoUri = photo.uri;
         }
       } catch {}
     }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      quality: 0.8,
-    });
-    if (!result.canceled && result.assets[0]) {
-      const uri = result.assets[0].uri;
-      setCasePhotos((prev) => [...prev, uri]);
-      setCaseAttachments((prev) => [...prev, { id: generateId(), uri, kind: "image" as const }]);
-      const entry: ActivityEntry = {
-        id: generateId(),
-        type: "photo",
-        timestamp: Date.now(),
-        description: "Photo captured from camera",
-        imageUri: uri,
-        user: userInitials,
-      };
-      appendActivityEntry(entry);
-      if ((Platform.OS as string) !== "web") {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    if (!capturedPhotoUri) {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        capturedPhotoUri = result.assets[0].uri;
       }
     }
+
+    if (!capturedPhotoUri) return;
+
+    const uri = capturedPhotoUri;
+    setCapturedUri(uri);
+    setCasePhotos((prev) => [...prev, uri]);
+    setCaseAttachments((prev) => [...prev, { id: generateId(), uri, kind: "image" as const }]);
+    if ((Platform.OS as string) !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+
+    // Automatically run AI analysis on the captured prescription photo so
+    // the form fields are populated without requiring a separate step.
+    autoAnalyzedRef.current = true;
+    handleFinishedReview([uri]).catch((err) => {
+      console.log("AI from Take Photo (form) failed:", err?.message || err);
+    });
   }
 
   async function handleAttachFiles() {
@@ -2687,6 +2681,14 @@ export default function ScanScreen() {
             </View>
           </Pressable>
         </View>
+        {isAnalyzing && (
+          <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#EFF6FF", paddingHorizontal: 16, paddingVertical: 10, gap: 10 }}>
+            <ActivityIndicator size="small" color="#2563EB" />
+            <Text style={{ fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#2563EB" }}>
+              Analyzing prescription...
+            </Text>
+          </View>
+        )}
         <KeyboardAwareScrollViewCompat
           style={styles.formScroll}
           contentContainerStyle={{
@@ -2764,11 +2766,13 @@ export default function ScanScreen() {
           ) : (
             <View style={styles.detectedBanner}>
               <Ionicons
-                name="checkmark-circle"
+                name="camera-outline"
                 size={20}
-                color={Colors.light.success}
+                color={Colors.light.textSecondary}
               />
-              <Text style={styles.detectedText}>Rx Document Detected</Text>
+              <Text style={[styles.detectedText, { color: Colors.light.textSecondary }]}>
+                Tap "Add Prescription" to scan and auto-fill
+              </Text>
             </View>
           )}
 
