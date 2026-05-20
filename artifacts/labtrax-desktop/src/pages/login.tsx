@@ -73,8 +73,9 @@ export default function LoginPage() {
   // on the fixed build or a stale local copy — no more guessing.
   const appVersion = (import.meta.env.VITE_APP_VERSION as string | undefined) || "";
   const commitSha = (import.meta.env.VITE_COMMIT_SHA as string | undefined) || "";
+  const buildNumber = (import.meta.env.VITE_BUILD_NUMBER as string | undefined) || "";
   const buildLabel = appVersion
-    ? `v${appVersion}${commitSha ? ` · ${commitSha}` : ""}`
+    ? `v${appVersion}${buildNumber ? ` (build ${buildNumber})` : ""}${commitSha ? ` · ${commitSha}` : ""}`
     : "";
 
   return (
