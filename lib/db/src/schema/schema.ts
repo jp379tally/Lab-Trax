@@ -520,6 +520,11 @@ export const iteroImportedOrders = pgTable(
     createdCaseId: varchar("created_case_id").references(() => cases.id, {
       onDelete: "set null",
     }),
+    importedByUserId: varchar("imported_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    batchId: text("batch_id"),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -534,6 +539,31 @@ export const iteroImportedOrders = pgTable(
     ),
   })
 );
+
+// One row per import call (rx, zip, or zip-batch). Each batch produces exactly
+// one session row with aggregate counts so the history endpoint can report
+// accurate created / deduped / errored totals even for orders that were
+// de-duplicated (and therefore never got a new itero_imported_orders row).
+export const iteroImportSessions = pgTable("itero_import_sessions", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  labOrganizationId: varchar("lab_organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  importedByUserId: varchar("imported_by_user_id").references(
+    () => users.id,
+    { onDelete: "set null" }
+  ),
+  importedAt: timestamp("imported_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  createdCount: integer("created_count").notNull().default(0),
+  dedupedCount: integer("deduped_count").notNull().default(0),
+  erroredCount: integer("errored_count").notNull().default(0),
+  caseIds: text("case_ids").array(),
+  batchId: text("batch_id"),
+});
 
 export const caseRestorations = pgTable("case_restorations", {
   id: varchar("id")

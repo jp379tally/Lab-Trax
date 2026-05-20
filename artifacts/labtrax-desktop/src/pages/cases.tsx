@@ -863,6 +863,7 @@ export function NewCaseModal({ onClose }: { onClose: () => void }) {
 
 const CASES_FILTER_STORAGE_KEY = "cases_filters_v2";
 const CASES_SCROLL_STORAGE_KEY = "cases_scroll_v1";
+const CASES_ITERO_BATCH_KEY = "cases_itero_batch_v1";
 
 type DateRangeFilter = "all" | "30" | "60" | "90" | "custom";
 
@@ -892,6 +893,14 @@ function readCasesFilters(): {
   };
 }
 
+function readIteroActiveBatch(): { batchId: string; caseIds: string[]; importedAt: string; label: string } | null {
+  try {
+    const raw = sessionStorage.getItem(CASES_ITERO_BATCH_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+
 export default function CasesPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["cases"],
@@ -912,8 +921,17 @@ export default function CasesPage() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">(initialFilters.current.sortDir);
   const [selected, setSelected] = useState<LabCase | null>(null);
   const [showNewCase, setShowNewCase] = useState(false);
+  const [iteroActiveBatch, setIteroActiveBatch] = useState<{ batchId: string; caseIds: string[]; importedAt: string; label: string } | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
+
+  useEffect(() => {
+    const batch = readIteroActiveBatch();
+    if (batch) {
+      setIteroActiveBatch(batch);
+      try { sessionStorage.removeItem(CASES_ITERO_BATCH_KEY); } catch {}
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -985,8 +1003,11 @@ export default function CasesPage() {
       }
     }
 
+    const batchCaseIdSet = iteroActiveBatch ? new Set(iteroActiveBatch.caseIds) : null;
+
     return rows
       .filter((c) => {
+        if (batchCaseIdSet && !batchCaseIdSet.has(c.id)) return false;
         if (statusFilter !== "all" && c.status !== statusFilter) return false;
         if (priorityFilter !== "all" && c.priority !== priorityFilter) return false;
         if (startDate !== null || endDate !== null) {
@@ -1013,7 +1034,7 @@ export default function CasesPage() {
         const vb = (b[sortKey] || "") as string;
         return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
       });
-  }, [data, search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir]);
+  }, [data, search, statusFilter, priorityFilter, dateRangeFilter, customStartDate, customEndDate, sortKey, sortDir, iteroActiveBatch]);
 
   const distinctDoctorNames = useMemo(() => {
     const names = new Set<string>();
@@ -1076,6 +1097,25 @@ export default function CasesPage() {
           </button>
         </div>
       </div>
+
+      {iteroActiveBatch && (
+        <div className="mb-4 flex items-center gap-3 px-4 py-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-sm text-blue-800 dark:text-blue-200">
+          <Sparkles size={14} className="shrink-0 text-blue-500" />
+          <span className="flex-1">
+            Filtered to iTero import session — {iteroActiveBatch.label} on{" "}
+            {new Date(iteroActiveBatch.importedAt).toLocaleString()}.{" "}
+            Showing {filtered.length} case{filtered.length !== 1 ? "s" : ""}.
+          </span>
+          <button
+            type="button"
+            onClick={() => setIteroActiveBatch(null)}
+            className="shrink-0 p-0.5 rounded hover:bg-blue-100 dark:hover:bg-blue-900"
+            title="Clear filter"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-3">

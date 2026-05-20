@@ -250,6 +250,48 @@ export const ImportCasesFromIteroZipBatchBody = zod.object({
 });
 
 /**
+ * Returns import sessions grouped by batchId (newest first). Each session
+shows when it ran, who ran it, how many orders were created vs
+deduplicated, and the resulting case IDs so the client can filter the
+cases list to that batch.
+
+ * @summary Get iTero batch import history for a lab
+ */
+export const getIteroImportHistoryQueryLimitDefault = 50;
+export const getIteroImportHistoryQueryOffsetDefault = 0;
+
+export const GetIteroImportHistoryQueryParams = zod.object({
+  labOrganizationId: zod.coerce.string(),
+  limit: zod.coerce.number().default(getIteroImportHistoryQueryLimitDefault),
+  offset: zod.coerce.number().default(getIteroImportHistoryQueryOffsetDefault),
+});
+
+export const GetIteroImportHistoryResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      total: zod.number(),
+      limit: zod.number(),
+      offset: zod.number(),
+      sessions: zod.array(
+        zod.object({
+          batchId: zod.string(),
+          importedAt: zod.coerce.date(),
+          importedByUserId: zod.string().nullish(),
+          importedByUsername: zod.string().nullish(),
+          importedByName: zod.string().nullish(),
+          createdCount: zod.number(),
+          dedupedCount: zod.number(),
+          erroredCount: zod.number(),
+          totalCount: zod.number(),
+          caseIds: zod.array(zod.string()),
+        }),
+      ),
+    })
+    .optional(),
+});
+
+/**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
 given lab, ranked by similarity to the optional `q` / `like`
 parameters using normalized name comparison (trim, lowercase,

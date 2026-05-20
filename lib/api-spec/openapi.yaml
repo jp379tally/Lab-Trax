@@ -263,6 +263,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IteroZipBatchImportResult"
+  /cases/itero-import-history:
+    get:
+      operationId: getIteroImportHistory
+      tags: [cases]
+      summary: Get iTero batch import history for a lab
+      description: |
+        Returns import sessions grouped by batchId (newest first). Each session
+        shows when it ran, who ran it, how many orders were created vs
+        deduplicated, and the resulting case IDs so the client can filter the
+        cases list to that batch.
+      parameters:
+        - in: query
+          name: labOrganizationId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Import session history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IteroImportHistoryResult"
   /doctors/search:
     get:
       operationId: searchDoctors
@@ -1228,6 +1256,35 @@ components:
               description: |
                 Display name of the suggested provider org, resolved
                 server-side so the desktop banner needs no extra round-trip.
+    IteroImportHistoryResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          type: object
+          required: [sessions, total, limit, offset]
+          properties:
+            total: { type: integer }
+            limit: { type: integer }
+            offset: { type: integer }
+            sessions:
+              type: array
+              items:
+                type: object
+                required: [batchId, importedAt, createdCount, dedupedCount, erroredCount, totalCount, caseIds]
+                properties:
+                  batchId: { type: string }
+                  importedAt: { type: string, format: date-time }
+                  importedByUserId: { type: string, nullable: true }
+                  importedByUsername: { type: string, nullable: true }
+                  importedByName: { type: string, nullable: true }
+                  createdCount: { type: integer }
+                  dedupedCount: { type: integer }
+                  erroredCount: { type: integer }
+                  totalCount: { type: integer }
+                  caseIds:
+                    type: array
+                    items: { type: string }
     IteroZipBatchImportResult:
       type: object
       properties:

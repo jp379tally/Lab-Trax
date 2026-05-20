@@ -4585,6 +4585,19 @@ function PlatformAdminPanel() {
   );
 }
 
+interface IteroImportSession {
+  batchId: string;
+  importedAt: string;
+  importedByUserId: string | null;
+  importedByUsername: string | null;
+  importedByName: string | null;
+  createdCount: number;
+  dedupedCount: number;
+  erroredCount: number;
+  totalCount: number;
+  caseIds: string[];
+}
+
 function IteroPanel() {
   const electron = (typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null);
   const itero = electron?.itero;
@@ -4603,6 +4616,13 @@ function IteroPanel() {
   const [intervalMin, setIntervalMin] = useState(5);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+
+  const historyQuery = useQuery<{ ok: boolean; data: { sessions: IteroImportSession[]; total: number } }>({
+    queryKey: ["itero-import-history", labOrgId],
+    queryFn: () => apiFetch(`/cases/itero-import-history?labOrganizationId=${encodeURIComponent(labOrgId)}&limit=25`),
+    enabled: !!labOrgId,
+    staleTime: 60_000,
+  });
 
   useEffect(() => {
     if (!itero) return;
@@ -4854,28 +4874,67 @@ function IteroPanel() {
             <div className="truncate">{user?.username}{status?.authActive === false && <span className="text-destructive ml-2">(poller paused — sign in required)</span>}</div>
           </div>
 
-          {status?.recentImports && status.recentImports.length > 0 && (
-            <div className="pt-3">
-              <div className="text-xs uppercase tracking-wide text-muted-foreground font-medium mb-2">Recent imports (last 10)</div>
+        </section>
+
+        <section className="space-y-2 border-t border-border pt-4">
+          <h3 className="text-xs uppercase tracking-wide text-muted-foreground font-medium flex items-center gap-1.5">
+            <History size={11} />
+            Import history
+          </h3>
+          {!labOrgId ? (
+            <p className="text-xs text-muted-foreground">Select a lab above to see import history.</p>
+          ) : historyQuery.isLoading ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+              <Loader2 size={12} className="animate-spin" /> Loading…
+            </div>
+          ) : historyQuery.isError ? (
+            <p className="text-xs text-destructive">Could not load history.</p>
+          ) : !historyQuery.data?.data?.sessions?.length ? (
+            <p className="text-xs text-muted-foreground">No import sessions recorded yet.</p>
+          ) : (
+            <div>
+              <p className="text-xs text-muted-foreground mb-2">Click a session to view those cases.</p>
               <ul className="text-sm divide-y divide-border rounded-md border border-border">
-                {status.recentImports.map((imp) => (
-                  <li key={imp.iteroOrderId + imp.importedAt} className="flex items-center justify-between gap-3 px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="font-mono text-xs text-muted-foreground truncate">iTero #{imp.iteroOrderId}</div>
-                      <div className="text-xs text-muted-foreground">{fmt(imp.importedAt)}</div>
-                    </div>
-                    {imp.caseId ? (
-                      <a
-                        href={`#/cases/${imp.caseId}`}
-                        className="text-xs font-medium text-primary hover:underline whitespace-nowrap"
-                      >
-                        {imp.caseNumber ? `Case ${imp.caseNumber}` : "Open case"}
-                      </a>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">No case link</span>
-                    )}
-                  </li>
-                ))}
+                {historyQuery.data.data.sessions.map((session) => {
+                  const operator = session.importedByName || session.importedByUsername || "Unknown user";
+                  const label = `${session.totalCount} order${session.totalCount !== 1 ? "s" : ""} by ${operator}`;
+                  return (
+                    <li key={session.batchId} className="flex items-center justify-between gap-3 px-3 py-2 hover:bg-secondary/40 transition-colors">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium truncate">{fmt(session.importedAt)}</div>
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          {operator} ·{" "}
+                          <span className="text-emerald-600 dark:text-emerald-400">{session.createdCount} new</span>
+                          {session.dedupedCount > 0 && (
+                            <span className="text-muted-foreground"> · {session.dedupedCount} skipped</span>
+                          )}
+                          {session.erroredCount > 0 && (
+                            <span className="text-destructive"> · {session.erroredCount} failed</span>
+                          )}
+                        </div>
+                      </div>
+                      {session.caseIds.length > 0 && (
+                        <a
+                          href="#/cases"
+                          className="text-xs font-medium text-primary hover:underline whitespace-nowrap"
+                          onClick={() => {
+                            try {
+                              sessionStorage.setItem(
+                                "cases_itero_batch_v1",
+                                JSON.stringify({ batchId: session.batchId, caseIds: session.caseIds, importedAt: session.importedAt, label })
+                              );
+                            } catch {}
+                          }}
+                        >
+                          View {session.caseIds.length} case{session.caseIds.length !== 1 ? "s" : ""}
+                        </a>
+                      )}
+                      {session.caseIds.length === 0 && (
+                        <span className="text-xs text-muted-foreground">All skipped</span>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}

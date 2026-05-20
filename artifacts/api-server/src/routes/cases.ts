@@ -16,6 +16,7 @@ import {
   invoiceLineItems,
   invoices,
   iteroImportedOrders,
+  iteroImportSessions,
   labCases,
   notifications,
   organizationConnections,
@@ -1439,6 +1440,82 @@ router.get(
       .limit(20);
 
     return ok(res, { cases: results });
+  }),
+);
+
+// GET /cases/itero-import-history
+//
+// Returns iTero batch-import sessions for a lab (newest first). Each session
+// shows when it ran, who ran it, accurate created/deduped/errored counts, and
+// the resulting case IDs so the client can deep-link to a filtered case list.
+//
+// NOTE: must be declared before "/:caseId" so Express does not shadow it.
+const iteroHistoryQuerySchema = z.object({
+  labOrganizationId: z.string().min(1),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+router.get(
+  "/itero-import-history",
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const query = iteroHistoryQuerySchema.parse(req.query ?? {});
+
+    await requireMembership(userId, query.labOrganizationId);
+
+    // Fetch total count for correct pagination (independent of limit/offset)
+    const [{ totalCount }] = await db
+      .select({ totalCount: sql<number>`count(*)` })
+      .from(iteroImportSessions)
+      .where(eq(iteroImportSessions.labOrganizationId, query.labOrganizationId));
+
+    const rows = await db
+      .select({
+        id: iteroImportSessions.id,
+        importedAt: iteroImportSessions.importedAt,
+        importedByUserId: iteroImportSessions.importedByUserId,
+        createdCount: iteroImportSessions.createdCount,
+        dedupedCount: iteroImportSessions.dedupedCount,
+        erroredCount: iteroImportSessions.erroredCount,
+        caseIds: iteroImportSessions.caseIds,
+        batchId: iteroImportSessions.batchId,
+      })
+      .from(iteroImportSessions)
+      .where(eq(iteroImportSessions.labOrganizationId, query.labOrganizationId))
+      .orderBy(desc(iteroImportSessions.importedAt))
+      .limit(query.limit)
+      .offset(query.offset);
+
+    const userIds = [...new Set(rows.map((r) => r.importedByUserId).filter(Boolean) as string[])];
+    const userRows = userIds.length > 0
+      ? await db
+          .select({ id: users.id, username: users.username, firstName: users.firstName, lastName: users.lastName })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : [];
+    const userMap = Object.fromEntries(userRows.map((u) => [u.id, u]));
+
+    const sessions = rows.map((r) => {
+      const u = r.importedByUserId ? userMap[r.importedByUserId] : undefined;
+      const created = Number(r.createdCount);
+      const deduped = Number(r.dedupedCount);
+      const errored = Number(r.erroredCount);
+      return {
+        batchId: r.batchId ?? r.id,
+        importedAt: r.importedAt,
+        importedByUserId: r.importedByUserId ?? null,
+        importedByUsername: u?.username ?? null,
+        importedByName: u ? [u.firstName, u.lastName].filter(Boolean).join(" ") || null : null,
+        createdCount: created,
+        dedupedCount: deduped,
+        erroredCount: errored,
+        totalCount: created + deduped + errored,
+        caseIds: (r.caseIds ?? []).filter(Boolean),
+      };
+    });
+
+    return ok(res, { sessions, total: Number(totalCount), limit: query.limit, offset: query.offset });
   }),
 );
 
@@ -3426,6 +3503,7 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).auth.userId as string;
     const body = iteroImportBodySchema.parse(req.body ?? {});
+    const batchId = randomBytes(8).toString("hex");
 
     if (!req.file) {
       throw new HttpError(400, "Rx file is required (field name 'file').");
@@ -3605,6 +3683,8 @@ router.post(
           labOrganizationId: body.labOrganizationId,
           iteroOrderId: body.iteroOrderId,
           createdCaseId: null,
+          importedByUserId: userId,
+          batchId,
         })
         .onConflictDoNothing({
           target: [
@@ -3858,6 +3938,18 @@ router.post(
       }
       const existing = txResult.existing;
       if (existing && existing.createdCaseId) {
+        // Best-effort session record for the deduped import
+        db.insert(iteroImportSessions).values({
+          labOrganizationId: body.labOrganizationId,
+          importedByUserId: userId,
+          createdCount: 0,
+          dedupedCount: 1,
+          erroredCount: 0,
+          caseIds: [],
+          batchId,
+        }).catch((err: unknown) => {
+          req.log?.warn({ err }, "iTero rx: failed to write deduped session record (non-fatal)");
+        });
         return ok(res, {
           deduped: true,
           caseId: existing.createdCaseId,
@@ -4107,6 +4199,19 @@ router.post(
       );
     }
 
+    // Best-effort session record for the newly created case
+    db.insert(iteroImportSessions).values({
+      labOrganizationId: body.labOrganizationId,
+      importedByUserId: userId,
+      createdCount: 1,
+      dedupedCount: 0,
+      erroredCount: 0,
+      caseIds: [createdCase.id],
+      batchId,
+    }).catch((err: unknown) => {
+      req.log?.warn({ err }, "iTero rx: failed to write created session record (non-fatal)");
+    });
+
     return ok(
       res,
       {
@@ -4140,6 +4245,7 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).auth.userId as string;
     const body = iteroZipImportBodySchema.parse(req.body ?? {});
+    const batchId = randomBytes(8).toString("hex");
 
     if (!req.file) {
       throw new HttpError(400, "ZIP file is required (field name 'file').");
@@ -4419,6 +4525,8 @@ router.post(
           labOrganizationId: body.labOrganizationId,
           iteroOrderId,
           createdCaseId: null,
+          importedByUserId: userId,
+          batchId,
         })
         .onConflictDoNothing({
           target: [
@@ -4672,6 +4780,18 @@ router.post(
       try { fs.unlinkSync(rxDiskPath); } catch { /* ignore */ }
       const existing = txResult.existing;
       if (existing && existing.createdCaseId) {
+        // Best-effort session record for the deduped ZIP import
+        db.insert(iteroImportSessions).values({
+          labOrganizationId: body.labOrganizationId,
+          importedByUserId: userId,
+          createdCount: 0,
+          dedupedCount: 1,
+          erroredCount: 0,
+          caseIds: [],
+          batchId,
+        }).catch((err: unknown) => {
+          req.log?.warn({ err }, "iTero zip: failed to write deduped session record (non-fatal)");
+        });
         return ok(res, {
           deduped: true,
           caseId: existing.createdCaseId,
@@ -4829,6 +4949,19 @@ router.post(
       );
     }
 
+    // Best-effort session record for the newly created case
+    db.insert(iteroImportSessions).values({
+      labOrganizationId: body.labOrganizationId,
+      importedByUserId: userId,
+      createdCount: 1,
+      dedupedCount: 0,
+      erroredCount: 0,
+      caseIds: [createdCase.id],
+      batchId,
+    }).catch((err: unknown) => {
+      req.log?.warn({ err }, "iTero zip: failed to write created session record (non-fatal)");
+    });
+
     return ok(
       res,
       {
@@ -4868,6 +5001,7 @@ async function processOneIteroZipFile(
   body: { labOrganizationId: string; providerOrganizationId: string; doctorNameHint?: string; patientFirstNameHint?: string; patientLastNameHint?: string },
   userId: string,
   user: any,
+  batchId?: string,
 ): Promise<OneZipResult> {
   const ZIP_MAX_ENTRIES = 100;
   const ZIP_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
@@ -5026,6 +5160,7 @@ async function processOneIteroZipFile(
   const txResult = await db.transaction(async (tx) => {
     const [claim] = await tx.insert(iteroImportedOrders).values({
       labOrganizationId: body.labOrganizationId, iteroOrderId, createdCaseId: null,
+      importedByUserId: userId, batchId: batchId ?? null,
     }).onConflictDoNothing({ target: [iteroImportedOrders.labOrganizationId, iteroImportedOrders.iteroOrderId] }).returning();
 
     if (!claim) {
@@ -5215,6 +5350,7 @@ router.post(
     const userId = (req as any).auth.userId as string;
     const body = iteroZipBatchBodySchema.parse(req.body ?? {});
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const batchId = randomBytes(8).toString("hex");
 
     if (files.length === 0) {
       throw new HttpError(400, "At least one ZIP file is required (field name 'files[]').");
@@ -5239,7 +5375,7 @@ router.post(
 
     for (const file of files) {
       try {
-        const result = await processOneIteroZipFile(req, file, body, userId, user);
+        const result = await processOneIteroZipFile(req, file, body, userId, user, batchId);
         results.push({
           filename: file.originalname,
           status: result.deduped ? "deduped" : "created",
@@ -5258,6 +5394,20 @@ router.post(
         });
       }
     }
+
+    // Best-effort session record aggregating all processed ZIPs in this batch
+    const createdResults = results.filter((r) => r.status === "created");
+    db.insert(iteroImportSessions).values({
+      labOrganizationId: body.labOrganizationId,
+      importedByUserId: userId,
+      createdCount: createdResults.length,
+      dedupedCount: results.filter((r) => r.status === "deduped").length,
+      erroredCount: results.filter((r) => r.status === "error").length,
+      caseIds: createdResults.map((r) => r.caseId).filter(Boolean) as string[],
+      batchId,
+    }).catch((err: unknown) => {
+      req.log?.warn({ err }, "iTero zip-batch: failed to write session record (non-fatal)");
+    });
 
     return ok(res, { results }, 207);
   }),

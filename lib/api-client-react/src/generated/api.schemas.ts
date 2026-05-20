@@ -321,6 +321,31 @@ export interface IteroImportResult {
   data?: IteroImportResultData;
 }
 
+export type IteroImportHistoryResultDataSessionsItem = {
+  batchId: string;
+  importedAt: string;
+  importedByUserId?: string | null;
+  importedByUsername?: string | null;
+  importedByName?: string | null;
+  createdCount: number;
+  dedupedCount: number;
+  erroredCount: number;
+  totalCount: number;
+  caseIds: string[];
+};
+
+export type IteroImportHistoryResultData = {
+  total: number;
+  limit: number;
+  offset: number;
+  sessions: IteroImportHistoryResultDataSessionsItem[];
+};
+
+export interface IteroImportHistoryResult {
+  ok?: boolean;
+  data?: IteroImportHistoryResultData;
+}
+
 export type IteroZipBatchImportResultDataResultsItemStatus =
   (typeof IteroZipBatchImportResultDataResultsItemStatus)[keyof typeof IteroZipBatchImportResultDataResultsItemStatus];
 
@@ -600,6 +625,12 @@ export type ImportCasesFromIteroZipBatchBody = {
   doctorNameHint?: string;
   patientFirstNameHint?: string;
   patientLastNameHint?: string;
+};
+
+export type GetIteroImportHistoryParams = {
+  labOrganizationId: string;
+  limit?: number;
+  offset?: number;
 };
 
 export type SearchDoctorsParams = {

@@ -31,6 +31,7 @@ import type {
   EmailPreferencesInput,
   EmailPreferencesResult,
   GetItemLabelsParams,
+  GetIteroImportHistoryParams,
   GetRxPracticeAliasParams,
   HealthStatus,
   ImportCaseFromIteroRxBody,
@@ -38,6 +39,7 @@ import type {
   ImportCasesFromIteroZipBatchBody,
   ItemLabelsInput,
   ItemLabelsResult,
+  IteroImportHistoryResult,
   IteroImportResult,
   IteroZipBatchImportResult,
   IteroZipImportResult,
@@ -844,6 +846,117 @@ export const useImportCasesFromIteroZipBatch = <
 > => {
   return useMutation(getImportCasesFromIteroZipBatchMutationOptions(options));
 };
+
+/**
+ * Returns import sessions grouped by batchId (newest first). Each session
+shows when it ran, who ran it, how many orders were created vs
+deduplicated, and the resulting case IDs so the client can filter the
+cases list to that batch.
+
+ * @summary Get iTero batch import history for a lab
+ */
+export const getGetIteroImportHistoryUrl = (
+  params: GetIteroImportHistoryParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/cases/itero-import-history?${stringifiedParams}`
+    : `/api/cases/itero-import-history`;
+};
+
+export const getIteroImportHistory = async (
+  params: GetIteroImportHistoryParams,
+  options?: RequestInit,
+): Promise<IteroImportHistoryResult> => {
+  return customFetch<IteroImportHistoryResult>(
+    getGetIteroImportHistoryUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetIteroImportHistoryQueryKey = (
+  params?: GetIteroImportHistoryParams,
+) => {
+  return [
+    `/api/cases/itero-import-history`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetIteroImportHistoryQueryOptions = <
+  TData = Awaited<ReturnType<typeof getIteroImportHistory>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetIteroImportHistoryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getIteroImportHistory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetIteroImportHistoryQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getIteroImportHistory>>
+  > = ({ signal }) =>
+    getIteroImportHistory(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getIteroImportHistory>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetIteroImportHistoryQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getIteroImportHistory>>
+>;
+export type GetIteroImportHistoryQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get iTero batch import history for a lab
+ */
+
+export function useGetIteroImportHistory<
+  TData = Awaited<ReturnType<typeof getIteroImportHistory>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetIteroImportHistoryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getIteroImportHistory>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetIteroImportHistoryQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
 
 /**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
