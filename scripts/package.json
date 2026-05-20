@@ -15,6 +15,7 @@
     "backfill-restoration-buckets": "tsx ./src/backfill-restoration-buckets.ts",
     "seed-stripe-products": "tsx ./src/seedStripeProducts.ts",
     "seed-revenuecat": "tsx ./src/seedRevenueCat.ts",
+    "bump-build-number": "tsx ./src/bump-build-number.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -35,7 +35,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createWriteStream, existsSync, readFileSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,9 +66,18 @@ if (!commitSha) {
   }
 }
 const shortSha = commitSha ? commitSha.slice(0, 7) : "";
+
+const buildNumberFile = resolve(root, "build-number.json");
+const buildNumberData = JSON.parse(readFileSync(buildNumberFile, "utf8"));
+const prevBuildNumber = buildNumberData.buildNumber ?? 0;
+const buildNumber = prevBuildNumber + 1;
+buildNumberData.buildNumber = buildNumber;
+writeFileSync(buildNumberFile, JSON.stringify(buildNumberData, null, 2) + "\n", "utf8");
+
 process.env.VITE_APP_VERSION = pkgVersion;
 process.env.VITE_COMMIT_SHA = shortSha;
-console.log(`Build identity: v${pkgVersion}${shortSha ? ` (${shortSha})` : ""}`);
+process.env.VITE_BUILD_NUMBER = String(buildNumber);
+console.log(`Build identity: v${pkgVersion} build ${buildNumber}${shortSha ? ` (${shortSha})` : ""}`);
 
 if (!process.env.VITE_API_BASE_URL) {
   console.error(

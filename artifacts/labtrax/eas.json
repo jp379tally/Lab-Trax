@@ -7,12 +7,14 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "prebuildCommand": "pnpm --filter @workspace/scripts run bump-build-number",
       "ios": {
         "simulator": false
       }
     },
     "preview": {
       "distribution": "internal",
+      "prebuildCommand": "pnpm --filter @workspace/scripts run bump-build-number",
       "ios": {
         "distribution": "internal"
       },
@@ -21,7 +23,7 @@
       }
     },
     "production": {
-      "autoIncrement": true,
+      "prebuildCommand": "pnpm --filter @workspace/scripts run bump-build-number",
       "env": {
         "EXPO_DEBUG": "1"
       },
