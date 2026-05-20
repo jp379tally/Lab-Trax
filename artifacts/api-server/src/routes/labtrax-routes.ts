@@ -1,8 +1,10 @@
 import express, { Router, type IRouter } from "express";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { spawn } from "node:child_process";
 import archiver from "archiver";
 import { uploadToOneDrive } from "../lib/onedrive";
 import {
@@ -2818,6 +2820,37 @@ export async function registerRoutes(): Promise<IRouter> {
     }
   });
 
+  async function convertPdfToImageBase64s(rawPdfBase64: string): Promise<string[]> {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "rx-pdf-"));
+    const pdfPath = path.join(tmpDir, "input.pdf");
+    const outputPrefix = path.join(tmpDir, "page");
+    try {
+      await writeFile(pdfPath, Buffer.from(rawPdfBase64, "base64"));
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn("pdftoppm", ["-jpeg", "-r", "150", "-f", "1", "-l", "3", pdfPath, outputPrefix]);
+        let stderr = "";
+        proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString().slice(0, 500); });
+        proc.on("close", (code: number) => {
+          if (code === 0) resolve();
+          else reject(new Error(`pdftoppm exited ${code}: ${stderr}`));
+        });
+        proc.on("error", reject);
+      });
+      const allFiles = await readdir(tmpDir);
+      const jpgFiles = allFiles
+        .filter((f) => f.startsWith("page") && (f.endsWith(".jpg") || f.endsWith(".jpeg")))
+        .sort();
+      const images: string[] = [];
+      for (const file of jpgFiles) {
+        const data = await readFile(path.join(tmpDir, file));
+        images.push(`data:image/jpeg;base64,${data.toString("base64")}`);
+      }
+      return images;
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
   router.post("/analyze-prescription", optionalAuth, async (req, res) => {
     try {
       const openai = getOpenAIClient();
@@ -2848,20 +2881,49 @@ export async function registerRoutes(): Promise<IRouter> {
 
       const imageContents: Array<{ type: "image_url"; image_url: { url: string; detail: "auto" } }> = [];
 
-      let primaryUrl = imageBase64;
-      if (!primaryUrl.startsWith("data:")) {
-        primaryUrl = `data:image/jpeg;base64,${primaryUrl}`;
-      }
-      imageContents.push({ type: "image_url", image_url: { url: primaryUrl, detail: "auto" } });
+      // PDF detection: raw base64 of any PDF starts with 'JVBERi' (base64 of '%PDF-').
+      // On iOS, PDFs picked from the document picker arrive here with raw PDF bytes
+      // wrapped in a fake data:image/jpeg;base64,... prefix. We detect the real
+      // content via the magic-byte signature and render each page via pdftoppm.
+      const isPdf = rawB64.startsWith("JVBERi");
+      if (isPdf) {
+        console.log("AI analyze-prescription: PDF detected, converting pages via pdftoppm");
+        let pdfImages: string[];
+        try {
+          pdfImages = await convertPdfToImageBase64s(rawB64);
+        } catch (pdfErr: any) {
+          console.log("AI analyze-prescription: PDF conversion failed:", pdfErr?.message);
+          return res.status(400).json({
+            success: false,
+            error: "PDF prescriptions could not be processed. Please photograph the printed prescription instead.",
+          });
+        }
+        if (pdfImages.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: "PDF could not be rendered. Please photograph the prescription instead.",
+          });
+        }
+        console.log("AI analyze-prescription: PDF converted to", pdfImages.length, "page(s)");
+        for (const img of pdfImages) {
+          imageContents.push({ type: "image_url", image_url: { url: img, detail: "auto" } });
+        }
+      } else {
+        let primaryUrl = imageBase64;
+        if (!primaryUrl.startsWith("data:")) {
+          primaryUrl = `data:image/jpeg;base64,${primaryUrl}`;
+        }
+        imageContents.push({ type: "image_url", image_url: { url: primaryUrl, detail: "auto" } });
 
-      if (additionalImages && Array.isArray(additionalImages)) {
-        for (const img of additionalImages) {
-          if (typeof img === "string" && img.length > 100) {
-            let imgUrl = img;
-            if (!imgUrl.startsWith("data:")) {
-              imgUrl = `data:image/jpeg;base64,${imgUrl}`;
+        if (additionalImages && Array.isArray(additionalImages)) {
+          for (const img of additionalImages) {
+            if (typeof img === "string" && img.length > 100) {
+              let imgUrl = img;
+              if (!imgUrl.startsWith("data:")) {
+                imgUrl = `data:image/jpeg;base64,${imgUrl}`;
+              }
+              imageContents.push({ type: "image_url", image_url: { url: imgUrl, detail: "auto" } });
             }
-            imageContents.push({ type: "image_url", image_url: { url: imgUrl, detail: "auto" } });
           }
         }
       }

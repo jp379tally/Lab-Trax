@@ -1049,6 +1049,9 @@ export default function ScanScreen() {
       const commaIdx = uri.indexOf(",");
       const b64Len = commaIdx >= 0 ? uri.length - commaIdx - 1 : uri.length;
       console.log("AI compress: URI is already a data URI, base64 payload length:", b64Len);
+      // Non-image data URIs (e.g. PDF bytes mislabeled as image/jpeg) — pass straight
+      // through to the server, which detects the PDF magic bytes and converts via pdftoppm.
+      if (!uri.startsWith("data:image/") && b64Len >= 5000) return uri;
       if (b64Len < 5000) {
         console.log("AI compress: data URI suspiciously small, attempting enhancement");
         const enhanced = await ensureHighQualityBase64(uri);
@@ -2187,10 +2190,37 @@ export default function ScanScreen() {
         }
 
         if (wasInCameraPhase && asset.mimeType === "application/pdf") {
-          setCasePhotos((prev) => [...prev, asset.uri]);
-          setCapturedUri(asset.uri);
-          setPhase("scanning");
-          cropDoneRef.current = true;
+          // Read the PDF bytes as base64 so the server can detect the PDF
+          // magic-byte signature and convert pages via pdftoppm.
+          let pdfDataUri: string = asset.uri;
+          if ((Platform.OS as string) !== "web") {
+            try {
+              const FSystem = await import("expo-file-system");
+              const b64 = await (FSystem as any).readAsStringAsync(asset.uri, {
+                encoding: (FSystem as any).EncodingType.Base64,
+              });
+              if (b64 && b64.length > 100) {
+                pdfDataUri = `data:application/pdf;base64,${b64}`;
+              }
+            } catch (e: any) {
+              console.log("PDF read failed, using raw URI:", e?.message);
+            }
+          }
+          setCapturedUri(pdfDataUri);
+          setCasePhotos((prev) => [...prev, pdfDataUri]);
+          setCaseAttachments((prev) => [
+            ...prev,
+            { id: generateId(), uri: asset.uri, kind: "pdf" as const, name: asset.name },
+          ]);
+          if ((Platform.OS as string) !== "web") {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          }
+          // Go straight to form+AI — skip the blank review screen for PDFs.
+          setPhase("form");
+          autoAnalyzedRef.current = true;
+          handleFinishedReview([pdfDataUri]).catch((err) => {
+            console.log("AI from PDF pick failed:", err?.message || err);
+          });
           isPickingFilesRef.current = false;
           return;
         }
