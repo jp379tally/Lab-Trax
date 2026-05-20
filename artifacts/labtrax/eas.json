@@ -23,7 +23,6 @@
       }
     },
     "production": {
-      "prebuildCommand": "pnpm --filter @workspace/scripts run bump-build-number",
       "env": {
         "EXPO_DEBUG": "1"
       },

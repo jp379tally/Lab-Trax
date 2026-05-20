@@ -81,6 +81,41 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      # Persist the incremented build-number.json so that the counter stays
+      # monotonically increasing across runs. Without this commit the file
+      # resets on the next clean checkout and two builds can share a number.
+      # [skip ci] prevents this maintenance commit from re-triggering CI.
+      - name: Commit bumped build number
+        if: success()
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add artifacts/labtrax-desktop/build-number.json
+          if git diff --cached --quiet; then
+            echo "build-number.json unchanged — nothing to commit."
+            exit 0
+          fi
+          BUILD_NUM=$(node -p "require('./artifacts/labtrax-desktop/build-number.json').buildNumber")
+          git commit -m "chore: bump desktop build number to ${BUILD_NUM} [skip ci]"
+          # Retry with rebase in case a parallel job pushed first.
+          # If the rebase ends with nothing new to push (both jobs wrote the
+          # same N+1), we mark success without an extra push.
+          pushed=false
+          for attempt in 1 2 3; do
+            if git pull --rebase origin "$GITHUB_REF_NAME" \
+                && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              pushed=true
+              break
+            fi
+            echo "::warning::Push attempt ${attempt} failed — retrying in ${attempt}s…"
+            sleep "$attempt"
+          done
+          if [[ "$pushed" != "true" ]]; then
+            echo "::error::All push attempts failed — build number was NOT persisted."
+            exit 1
+          fi
+
       # ── Upload artifacts ──────────────────────────────────────────────────────
       - name: Upload DMG as workflow artifact
         uses: actions/upload-artifact@v4

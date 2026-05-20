@@ -1,0 +1,117 @@
+name: EAS Mobile Build
+
+# Canonical workflow for triggering a production EAS build.
+#
+# This workflow owns the mobile build-number bump: it increments
+# ios.buildNumber / android.versionCode in artifacts/labtrax/app.json,
+# commits the result back to main, and THEN kicks off the EAS build.
+# Because the bump is committed before EAS starts, every run produces a
+# unique, persisted counter — re-running on the same commit yields the
+# next sequential number, not the same one.
+#
+# The prebuildCommand in eas.json is removed from the production profile
+# so that bumping only happens here (one source of truth). It is kept in
+# development/preview profiles for local eas build convenience.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   EXPO_TOKEN  — Expo access token with publish rights for the project
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to build"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - ios
+          - android
+      profile:
+        description: "EAS build profile"
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - preview
+          - development
+
+jobs:
+  bump-and-build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so git push doesn't fail on shallow clones.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Increment ios.buildNumber / android.versionCode in app.json and commit
+      # the result before the EAS build starts. This ensures the counter is
+      # persisted even if the EAS build is later cancelled or retried.
+      - name: Bump mobile build number
+        run: pnpm --filter @workspace/scripts run bump-build-number
+
+      - name: Commit bumped app.json
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add artifacts/labtrax/app.json
+          if git diff --cached --quiet; then
+            echo "app.json unchanged — nothing to commit."
+            exit 0
+          fi
+          BUILD_NUM=$(node -p \
+            "JSON.parse(require('fs').readFileSync('artifacts/labtrax/app.json','utf8')).expo.ios.buildNumber")
+          git commit -m "chore: bump mobile build number to ${BUILD_NUM} [skip ci]"
+          # Retry with rebase in case another job pushed to main concurrently.
+          # Fail hard if all attempts are exhausted so the pipeline does not
+          # silently proceed with an unpersisted counter.
+          pushed=false
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main \
+                && git push origin HEAD:main; then
+              pushed=true
+              break
+            fi
+            echo "::warning::Push attempt ${attempt} failed — retrying in ${attempt}s…"
+            sleep "$attempt"
+          done
+          if [[ "$pushed" != "true" ]]; then
+            echo "::error::All push attempts failed — mobile build number was NOT persisted."
+            exit 1
+          fi
+
+      - name: Build on EAS
+        uses: expo/expo-github-action@v8
+        with:
+          expo-version: latest
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Trigger EAS build
+        working-directory: artifacts/labtrax
+        run: |
+          eas build \
+            --platform "${{ github.event.inputs.platform }}" \
+            --profile  "${{ github.event.inputs.profile }}" \
+            --non-interactive \
+            --no-wait

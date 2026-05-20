@@ -54,6 +54,66 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
+      # Persist the incremented build-number.json back to main so the counter
+      # stays monotonically increasing across releases.
+      #
+      # This workflow is triggered by a tag push, so the runner operates on a
+      # detached HEAD — git pull --rebase has no current branch to rebase onto.
+      # Instead we:
+      #   1. Read the bumped number from the working tree (tag checkout).
+      #   2. Fetch main and switch to it as a real local branch.
+      #   3. Write the exact bumped value onto main's copy of the file.
+      #   4. Commit (no-op if a parallel job already pushed the same value).
+      #   5. Push with fetch+rebase retry; fail hard if all attempts exhaust.
+      # [skip ci] prevents the maintenance commit from re-triggering CI.
+      - name: Commit bumped build number
+        if: success()
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Read the number from the tag working tree before switching branches.
+          BUILD_NUM=$(node -p "require('./artifacts/labtrax-desktop/build-number.json').buildNumber")
+          # Tags are immutable — commit to main instead.
+          git fetch origin main
+          git checkout -B main origin/main
+          # Write the bumped value onto main's copy of the file.
+          node -e "
+            const fs = require('fs'), p = 'artifacts/labtrax-desktop/build-number.json';
+            const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+            d.buildNumber = $BUILD_NUM;
+            fs.writeFileSync(p, JSON.stringify(d, null, 2) + '\n', 'utf8');
+          "
+          git add artifacts/labtrax-desktop/build-number.json
+          if git diff --cached --quiet; then
+            echo "build-number.json already at ${BUILD_NUM} on main — nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: bump desktop build number to ${BUILD_NUM} [skip ci]"
+          # Retry with fetch+rebase on conflict (parallel macOS/Windows race).
+          # After rebase, re-check if the file is already at the target value —
+          # if so, the other job already persisted it and no push is needed.
+          pushed=false
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              pushed=true
+              break
+            fi
+            echo "::warning::Push attempt ${attempt} failed — retrying in ${attempt}s…"
+            git fetch origin main
+            git rebase origin/main
+            if git diff origin/main --quiet -- artifacts/labtrax-desktop/build-number.json; then
+              echo "build-number.json already at ${BUILD_NUM} on origin/main — no push needed."
+              pushed=true
+              break
+            fi
+            sleep "$attempt"
+          done
+          if [[ "$pushed" != "true" ]]; then
+            echo "::error::All push attempts failed — build number was NOT persisted."
+            exit 1
+          fi
+
       - name: Verify installer signature
         if: env.CSC_LINK != ''
         shell: pwsh
@@ -314,6 +374,59 @@ process.stdout.write(out.join('\n').trim());
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Mirror the Windows commit-back step exactly. Both platform jobs start
+      # from the same tag commit (detached HEAD), increment build-number to the
+      # same N+1, and race to push to main. The same fetch+checkout-main +
+      # retry-rebase logic is used here so the second arrival is a no-op:
+      # after rebasing it sees the file already at N+1 and exits cleanly.
+      - name: Commit bumped build number
+        if: success()
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Read the number from the tag working tree before switching branches.
+          BUILD_NUM=$(node -p "require('./artifacts/labtrax-desktop/build-number.json').buildNumber")
+          # Tags are immutable — commit to main instead.
+          git fetch origin main
+          git checkout -B main origin/main
+          # Write the bumped value onto main's copy of the file.
+          node -e "
+            const fs = require('fs'), p = 'artifacts/labtrax-desktop/build-number.json';
+            const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+            d.buildNumber = $BUILD_NUM;
+            fs.writeFileSync(p, JSON.stringify(d, null, 2) + '\n', 'utf8');
+          "
+          git add artifacts/labtrax-desktop/build-number.json
+          if git diff --cached --quiet; then
+            echo "build-number.json already at ${BUILD_NUM} on main — nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: bump desktop build number to ${BUILD_NUM} [skip ci]"
+          # Retry with fetch+rebase on conflict (parallel macOS/Windows race).
+          # After rebase, re-check if the file is already at the target value —
+          # if so, the other job already persisted it and no push is needed.
+          pushed=false
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              pushed=true
+              break
+            fi
+            echo "::warning::Push attempt ${attempt} failed — retrying in ${attempt}s…"
+            git fetch origin main
+            git rebase origin/main
+            if git diff origin/main --quiet -- artifacts/labtrax-desktop/build-number.json; then
+              echo "build-number.json already at ${BUILD_NUM} on origin/main — no push needed."
+              pushed=true
+              break
+            fi
+            sleep "$attempt"
+          done
+          if [[ "$pushed" != "true" ]]; then
+            echo "::error::All push attempts failed — build number was NOT persisted."
+            exit 1
+          fi
 
       # Auto-publish the freshly built DMG to the live download page so
       # admins don't have to download → upload → update URL by hand. Mirrors
