@@ -1159,7 +1159,8 @@ export default function CasesPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-secondary/40">
-                <th className="text-left px-5 py-2.5"><SortHeader k="caseNumber">Case #</SortHeader></th>
+                <th className="text-left px-5 py-2.5"><SortHeader k="createdAt">Created</SortHeader></th>
+                <th className="text-left py-2.5"><SortHeader k="caseNumber">Case #</SortHeader></th>
                 <th className="text-left py-2.5">Patient</th>
                 <th className="text-left py-2.5"><SortHeader k="doctorName">Doctor</SortHeader></th>
                 <th className="text-left py-2.5">Type</th>
@@ -1169,7 +1170,6 @@ export default function CasesPage() {
                 <th className="text-left py-2.5"><SortHeader k="status">Status</SortHeader></th>
                 <th className="text-left py-2.5"><SortHeader k="dueDate">Due</SortHeader></th>
                 <th className="text-right py-2.5"><SortHeader k="totalPrice">Price</SortHeader></th>
-                <th className="text-left px-5 py-2.5"><SortHeader k="createdAt">Created</SortHeader></th>
               </tr>
             </thead>
             <tbody>
@@ -1201,6 +1201,7 @@ export default function CasesPage() {
                   onClick={() => setSelected(c)}
                   className="border-t border-border cursor-pointer hover:bg-secondary/40"
                 >
+                  <td className="px-5 py-3 text-muted-foreground">{relativeTime(c.createdAt)}</td>
                   <td className="px-5 py-3 font-mono text-xs">
                     <div className="flex items-center gap-1.5">
                       {c.needsAiReview && (
@@ -1242,7 +1243,6 @@ export default function CasesPage() {
                   <td className="py-3 text-right tabular-nums">
                     {Number(c.totalPrice ?? 0) > 0 ? formatMoney(c.totalPrice) : "—"}
                   </td>
-                  <td className="px-5 py-3 text-muted-foreground">{relativeTime(c.createdAt)}</td>
                 </tr>
               ))}
             </tbody>
