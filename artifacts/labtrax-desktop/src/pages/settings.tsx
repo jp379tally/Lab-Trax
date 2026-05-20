@@ -3196,7 +3196,7 @@ function MobileBuildPanel() {
                     setVersionError(null);
                     versionMutation.mutate(v);
                   }}
-                  disabled={versionMutation.isPending || (versionDraft === null || versionDraft.trim() === (info.expoVersion ?? ""))}
+                  disabled={versionMutation.isPending || versionDraft === null || versionDraft.trim() === "" || versionDraft.trim() === (info.expoVersion ?? "")}
                   className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
                 >
                   {versionMutation.isPending ? (
