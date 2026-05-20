@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Play, RotateCcw, RefreshCcw, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { AlertTriangle, Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Play, RotateCcw, RefreshCcw, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -2011,6 +2011,28 @@ function InstallerStatusBadge({ status }: { status: DesktopInstallerInfo["instal
   );
 }
 
+function parseVersionFromFilename(filename: string): string | null {
+  const match = filename.match(/(\d+\.\d+(?:\.\d+)*(?:-[\w.]+)?)/);
+  return match ? match[1] : null;
+}
+
+function compareVersions(a: string, b: string): number {
+  const normalize = (v: string) =>
+    v
+      .replace(/^v/, "")
+      .split(/[-+]/)[0]
+      .split(".")
+      .map((p) => parseInt(p, 10) || 0);
+  const pa = normalize(a);
+  const pb = normalize(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 function DesktopInstallerPanel() {
   const queryClient = useQueryClient();
   const [urlInput, setUrlInput] = useState<string>("");
@@ -2409,6 +2431,28 @@ function DesktopInstallerPanel() {
                 <AlertDialogTitle>Upload installer?</AlertDialogTitle>
                 <AlertDialogDescription asChild>
                   <div className="space-y-2 text-sm">
+                    {(() => {
+                      const liveVersion = info?.version ?? null;
+                      const newVersion = uploadConfirmPending
+                        ? parseVersionFromFilename(uploadConfirmPending.name)
+                        : null;
+                      const isDowngrade =
+                        liveVersion &&
+                        newVersion &&
+                        compareVersions(newVersion, liveVersion) < 0;
+                      return isDowngrade ? (
+                        <div className="flex items-start gap-2 rounded-md border border-amber-400/60 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-amber-800 dark:text-amber-300">
+                          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                          <span className="text-xs font-medium leading-snug">
+                            Downgrade warning — you are about to replace{" "}
+                            <strong>v{liveVersion}</strong> with{" "}
+                            <strong>v{newVersion}</strong>. Users who have already
+                            updated will be prompted to "downgrade". Proceed only
+                            if this is intentional.
+                          </span>
+                        </div>
+                      ) : null;
+                    })()}
                     <p>
                       This will replace the live installer that all users download. Review the details below before continuing.
                     </p>
@@ -2421,6 +2465,12 @@ function DesktopInstallerPanel() {
                         <span className="text-muted-foreground">Size:&nbsp;</span>
                         <span>{uploadConfirmPending ? formatInstallerSize(uploadConfirmPending.size) : "—"}</span>
                       </div>
+                      {uploadConfirmPending && parseVersionFromFilename(uploadConfirmPending.name) && (
+                        <div>
+                          <span className="text-muted-foreground">New version:&nbsp;</span>
+                          <span>{parseVersionFromFilename(uploadConfirmPending.name)}</span>
+                        </div>
+                      )}
                       <div>
                         <span className="text-muted-foreground">Current version:&nbsp;</span>
                         <span>{info?.version ?? "—"}</span>
