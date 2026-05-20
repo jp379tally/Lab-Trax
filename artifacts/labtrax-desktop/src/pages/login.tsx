@@ -152,11 +152,11 @@ export default function LoginPage() {
         <p className="text-center text-xs text-muted-foreground mt-5">
           The same account works on the LabTrax mobile app.
         </p>
-        <p className="text-center text-[10px] text-muted-foreground/70 mt-2 break-all">
-          {apiOrigin
-            ? `Server: ${apiOrigin}`
-            : "Server: not configured — please reinstall LabTrax Desktop"}
-        </p>
+        {apiOrigin && (
+          <p className="text-center text-[10px] text-muted-foreground/70 mt-2 break-all">
+            Server: {apiOrigin}
+          </p>
+        )}
         {buildLabel && (
           <p className="text-center text-[10px] text-muted-foreground/60 mt-1">
             Build: {buildLabel}
