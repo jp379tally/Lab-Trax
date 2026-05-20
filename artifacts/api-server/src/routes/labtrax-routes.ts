@@ -3797,6 +3797,7 @@ Important rules:
   const SETTING_DESKTOP_INSTALLER_URL = "desktop_installer_url";
   const SETTING_DESKTOP_INSTALLER_VERSION = "desktop_installer_version";
   const SETTING_DESKTOP_INSTALLER_RELEASE_NOTES = "desktop_installer_release_notes";
+  const SETTING_MOBILE_BUILD_LAST_TRIGGER = "mobile_build_last_trigger";
 
   function validateInstallerUrl(url: string): string | null {
     if (url.startsWith("https://") || url.startsWith("/downloads/")) return null;
@@ -5141,6 +5142,155 @@ Important rules:
       const msg = e instanceof Error ? e.message : "Failed to save backup history retention settings.";
       return res.status(500).json({ error: msg });
     }
+  });
+
+  // ── Admin: Mobile Build ────────────────────────────────────────────────────
+  // Returns current build numbers from app.json and last-triggered build info.
+  router.get("/admin/mobile-build/info", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const appJsonPath = path.resolve(process.cwd(), "artifacts/labtrax/app.json");
+    let iosBuildNumber: string | null = null;
+    let androidVersionCode: number | null = null;
+    let appJsonError: string | null = null;
+    try {
+      const raw = await readFile(appJsonPath, "utf8");
+      const appJson = JSON.parse(raw) as {
+        expo?: { ios?: { buildNumber?: string }; android?: { versionCode?: number } };
+      };
+      iosBuildNumber = appJson.expo?.ios?.buildNumber ?? null;
+      androidVersionCode = appJson.expo?.android?.versionCode ?? null;
+    } catch (err) {
+      appJsonError = (err as Error).message ?? "Could not read app.json.";
+    }
+
+    const repoUrl = process.env.GITHUB_REPO_URL ?? null;
+    const tokenConfigured = !!process.env.GITHUB_ACTIONS_TOKEN;
+
+    const githubRepoPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(\/)?$/;
+    const repoMatch = repoUrl ? githubRepoPattern.exec(repoUrl) : null;
+    const repoOwner = repoMatch?.[1] ?? null;
+    const repoName = repoMatch?.[2] ?? null;
+
+    const [lastTriggerRow] = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_MOBILE_BUILD_LAST_TRIGGER));
+    let lastTrigger: {
+      platform: string;
+      profile: string;
+      triggeredAt: string;
+      triggeredByUsername: string;
+    } | null = null;
+    if (lastTriggerRow?.value) {
+      try {
+        lastTrigger = JSON.parse(lastTriggerRow.value) as typeof lastTrigger;
+      } catch {
+        /* ignore malformed row */
+      }
+    }
+
+    return res.json({
+      iosBuildNumber,
+      androidVersionCode,
+      appJsonError,
+      repoUrl,
+      repoOwner,
+      repoName,
+      tokenConfigured,
+      lastTrigger,
+    });
+  });
+
+  // Triggers a GitHub Actions workflow_dispatch for eas-build.yml.
+  router.post("/admin/mobile-build/trigger", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const token = process.env.GITHUB_ACTIONS_TOKEN;
+    if (!token) {
+      return res.status(503).json({
+        error: "GITHUB_ACTIONS_TOKEN is not configured. Set it as an environment secret to enable mobile builds.",
+      });
+    }
+
+    const repoUrl = process.env.GITHUB_REPO_URL ?? null;
+    const githubRepoPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(\/)?$/;
+    const repoMatch = repoUrl ? githubRepoPattern.exec(repoUrl) : null;
+    const repoOwner = repoMatch?.[1] ?? null;
+    const repoName = repoMatch?.[2] ?? null;
+    if (!repoOwner || !repoName) {
+      return res.status(503).json({
+        error: "GITHUB_REPO_URL is not set or not a valid https://github.com/<owner>/<repo> URL.",
+      });
+    }
+
+    const { platform, profile } = req.body as { platform?: unknown; profile?: unknown };
+    const validPlatforms = ["all", "ios", "android"] as const;
+    const validProfiles = ["production", "preview", "development"] as const;
+    const chosenPlatform = validPlatforms.includes(platform as any) ? (platform as string) : "all";
+    const chosenProfile = validProfiles.includes(profile as any) ? (profile as string) : "production";
+
+    const dispatchUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/actions/workflows/eas-build.yml/dispatches`;
+    let ghRes: Response;
+    try {
+      ghRes = await fetch(dispatchUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        body: JSON.stringify({
+          ref: "main",
+          inputs: { platform: chosenPlatform, profile: chosenProfile },
+        }),
+      });
+    } catch (err) {
+      req.log.error({ err }, "GitHub API request failed for mobile build trigger");
+      return res.status(502).json({ error: "Could not reach the GitHub API. Check server connectivity." });
+    }
+
+    if (!ghRes.ok) {
+      let detail = "";
+      try {
+        const body = await ghRes.json() as { message?: string };
+        detail = body.message ? ` — ${body.message}` : "";
+      } catch { /* ignore */ }
+      req.log.error(
+        { status: ghRes.status, url: dispatchUrl },
+        "GitHub workflow_dispatch returned a non-2xx response",
+      );
+      return res.status(502).json({
+        error: `GitHub rejected the workflow dispatch (HTTP ${ghRes.status})${detail}. Verify that GITHUB_ACTIONS_TOKEN has workflow write access and that the eas-build.yml workflow exists on the main branch.`,
+      });
+    }
+
+    const reqUser = (req as any).user as { username?: string } | undefined;
+    const triggerRecord = {
+      platform: chosenPlatform,
+      profile: chosenProfile,
+      triggeredAt: new Date().toISOString(),
+      triggeredByUsername: reqUser?.username ?? "unknown",
+    };
+
+    try {
+      await db
+        .insert(systemSettings)
+        .values({ key: SETTING_MOBILE_BUILD_LAST_TRIGGER, value: JSON.stringify(triggerRecord) })
+        .onConflictDoUpdate({
+          target: systemSettings.key,
+          set: { value: JSON.stringify(triggerRecord), updatedAt: new Date() },
+        });
+    } catch (err) {
+      req.log.warn({ err }, "Failed to persist mobile build last-trigger record");
+    }
+
+    return res.json({ ok: true, trigger: triggerRecord });
   });
 
   return router;

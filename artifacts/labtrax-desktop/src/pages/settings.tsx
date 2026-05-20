@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, RotateCcw, RefreshCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, Play, RotateCcw, RefreshCcw, ShieldCheck, Smartphone, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,9 +29,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "itero" | "platform-admin" | "subscriptions" | "notifications";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "mobile" | "itero" | "platform-admin" | "subscriptions" | "notifications";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "itero", "platform-admin", "subscriptions", "notifications"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "mobile", "itero", "platform-admin", "subscriptions", "notifications"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -58,6 +58,7 @@ export default function SettingsPage() {
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
+    { key: "mobile", label: "Mobile app", icon: Smartphone, show: isAdmin && hasPlatformAdminBridge },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
     { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin && hasPlatformAdminBridge },
     { key: "subscriptions", label: "Subscriptions", icon: CreditCard, show: isAdmin && hasPlatformAdminBridge },
@@ -105,6 +106,7 @@ export default function SettingsPage() {
           {tab === "users" && isAdmin && <UsersPanel />}
           {tab === "backup" && isAdmin && <BackupPanel />}
           {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
+          {tab === "mobile" && isAdmin && hasPlatformAdminBridge && <MobileBuildPanel />}
           {tab === "itero" && isAdmin && <IteroPanel />}
           {tab === "platform-admin" && isAdmin && hasPlatformAdminBridge && <PlatformAdminPanel />}
           {tab === "subscriptions" && isAdmin && hasPlatformAdminBridge && <SubscriptionsPanel />}
@@ -2982,6 +2984,224 @@ function DesktopInstallerHistoryPanel({ repoUrl }: { repoUrl: string | null }) {
         </div>
       )}
     </div>
+  );
+}
+
+interface MobileBuildInfo {
+  iosBuildNumber: string | null;
+  androidVersionCode: number | null;
+  appJsonError: string | null;
+  repoUrl: string | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  tokenConfigured: boolean;
+  lastTrigger: {
+    platform: string;
+    profile: string;
+    triggeredAt: string;
+    triggeredByUsername: string;
+  } | null;
+}
+
+function MobileBuildPanel() {
+  const queryClient = useQueryClient();
+  const [platform, setPlatform] = useState<"all" | "ios" | "android">("all");
+  const [profile, setProfile] = useState<"production" | "preview" | "development">("production");
+  const [triggerError, setTriggerError] = useState<string | null>(null);
+  const [triggerSuccess, setTriggerSuccess] = useState(false);
+
+  const query = useQuery({
+    queryKey: ["admin", "mobile-build", "info"],
+    queryFn: () => apiFetch<MobileBuildInfo>("/admin/mobile-build/info"),
+  });
+
+  const triggerMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean; trigger: MobileBuildInfo["lastTrigger"] }>("/admin/mobile-build/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform, profile }),
+      }),
+    onSuccess: () => {
+      setTriggerError(null);
+      setTriggerSuccess(true);
+      queryClient.invalidateQueries({ queryKey: ["admin", "mobile-build", "info"] });
+      setTimeout(() => setTriggerSuccess(false), 4000);
+    },
+    onError: (err: Error) => {
+      setTriggerSuccess(false);
+      setTriggerError(err.message || "Failed to trigger build.");
+    },
+  });
+
+  const info = query.data;
+  const repoBase = info?.repoUrl ? info.repoUrl.replace(/\/$/, "") : null;
+  const actionsUrl = repoBase ? `${repoBase}/actions/workflows/eas-build.yml` : null;
+
+  function formatTriggerTime(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  }
+
+  const platformLabels: Record<string, string> = { all: "All (iOS + Android)", ios: "iOS only", android: "Android only" };
+  const profileLabels: Record<string, string> = { production: "Production", preview: "Preview", development: "Development" };
+
+  return (
+    <PanelShell
+      title="Mobile app"
+      subtitle="Trigger an EAS cloud build for iOS or Android straight from this settings panel."
+    >
+      {query.isLoading && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 size={13} className="animate-spin" />
+          Loading…
+        </div>
+      )}
+      {query.error && (
+        <Alert tone="danger">{(query.error as Error).message}</Alert>
+      )}
+      {info && (
+        <div className="space-y-5">
+          {/* Build number info */}
+          <div className="rounded-lg border border-border bg-secondary/30 px-5 py-4 space-y-3">
+            <div className="text-sm font-semibold">Current build numbers</div>
+            {info.appJsonError ? (
+              <Alert tone="warning">Could not read app.json: {info.appJsonError}</Alert>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">iOS build number</div>
+                  <div className="text-sm font-mono font-semibold">{info.iosBuildNumber ?? "—"}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">Android version code</div>
+                  <div className="text-sm font-mono font-semibold">{info.androidVersionCode ?? "—"}</div>
+                </div>
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground">
+              The EAS build workflow automatically bumps these numbers before each build and commits the result back to{" "}
+              <code className="font-mono">main</code>.
+            </p>
+          </div>
+
+          {/* Setup warnings */}
+          {!info.tokenConfigured && (
+            <Alert tone="warning">
+              <strong>GITHUB_ACTIONS_TOKEN is not set.</strong> Add a fine-grained GitHub PAT with <em>Actions: Read and write</em> access as the <code className="font-mono">GITHUB_ACTIONS_TOKEN</code> environment secret to enable build triggering.
+            </Alert>
+          )}
+          {(!info.repoOwner || !info.repoName) && (
+            <Alert tone="warning">
+              <strong>GITHUB_REPO_URL is not set or invalid.</strong> Set it to your repository URL (e.g.{" "}
+              <code className="font-mono">https://github.com/your-org/your-repo</code>) so the panel knows where to dispatch the workflow.
+            </Alert>
+          )}
+
+          {/* Trigger form */}
+          <div className="rounded-lg border border-border px-5 py-4 space-y-4">
+            <div className="text-sm font-semibold">Trigger EAS build</div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Platform
+                </label>
+                <select
+                  value={platform}
+                  onChange={(e) => setPlatform(e.target.value as "all" | "ios" | "android")}
+                  className={inputCls}
+                >
+                  <option value="all">All (iOS + Android)</option>
+                  <option value="ios">iOS only</option>
+                  <option value="android">Android only</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                  Profile
+                </label>
+                <select
+                  value={profile}
+                  onChange={(e) => setProfile(e.target.value as "production" | "preview" | "development")}
+                  className={inputCls}
+                >
+                  <option value="production">Production</option>
+                  <option value="preview">Preview</option>
+                  <option value="development">Development</option>
+                </select>
+              </div>
+            </div>
+            {triggerError && <Alert tone="danger">{triggerError}</Alert>}
+            {triggerSuccess && (
+              <Alert tone="success">
+                Build triggered successfully. Check{" "}
+                {actionsUrl ? (
+                  <a href={actionsUrl} target="_blank" rel="noopener noreferrer" className="underline font-medium">
+                    GitHub Actions
+                  </a>
+                ) : (
+                  "GitHub Actions"
+                )}{" "}
+                to monitor progress.
+              </Alert>
+            )}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => triggerMutation.mutate()}
+                disabled={triggerMutation.isPending || !info.tokenConfigured || !info.repoOwner}
+                className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+              >
+                {triggerMutation.isPending ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Play size={14} />
+                )}
+                {triggerMutation.isPending ? "Triggering…" : "Trigger EAS build"}
+              </button>
+              {actionsUrl && (
+                <a
+                  href={actionsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-input bg-background text-xs font-medium hover:bg-secondary"
+                >
+                  <Github size={13} />
+                  View on GitHub
+                  <ExternalLink size={11} className="text-muted-foreground" />
+                </a>
+              )}
+            </div>
+          </div>
+
+          {/* Last triggered build */}
+          {info.lastTrigger && (
+            <div className="rounded-lg border border-border px-5 py-4 space-y-2">
+              <div className="text-sm font-semibold">Last triggered build</div>
+              <div className="grid grid-cols-3 gap-4 text-sm">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">Platform</div>
+                  <div className="font-medium">{platformLabels[info.lastTrigger.platform] ?? info.lastTrigger.platform}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">Profile</div>
+                  <div className="font-medium">{profileLabels[info.lastTrigger.profile] ?? info.lastTrigger.profile}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">Triggered by</div>
+                  <div className="font-medium">{info.lastTrigger.triggeredByUsername}</div>
+                </div>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                <Clock size={11} className="inline mr-1 -mt-px" />
+                {formatTriggerTime(info.lastTrigger.triggeredAt)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </PanelShell>
   );
 }
 
