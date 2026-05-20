@@ -5533,5 +5533,270 @@ Important rules:
     });
   });
 
+  // ── Admin: Build Counter Recovery ─────────────────────────────────────────
+  // Applies a corrected build counter to either build-number.json (desktop) or
+  // app.json (mobile) when the GitHub Actions push step failed during a build.
+  // Uses the GitHub Contents API (BUILD_BOT_TOKEN > GITHUB_ACTIONS_TOKEN) so
+  // the commit lands directly on main even when branch protection is active.
+  // Falls back to a local git commit when no GitHub token is configured.
+  router.post("/admin/settings/build-counter", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const { target, buildNumber } = req.body as { target?: unknown; buildNumber?: unknown };
+
+    if (target !== "desktop" && target !== "mobile") {
+      return res.status(400).json({ error: "target must be \"desktop\" or \"mobile\"." });
+    }
+    if (typeof buildNumber !== "number" || !Number.isInteger(buildNumber) || buildNumber < 1) {
+      return res.status(400).json({ error: "buildNumber must be a positive integer." });
+    }
+
+    const reqUser = (req as any).user as { username?: string } | undefined;
+    const actor = reqUser?.username ?? "labtrax-admin";
+
+    // Resolve GitHub token and repo coordinates.
+    const ghToken = process.env.BUILD_BOT_TOKEN ?? process.env.GITHUB_ACTIONS_TOKEN ?? null;
+    const repoUrl = process.env.GITHUB_REPO_URL ?? null;
+    const githubRepoPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(\/)?$/;
+    const repoMatch = repoUrl ? githubRepoPattern.exec(repoUrl) : null;
+    const repoOwner = repoMatch?.[1] ?? null;
+    const repoName = repoMatch?.[2] ?? null;
+    const useGitHub = !!(ghToken && repoOwner && repoName);
+
+    if (target === "desktop") {
+      const filePath = "artifacts/labtrax-desktop/build-number.json";
+      const absPath = path.resolve(process.cwd(), filePath);
+      const newContent = JSON.stringify({ buildNumber }, null, 2) + "\n";
+      const commitMessage = `chore: apply desktop build counter fallback (buildNumber=${buildNumber}) [skip ci]\n\nApplied via Settings panel by ${actor}.`;
+
+      if (useGitHub) {
+        // Fetch current file SHA from GitHub so we can update it.
+        const contentsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${filePath}`;
+        let currentSha: string;
+        try {
+          const getRes = await fetch(`${contentsUrl}?ref=main`, {
+            headers: {
+              Authorization: `Bearer ${ghToken}`,
+              Accept: "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+            },
+          });
+          if (!getRes.ok) {
+            const body = await getRes.json().catch(() => ({})) as { message?: string };
+            return res.status(502).json({
+              error: `GitHub could not read the current file (HTTP ${getRes.status})${body.message ? `: ${body.message}` : ""}. Verify GITHUB_REPO_URL and that the token has Contents: Read access.`,
+            });
+          }
+          const fileData = await getRes.json() as { sha: string };
+          currentSha = fileData.sha;
+        } catch (err) {
+          req.log.error({ err }, "GitHub API request failed reading build-number.json");
+          return res.status(502).json({ error: "Could not reach the GitHub API to read the current file." });
+        }
+
+        // Commit the updated file via GitHub Contents API.
+        const encodedContent = Buffer.from(newContent, "utf8").toString("base64");
+        let putRes: Response;
+        try {
+          putRes = await fetch(contentsUrl, {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${ghToken}`,
+              Accept: "application/vnd.github+json",
+              "Content-Type": "application/json",
+              "X-GitHub-Api-Version": "2022-11-28",
+            },
+            body: JSON.stringify({
+              message: commitMessage,
+              content: encodedContent,
+              sha: currentSha,
+              branch: "main",
+              committer: { name: "LabTrax Admin", email: "admin@labtrax.app" },
+            }),
+          });
+        } catch (err) {
+          req.log.error({ err }, "GitHub API request failed updating build-number.json");
+          return res.status(502).json({ error: "Could not reach the GitHub API to commit the file." });
+        }
+
+        if (!putRes.ok) {
+          const body = await putRes.json().catch(() => ({})) as { message?: string };
+          req.log.error({ status: putRes.status }, "GitHub Contents API returned non-2xx for build-number.json");
+          return res.status(502).json({
+            error: `GitHub rejected the commit (HTTP ${putRes.status})${body.message ? `: ${body.message}` : ""}. Make sure the token has Contents: Read & Write access on main.`,
+          });
+        }
+
+        const putBody = await putRes.json() as { commit?: { sha?: string; html_url?: string } };
+        const commitSha = putBody.commit?.sha ?? null;
+        const commitUrl = putBody.commit?.html_url ?? null;
+
+        // Also update the local file so the running API sees the new value.
+        try {
+          await writeFile(absPath, newContent, "utf8");
+        } catch {
+          /* non-fatal — the GitHub commit is the source of truth */
+        }
+
+        req.log.info({ buildNumber, commitSha, actor }, "Desktop build counter applied via GitHub API");
+        return res.json({ ok: true, target: "desktop", buildNumber, commitSha, commitUrl });
+      }
+
+      // No GitHub token — fall back to local git commit.
+      try {
+        await writeFile(absPath, newContent, "utf8");
+      } catch (err) {
+        return res.status(500).json({ error: `Could not write build-number.json: ${(err as Error).message}` });
+      }
+
+      await new Promise<void>((resolve) => {
+        const git = spawn("git", ["add", absPath], { stdio: "ignore" });
+        git.on("close", (addCode) => {
+          if (addCode !== 0) { resolve(); return; }
+          const commit = spawn("git", ["commit", "-m", commitMessage], { stdio: "ignore" });
+          commit.on("close", () => resolve());
+        });
+      });
+
+      req.log.info({ buildNumber, actor }, "Desktop build counter applied via local git (no GitHub token)");
+      return res.json({ ok: true, target: "desktop", buildNumber, commitSha: null, commitUrl: null });
+    }
+
+    // target === "mobile"
+    const filePath = "artifacts/labtrax/app.json";
+    const absPath = path.resolve(process.cwd(), filePath);
+    let appJson: Record<string, unknown>;
+    try {
+      const raw = await readFile(absPath, "utf8");
+      appJson = JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      return res.status(500).json({ error: `Could not read app.json: ${(err as Error).message}` });
+    }
+
+    const expo = appJson.expo as Record<string, unknown> | undefined;
+    if (!expo || typeof expo !== "object") {
+      return res.status(500).json({ error: "app.json is missing the expo key." });
+    }
+    const ios = expo.ios as Record<string, unknown> | undefined;
+    const android = expo.android as Record<string, unknown> | undefined;
+    if (ios && typeof ios === "object") {
+      ios.buildNumber = String(buildNumber);
+    }
+    if (android && typeof android === "object") {
+      android.versionCode = buildNumber;
+    }
+
+    const newContent = JSON.stringify(appJson, null, 2) + "\n";
+    const commitMessage = `chore: apply mobile build counter fallback (buildNumber=${buildNumber}) [skip ci]\n\nApplied via Settings panel by ${actor}.`;
+
+    if (useGitHub) {
+      const contentsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${filePath}`;
+      let currentSha: string;
+      try {
+        const getRes = await fetch(`${contentsUrl}?ref=main`, {
+          headers: {
+            Authorization: `Bearer ${ghToken}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        });
+        if (!getRes.ok) {
+          const body = await getRes.json().catch(() => ({})) as { message?: string };
+          return res.status(502).json({
+            error: `GitHub could not read the current file (HTTP ${getRes.status})${body.message ? `: ${body.message}` : ""}. Verify GITHUB_REPO_URL and that the token has Contents: Read access.`,
+          });
+        }
+        const fileData = await getRes.json() as { sha: string };
+        currentSha = fileData.sha;
+      } catch (err) {
+        req.log.error({ err }, "GitHub API request failed reading app.json");
+        return res.status(502).json({ error: "Could not reach the GitHub API to read the current file." });
+      }
+
+      const encodedContent = Buffer.from(newContent, "utf8").toString("base64");
+      let putRes: Response;
+      try {
+        putRes = await fetch(contentsUrl, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${ghToken}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          body: JSON.stringify({
+            message: commitMessage,
+            content: encodedContent,
+            sha: currentSha,
+            branch: "main",
+            committer: { name: "LabTrax Admin", email: "admin@labtrax.app" },
+          }),
+        });
+      } catch (err) {
+        req.log.error({ err }, "GitHub API request failed updating app.json");
+        return res.status(502).json({ error: "Could not reach the GitHub API to commit the file." });
+      }
+
+      if (!putRes.ok) {
+        const body = await putRes.json().catch(() => ({})) as { message?: string };
+        req.log.error({ status: putRes.status }, "GitHub Contents API returned non-2xx for app.json");
+        return res.status(502).json({
+          error: `GitHub rejected the commit (HTTP ${putRes.status})${body.message ? `: ${body.message}` : ""}. Make sure the token has Contents: Read & Write access on main.`,
+        });
+      }
+
+      const putBody = await putRes.json() as { commit?: { sha?: string; html_url?: string } };
+      const commitSha = putBody.commit?.sha ?? null;
+      const commitUrl = putBody.commit?.html_url ?? null;
+
+      // Update local file too.
+      try {
+        await writeFile(absPath, newContent, "utf8");
+      } catch {
+        /* non-fatal */
+      }
+
+      req.log.info({ buildNumber, commitSha, actor }, "Mobile build counter applied via GitHub API");
+      return res.json({
+        ok: true,
+        target: "mobile",
+        buildNumber,
+        iosBuildNumber: String(buildNumber),
+        androidVersionCode: buildNumber,
+        commitSha,
+        commitUrl,
+      });
+    }
+
+    // No GitHub token — fall back to local git commit.
+    try {
+      await writeFile(absPath, newContent, "utf8");
+    } catch (err) {
+      return res.status(500).json({ error: `Could not write app.json: ${(err as Error).message}` });
+    }
+
+    await new Promise<void>((resolve) => {
+      const git = spawn("git", ["add", absPath], { stdio: "ignore" });
+      git.on("close", (addCode) => {
+        if (addCode !== 0) { resolve(); return; }
+        const commit = spawn("git", ["commit", "-m", commitMessage], { stdio: "ignore" });
+        commit.on("close", () => resolve());
+      });
+    });
+
+    req.log.info({ buildNumber, actor }, "Mobile build counter applied via local git (no GitHub token)");
+    return res.json({
+      ok: true,
+      target: "mobile",
+      buildNumber,
+      iosBuildNumber: String(buildNumber),
+      androidVersionCode: buildNumber,
+      commitSha: null,
+      commitUrl: null,
+    });
+  });
+
   return router;
 }

@@ -7,7 +7,30 @@ hard failure. The installer or app bundle that was produced is still good — on
 the counter file didn't make it into the repo.
 
 To make sure the next build gets a higher number (not the same one), you need to
-apply the fallback artifact manually.
+apply the fallback artifact — either via the one-click recovery panel in Settings,
+or manually.
+
+## One-click recovery (recommended)
+
+Open **Settings → Desktop app** (for Windows/macOS builds) or
+**Settings → Mobile app** (for EAS builds) in the LabTrax Desktop app and scroll
+to the **Build counter recovery** section.
+
+1. Open the failed GitHub Actions run summary and find the `build-number.json`
+   (desktop) or `app.json` (mobile) inside the attached `build-counter-fallback`
+   artifact — the correct `buildNumber` / `versionCode` value is printed there.
+2. Paste that number into the **Build counter recovery** field and click
+   **Apply counter**.
+
+The API uses the **`BUILD_BOT_TOKEN`** secret (falling back to
+`GITHUB_ACTIONS_TOKEN`) to commit the corrected file directly to `main` via the
+GitHub Contents API, bypassing any branch-protection rules that blocked the
+original push. A link to the new commit is shown on success.
+
+> **Prerequisites:** `GITHUB_REPO_URL` must be set to your repository URL, and
+> either `BUILD_BOT_TOKEN` or `GITHUB_ACTIONS_TOKEN` must have **Contents: Read &
+> Write** access. If neither token is configured the panel falls back to a local
+> git commit (dev-only path).
 
 ## When this applies
 
@@ -21,7 +44,9 @@ A `build-counter-fallback` (or `build-counter-fallback-windows` /
 `build-counter-fallback-macos` for the release workflow) artifact will be
 attached to the failed run.
 
-## Desktop builds (build-windows, build-macos, release)
+## Manual recovery (fallback)
+
+### Desktop builds (build-windows, build-macos, release)
 
 The fallback artifact contains `build-number.json`.
 
@@ -51,7 +76,7 @@ The fallback artifact contains `build-number.json`.
 4. Verify the file on `main` has a `buildNumber` value higher than the previous
    one before triggering the next build.
 
-## Mobile builds (eas-build)
+### Mobile builds (eas-build)
 
 The fallback artifact contains `app.json`.
 

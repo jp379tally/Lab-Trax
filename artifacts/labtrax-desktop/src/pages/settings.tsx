@@ -2610,6 +2610,7 @@ function DesktopInstallerPanel() {
             </a>
           </div>
 
+          <DesktopBuildCounterRecovery repoUrl={info.repoUrl} />
           <DesktopInstallerUploadsPanel />
           <DesktopInstallerHistoryPanel repoUrl={info.repoUrl} />
         </div>
@@ -2656,6 +2657,116 @@ function ChecksumCell({ checksum }: { checksum: string | null }) {
       >
         {copied ? <Check size={12} /> : <Copy size={12} />}
       </button>
+    </div>
+  );
+}
+
+function DesktopBuildCounterRecovery({ repoUrl }: { repoUrl: string | null }) {
+  const queryClient = useQueryClient();
+  const [buildNumberInput, setBuildNumberInput] = useState("");
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [applySuccess, setApplySuccess] = useState<{ buildNumber: number; commitUrl: string | null } | null>(null);
+
+  const applyMutation = useMutation({
+    mutationFn: (buildNumber: number) =>
+      apiFetch<{ ok: boolean; buildNumber: number; commitSha: string | null; commitUrl: string | null }>(
+        "/admin/settings/build-counter",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: "desktop", buildNumber }),
+        },
+      ),
+    onSuccess: (data) => {
+      setApplyError(null);
+      setApplySuccess({ buildNumber: data.buildNumber, commitUrl: data.commitUrl });
+      setBuildNumberInput("");
+      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
+      setTimeout(() => setApplySuccess(null), 8000);
+    },
+    onError: (err: Error) => {
+      setApplySuccess(null);
+      setApplyError(err.message || "Failed to apply build counter.");
+    },
+  });
+
+  function handleApply() {
+    const n = parseInt(buildNumberInput.trim(), 10);
+    if (!buildNumberInput.trim() || Number.isNaN(n) || n < 1) {
+      setApplyError("Enter a valid positive integer build number.");
+      return;
+    }
+    setApplyError(null);
+    setApplySuccess(null);
+    applyMutation.mutate(n);
+  }
+
+  return (
+    <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/20 px-5 py-4 space-y-3">
+      <div className="flex items-start gap-2">
+        <RotateCcw size={14} className="mt-0.5 text-amber-600 dark:text-amber-400 shrink-0" />
+        <div>
+          <div className="text-sm font-semibold">Build counter recovery</div>
+          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+            If a build workflow exited with a warning that the counter wasn't persisted, paste the <code className="font-mono bg-secondary px-0.5 rounded">buildNumber</code> from the <code className="font-mono bg-secondary px-0.5 rounded">build-counter-fallback</code> artifact here. The correct value is committed directly to <code className="font-mono bg-secondary px-0.5 rounded">main</code> via the GitHub API using <code className="font-mono bg-secondary px-0.5 rounded">BUILD_BOT_TOKEN</code> (or <code className="font-mono bg-secondary px-0.5 rounded">GITHUB_ACTIONS_TOKEN</code>) so the next build gets a higher number.
+          </p>
+        </div>
+      </div>
+      {applyError && <Alert tone="danger">{applyError}</Alert>}
+      {applySuccess && (
+        <Alert tone="success">
+          Build counter set to <strong>{applySuccess.buildNumber}</strong> and committed to main.
+          {applySuccess.commitUrl && (
+            <>
+              {" "}
+              <a
+                href={applySuccess.commitUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline font-medium"
+              >
+                View commit
+              </a>
+            </>
+          )}
+        </Alert>
+      )}
+      <div className="flex items-center gap-3">
+        <input
+          type="number"
+          min={1}
+          step={1}
+          value={buildNumberInput}
+          onChange={(e) => setBuildNumberInput(e.target.value)}
+          placeholder="e.g. 42"
+          className={`${inputCls} w-36 font-mono`}
+          onKeyDown={(e) => { if (e.key === "Enter") handleApply(); }}
+        />
+        <button
+          type="button"
+          onClick={handleApply}
+          disabled={applyMutation.isPending || !buildNumberInput.trim()}
+          className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-50"
+        >
+          {applyMutation.isPending ? (
+            <Loader2 size={13} className="animate-spin" />
+          ) : (
+            <RotateCcw size={13} />
+          )}
+          {applyMutation.isPending ? "Applying…" : "Apply counter"}
+        </button>
+        {repoUrl && (
+          <a
+            href={`${repoUrl.replace(/\/$/, "")}/actions`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <ExternalLink size={11} />
+            Actions
+          </a>
+        )}
+      </div>
     </div>
   );
 }
@@ -3641,6 +3752,9 @@ function MobileBuildPanel() {
             </div>
           )}
 
+          {/* Build counter recovery */}
+          <MobileBuildCounterRecovery repoUrl={info.repoUrl} onApplied={() => queryClient.invalidateQueries({ queryKey: ["admin", "mobile-build", "info"] })} />
+
           {/* Last triggered build */}
           {info.lastTrigger && (
             <div className="rounded-lg border border-border px-5 py-4 space-y-3">
@@ -3735,6 +3849,128 @@ function MobileBuildPanel() {
         </AlertDialogContent>
       </AlertDialog>
     </PanelShell>
+  );
+}
+
+function MobileBuildCounterRecovery({
+  repoUrl,
+  onApplied,
+}: {
+  repoUrl: string | null;
+  onApplied?: () => void;
+}) {
+  const [buildNumberInput, setBuildNumberInput] = useState("");
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [applySuccess, setApplySuccess] = useState<{
+    buildNumber: number;
+    commitUrl: string | null;
+  } | null>(null);
+
+  const applyMutation = useMutation({
+    mutationFn: (buildNumber: number) =>
+      apiFetch<{
+        ok: boolean;
+        buildNumber: number;
+        commitSha: string | null;
+        commitUrl: string | null;
+      }>("/admin/settings/build-counter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: "mobile", buildNumber }),
+      }),
+    onSuccess: (data) => {
+      setApplyError(null);
+      setApplySuccess({ buildNumber: data.buildNumber, commitUrl: data.commitUrl });
+      setBuildNumberInput("");
+      onApplied?.();
+      setTimeout(() => setApplySuccess(null), 8000);
+    },
+    onError: (err: Error) => {
+      setApplySuccess(null);
+      setApplyError(err.message || "Failed to apply build counter.");
+    },
+  });
+
+  function handleApply() {
+    const n = parseInt(buildNumberInput.trim(), 10);
+    if (!buildNumberInput.trim() || Number.isNaN(n) || n < 1) {
+      setApplyError("Enter a valid positive integer build number.");
+      return;
+    }
+    setApplyError(null);
+    setApplySuccess(null);
+    applyMutation.mutate(n);
+  }
+
+  return (
+    <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/20 px-5 py-4 space-y-3">
+      <div className="flex items-start gap-2">
+        <RotateCcw size={14} className="mt-0.5 text-amber-600 dark:text-amber-400 shrink-0" />
+        <div>
+          <div className="text-sm font-semibold">Build counter recovery</div>
+          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+            If an EAS build exited with a warning that the counter wasn't persisted, paste the build number from the <code className="font-mono bg-secondary px-0.5 rounded">build-counter-fallback</code> artifact here. Both <code className="font-mono bg-secondary px-0.5 rounded">expo.ios.buildNumber</code> and <code className="font-mono bg-secondary px-0.5 rounded">expo.android.versionCode</code> in <code className="font-mono bg-secondary px-0.5 rounded">app.json</code> will be set to this value and committed to <code className="font-mono bg-secondary px-0.5 rounded">main</code>.
+          </p>
+        </div>
+      </div>
+      {applyError && <Alert tone="danger">{applyError}</Alert>}
+      {applySuccess && (
+        <Alert tone="success">
+          Build counter set to <strong>{applySuccess.buildNumber}</strong> and committed to main.
+          {applySuccess.commitUrl && (
+            <>
+              {" "}
+              <a
+                href={applySuccess.commitUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline font-medium"
+              >
+                View commit
+              </a>
+            </>
+          )}
+        </Alert>
+      )}
+      <div className="flex items-center gap-3">
+        <input
+          type="number"
+          min={1}
+          step={1}
+          value={buildNumberInput}
+          onChange={(e) => setBuildNumberInput(e.target.value)}
+          placeholder="e.g. 134"
+          className={`${inputCls} w-36 font-mono`}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleApply();
+          }}
+        />
+        <button
+          type="button"
+          onClick={handleApply}
+          disabled={applyMutation.isPending || !buildNumberInput.trim()}
+          className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-50"
+        >
+          {applyMutation.isPending ? (
+            <Loader2 size={13} className="animate-spin" />
+          ) : (
+            <RotateCcw size={13} />
+          )}
+          {applyMutation.isPending ? "Applying…" : "Apply counter"}
+        </button>
+        {repoUrl && (
+          <a
+            href={`${repoUrl.replace(/\/$/, "")}/actions`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <ExternalLink size={11} />
+            Actions
+          </a>
+        )}
+      </div>
+    </div>
   );
 }
 
