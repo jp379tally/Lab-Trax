@@ -1646,7 +1646,7 @@ export function DashboardDropZone() {
             if (electronAPI?.previewFile) {
               const buffer = await phase.file.arrayBuffer();
               const fileKey = `${phase.file.name}:${phase.file.size}`;
-              await electronAPI.previewFile(buffer, phase.file.type, fileKey);
+              await electronAPI.previewFile(buffer, phase.file.type, fileKey, phase.file.name);
             } else {
               const url = URL.createObjectURL(phase.file);
               window.open(url, "_blank", "noopener,noreferrer");

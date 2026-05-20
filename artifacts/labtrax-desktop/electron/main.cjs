@@ -241,7 +241,7 @@ ipcMain.handle("get-app-version", () => app.getVersion());
 // Map from file path → BrowserWindow so we can focus instead of stacking duplicates.
 const previewWindows = new Map();
 
-ipcMain.handle("preview:open-file", async (_event, buffer, mimeType, fileKey) => {
+ipcMain.handle("preview:open-file", async (_event, buffer, mimeType, fileKey, filename) => {
   const key = fileKey || `preview-${Date.now()}`;
 
   const existing = previewWindows.get(key);
@@ -257,11 +257,12 @@ ipcMain.handle("preview:open-file", async (_event, buffer, mimeType, fileKey) =>
   const tmpPath = path.join(os.tmpdir(), `labtrax-preview-${Date.now()}${ext}`);
   fs.writeFileSync(tmpPath, Buffer.from(buffer));
 
+  const title = filename || "Document Preview";
   const win = new BrowserWindow({
     width: 750,
     height: 950,
     autoHideMenuBar: true,
-    title: "Document Preview",
+    title,
   });
 
   previewWindows.set(key, win);
