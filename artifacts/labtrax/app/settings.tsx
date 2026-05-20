@@ -89,6 +89,13 @@ export default function SettingsScreen() {
   type VersionHistoryEntry = { version: string; changedByUsername: string; changedAt: string };
   const [mobileBuildVersionHistory, setMobileBuildVersionHistory] = useState<VersionHistoryEntry[]>([]);
   const [mobileBuildVersionLoading, setMobileBuildVersionLoading] = useState(false);
+  type LiveBuildInfo = {
+    expoVersion: string | null;
+    iosBuildNumber: string | null;
+    androidVersionCode: number | null;
+    latestRun: { status: string; conclusion: string | null; html_url: string } | null;
+  };
+  const [liveBuildInfo, setLiveBuildInfo] = useState<LiveBuildInfo | null>(null);
 
   type RestorePhase = "idle" | "uploading" | "validating" | "decrypting" | "restoring_db" | "restoring_media" | "done" | "error";
   const RESTORE_PHASE_LABELS: Record<RestorePhase, string> = {
@@ -321,6 +328,14 @@ export default function SettingsScreen() {
         const data = await res.json();
         if (!cancelled && Array.isArray(data.versionHistory)) {
           setMobileBuildVersionHistory((data.versionHistory as { version: string; changedByUsername: string; changedAt: string }[]).slice(0, 5));
+        }
+        if (!cancelled) {
+          setLiveBuildInfo({
+            expoVersion: data.expoVersion ?? null,
+            iosBuildNumber: data.iosBuildNumber ?? null,
+            androidVersionCode: data.androidVersionCode ?? null,
+            latestRun: data.latestRun ?? null,
+          });
         }
       } catch {
         // gracefully ignore
@@ -1609,9 +1624,57 @@ export default function SettingsScreen() {
               <View style={[styles.menuIcon, { backgroundColor: colors.surfaceSecondary }]}>
                 <Ionicons name="information-circle" size={18} color={colors.textSecondary} />
               </View>
-              <View style={styles.menuInfo}>
-                <Text style={[styles.menuTitle, { color: colors.text }]}>Version</Text>
-                <Text style={[styles.menuSub, { color: colors.textSecondary }]}>v2.1 (2026 Ready)</Text>
+              <View style={[styles.menuInfo, { flex: 1 }]}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <Text style={[styles.menuTitle, { color: colors.text }]}>Version</Text>
+                  {isAnyAdmin && liveBuildInfo && (() => {
+                    const run = liveBuildInfo.latestRun;
+                    if (!run) return null;
+                    if (run.status === "in_progress" || run.status === "queued") {
+                      return (
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: "#FEF3C7" }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>Building…</Text>
+                        </View>
+                      );
+                    }
+                    if (run.status === "completed" && run.conclusion === "success") {
+                      return (
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: "#DCFCE7" }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#166534" }}>Build passed</Text>
+                        </View>
+                      );
+                    }
+                    if (run.status === "completed" && run.conclusion !== "success") {
+                      return (
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: "#FEE2E2" }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#991B1B" }}>Build failed</Text>
+                        </View>
+                      );
+                    }
+                    return null;
+                  })()}
+                </View>
+                {isAnyAdmin && liveBuildInfo ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 1, flexWrap: "wrap" }}>
+                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>
+                      {liveBuildInfo.expoVersion ? `v${liveBuildInfo.expoVersion}` : "v—"}
+                      {Platform.OS === "ios" && liveBuildInfo.iosBuildNumber
+                        ? ` (build ${liveBuildInfo.iosBuildNumber})`
+                        : Platform.OS === "android" && liveBuildInfo.androidVersionCode
+                        ? ` (code ${liveBuildInfo.androidVersionCode})`
+                        : ""}
+                    </Text>
+                    {liveBuildInfo.expoVersion &&
+                      mobileBuildVersionHistory.length > 0 &&
+                      liveBuildInfo.expoVersion === mobileBuildVersionHistory[0].version && (
+                        <View style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: "#EDE9FE" }}>
+                          <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Latest</Text>
+                        </View>
+                      )}
+                  </View>
+                ) : (
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>v2.1 (2026 Ready)</Text>
+                )}
               </View>
             </View>
           </View>
