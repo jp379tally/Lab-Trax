@@ -2026,6 +2026,7 @@ function DesktopInstallerPanel() {
     file: File;
     message: string;
   } | null>(null);
+  const [uploadConfirmPending, setUploadConfirmPending] = useState<File | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const query = useQuery({
@@ -2133,7 +2134,7 @@ function DesktopInstallerPanel() {
       return;
     }
     setDuplicatePrompt(null);
-    uploadMutation.mutate({ file });
+    setUploadConfirmPending(file);
   }
 
   const info = query.data;
@@ -2396,6 +2397,60 @@ function DesktopInstallerPanel() {
               )}
             </div>
           </div>
+
+          <AlertDialog
+            open={uploadConfirmPending !== null}
+            onOpenChange={(open) => {
+              if (!open) setUploadConfirmPending(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Upload installer?</AlertDialogTitle>
+                <AlertDialogDescription asChild>
+                  <div className="space-y-2 text-sm">
+                    <p>
+                      This will replace the live installer that all users download. Review the details below before continuing.
+                    </p>
+                    <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 space-y-1 text-xs font-mono">
+                      <div>
+                        <span className="text-muted-foreground">File:&nbsp;</span>
+                        <span className="font-semibold break-all">{uploadConfirmPending?.name}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Size:&nbsp;</span>
+                        <span>{uploadConfirmPending ? formatInstallerSize(uploadConfirmPending.size) : "—"}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Current version:&nbsp;</span>
+                        <span>{info?.version ?? "—"}</span>
+                      </div>
+                      {info?.installerObject && (
+                        <div>
+                          <span className="text-muted-foreground">Current size:&nbsp;</span>
+                          <span>{formatInstallerSize(info.installerObject.size)}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel onClick={() => setUploadConfirmPending(null)}>
+                  Cancel
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => {
+                    const file = uploadConfirmPending;
+                    setUploadConfirmPending(null);
+                    if (file) uploadMutation.mutate({ file });
+                  }}
+                >
+                  Upload
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
           <AlertDialog
             open={duplicatePrompt !== null}
