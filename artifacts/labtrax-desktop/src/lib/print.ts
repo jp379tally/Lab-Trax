@@ -470,7 +470,16 @@ const CARD_CSS = `
 }
 `;
 
-export function printCaseCard(labCase: LabCase): void {
+export function printCaseCard(
+  labCase: LabCase,
+  extras: {
+    notes?: Array<{
+      noteText?: string | null;
+      visibility?: string | null;
+      createdAt?: string | null;
+    }>;
+  } = {},
+): void {
   const patient = `${labCase.patientFirstName ?? ""} ${
     labCase.patientLastName ?? ""
   }`.trim();
@@ -508,19 +517,43 @@ export function printCaseCard(labCase: LabCase): void {
   ${labCase.restorationTypes ? `<div class="lt-card-field"><span class="lt-card-key">Restorative Type</span><span class="lt-card-val">${escapeHtml(labCase.restorationTypes)}</span></div>` : ""}
   ${labCase.restorationMaterials ? `<div class="lt-card-field"><span class="lt-card-key">Material</span><span class="lt-card-val">${escapeHtml(labCase.restorationMaterials)}</span></div>` : ""}
   ${labCase.teeth ? `<div class="lt-card-field" style="grid-column:1/-1"><span class="lt-card-key">Tooth Number(s)</span><span class="lt-card-val">${escapeHtml(labCase.teeth)}</span></div>` : ""}
-  ${labCase.caseNotes ? `<div class="lt-card-field" style="grid-column:1/-1"><span class="lt-card-key">Notes</span><span class="lt-card-val" style="white-space:pre-wrap">${escapeHtml(labCase.caseNotes)}</span></div>` : ""}
 </div>`;
 
   const toothChartSection = `
 <div class="lt-card-section">Tooth Chart</div>
 ${buildToothChart(selected)}`;
 
+  // Notes section — prefer the full notes array if provided, else fall back
+  // to the denormalized caseNotes string on the LabCase object.
+  const notesArr = extras.notes;
+  let notesSection = "";
+  if (notesArr !== undefined) {
+    notesSection = `\n<div class="lt-card-section">Notes</div>\n`;
+    if (notesArr.length === 0) {
+      notesSection += `<div style="font-size:10px;color:#777;margin-top:2px">No notes yet.</div>`;
+    } else {
+      notesSection += notesArr
+        .map((n) => {
+          const when = n.createdAt ? formatDateTime(n.createdAt) : "";
+          const vis =
+            n.visibility === "internal_lab_only" ? "Internal" : "Shared";
+          return `<div style="margin-bottom:6px">
+  <div style="font-size:8px;color:#777;margin-bottom:1px">${escapeHtml(when)}${when ? " · " : ""}${vis}</div>
+  <div style="font-size:10px;white-space:pre-wrap">${escapeHtml(n.noteText || "")}</div>
+</div>`;
+        })
+        .join("");
+    }
+  } else if (labCase.caseNotes) {
+    notesSection = `\n<div class="lt-card-section">Notes</div>\n<div style="font-size:10px;white-space:pre-wrap">${escapeHtml(labCase.caseNotes)}</div>`;
+  }
+
   const footer = `<div class="lt-card-footer">LabTrax · Case ${escapeHtml(labCase.caseNumber)} · Printed ${escapeHtml(formatDateTime(new Date().toISOString()))}</div>`;
 
-  const body = `${header}${detailsGrid}${rxGrid}${toothChartSection}${footer}`;
+  const body = `${header}${detailsGrid}${rxGrid}${toothChartSection}${notesSection}\n${footer}`;
 
   openPrintWindow({
-    title: `Case ${labCase.caseNumber} — Card`,
+    title: `Case ${labCase.caseNumber} — Label`,
     bodyClass: "lt-card-page",
     extraCss: CARD_CSS,
     body,

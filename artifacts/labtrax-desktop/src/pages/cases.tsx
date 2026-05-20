@@ -42,7 +42,6 @@ import { formatDate, formatDateTime, formatMoney, formatPhone, relativeTime, sta
 import {
   printCaseCard,
   printCaseHistory,
-  printCaseLabel,
   printInvoice,
   printTabContent,
 } from "@/lib/print";
@@ -2072,13 +2071,12 @@ export function CaseDrawer({
             <button
               type="button"
               onClick={() =>
-                printCaseLabel(data ?? labCase, {
-                  material: data?.restorationMaterials,
-                  teeth: data?.teeth,
+                printCaseCard(data ?? labCase, {
+                  notes: data?.notes ?? [],
                 })
               }
               className="h-8 px-2.5 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-xs font-medium"
-              title="Print 4×2in case label"
+              title="Print case label"
             >
               <Printer size={14} />
               Label
