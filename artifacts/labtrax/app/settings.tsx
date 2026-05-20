@@ -1789,6 +1789,11 @@ export default function SettingsScreen() {
                     : null);
                 if (url) {
                   await WebBrowser.openBrowserAsync(url);
+                } else {
+                  Alert.alert(
+                    "Build Counter Recovery",
+                    "1. Open the failed GitHub Actions run and download the build-counter-fallback artifact.\n\n2. Extract the zip and note the buildNumber value in build-number.json.\n\n3. Paste that number into the Build counter recovery field in Settings → Desktop App and tap Apply counter.",
+                  );
                 }
               }}
             >
@@ -1818,7 +1823,7 @@ export default function SettingsScreen() {
                         </Text>
                       </View>
                     )}
-                    {!buildCounterWarning.runUrl && buildCounterRepoUrl && (
+                    {!buildCounterWarning.runUrl && (
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#FEF3C7", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 }}>
                         <Ionicons name="book-outline" size={12} color="#D97706" />
                         <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#D97706" }}>Recovery guide</Text>

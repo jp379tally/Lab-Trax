@@ -2248,18 +2248,27 @@ function DesktopInstallerPanel() {
                     The next build may reuse the same number. Apply the fallback artifact to fix this.
                   </p>
                   <div className="flex flex-wrap items-center gap-2 mt-2">
-                    <a
-                      href={
-                        info.repoUrl
-                          ? `${info.repoUrl.replace(/\/$/, "")}/blob/main/docs/build-counter-recovery.md`
-                          : undefined
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline${!info.repoUrl ? " opacity-50 cursor-not-allowed pointer-events-none" : ""}`}
-                    >
-                      Recovery guide
-                    </a>
+                    {info.repoUrl ? (
+                      <a
+                        href={`${info.repoUrl.replace(/\/$/, "")}/blob/main/docs/build-counter-recovery.md`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline"
+                      >
+                        Recovery guide
+                      </a>
+                    ) : (
+                      <details className="w-full">
+                        <summary className="text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline cursor-pointer list-none">
+                          Recovery guide
+                        </summary>
+                        <ol className="mt-2 text-xs text-amber-700/80 dark:text-amber-400/80 space-y-1 leading-relaxed border-t border-amber-400/30 pt-2 list-decimal list-inside">
+                          <li>Open the failed GitHub Actions run and download the <code className="font-mono bg-amber-500/15 px-1 py-0.5 rounded">build-counter-fallback</code> artifact.</li>
+                          <li>Extract the zip and find the <code className="font-mono bg-amber-500/15 px-1 py-0.5 rounded">buildNumber</code> value in <code className="font-mono bg-amber-500/15 px-1 py-0.5 rounded">build-number.json</code>.</li>
+                          <li>Paste that number into the Build counter recovery field below and click <strong>Apply counter</strong>.</li>
+                        </ol>
+                      </details>
+                    )}
                     {info.buildCounterWarning.runUrl && (
                       <a
                         href={info.buildCounterWarning.runUrl}
