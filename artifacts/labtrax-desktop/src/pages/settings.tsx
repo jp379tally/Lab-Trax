@@ -2990,6 +2990,7 @@ function DesktopInstallerHistoryPanel({ repoUrl }: { repoUrl: string | null }) {
 interface MobileBuildInfo {
   iosBuildNumber: string | null;
   androidVersionCode: number | null;
+  expoVersion: string | null;
   appJsonError: string | null;
   repoUrl: string | null;
   repoOwner: string | null;
@@ -3010,10 +3011,33 @@ function MobileBuildPanel() {
   const [triggerError, setTriggerError] = useState<string | null>(null);
   const [triggerSuccess, setTriggerSuccess] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [versionDraft, setVersionDraft] = useState<string | null>(null);
+  const [versionError, setVersionError] = useState<string | null>(null);
+  const [versionSuccess, setVersionSuccess] = useState(false);
 
   const query = useQuery({
     queryKey: ["admin", "mobile-build", "info"],
     queryFn: () => apiFetch<MobileBuildInfo>("/admin/mobile-build/info"),
+  });
+
+  const versionMutation = useMutation({
+    mutationFn: (version: string) =>
+      apiFetch<{ ok: boolean; expoVersion: string }>("/admin/mobile-build/app-version", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version }),
+      }),
+    onSuccess: () => {
+      setVersionError(null);
+      setVersionSuccess(true);
+      setVersionDraft(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "mobile-build", "info"] });
+      setTimeout(() => setVersionSuccess(false), 4000);
+    },
+    onError: (err: Error) => {
+      setVersionSuccess(false);
+      setVersionError(err.message || "Failed to save version.");
+    },
   });
 
   const triggerMutation = useMutation({
@@ -3070,7 +3094,7 @@ function MobileBuildPanel() {
             {info.appJsonError ? (
               <Alert tone="warning">Could not read app.json: {info.appJsonError}</Alert>
             ) : (
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div>
                   <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">iOS build number</div>
                   <div className="text-sm font-mono font-semibold">{info.iosBuildNumber ?? "—"}</div>
@@ -3079,13 +3103,57 @@ function MobileBuildPanel() {
                   <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">Android version code</div>
                   <div className="text-sm font-mono font-semibold">{info.androidVersionCode ?? "—"}</div>
                 </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-1">App store version</div>
+                  <div className="text-sm font-mono font-semibold">{info.expoVersion ?? "—"}</div>
+                </div>
               </div>
             )}
             <p className="text-[11px] text-muted-foreground">
-              The EAS build workflow automatically bumps these numbers before each build and commits the result back to{" "}
+              The EAS build workflow automatically bumps iOS build number and Android version code before each build and commits the result back to{" "}
               <code className="font-mono">main</code>.
             </p>
           </div>
+
+          {/* App store version editor */}
+          {!info.appJsonError && (
+            <div className="rounded-lg border border-border px-5 py-4 space-y-3">
+              <div className="text-sm font-semibold">App store version string</div>
+              <p className="text-[11px] text-muted-foreground">
+                This is the user-visible version shown in the App Store and Google Play (e.g. <code className="font-mono">2.1.0</code>). Must be x.y.z format.
+              </p>
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  value={versionDraft ?? info.expoVersion ?? ""}
+                  onChange={(e) => setVersionDraft(e.target.value)}
+                  placeholder="e.g. 2.1.0"
+                  className={`${inputCls} w-36 font-mono`}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const v = (versionDraft ?? "").trim();
+                    if (!/^\d+\.\d+\.\d+$/.test(v)) {
+                      setVersionError("Version must be x.y.z (e.g. 2.1.0).");
+                      return;
+                    }
+                    setVersionError(null);
+                    versionMutation.mutate(v);
+                  }}
+                  disabled={versionMutation.isPending || (versionDraft === null || versionDraft.trim() === (info.expoVersion ?? ""))}
+                  className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+                >
+                  {versionMutation.isPending ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : null}
+                  {versionMutation.isPending ? "Saving…" : "Save version"}
+                </button>
+              </div>
+              {versionError && <Alert tone="danger">{versionError}</Alert>}
+              {versionSuccess && <Alert tone="success">Version updated and committed to app.json.</Alert>}
+            </div>
+          )}
 
           {/* Setup warnings */}
           {!info.tokenConfigured && (

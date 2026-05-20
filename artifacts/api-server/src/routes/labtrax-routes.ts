@@ -5154,14 +5154,16 @@ Important rules:
     const appJsonPath = path.resolve(process.cwd(), "artifacts/labtrax/app.json");
     let iosBuildNumber: string | null = null;
     let androidVersionCode: number | null = null;
+    let expoVersion: string | null = null;
     let appJsonError: string | null = null;
     try {
       const raw = await readFile(appJsonPath, "utf8");
       const appJson = JSON.parse(raw) as {
-        expo?: { ios?: { buildNumber?: string }; android?: { versionCode?: number } };
+        expo?: { version?: string; ios?: { buildNumber?: string }; android?: { versionCode?: number } };
       };
       iosBuildNumber = appJson.expo?.ios?.buildNumber ?? null;
       androidVersionCode = appJson.expo?.android?.versionCode ?? null;
+      expoVersion = appJson.expo?.version ?? null;
     } catch (err) {
       appJsonError = (err as Error).message ?? "Could not read app.json.";
     }
@@ -5195,6 +5197,7 @@ Important rules:
     return res.json({
       iosBuildNumber,
       androidVersionCode,
+      expoVersion,
       appJsonError,
       repoUrl,
       repoOwner,
@@ -5202,6 +5205,58 @@ Important rules:
       tokenConfigured,
       lastTrigger,
     });
+  });
+
+  // Updates the expo.version field in app.json and git-commits the change.
+  router.put("/admin/mobile-build/app-version", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    const { version } = req.body as { version?: unknown };
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version.trim())) {
+      return res.status(400).json({ error: "version must be a valid semver string (x.y.z)." });
+    }
+    const newVersion = version.trim();
+
+    const appJsonPath = path.resolve(process.cwd(), "artifacts/labtrax/app.json");
+    let appJson: Record<string, unknown>;
+    try {
+      const raw = await readFile(appJsonPath, "utf8");
+      appJson = JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      return res.status(500).json({ error: `Could not read app.json: ${(err as Error).message}` });
+    }
+
+    const expo = appJson.expo as Record<string, unknown> | undefined;
+    if (!expo || typeof expo !== "object") {
+      return res.status(500).json({ error: "app.json is missing the expo key." });
+    }
+    expo.version = newVersion;
+
+    try {
+      await writeFile(appJsonPath, JSON.stringify(appJson, null, 2) + "\n", "utf8");
+    } catch (err) {
+      return res.status(500).json({ error: `Could not write app.json: ${(err as Error).message}` });
+    }
+
+    // Attempt a git commit; failures are non-fatal — the file has already been updated.
+    await new Promise<void>((resolve) => {
+      const git = spawn("git", ["add", appJsonPath], { stdio: "ignore" });
+      git.on("close", (addCode) => {
+        if (addCode !== 0) { resolve(); return; }
+        const reqUser = (req as any).user as { username?: string } | undefined;
+        const author = reqUser?.username ?? "labtrax-admin";
+        const commit = spawn(
+          "git",
+          ["commit", "-m", `chore: bump mobile app version to ${newVersion} (via settings panel by ${author})`],
+          { stdio: "ignore" },
+        );
+        commit.on("close", () => resolve());
+      });
+    });
+
+    return res.json({ ok: true, expoVersion: newVersion });
   });
 
   // Triggers a GitHub Actions workflow_dispatch for eas-build.yml.
