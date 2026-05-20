@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, Link2, Loader2, Mail, MailX, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
+import { Archive, ArchiveRestore, Building2, ChevronDown, ChevronRight, DollarSign, GitMerge, Link2, Loader2, Mail, MailX, Plus, Search, Send, Stethoscope, Tag, Trash2, UserPlus, Users, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Invoice, LabCase, MeResponse, Organization } from "@/lib/types";
@@ -34,6 +34,144 @@ interface PracticeInvite {
 
 const ASSIGNABLE_ROLES = ["admin", "user", "billing", "read_only"] as const;
 const ADMIN_ROLES = new Set(["owner", "admin"]);
+
+// Practices ≥ this bigram similarity (on normalized name) are flagged as
+// likely duplicates in the "Suggested duplicates" banner.
+const PRACTICE_DUP_SIMILARITY_THRESHOLD = 0.7;
+const PRACTICE_DUP_DISMISS_KEY = "labtrax_practice_dup_dismissed_v1";
+
+function normalizePracticeNameForCompare(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\b(dental|dentistry|the|of|llc|llp|pllc|pc|pa|inc|ltd|co|practice|office|associates)\b/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function practiceBigramSimilarity(a: string, b: string): number {
+  const an = normalizePracticeNameForCompare(a);
+  const bn = normalizePracticeNameForCompare(b);
+  if (!an || !bn) return 0;
+  if (an === bn) return 1;
+  const grams = (s: string) => {
+    const set = new Set<string>();
+    const padded = ` ${s} `;
+    for (let i = 0; i < padded.length - 1; i++) set.add(padded.slice(i, i + 2));
+    return set;
+  };
+  const A = grams(an);
+  const B = grams(bn);
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+function loadDismissedPracticeDupClusters(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(PRACTICE_DUP_DISMISS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? (parsed as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function practiceClusterKey(labId: string, ids: string[]): string {
+  return `${labId}::${[...ids].sort().join("||")}`;
+}
+
+interface PracticeCluster {
+  labId: string;
+  practices: Organization[];
+  topScore: number;
+  key: string;
+}
+
+// Per-lab union-find clustering of practices with name similarity ≥ threshold.
+// "Lab id" here is the practice's `parentLabOrganizationId` (a provider's
+// owning lab), so cross-tenant duplicates stay separate.
+function buildPracticeDuplicateClusters(
+  practices: Organization[],
+  adminLabOrgIds: Set<string>,
+  threshold: number,
+): PracticeCluster[] {
+  const byLab = new Map<string, Organization[]>();
+  for (const p of practices) {
+    if (p.type !== "provider") continue;
+    if (p.deletedAt) continue;
+    const labId = p.parentLabOrganizationId || "";
+    if (!labId || !adminLabOrgIds.has(labId)) continue;
+    const list = byLab.get(labId) ?? [];
+    list.push(p);
+    byLab.set(labId, list);
+  }
+  const clusters: PracticeCluster[] = [];
+  for (const [labId, list] of byLab) {
+    if (list.length < 2) continue;
+    const parent = list.map((_, i) => i);
+    const find = (i: number): number => {
+      let cur = i;
+      while (parent[cur] !== cur) {
+        parent[cur] = parent[parent[cur]];
+        cur = parent[cur];
+      }
+      return cur;
+    };
+    const union = (a: number, b: number) => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    };
+    const pairScores = new Map<string, number>();
+    for (let i = 0; i < list.length; i++) {
+      const ni = list[i].displayName || list[i].name;
+      if (!ni) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        const nj = list[j].displayName || list[j].name;
+        if (!nj) continue;
+        const s = practiceBigramSimilarity(ni, nj);
+        if (s >= threshold) {
+          union(i, j);
+          pairScores.set(`${i}|${j}`, s);
+        }
+      }
+    }
+    const groups = new Map<number, number[]>();
+    for (let i = 0; i < list.length; i++) {
+      const root = find(i);
+      const arr = groups.get(root) ?? [];
+      arr.push(i);
+      groups.set(root, arr);
+    }
+    for (const idxs of groups.values()) {
+      if (idxs.length < 2) continue;
+      let topScore = 0;
+      for (let a = 0; a < idxs.length; a++) {
+        for (let b = a + 1; b < idxs.length; b++) {
+          const lo = Math.min(idxs[a], idxs[b]);
+          const hi = Math.max(idxs[a], idxs[b]);
+          const sc = pairScores.get(`${lo}|${hi}`) ?? 0;
+          if (sc > topScore) topScore = sc;
+        }
+      }
+      const items = idxs.map((i) => list[i]);
+      clusters.push({
+        labId,
+        practices: items,
+        topScore,
+        key: practiceClusterKey(
+          labId,
+          items.map((p) => p.id),
+        ),
+      });
+    }
+  }
+  clusters.sort((a, b) => b.topScore - a.topScore);
+  return clusters;
+}
 
 function roleLabel(role: string): string {
   switch (role) {
@@ -73,6 +211,22 @@ export default function PracticesPage() {
   const [missingEmailOnly, setMissingEmailOnly] = useState(false);
   const [editing, setEditing] = useState<Organization | null>(null);
   const [adding, setAdding] = useState(false);
+  const [dismissedDupClusters, setDismissedDupClusters] = useState<Set<string>>(
+    () => loadDismissedPracticeDupClusters(),
+  );
+  const [showAllSuggestedDups, setShowAllSuggestedDups] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        PRACTICE_DUP_DISMISS_KEY,
+        JSON.stringify(Array.from(dismissedDupClusters)),
+      );
+    } catch {
+      // localStorage may be unavailable; safe to ignore.
+    }
+  }, [dismissedDupClusters]);
 
   const meQuery = useQuery({
     queryKey: ["auth", "me"],
@@ -93,6 +247,7 @@ export default function PracticesPage() {
     return ids;
   }, [meQuery.data]);
   const canAddPractice = adminLabOrgIds.length > 0;
+  const adminLabOrgIdsSet = useMemo(() => new Set(adminLabOrgIds), [adminLabOrgIds]);
 
   const orgs = orgsQuery.data ?? [];
   const cases = casesQuery.data ?? [];
@@ -150,6 +305,24 @@ export default function PracticesPage() {
     if (missingEmailCount === 0) setMissingEmailOnly(false);
   }, [missingEmailCount]);
 
+  // Likely-duplicate practice clusters within each lab the user administers.
+  // We show every cluster (not just one) so admins can step through them
+  // without reload→merge→reload cycles.
+  const suggestedDupClusters = useMemo(
+    () =>
+      buildPracticeDuplicateClusters(
+        orgs,
+        adminLabOrgIdsSet,
+        PRACTICE_DUP_SIMILARITY_THRESHOLD,
+      ),
+    [orgs, adminLabOrgIdsSet],
+  );
+
+  const visibleDupClusters = useMemo(
+    () => suggestedDupClusters.filter((c) => !dismissedDupClusters.has(c.key)),
+    [suggestedDupClusters, dismissedDupClusters],
+  );
+
   const isLoading = orgsQuery.isLoading;
   const error = orgsQuery.error as Error | null;
 
@@ -192,6 +365,89 @@ export default function PracticesPage() {
           >
             Show {missingEmailCount === 1 ? "it" : "them"}
           </button>
+        </div>
+      )}
+
+      {visibleDupClusters.length > 0 && (
+        <div className="mb-5 rounded-lg border border-sky-300 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-700 px-4 py-3.5">
+          <div className="flex items-center gap-2 mb-2">
+            <GitMerge size={14} className="text-sky-700 dark:text-sky-300" />
+            <p className="text-sm font-medium text-sky-900 dark:text-sky-200">
+              Suggested duplicates
+              <span className="font-normal text-sky-700 dark:text-sky-400 ml-1.5">
+                ({visibleDupClusters.length} likely-duplicate{" "}
+                {visibleDupClusters.length === 1 ? "cluster" : "clusters"} — open each to review and archive)
+              </span>
+            </p>
+          </div>
+          <ul className="space-y-1.5">
+            {(showAllSuggestedDups
+              ? visibleDupClusters
+              : visibleDupClusters.slice(0, 5)
+            ).map((cluster) => (
+              <li
+                key={cluster.key}
+                className="flex items-center gap-3 rounded-md bg-card/70 dark:bg-card/40 border border-sky-200/60 dark:border-sky-800/50 px-3 py-2"
+              >
+                <div className="flex-1 min-w-0 text-sm">
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                    {cluster.practices.map((p, i) => (
+                      <span key={p.id} className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(p)}
+                          className="font-medium underline-offset-2 hover:underline text-left"
+                        >
+                          {p.displayName || p.name}
+                        </button>
+                        {i < cluster.practices.length - 1 && (
+                          <span className="text-muted-foreground">·</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    {Math.round(cluster.topScore * 100)}% name match
+                    {cluster.practices.length > 2 &&
+                      ` · ${cluster.practices.length} practices`}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditing(cluster.practices[0])}
+                  className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90"
+                >
+                  Review
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDismissedDupClusters((prev) => {
+                      const next = new Set(prev);
+                      next.add(cluster.key);
+                      return next;
+                    });
+                  }}
+                  className="shrink-0 h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                  aria-label="Keep these separate"
+                  title="Keep these separate"
+                >
+                  <X size={13} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          {visibleDupClusters.length > 5 && (
+            <button
+              type="button"
+              onClick={() => setShowAllSuggestedDups((v) => !v)}
+              className="mt-2 text-xs font-medium text-sky-800 dark:text-sky-300 hover:underline"
+            >
+              {showAllSuggestedDups
+                ? "Show fewer"
+                : `Show ${visibleDupClusters.length - 5} more`}
+            </button>
+          )}
         </div>
       )}
 

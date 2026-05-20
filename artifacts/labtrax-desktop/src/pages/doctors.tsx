@@ -101,6 +101,111 @@ const OPEN_STATUSES = new Set([
 
 const ADMIN_ROLES = new Set(["owner", "admin"]);
 
+// Rows ≥ this bigram similarity (on normalized doctor name) are flagged as
+// likely duplicates in the "Suggested merges" banner.
+const DUP_SIMILARITY_THRESHOLD = 0.7;
+const DOCTOR_DUP_DISMISS_KEY = "labtrax_doctor_dup_dismissed_v1";
+
+function loadDismissedDupClusters(storageKey: string): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? (parsed as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+// Stable cluster key keyed by lab + sorted row identifiers, so the same
+// cluster of duplicates gets the same dismissal id across reloads.
+function duplicateClusterKey(labId: string, ids: string[]): string {
+  return `${labId}::${[...ids].sort().join("||")}`;
+}
+
+interface DuplicateCluster<T> {
+  labId: string;
+  rows: T[];
+  topScore: number;
+  key: string;
+}
+
+// Group items into transitively-connected clusters using union-find over
+// pairs whose `similarity(a, b) >= threshold`. Per-lab to keep cross-tenant
+// duplicates separate (we'd never merge across labs anyway).
+function buildDuplicateClusters<T>(
+  itemsByLab: Map<string, T[]>,
+  getCompareName: (t: T) => string,
+  getRowId: (t: T) => string,
+  similarity: (a: string, b: string) => number,
+  threshold: number,
+): DuplicateCluster<T>[] {
+  const clusters: DuplicateCluster<T>[] = [];
+  for (const [labId, list] of itemsByLab) {
+    if (list.length < 2) continue;
+    const parent = list.map((_, i) => i);
+    const find = (i: number): number => {
+      let cur = i;
+      while (parent[cur] !== cur) {
+        parent[cur] = parent[parent[cur]];
+        cur = parent[cur];
+      }
+      return cur;
+    };
+    const union = (a: number, b: number) => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    };
+    const pairScores = new Map<string, number>();
+    for (let i = 0; i < list.length; i++) {
+      const ni = getCompareName(list[i]);
+      if (!ni) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        const nj = getCompareName(list[j]);
+        if (!nj) continue;
+        const s = similarity(ni, nj);
+        if (s >= threshold) {
+          union(i, j);
+          pairScores.set(`${i}|${j}`, s);
+        }
+      }
+    }
+    const groups = new Map<number, number[]>();
+    for (let i = 0; i < list.length; i++) {
+      const root = find(i);
+      const arr = groups.get(root) ?? [];
+      arr.push(i);
+      groups.set(root, arr);
+    }
+    for (const idxs of groups.values()) {
+      if (idxs.length < 2) continue;
+      let topScore = 0;
+      for (let a = 0; a < idxs.length; a++) {
+        for (let b = a + 1; b < idxs.length; b++) {
+          const lo = Math.min(idxs[a], idxs[b]);
+          const hi = Math.max(idxs[a], idxs[b]);
+          const sc = pairScores.get(`${lo}|${hi}`) ?? 0;
+          if (sc > topScore) topScore = sc;
+        }
+      }
+      const rowsInCluster = idxs.map((i) => list[i]);
+      clusters.push({
+        labId,
+        rows: rowsInCluster,
+        topScore,
+        key: duplicateClusterKey(
+          labId,
+          rowsInCluster.map((r) => getRowId(r)),
+        ),
+      });
+    }
+  }
+  clusters.sort((a, b) => b.topScore - a.topScore);
+  return clusters;
+}
+
 interface PracticeMember {
   id: string;
   role: string;
@@ -146,7 +251,23 @@ export default function DoctorsPage() {
     labOrganizationId: string;
   } | null>(null);
   const [undoToast, setUndoToast] = useState<UndoToast | null>(null);
+  const [dismissedDupClusters, setDismissedDupClusters] = useState<Set<string>>(
+    () => loadDismissedDupClusters(DOCTOR_DUP_DISMISS_KEY),
+  );
+  const [showAllSuggestedMerges, setShowAllSuggestedMerges] = useState(false);
   const queryClientPage = useQueryClient();
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        DOCTOR_DUP_DISMISS_KEY,
+        JSON.stringify(Array.from(dismissedDupClusters)),
+      );
+    } catch {
+      // localStorage may be unavailable (private mode, quota); ignore.
+    }
+  }, [dismissedDupClusters]);
 
   const undoMutation = useUndoDoctorMerge({
     mutation: {
@@ -292,6 +413,31 @@ export default function DoctorsPage() {
     [rows],
   );
 
+  // Likely-duplicate doctor clusters within each lab the current user can
+  // administer. We surface every cluster (not just one) so admins can rip
+  // through them without merge→reload cycles.
+  const suggestedDuplicateClusters = useMemo(() => {
+    const byLab = new Map<string, DoctorRow[]>();
+    for (const r of rows) {
+      if (!adminLabIds.has(r.labOrganizationId)) continue;
+      const list = byLab.get(r.labOrganizationId) ?? [];
+      list.push(r);
+      byLab.set(r.labOrganizationId, list);
+    }
+    return buildDuplicateClusters<DoctorRow>(
+      byLab,
+      (r) => r.doctorName,
+      (r) => r.key,
+      bigramSimilarity,
+      DUP_SIMILARITY_THRESHOLD,
+    );
+  }, [rows, adminLabIds]);
+
+  const visibleDuplicateClusters = useMemo(
+    () => suggestedDuplicateClusters.filter((c) => !dismissedDupClusters.has(c.key)),
+    [suggestedDuplicateClusters, dismissedDupClusters],
+  );
+
   const isLoading = casesQuery.isLoading || invoicesQuery.isLoading;
   const error = (casesQuery.error || invoicesQuery.error) as Error | null;
 
@@ -333,6 +479,94 @@ export default function DoctorsPage() {
           >
             Show all
           </button>
+        </div>
+      )}
+
+      {visibleDuplicateClusters.length > 0 && (
+        <div className="mb-5 rounded-lg border border-sky-300 bg-sky-50 dark:bg-sky-950/30 dark:border-sky-700 px-4 py-3.5">
+          <div className="flex items-center gap-2 mb-2">
+            <GitMerge size={14} className="text-sky-700 dark:text-sky-300" />
+            <p className="text-sm font-medium text-sky-900 dark:text-sky-200">
+              Suggested merges
+              <span className="font-normal text-sky-700 dark:text-sky-400 ml-1.5">
+                ({visibleDuplicateClusters.length} likely-duplicate{" "}
+                {visibleDuplicateClusters.length === 1 ? "cluster" : "clusters"})
+              </span>
+            </p>
+          </div>
+          <ul className="space-y-1.5">
+            {(showAllSuggestedMerges
+              ? visibleDuplicateClusters
+              : visibleDuplicateClusters.slice(0, 5)
+            ).map((cluster) => (
+              <li
+                key={cluster.key}
+                className="flex items-center gap-3 rounded-md bg-card/70 dark:bg-card/40 border border-sky-200/60 dark:border-sky-800/50 px-3 py-2"
+              >
+                <div className="flex-1 min-w-0 text-sm">
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                    {cluster.rows.map((r, i) => (
+                      <span key={r.key} className="inline-flex items-center gap-1">
+                        <span className="font-medium">{r.doctorName}</span>
+                        <span className="text-xs text-muted-foreground">
+                          ({r.practiceName})
+                        </span>
+                        {i < cluster.rows.length - 1 && (
+                          <span className="text-muted-foreground">·</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    {Math.round(cluster.topScore * 100)}% name match
+                    {cluster.rows.length > 2 && ` · ${cluster.rows.length} doctors`}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMergeDialog({
+                      labOrganizationId: cluster.labId,
+                      sources: cluster.rows.map((r) => ({
+                        doctorName: r.doctorName,
+                        providerOrganizationId: r.practiceId || null,
+                        practiceName: r.practiceName,
+                      })),
+                    });
+                  }}
+                  className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90"
+                >
+                  <GitMerge size={12} /> Review
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDismissedDupClusters((prev) => {
+                      const next = new Set(prev);
+                      next.add(cluster.key);
+                      return next;
+                    });
+                  }}
+                  className="shrink-0 h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                  aria-label="Keep these separate"
+                  title="Keep these separate"
+                >
+                  <X size={13} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          {visibleDuplicateClusters.length > 5 && (
+            <button
+              type="button"
+              onClick={() => setShowAllSuggestedMerges((v) => !v)}
+              className="mt-2 text-xs font-medium text-sky-800 dark:text-sky-300 hover:underline"
+            >
+              {showAllSuggestedMerges
+                ? "Show fewer"
+                : `Show ${visibleDuplicateClusters.length - 5} more`}
+            </button>
+          )}
         </div>
       )}
 
