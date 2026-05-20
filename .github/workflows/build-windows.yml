@@ -141,7 +141,29 @@ jobs:
           fi
           echo "stage=settings" >> "$GITHUB_OUTPUT"
           echo "Updating live download URL → /downloads/LabTrax-Setup.exe (version $VERSION)"
-          NOTES="Auto-published from GitHub Actions run ${GITHUB_RUN_ID} (commit ${GITHUB_SHA})."
+          NOTES=$(node -e "
+const fs = require('fs');
+const ver = 'v${VERSION}';
+let raw;
+try { raw = fs.readFileSync('artifacts/labtrax-desktop/RELEASE_NOTES.md', 'utf8'); } catch { process.exit(0); }
+const lines = raw.split(/\r?\n/);
+let inBlock = false, out = [];
+for (const line of lines) {
+  if (/^## v/.test(line)) {
+    if (inBlock) break;
+    if (line.replace(/^##\s+/, '').trim() === ver) inBlock = true;
+    continue;
+  }
+  if (inBlock) out.push(line);
+}
+process.stdout.write(out.join('\n').trim());
+" 2>/dev/null) || true
+          if [[ -z "$NOTES" ]]; then
+            NOTES="Auto-published from GitHub Actions run ${GITHUB_RUN_ID} (commit ${GITHUB_SHA})."
+            echo "::notice::No entry for v${VERSION} found in RELEASE_NOTES.md — using generic notes."
+          else
+            echo "::notice::Using release notes for v${VERSION} from RELEASE_NOTES.md."
+          fi
           SETTINGS_BODY=$(mktemp)
           SETTINGS_STATUS=$(curl --silent --show-error --output "$SETTINGS_BODY" --write-out '%{http_code}' \
             -X PUT \

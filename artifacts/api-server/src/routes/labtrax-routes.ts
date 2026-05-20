@@ -4301,6 +4301,49 @@ Important rules:
     }
   });
 
+  router.get("/admin/settings/desktop-installer/release-notes-file", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const versionParam = typeof (req.query as any).version === "string"
+      ? (req.query as any).version.trim()
+      : "";
+    if (!versionParam) {
+      return res.status(400).json({ error: "version query parameter is required." });
+    }
+    const overridePath = process.env.RELEASE_NOTES_PATH?.trim();
+    const notesPath = overridePath
+      ? path.resolve(overridePath)
+      : path.resolve(process.cwd(), "artifacts/labtrax-desktop/RELEASE_NOTES.md");
+    let raw: string;
+    try {
+      raw = await readFile(notesPath, "utf8");
+    } catch {
+      return res.status(404).json({ error: "RELEASE_NOTES.md not found on this server." });
+    }
+    const normalizedVersion = versionParam.startsWith("v") ? versionParam : `v${versionParam}`;
+    const lines = raw.split(/\r?\n/);
+    let inBlock = false;
+    const blockLines: string[] = [];
+    for (const line of lines) {
+      if (/^## v/.test(line)) {
+        if (inBlock) break;
+        const heading = line.replace(/^##\s+/, "").trim();
+        if (heading === normalizedVersion) {
+          inBlock = true;
+        }
+        continue;
+      }
+      if (inBlock) {
+        blockLines.push(line);
+      }
+    }
+    const notes = inBlock
+      ? blockLines.join("\n").replace(/^\s+/, "").replace(/\s+$/, "") || null
+      : null;
+    return res.json({ version: normalizedVersion, notes });
+  });
+
   router.get("/admin/settings/desktop-installer/history", requireAuth, async (req, res) => {
     if (!isPlatformAdmin(req)) {
       return res.status(403).json({ error: "Admin access required." });

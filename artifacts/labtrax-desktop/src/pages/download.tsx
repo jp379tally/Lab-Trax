@@ -162,7 +162,7 @@ export default function DownloadPage() {
           </p>
         ) : (
           <p className="text-sm text-muted-foreground italic">
-            No release notes are available for this version yet.
+            Release notes for this version are coming soon.
           </p>
         )}
       </div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, RotateCcw, RefreshCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
+import { Building2, Check, ChevronDown, ChevronRight, Clock, Copy, CreditCard, Download, ExternalLink, FileDown, Github, History, KeyRound, LayoutList, Loader2, LogOut, Monitor, Package, RotateCcw, RefreshCcw, ShieldCheck, Sparkles, Trash2, Upload, User as UserIcon, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -2018,6 +2018,8 @@ function DesktopInstallerPanel() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [importNotesLoading, setImportNotesLoading] = useState(false);
+  const [importNotesError, setImportNotesError] = useState<string | null>(null);
   const [duplicatePrompt, setDuplicatePrompt] = useState<{
     file: File;
     message: string;
@@ -2258,9 +2260,49 @@ function DesktopInstallerPanel() {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">
-                Release notes <span className="font-normal">(optional)</span>
-              </label>
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Release notes <span className="font-normal">(optional)</span>
+                </label>
+                <button
+                  type="button"
+                  disabled={importNotesLoading || !versionInput.trim()}
+                  title={!versionInput.trim() ? "Enter a version number first" : `Import notes for v${versionInput.trim()} from RELEASE_NOTES.md`}
+                  onClick={async () => {
+                    const ver = versionInput.trim();
+                    if (!ver) return;
+                    setImportNotesLoading(true);
+                    setImportNotesError(null);
+                    try {
+                      const result = await apiFetch<{ version: string; notes: string | null }>(
+                        `/admin/settings/desktop-installer/release-notes-file?version=${encodeURIComponent(ver)}`,
+                      );
+                      if (result.notes) {
+                        setReleaseNotesInput(result.notes);
+                      } else {
+                        setImportNotesError(`No entry for ${result.version} found in RELEASE_NOTES.md.`);
+                      }
+                    } catch (err) {
+                      setImportNotesError(
+                        err instanceof Error ? err.message : "Could not load RELEASE_NOTES.md.",
+                      );
+                    } finally {
+                      setImportNotesLoading(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {importNotesLoading ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <FileDown size={11} />
+                  )}
+                  Import from RELEASE_NOTES.md
+                </button>
+              </div>
+              {importNotesError && (
+                <p className="text-[11px] text-destructive">{importNotesError}</p>
+              )}
               <textarea
                 className="w-full px-2.5 py-2 rounded-md bg-background border border-input text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
                 rows={3}
