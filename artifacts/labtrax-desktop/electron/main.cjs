@@ -245,6 +245,17 @@ ipcMain.handle("dialog:show-folder", async () => {
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
+ipcMain.handle("dialog:showOpenDialog", async (_event, opts) => {
+  const win = BrowserWindow.getAllWindows()[0];
+  const options = {
+    title: opts?.title,
+    filters: opts?.filters,
+    properties: opts?.properties ?? ["openFile"],
+  };
+  const result = await dialog.showOpenDialog(win ?? undefined, options);
+  return result.canceled ? null : result.filePaths;
+});
+
 ipcMain.handle("install-update", () => {
   const { autoUpdater } = require("electron-updater");
   autoUpdater.quitAndInstall();
