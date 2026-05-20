@@ -148,6 +148,7 @@ jobs:
           fi
           BASE_URL="${PUBLISH_API_BASE_URL%/}"
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          BUILD_NUM_FOR_ALERT=$(node -p "require('./artifacts/labtrax-desktop/build-number.json').buildNumber" 2>/dev/null || echo "")
           PAYLOAD=$(jq -n \
             --arg workflowName "${GITHUB_WORKFLOW}" \
             --arg runUrl "$RUN_URL" \
@@ -156,7 +157,8 @@ jobs:
             --arg ref "${GITHUB_REF_NAME}" \
             --arg stage "build-number-commit" \
             --arg errorMessage "All 3 push attempts to persist build-number.json to ${GITHUB_REF_NAME} failed. The build number counter may reset on the next checkout — check branch protection rules or network connectivity." \
-            '{workflowName:$workflowName, runUrl:$runUrl, runId:$runId, commitSha:$commitSha, ref:$ref, stage:$stage, errorMessage:$errorMessage}')
+            --argjson attemptedBuildNumber "${BUILD_NUM_FOR_ALERT:-null}" \
+            '{workflowName:$workflowName, runUrl:$runUrl, runId:$runId, commitSha:$commitSha, ref:$ref, stage:$stage, errorMessage:$errorMessage, attemptedBuildNumber:$attemptedBuildNumber}')
           echo "Reporting build-number push failure to $BASE_URL/api/admin/desktop-installer/publish-failure"
           NOTIFY_BODY=$(mktemp)
           NOTIFY_STATUS=$(curl --silent --show-error --output "$NOTIFY_BODY" --write-out '%{http_code}' \

@@ -1974,6 +1974,14 @@ interface DesktopInstallerInfo {
   installerStatus: "ok" | "missing" | "stale" | "external" | "unknown";
   installerStatusMessage: string | null;
   settingsUpdatedAt: string | null;
+  buildCounterWarning: {
+    runUrl: string | null;
+    runId: string | null;
+    workflowName: string | null;
+    ref: string | null;
+    attemptedBuildNumber: number | null;
+    reportedAt: string;
+  } | null;
 }
 
 function formatInstallerSize(bytes: number): string {
@@ -2193,6 +2201,76 @@ function DesktopInstallerPanel() {
         <div className="space-y-5">
           {info.repoUrlWarning && (
             <Alert tone="warning">{info.repoUrlWarning}</Alert>
+          )}
+          {info.buildCounterWarning && (
+            <div className="rounded-lg border border-amber-400/50 bg-amber-500/10 px-4 py-3 space-y-2">
+              <div className="flex items-start gap-2">
+                <svg
+                  className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5"
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                  <path d="M12 9v4" />
+                  <path d="M12 17h.01" />
+                </svg>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                    Build counter may be out of sync
+                  </div>
+                  <p className="text-xs text-amber-700/80 dark:text-amber-400/80 mt-0.5 leading-relaxed">
+                    A recent CI build
+                    {info.buildCounterWarning.attemptedBuildNumber !== null
+                      ? ` (build #${info.buildCounterWarning.attemptedBuildNumber})`
+                      : ""}
+                    {info.buildCounterWarning.workflowName
+                      ? ` from "${info.buildCounterWarning.workflowName}"`
+                      : ""}
+                    {" "}
+                    failed to push the updated <code className="font-mono bg-amber-500/15 px-1 py-0.5 rounded">build-number.json</code> to the repo.
+                    The next build may reuse the same number. Apply the fallback artifact to fix this.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <a
+                      href={
+                        info.repoUrl
+                          ? `${info.repoUrl.replace(/\/$/, "")}/blob/main/docs/build-counter-recovery.md`
+                          : undefined
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline${!info.repoUrl ? " opacity-50 cursor-not-allowed pointer-events-none" : ""}`}
+                    >
+                      Recovery guide
+                    </a>
+                    {info.buildCounterWarning.runUrl && (
+                      <a
+                        href={info.buildCounterWarning.runUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline"
+                      >
+                        View failed run
+                        {info.buildCounterWarning.runId
+                          ? ` #${info.buildCounterWarning.runId}`
+                          : ""}
+                      </a>
+                    )}
+                    {info.buildCounterWarning.ref && (
+                      <span className="text-[11px] text-amber-600/70 dark:text-amber-400/60">
+                        branch: {info.buildCounterWarning.ref}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
           {info.urlError ? (
             <Alert tone="danger">

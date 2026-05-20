@@ -3797,6 +3797,7 @@ Important rules:
   const SETTING_DESKTOP_INSTALLER_URL = "desktop_installer_url";
   const SETTING_DESKTOP_INSTALLER_VERSION = "desktop_installer_version";
   const SETTING_DESKTOP_INSTALLER_RELEASE_NOTES = "desktop_installer_release_notes";
+  const SETTING_BUILD_COUNTER_WARNING = "build_counter_warning";
   const SETTING_MOBILE_BUILD_LAST_TRIGGER = "mobile_build_last_trigger";
   const SETTING_MOBILE_VERSION_HISTORY = "mobile_app_version_history";
   const MOBILE_VERSION_HISTORY_MAX_ROWS = 20;
@@ -3871,6 +3872,7 @@ Important rules:
           SETTING_DESKTOP_INSTALLER_URL,
           SETTING_DESKTOP_INSTALLER_VERSION,
           SETTING_DESKTOP_INSTALLER_RELEASE_NOTES,
+          SETTING_BUILD_COUNTER_WARNING,
         ]),
       );
     const byKey = Object.fromEntries(dbRows.map((r) => [r.key, r.value]));
@@ -3945,6 +3947,67 @@ Important rules:
     } else {
       installerStatus = "ok";
     }
+    // ── Build-counter sync check ────────────────────────────────────────────
+    // When CI fails to push build-number.json, it calls /publish-failure with
+    // stage="build-number-commit" which stores a warning here. We auto-clear
+    // it once the file on disk has been updated to >= the attempted number.
+    let buildCounterWarning: {
+      runUrl: string | null;
+      runId: string | null;
+      workflowName: string | null;
+      ref: string | null;
+      attemptedBuildNumber: number | null;
+      reportedAt: string;
+    } | null = null;
+    const rawCounterWarning = byKey[SETTING_BUILD_COUNTER_WARNING] ?? null;
+    if (rawCounterWarning) {
+      try {
+        const parsed = JSON.parse(rawCounterWarning) as {
+          runUrl?: string | null;
+          runId?: string | null;
+          workflowName?: string | null;
+          ref?: string | null;
+          attemptedBuildNumber?: number | null;
+          reportedAt?: string;
+        };
+        const attempted =
+          typeof parsed.attemptedBuildNumber === "number" ? parsed.attemptedBuildNumber : null;
+        let cleared = false;
+        if (attempted !== null) {
+          try {
+            const buildNumberPath = path.resolve(
+              process.cwd(),
+              "artifacts/labtrax-desktop/build-number.json",
+            );
+            const diskRaw = fs.readFileSync(buildNumberPath, "utf8");
+            const diskParsed = JSON.parse(diskRaw) as { buildNumber?: number };
+            const diskNum =
+              typeof diskParsed.buildNumber === "number" ? diskParsed.buildNumber : null;
+            if (diskNum !== null && diskNum >= attempted) {
+              cleared = true;
+              await db
+                .delete(systemSettings)
+                .where(eq(systemSettings.key, SETTING_BUILD_COUNTER_WARNING));
+            }
+          } catch {
+            // If we can't read the file, leave the warning in place.
+          }
+        }
+        if (!cleared) {
+          buildCounterWarning = {
+            runUrl: parsed.runUrl ?? null,
+            runId: parsed.runId ?? null,
+            workflowName: parsed.workflowName ?? null,
+            ref: parsed.ref ?? null,
+            attemptedBuildNumber: attempted,
+            reportedAt: parsed.reportedAt ?? new Date(0).toISOString(),
+          };
+        }
+      } catch {
+        // Malformed warning — ignore.
+      }
+    }
+
     return res.json({
       version,
       dbVersion,
@@ -3964,6 +4027,7 @@ Important rules:
       installerStatus,
       installerStatusMessage,
       settingsUpdatedAt: settingsUpdatedAt ? settingsUpdatedAt.toISOString() : null,
+      buildCounterWarning,
     });
   });
 
@@ -4162,7 +4226,8 @@ Important rules:
       };
       const stageRaw = asStr(body.stage);
       const stage =
-        stageRaw && ["upload", "settings", "unknown"].includes(stageRaw.toLowerCase())
+        stageRaw &&
+        ["upload", "settings", "unknown", "build-number-commit"].includes(stageRaw.toLowerCase())
           ? stageRaw.toLowerCase()
           : "unknown";
       const httpStatusRaw = body.httpStatus;
@@ -4177,6 +4242,35 @@ Important rules:
       const ref = asStr(body.ref);
       const version = asStr(body.version);
       const workflowName = asStr(body.workflowName);
+      const attemptedBuildNumberRaw = body.attemptedBuildNumber;
+      const attemptedBuildNumber =
+        typeof attemptedBuildNumberRaw === "number" && Number.isFinite(attemptedBuildNumberRaw)
+          ? Math.trunc(attemptedBuildNumberRaw)
+          : null;
+
+      // When CI fails to push the incremented build-number.json, store a warning
+      // flag in system_settings so the Settings → Desktop App panel can surface it.
+      if (stage === "build-number-commit") {
+        try {
+          const warningPayload = JSON.stringify({
+            runUrl,
+            runId,
+            workflowName,
+            ref,
+            attemptedBuildNumber,
+            reportedAt: new Date().toISOString(),
+          });
+          await db
+            .insert(systemSettings)
+            .values({ key: SETTING_BUILD_COUNTER_WARNING, value: warningPayload })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: warningPayload, updatedAt: new Date() },
+            });
+        } catch (e: any) {
+          req.log?.error?.({ err: e }, "publish-failure: failed to store build counter warning");
+        }
+      }
 
       let adminEmails: string[] = [];
       try {
