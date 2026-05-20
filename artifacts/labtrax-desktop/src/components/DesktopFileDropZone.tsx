@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Box, CheckCircle, CheckCircle2, FileText, Film, Image, Link2, Loader2, PackageOpen, RotateCw, Search, Upload, X, XCircle } from "lucide-react";
+import { AlertTriangle, Box, CheckCircle, CheckCircle2, FileText, Film, Image, Link2, Loader2, PackageOpen, RotateCw, Search, Sparkles, Upload, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads, type FileWithHandle, type UploadRejection } from "@/lib/uploads-context";
@@ -90,6 +90,8 @@ interface ZipBatchEntry {
   patchingProvider?: boolean;
   /** Error message from the last PATCH attempt (if any) */
   patchError?: string | null;
+  /** True when the linked provider was auto-filled from the AI suggestion */
+  aiAutoFilled?: boolean;
 }
 
 interface PendingZip {
@@ -98,6 +100,12 @@ interface PendingZip {
   file: File;
   /** Per-ZIP practice assignment (may be "" to mean "no practice") */
   providerId: string;
+  /**
+   * True when the user explicitly picked a practice for this ZIP (per-row or
+   * bulk "Set for all"). When false, the providerId is just the prefilled
+   * default from the global picker and we should still honor an AI suggestion.
+   */
+  providerExplicitlySet?: boolean;
 }
 
 interface DesktopFileDropZoneProps {
@@ -327,7 +335,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
 
   function updatePendingZipProvider(id: string, providerId: string) {
     setPendingZips((prev) =>
-      prev.map((z) => (z.id === id ? { ...z, providerId } : z))
+      prev.map((z) => (z.id === id ? { ...z, providerId, providerExplicitlySet: true } : z))
     );
   }
 
@@ -340,7 +348,12 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
     setSelectedGenericCase(null);
   }
 
-  async function patchCasePractice(entryId: string, caseId: string, newProviderId: string) {
+  async function patchCasePractice(
+    entryId: string,
+    caseId: string,
+    newProviderId: string,
+    opts: { aiAuto?: boolean } = {},
+  ) {
     setZipBatchEntries((prev) =>
       prev.map((e) => (e.id === entryId ? { ...e, patchingProvider: true, patchError: null } : e))
     );
@@ -353,10 +366,18 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
         }),
         headers: { "Content-Type": "application/json" },
       });
+      // Only mark the entry as AI-auto-filled after the PATCH actually succeeds,
+      // so the badge/highlight can't lie about the case's real state.
       setZipBatchEntries((prev) =>
         prev.map((e) =>
           e.id === entryId
-            ? { ...e, patchingProvider: false, linkedProviderOrgId: newProviderId || null, patchError: null }
+            ? {
+                ...e,
+                patchingProvider: false,
+                linkedProviderOrgId: newProviderId || null,
+                patchError: null,
+                aiAutoFilled: opts.aiAuto ? true : e.aiAutoFilled,
+              }
             : e
         )
       );
@@ -453,6 +474,24 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                 : e
             )
           );
+
+          // Auto-select the AI-suggested practice when:
+          //  - the case was newly created (suggestions aren't returned for deduped)
+          //  - the server returned a suggestion
+          //  - the user didn't EXPLICITLY pick a practice for this ZIP
+          //    (a prefilled default from the global picker doesn't count)
+          //  - the suggestion differs from what's currently linked
+          if (
+            fileResult.status === "created" &&
+            fileResult.caseId &&
+            fileResult.suggestedProviderOrgId &&
+            !pz.providerExplicitlySet &&
+            fileResult.suggestedProviderOrgId !== (fileResult.linkedProviderOrgId ?? null)
+          ) {
+            const suggestedId = fileResult.suggestedProviderOrgId;
+            const caseId = fileResult.caseId;
+            void patchCasePractice(entry.id, caseId, suggestedId, { aiAuto: true });
+          }
         }
       } catch (err: any) {
         setZipBatchEntries((prev) =>
@@ -694,7 +733,9 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                   onChange={(e) => {
                     const val = e.target.value;
                     setSelectedProviderId(val);
-                    setPendingZips((prev) => prev.map((z) => ({ ...z, providerId: val })));
+                    setPendingZips((prev) =>
+                      prev.map((z) => ({ ...z, providerId: val, providerExplicitlySet: true })),
+                    );
                   }}
                   className="w-full text-xs rounded-md border border-border bg-background px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
                 >
@@ -878,16 +919,30 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                             value={entry.linkedProviderOrgId ?? ""}
                             onChange={(e) => {
                               if (entry.caseId) {
+                                setZipBatchEntries((prev) =>
+                                  prev.map((x) => (x.id === entry.id ? { ...x, aiAutoFilled: false } : x))
+                                );
                                 void patchCasePractice(entry.id, entry.caseId, e.target.value);
                               }
                             }}
-                            className="w-full rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+                            className={
+                              "w-full rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 " +
+                              (entry.aiAutoFilled
+                                ? "border-violet-500/60 ring-1 ring-violet-500/30"
+                                : "border-border")
+                            }
                           >
                             <option value="">— No practice —</option>
                             {providerOrgs.map((o) => (
                               <option key={o.id} value={o.id}>{o.name ?? o.id}</option>
                             ))}
                           </select>
+                          {entry.aiAutoFilled && (
+                            <p className="mt-1 text-[11px] text-violet-600 dark:text-violet-400 flex items-center gap-1">
+                              <Sparkles size={11} className="shrink-0" />
+                              <span>AI suggestion — auto-filled, change if wrong</span>
+                            </p>
+                          )}
                         </div>
                         {entry.patchingProvider && (
                           <Loader2 size={12} className="animate-spin text-muted-foreground shrink-0" />
