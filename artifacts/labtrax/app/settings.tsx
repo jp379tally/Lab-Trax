@@ -96,6 +96,9 @@ export default function SettingsScreen() {
     latestRun: { status: string; conclusion: string | null; html_url: string } | null;
   };
   const [liveBuildInfo, setLiveBuildInfo] = useState<LiveBuildInfo | null>(null);
+  const [mobileBuildTriggering, setMobileBuildTriggering] = useState(false);
+  const [mobileBuildTriggerError, setMobileBuildTriggerError] = useState<string | null>(null);
+  const [mobileBuildTriggerSuccess, setMobileBuildTriggerSuccess] = useState(false);
 
   type RestorePhase = "idle" | "uploading" | "validating" | "decrypting" | "restoring_db" | "restoring_media" | "done" | "error";
   const RESTORE_PHASE_LABELS: Record<RestorePhase, string> = {
@@ -456,6 +459,46 @@ export default function SettingsScreen() {
   const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
   const isLabAdmin = userType === "lab" && currentUserData?.role === "admin";
   const isAnyAdmin = currentUserData?.role === "admin";
+
+  async function triggerMobileBuild() {
+    if (mobileBuildTriggering) return;
+    setMobileBuildTriggering(true);
+    setMobileBuildTriggerError(null);
+    setMobileBuildTriggerSuccess(false);
+    try {
+      const res = await resilientFetch("/api/admin/mobile-build/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform: "all", profile: "production" }),
+      });
+      const data = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setMobileBuildTriggerError(data.error ?? "Failed to trigger build.");
+      } else {
+        setMobileBuildTriggerSuccess(true);
+        // Re-fetch build info to confirm the new trigger recorded on the server,
+        // then clear the success state — button re-enables after the poll completes.
+        try {
+          const infoRes = await resilientFetch("/api/admin/mobile-build/info");
+          if (infoRes.ok) {
+            const infoData = await infoRes.json();
+            if (Array.isArray(infoData.versionHistory)) {
+              setMobileBuildVersionHistory(
+                (infoData.versionHistory as VersionHistoryEntry[]).slice(0, 5),
+              );
+            }
+          }
+        } catch {
+          // non-fatal; version history will stay as-is
+        }
+        setMobileBuildTriggerSuccess(false);
+      }
+    } catch {
+      setMobileBuildTriggerError("Network error. Please try again.");
+    } finally {
+      setMobileBuildTriggering(false);
+    }
+  }
 
   async function loadLabDirectory(force = false): Promise<LabDirectoryEntry[]> {
     if (!force && labDirectoryCache.length > 0) {
@@ -1859,6 +1902,63 @@ export default function SettingsScreen() {
                 </View>
               </View>
             </Pressable>
+          </View>
+        )}
+
+        {userType === "master_admin" && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>MOBILE BUILD</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  mobileBuildTriggering && { opacity: 0.6 },
+                  pressed && !mobileBuildTriggering && { opacity: 0.7 },
+                ]}
+                onPress={() => {
+                  if (mobileBuildTriggering) return;
+                  Alert.alert(
+                    "Trigger EAS Build",
+                    "This will dispatch a production build for all platforms via GitHub Actions. Continue?",
+                    [
+                      { text: "Cancel", style: "cancel" },
+                      { text: "Trigger", style: "default", onPress: () => void triggerMobileBuild() },
+                    ],
+                  );
+                }}
+                disabled={mobileBuildTriggering}
+              >
+                <View style={[styles.menuIcon, { backgroundColor: mobileBuildTriggerSuccess ? "#D1FAE5" : "#EDE9FE" }]}>
+                  {mobileBuildTriggering ? (
+                    <ActivityIndicator size="small" color="#7C3AED" />
+                  ) : mobileBuildTriggerSuccess ? (
+                    <Ionicons name="checkmark-circle" size={18} color="#059669" />
+                  ) : (
+                    <Ionicons name="rocket" size={18} color="#7C3AED" />
+                  )}
+                </View>
+                <View style={styles.menuInfo}>
+                  <Text style={[styles.menuTitle, { color: mobileBuildTriggerSuccess ? "#059669" : colors.text }]}>
+                    {mobileBuildTriggering ? "Triggering…" : mobileBuildTriggerSuccess ? "Build triggered!" : "Trigger EAS build"}
+                  </Text>
+                  <Text style={[styles.menuSub, { color: colors.textSecondary }]}>
+                    {mobileBuildTriggering
+                      ? "Dispatching to GitHub Actions…"
+                      : mobileBuildTriggerSuccess
+                      ? "All platforms · production"
+                      : "All platforms · production profile"}
+                  </Text>
+                </View>
+                {!mobileBuildTriggering && !mobileBuildTriggerSuccess && (
+                  <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+                )}
+              </Pressable>
+            </View>
+            {mobileBuildTriggerError && (
+              <Text style={{ marginTop: 8, fontSize: 13, color: "#DC2626", paddingHorizontal: 4 }}>
+                {mobileBuildTriggerError}
+              </Text>
+            )}
           </View>
         )}
 

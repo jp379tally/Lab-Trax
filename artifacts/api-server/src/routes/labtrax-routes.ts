@@ -5489,8 +5489,12 @@ Important rules:
   });
 
   // Triggers a GitHub Actions workflow_dispatch for eas-build.yml.
+  // Accepts either a platform-admin secret header (CI path) or a JWT-authenticated
+  // master_admin user (mobile / desktop path without a stored secret).
   router.post("/admin/mobile-build/trigger", requireAuth, async (req, res) => {
-    if (!isPlatformAdmin(req)) {
+    const reqUser = (req as any).user as { role?: string; username?: string; userType?: string } | undefined;
+    const isMasterAdmin = !!reqUser && reqUser.role === "admin" && reqUser.userType === "master_admin";
+    if (!isPlatformAdmin(req) && !isMasterAdmin) {
       return res.status(403).json({ error: "Admin access required." });
     }
 
@@ -5554,7 +5558,6 @@ Important rules:
       });
     }
 
-    const reqUser = (req as any).user as { username?: string } | undefined;
     const triggerRecord = {
       platform: chosenPlatform,
       profile: chosenProfile,
