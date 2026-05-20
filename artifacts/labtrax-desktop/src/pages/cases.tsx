@@ -24,7 +24,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { apiFetch, getApiOrigin } from "@/lib/api";
+import { apiFetch, getAccessToken, getApiOrigin } from "@/lib/api";
 import type {
   CaseAttachment,
   CaseEvent,
@@ -3244,7 +3244,18 @@ export function CaseDrawer({
                             <div key={a.id} className="relative group">
                               <button
                                 type="button"
-                                onClick={() => setLightboxUrl(imgUrl)}
+                                onClick={async () => {
+                                  const electronAPI = (window as any).electronAPI;
+                                  if (electronAPI?.previewFile && a.id) {
+                                    try {
+                                      await previewAttachmentInElectron(labCase.id, a);
+                                    } catch {
+                                      setLightboxUrl(imgUrl);
+                                    }
+                                  } else {
+                                    setLightboxUrl(imgUrl);
+                                  }
+                                }}
                                 className="relative w-full aspect-square rounded-lg overflow-hidden bg-secondary block"
                                 title={a.fileName}
                               >
@@ -3926,6 +3937,24 @@ function PriceHistoryPanel({
   );
 }
 
+async function previewAttachmentInElectron(
+  caseId: string,
+  attachment: CaseAttachment,
+): Promise<void> {
+  const electronAPI = (window as any).electronAPI;
+  if (!electronAPI?.previewFile || !attachment.id) return;
+  const href = `${getApiOrigin()}/api/cases/${caseId}/attachments/${attachment.id}/file`;
+  const token = getAccessToken();
+  const res = await fetch(href, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Failed to fetch file: ${res.status}`);
+  const buffer = await res.arrayBuffer();
+  const mimeType =
+    attachment.fileType || res.headers.get("content-type") || "application/octet-stream";
+  await electronAPI.previewFile(buffer, mimeType, `attachment:${attachment.id}`);
+}
+
 function AttachmentRow({
   caseId,
   attachment,
@@ -3935,6 +3964,7 @@ function AttachmentRow({
   attachment: CaseAttachment;
   canManage: boolean;
 }) {
+  const [isPreviewing, setIsPreviewing] = useState(false);
   const queryClient = useQueryClient();
   const deleteMutation = useMutation({
     mutationFn: () =>
@@ -3998,6 +4028,21 @@ function AttachmentRow({
     visibilityMutation.mutate();
   }
 
+  const electronAPI = (window as any).electronAPI;
+  const canElectronPreview = !!(electronAPI?.previewFile && attachment.id);
+
+  async function handleElectronPreview() {
+    if (isPreviewing) return;
+    setIsPreviewing(true);
+    try {
+      await previewAttachmentInElectron(caseId, attachment);
+    } catch {
+      if (href) window.open(href, "_blank", "noopener,noreferrer");
+    } finally {
+      setIsPreviewing(false);
+    }
+  }
+
   const rowBody = (
     <>
       <div className="mt-0.5 text-muted-foreground">
@@ -4035,15 +4080,27 @@ function AttachmentRow({
   return (
     <div className="border border-border rounded-md px-3 py-2 text-sm flex items-start gap-3">
       {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer"
-          title={`Open "${attachment.fileName}"`}
-        >
-          {rowBody}
-        </a>
+        canElectronPreview ? (
+          <button
+            type="button"
+            onClick={handleElectronPreview}
+            disabled={isPreviewing}
+            className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer disabled:opacity-60 text-left"
+            title={`Preview "${attachment.fileName}"`}
+          >
+            {rowBody}
+          </button>
+        ) : (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-start gap-3 flex-1 min-w-0 -mx-1 -my-0.5 px-1 py-0.5 rounded hover:bg-secondary/60 transition-colors cursor-pointer"
+            title={`Open "${attachment.fileName}"`}
+          >
+            {rowBody}
+          </a>
+        )
       ) : (
         <div className="flex items-start gap-3 flex-1 min-w-0">{rowBody}</div>
       )}
@@ -4070,15 +4127,31 @@ function AttachmentRow({
           </button>
         )}
         {href && (
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
-            title="Open file"
-          >
-            <ExternalLink size={13} />
-          </a>
+          canElectronPreview ? (
+            <button
+              type="button"
+              onClick={handleElectronPreview}
+              disabled={isPreviewing}
+              className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-50"
+              title="Preview file"
+            >
+              {isPreviewing ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <ExternalLink size={13} />
+              )}
+            </button>
+          ) : (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="h-7 w-7 rounded hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-foreground"
+              title="Open file"
+            >
+              <ExternalLink size={13} />
+            </a>
+          )
         )}
         <button
           type="button"
