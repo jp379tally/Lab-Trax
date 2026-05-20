@@ -136,6 +136,8 @@ export interface InvoicePdfOptions {
   generatedAt: Date;
   /** Full URL of the lab logo; shown in the top-right header when provided. */
   logoUrl?: string | null;
+  /** Logo size for this PDF. null/undefined treated as "medium". */
+  logoPdfSize?: "small" | "medium" | "large" | null;
 }
 
 export interface BuiltInvoicePdf {
@@ -227,11 +229,19 @@ function buildInvoiceDoc(opts: InvoicePdfOptions) {
   doc.text(`#${opts.invoiceNumber}`, margin, 66);
   doc.setTextColor(0);
 
+  // Logo height per size setting
+  const LOGO_HEIGHTS: Record<string, number> = { small: 28, medium: 40, large: 56 };
+  const LOGO_MAX_WIDTHS: Record<string, number> = { small: 90, medium: 130, large: 180 };
+  const logoSizeKey = opts.logoPdfSize ?? "medium";
+  const logoH = LOGO_HEIGHTS[logoSizeKey] ?? 40;
+  const logoMaxW = LOGO_MAX_WIDTHS[logoSizeKey] ?? 130;
+
   // Lab logo (top-right) or lab name text
   if (opts.logoUrl) {
     try {
-      // logoUrl should be a pre-fetched base64 data URL; render as image
-      doc.addImage(opts.logoUrl, margin, 30, 0, 36);
+      // Place logo flush with the right margin, auto-width from height
+      const logoX = pageWidth - margin - logoMaxW;
+      doc.addImage(opts.logoUrl, logoX, 30, 0, logoH);
     } catch {
       // fall back to text if image fails
       doc.setFontSize(11);

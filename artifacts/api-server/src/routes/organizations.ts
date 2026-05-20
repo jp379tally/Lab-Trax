@@ -2256,10 +2256,13 @@ export function resolveLogoplacements(
   return new Set();
 }
 
+const LOGO_PDF_SIZES = ["small", "medium", "large"] as const;
+
 const logoPlacementsBodySchema = z.object({
   placements: z
     .array(z.enum(LOGO_PLACEMENT_KEYS))
     .max(LOGO_PLACEMENT_KEYS.length),
+  logoPdfSize: z.enum(LOGO_PDF_SIZES).nullable().optional(),
 });
 
 router.patch(
@@ -2268,16 +2271,24 @@ router.patch(
     const { organizationId } = req.params;
     await resolveOrgAdminAccess((req as any).auth.userId, organizationId);
 
-    const { placements } = logoPlacementsBodySchema.parse(req.body);
+    const { placements, logoPdfSize } = logoPlacementsBodySchema.parse(req.body);
 
     const existing = await db.query.organizations.findFirst({
       where: eq(organizations.id, organizationId),
     });
     if (!existing) throw new HttpError(404, "Organization not found.");
 
+    const updateData: Record<string, unknown> = {
+      logoplacements: placements,
+      updatedAt: new Date(),
+    };
+    if (logoPdfSize !== undefined) {
+      updateData.logoPdfSize = logoPdfSize ?? null;
+    }
+
     const [updated] = await db
       .update(organizations)
-      .set({ logoplacements: placements, updatedAt: new Date() })
+      .set(updateData as any)
       .where(eq(organizations.id, organizationId))
       .returning();
 
@@ -2287,8 +2298,8 @@ router.patch(
       action: "organization_logo_placements_updated",
       entityType: "organization",
       entityId: organizationId,
-      beforeJson: { placements: existing.logoplacements },
-      afterJson: { placements },
+      beforeJson: { placements: existing.logoplacements, logoPdfSize: (existing as any).logoPdfSize },
+      afterJson: { placements, logoPdfSize: updateData.logoPdfSize },
     });
 
     return ok(res, updated);

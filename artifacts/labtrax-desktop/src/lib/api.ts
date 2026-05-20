@@ -39,6 +39,8 @@ export type SessionUser = {
   // null = unset (treated as all-enabled when practiceLogoUrl exists).
   // Non-null = exact list the admin has chosen.
   practiceLogoplacements?: string[] | null;
+  // PDF logo size preference. null = default "medium".
+  practiceLogoSize?: string | null;
   // Current work-status presence indicator. One of "available" (at
   // work), "break", "lunch", or "out_of_office". Defaults to
   // "available" server-side when unset.

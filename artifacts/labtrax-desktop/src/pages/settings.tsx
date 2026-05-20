@@ -254,6 +254,20 @@ function ProfilePanel() {
     },
   });
 
+  const logoSizeMutation = useMutation({
+    mutationFn: async (size: "small" | "medium" | "large") => {
+      if (!user?.practiceOrganizationId) throw new Error("No lab organization linked.");
+      const allPlacements = user?.practiceLogoplacements ?? ["invoices","statements","sms","emails","case_exports","quotes","welcome_emails","payment_receipts"];
+      return apiFetch(
+        `/organizations/${user.practiceOrganizationId}/logo-placements`,
+        { method: "PATCH", body: JSON.stringify({ placements: allPlacements, logoPdfSize: size }) }
+      );
+    },
+    onSuccess: async () => {
+      await refresh();
+    },
+  });
+
   async function handleLogoFile(file: File) {
     setLogoError(null);
     if (!user?.practiceOrganizationId) {
@@ -361,6 +375,29 @@ function ProfilePanel() {
                 Add logo to documents
               </button>
             </div>
+            {user?.practiceLogoUrl && (
+              <div className="mt-3 flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">PDF logo size:</span>
+                {(["small", "medium", "large"] as const).map((size) => {
+                  const active = (user?.practiceLogoSize ?? "medium") === size;
+                  return (
+                    <button
+                      key={size}
+                      type="button"
+                      onClick={() => logoSizeMutation.mutate(size)}
+                      disabled={logoSizeMutation.isPending || !user?.practiceOrganizationId}
+                      className={`h-7 px-3 rounded-md text-xs font-medium border transition-colors disabled:opacity-60 capitalize ${
+                        active
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background border-input hover:bg-secondary"
+                      }`}
+                    >
+                      {size}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>

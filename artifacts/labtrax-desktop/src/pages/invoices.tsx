@@ -912,6 +912,7 @@ export function InvoiceEditor({
       notes,
       generatedAt: new Date(),
       logoUrl: logoDataUrl,
+      logoPdfSize: (user?.practiceLogoSize as "small" | "medium" | "large" | null) ?? null,
     };
   }
 

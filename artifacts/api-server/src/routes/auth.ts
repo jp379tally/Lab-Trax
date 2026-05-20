@@ -191,6 +191,7 @@ async function hydrateUsersWithActiveMemberships(rawUsers: any[]) {
       // should treat as all-enabled when practiceLogoUrl is set, or
       // empty otherwise). See organizations PATCH /logo-placements.
       practiceLogoplacements: (primaryOrganization as any)?.logoplacements ?? null,
+      practiceLogoSize: (primaryOrganization as any)?.logoPdfSize ?? null,
       // Surface the lab-scoped account number from the user's primary
       // practice organization so providers can see it in their profile.
       // Falls back to the legacy per-user accountNumber field.

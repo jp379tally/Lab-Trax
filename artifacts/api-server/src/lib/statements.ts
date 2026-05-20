@@ -223,11 +223,18 @@ export async function buildPracticeStatements(
   return Array.from(grouped.values());
 }
 
+const PDF_LOGO_FIT: Record<string, [number, number]> = {
+  small: [90, 36],
+  medium: [120, 48],
+  large: [160, 64],
+};
+
 export async function generateStatementPdfBuffer(
   labName: string,
   data: PracticeStatementData,
   periodLabel: string,
-  logoBuffer?: Buffer | null
+  logoBuffer?: Buffer | null,
+  logoPdfSize?: string | null
 ): Promise<Buffer> {
   return await new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({ size: "LETTER", margin: 48 });
@@ -238,8 +245,11 @@ export async function generateStatementPdfBuffer(
 
     if (logoBuffer) {
       try {
-        doc.image(logoBuffer, 48, 30, { fit: [120, 48] });
-        doc.moveDown(2);
+        const fit = PDF_LOGO_FIT[logoPdfSize ?? "medium"] ?? PDF_LOGO_FIT["medium"]!;
+        doc.image(logoBuffer, 48, 30, { fit });
+        // Move the cursor below the logo before writing the heading so
+        // text does not overlap the image.
+        doc.y = 30 + fit[1] + 12;
       } catch {
         // logo embed failed — fall through to text-only header
       }
@@ -548,7 +558,8 @@ export async function runMonthlyStatementsForLab(opts: {
           labName,
           s,
           periodLabel(periodMonth),
-          logoBuffer
+          logoBuffer,
+          (labOrg as any)?.logoPdfSize
         );
         const result = await sendStatementEmail({
           to: s.practiceEmail,
@@ -696,7 +707,8 @@ async function attemptStatementSendForRun(runId: string): Promise<RetryResult> {
         labName,
         data,
         periodLabel(run.periodMonth),
-        retryLogoBuffer
+        retryLogoBuffer,
+        (labOrg as any)?.logoPdfSize
       );
       const result = await sendStatementEmail({
         to: practiceEmail,
@@ -958,12 +970,13 @@ export async function generateStatementsZipBuffer(
   labName: string,
   statements: PracticeStatementData[],
   label: string,
-  logoBuffer: Buffer | null
+  logoBuffer: Buffer | null,
+  logoPdfSize?: string | null
 ): Promise<Buffer> {
   const pdfs: Array<{ name: string; buf: Buffer }> = [];
   for (const s of statements) {
     const safeName = s.practiceName.replace(/[^a-z0-9-_]+/gi, "_");
-    const buf = await generateStatementPdfBuffer(labName, s, label, logoBuffer);
+    const buf = await generateStatementPdfBuffer(labName, s, label, logoBuffer, logoPdfSize);
     pdfs.push({ name: `statement-${safeName}.pdf`, buf });
   }
 
@@ -1077,7 +1090,8 @@ export async function runBatchSendStatements(opts: {
             labName,
             s,
             label,
-            logoBuffer
+            logoBuffer,
+            (labOrg as any)?.logoPdfSize
           );
           const er = await sendStatementEmail({
             to: s.practiceEmail,
@@ -1201,7 +1215,8 @@ export async function generateStatementsZipBufferForLab(opts: {
     labName,
     statements,
     label,
-    logoBuffer
+    logoBuffer,
+    (labOrg as any)?.logoPdfSize
   );
   const dateStr = new Date().toISOString().slice(0, 10);
   return { zipBuffer, filename: `statements-${dateStr}.zip`, periodLabel: label };

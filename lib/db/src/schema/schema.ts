@@ -158,6 +158,9 @@ export const organizations = pgTable(
     // Valid values: "invoices" | "statements" | "sms" | "emails" |
     // "case_exports" | "quotes" | "welcome_emails" | "payment_receipts"
     logoplacements: text("logo_placements").array(),
+    // Size of the logo in generated PDFs. null = default ("medium").
+    // Valid values: "small" | "medium" | "large"
+    logoPdfSize: text("logo_pdf_size"),
     // Provider organizations are created by a specific lab. We persist the
     // creating lab's id here (nullable for non-provider orgs / legacy rows)
     // so account-number uniqueness can be scoped per lab.
