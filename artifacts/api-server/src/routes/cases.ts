@@ -2069,6 +2069,32 @@ router.patch(
       beforeJson: found,
       afterJson: updated,
     });
+
+    // ── Bridge-connector change: re-price affected pontics ──
+    // When the user draws (or redraws) bridge connectors on the tooth chart,
+    // pontics that were previously $0.00 / UNKNOWN SOURCE get corrected to
+    // the same material and tier as their adjacent abutment crowns.
+    if (input.bridgeConnectors !== undefined) {
+      const newBridgeConnectorStr = (updates.bridgeConnectors as string | null) ?? null;
+      const allRestorations = await db.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, found.id),
+      });
+      await _repricePonticsInSpans(
+        {
+          id: found.id,
+          labOrganizationId: found.labOrganizationId,
+          doctorName: found.doctorName,
+          providerOrganizationId: found.providerOrganizationId,
+        },
+        allRestorations,
+        newBridgeConnectorStr,
+      );
+      await syncInvoiceFromRestorations({
+        caseId: found.id,
+        actorUserId: (req as any).auth.userId,
+      });
+    }
+
     return ok(res, updated);
   })
 );
@@ -2468,6 +2494,100 @@ function _findBridgeSpan(toothNum: number, connectors: Set<string>): Set<number>
   return span;
 }
 
+/**
+ * Re-price every non-manually-priced pontic in `restorations`.
+ *
+ * Material resolution priority:
+ *   1. Bridge-connector span membership (when `bridgeConnectorStr` is non-null).
+ *   2. Adjacency fallback: nearest non-pontic restoration within ±3 tooth
+ *      numbers (handles cases where bridge connectors haven't been drawn yet).
+ *
+ * Manually-priced pontics (`priceSource = "manual"`) are never touched.
+ * The function is idempotent and safe to call with any restoration list.
+ */
+async function _repricePonticsInSpans(
+  caseCtx: {
+    id: string;
+    labOrganizationId: string;
+    doctorName?: string | null;
+    providerOrganizationId?: string | null;
+  },
+  restorations: Array<{
+    id: string;
+    toothNumber: string;
+    restorationType: string;
+    material: string | null;
+    priceSource: string | null;
+  }>,
+  bridgeConnectorStr: string | null,
+): Promise<void> {
+  const connectors = _parseBridgeConnectorStr(bridgeConnectorStr);
+
+  const pontics = restorations.filter(
+    (r) => /pontic/i.test(r.restorationType) && r.priceSource !== "manual",
+  );
+  if (pontics.length === 0) return;
+
+  for (const pontic of pontics) {
+    const ponticTooth = Number(pontic.toothNumber.trim());
+    if (!Number.isInteger(ponticTooth) || ponticTooth < 1 || ponticTooth > 32) continue;
+
+    let abutmentMaterial: string | null = null;
+
+    if (connectors.size > 0) {
+      const span = _findBridgeSpan(ponticTooth, connectors);
+      if (span.size > 1) {
+        const abutment = restorations.find(
+          (r) =>
+            span.has(Number(r.toothNumber.trim())) &&
+            !/pontic/i.test(r.restorationType) &&
+            r.material,
+        );
+        abutmentMaterial = abutment?.material ?? null;
+      }
+    }
+
+    if (!abutmentMaterial) {
+      const sorted = restorations
+        .filter((r) => !/pontic/i.test(r.restorationType) && r.material)
+        .map((r) => ({
+          r,
+          dist: Math.abs(Number(r.toothNumber.trim()) - ponticTooth),
+        }))
+        .filter(({ dist }) => dist > 0 && dist <= 3)
+        .sort((a, b) => a.dist - b.dist);
+      abutmentMaterial = sorted[0]?.r.material ?? null;
+    }
+
+    if (!abutmentMaterial) continue;
+
+    const matForPricing = pontic.material || abutmentMaterial;
+    const repriced = await resolveServerPriceWithSource(
+      {
+        labOrganizationId: caseCtx.labOrganizationId,
+        doctorName: caseCtx.doctorName,
+        providerOrganizationId: caseCtx.providerOrganizationId,
+      },
+      matForPricing,
+      pontic.restorationType,
+    );
+
+    if (repriced) {
+      await db
+        .update(caseRestorations)
+        .set({
+          material: pontic.material ?? abutmentMaterial,
+          unitPrice: repriced.amount.toFixed(2),
+          priceSource: repriced.source,
+          priceSourceId: repriced.sourceId,
+          priceSourceName: repriced.sourceName,
+          priceKey: repriced.key,
+        })
+        .where(eq(caseRestorations.id, pontic.id));
+    }
+  }
+}
+
 router.post(
   "/:caseId/restorations",
   asyncHandler(async (req, res) => {
@@ -2495,26 +2615,43 @@ router.post(
     // When a pontic is added without a material, look at the case's existing
     // restorations that share the same bridge span and use the first non-pontic
     // abutment's material so the price resolves correctly.
+    // When bridge connectors are not yet drawn, fall back to a ±3-tooth
+    // adjacency search so pontics self-heal even before the connector data
+    // exists on the case.
     let effectiveMaterial = input.material ?? null;
     const bridgeConnectorStr = (found as any).bridgeConnectors as string | null ?? null;
-    if (
-      /pontic/i.test(input.restorationType) &&
-      !effectiveMaterial &&
-      bridgeConnectorStr
-    ) {
+    if (/pontic/i.test(input.restorationType) && !effectiveMaterial) {
       const ponticTooth = Number(input.toothNumber.trim());
       if (Number.isInteger(ponticTooth) && ponticTooth >= 1 && ponticTooth <= 32) {
-        const connectors = _parseBridgeConnectorStr(bridgeConnectorStr);
-        const span = _findBridgeSpan(ponticTooth, connectors);
-        if (span.size > 1) {
-          const existingRestorations = await db.query.caseRestorations.findMany({
-            where: eq(caseRestorations.caseId, found.id),
-          });
-          const abutment = existingRestorations.find((r) => {
-            const rTooth = Number(r.toothNumber.trim());
-            return span.has(rTooth) && !/pontic/i.test(r.restorationType) && r.material;
-          });
-          if (abutment?.material) effectiveMaterial = abutment.material;
+        const existingRestorations = await db.query.caseRestorations.findMany({
+          where: eq(caseRestorations.caseId, found.id),
+        });
+
+        if (bridgeConnectorStr) {
+          // Path A: bridge connector span lookup.
+          const connectors = _parseBridgeConnectorStr(bridgeConnectorStr);
+          const span = _findBridgeSpan(ponticTooth, connectors);
+          if (span.size > 1) {
+            const abutment = existingRestorations.find((r) => {
+              const rTooth = Number(r.toothNumber.trim());
+              return span.has(rTooth) && !/pontic/i.test(r.restorationType) && r.material;
+            });
+            if (abutment?.material) effectiveMaterial = abutment.material;
+          }
+        }
+
+        // Path B: adjacency fallback (±3 teeth) — runs when bridge connectors
+        // are absent or the span lookup found no abutment with a material.
+        if (!effectiveMaterial) {
+          const candidates = existingRestorations
+            .filter((r) => !/pontic/i.test(r.restorationType) && r.material)
+            .map((r) => ({
+              r,
+              dist: Math.abs(Number(r.toothNumber.trim()) - ponticTooth),
+            }))
+            .filter(({ dist }) => dist > 0 && dist <= 3)
+            .sort((a, b) => a.dist - b.dist);
+          if (candidates[0]?.r.material) effectiveMaterial = candidates[0].r.material;
         }
       }
     }
@@ -2580,74 +2717,30 @@ router.post(
       },
     });
 
-    // ── Step 2: Re-price all non-manually-priced restorations in the same
-    // bridge span so pontics added before their abutments get corrected
-    // when the abutment arrives (and vice-versa).
-    if (bridgeConnectorStr) {
-      const insertedTooth = Number(input.toothNumber.trim());
-      if (Number.isInteger(insertedTooth) && insertedTooth >= 1 && insertedTooth <= 32) {
-        const connectors = _parseBridgeConnectorStr(bridgeConnectorStr);
-        const span = _findBridgeSpan(insertedTooth, connectors);
-        if (span.size > 1) {
-          // Fetch all other restorations in this case so we can filter to
-          // the span and find the abutment material.
-          const allOtherRestorations = await db.query.caseRestorations.findMany({
-            where: and(
-              eq(caseRestorations.caseId, found.id),
-              ne(caseRestorations.id, restoration.id),
-            ),
-          });
-
-          // Determine the authoritative abutment material for the span
-          // (include the newly inserted restoration in the search pool).
-          const allSpanRestorations = [
-            ...allOtherRestorations.filter((r) => span.has(Number(r.toothNumber.trim()))),
-            restoration,
-          ];
-          const spanAbutment = allSpanRestorations.find(
-            (r) => !/pontic/i.test(r.restorationType) && r.material,
-          );
-          const spanMaterial = spanAbutment?.material ?? null;
-
-          // Re-price each other non-manually-priced restoration in the span.
-          const spanOthers = allOtherRestorations.filter((r) => {
-            const rTooth = Number(r.toothNumber.trim());
-            return span.has(rTooth) && r.priceSource !== "manual";
-          });
-
-          for (const spanRest of spanOthers) {
-            // Pontic without material → inherit the span's abutment material.
-            const matForRest =
-              /pontic/i.test(spanRest.restorationType) && !spanRest.material && spanMaterial
-                ? spanMaterial
-                : (spanRest.material ?? null);
-
-            const repriced = await resolveServerPriceWithSource(
-              {
-                labOrganizationId: found.labOrganizationId,
-                doctorName: found.doctorName,
-                providerOrganizationId: found.providerOrganizationId,
-              },
-              matForRest,
-              spanRest.restorationType,
-            );
-
-            if (repriced) {
-              await db
-                .update(caseRestorations)
-                .set({
-                  material: matForRest ?? spanRest.material,
-                  unitPrice: repriced.amount.toFixed(2),
-                  priceSource: repriced.source,
-                  priceSourceId: repriced.sourceId,
-                  priceSourceName: repriced.sourceName,
-                  priceKey: repriced.key,
-                })
-                .where(eq(caseRestorations.id, spanRest.id));
-            }
-          }
-        }
-      }
+    // ── Step 2: Re-price existing pontics adjacent to the newly inserted
+    // restoration.  Uses `_repricePonticsInSpans`, which tries bridge-connector
+    // span membership first and falls back to a ±3-tooth adjacency search.
+    // This corrects pontics that were added before their abutment existed, and
+    // also handles the case where bridge connectors haven't been drawn yet.
+    {
+      const allOtherRestorations = await db.query.caseRestorations.findMany({
+        where: and(
+          eq(caseRestorations.caseId, found.id),
+          ne(caseRestorations.id, restoration.id),
+        ),
+      });
+      // Include the newly inserted restoration so the helper can use it as
+      // the authoritative abutment material source.
+      await _repricePonticsInSpans(
+        {
+          id: found.id,
+          labOrganizationId: found.labOrganizationId,
+          doctorName: found.doctorName,
+          providerOrganizationId: found.providerOrganizationId,
+        },
+        [...allOtherRestorations, restoration],
+        bridgeConnectorStr,
+      );
     }
 
     // Keep the case's invoice in sync with the restoration set so the
