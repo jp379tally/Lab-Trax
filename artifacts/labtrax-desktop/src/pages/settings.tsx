@@ -3009,6 +3009,7 @@ function MobileBuildPanel() {
   const [profile, setProfile] = useState<"production" | "preview" | "development">("production");
   const [triggerError, setTriggerError] = useState<string | null>(null);
   const [triggerSuccess, setTriggerSuccess] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const query = useQuery({
     queryKey: ["admin", "mobile-build", "info"],
@@ -3149,7 +3150,7 @@ function MobileBuildPanel() {
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() => triggerMutation.mutate()}
+                onClick={() => setConfirmOpen(true)}
                 disabled={triggerMutation.isPending || !info.tokenConfigured || !info.repoOwner}
                 className="inline-flex items-center gap-2 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
               >
@@ -3201,6 +3202,51 @@ function MobileBuildPanel() {
           )}
         </div>
       )}
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Trigger EAS build?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>This will dispatch a paid EAS cloud build with the following settings:</p>
+                <div className="rounded-md border border-border bg-secondary/40 px-4 py-3 text-sm space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-20 shrink-0">Platform</span>
+                    <span className="font-medium">{platformLabels[platform]}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-20 shrink-0">Profile</span>
+                    <span className="font-medium">{profileLabels[profile]}</span>
+                    {profile !== "production" && (
+                      <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
+                        Non-production
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {profile !== "production" && (
+                  <p className="text-amber-600 dark:text-amber-400 text-sm">
+                    You are about to start a <strong>{profileLabels[profile].toLowerCase()}</strong> build. These still consume build minutes. Make sure this is intentional.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmOpen(false);
+                triggerMutation.mutate();
+              }}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              Yes, trigger build
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PanelShell>
   );
 }
