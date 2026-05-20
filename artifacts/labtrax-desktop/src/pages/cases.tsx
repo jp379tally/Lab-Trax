@@ -1532,6 +1532,36 @@ export function CaseDrawer({
     refetchOnWindowFocus: true,
   });
 
+  const drawerOrgsQuery = useQuery({
+    queryKey: ["organizations"],
+    queryFn: () => apiFetch<Organization[]>("/organizations"),
+  });
+  const drawerProviderOrgs = useMemo(
+    () => (drawerOrgsQuery.data ?? []).filter((o) => o.type !== "lab"),
+    [drawerOrgsQuery.data],
+  );
+  const currentProviderOrg = useMemo(() => {
+    const pid = data?.providerOrganizationId ?? labCase.providerOrganizationId;
+    if (!pid) return null;
+    return drawerProviderOrgs.find((o) => o.id === pid) ?? null;
+  }, [drawerProviderOrgs, data?.providerOrganizationId, labCase.providerOrganizationId]);
+  const [aiPracticePickerOpen, setAiPracticePickerOpen] = useState(false);
+  const [aiPracticeError, setAiPracticeError] = useState<string | null>(null);
+  const changeAiPracticeMutation = useMutation({
+    mutationFn: (providerOrganizationId: string) =>
+      apiFetch(`/cases/${labCase.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ providerOrganizationId }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["case", labCase.id] });
+      setAiPracticePickerOpen(false);
+      setAiPracticeError(null);
+    },
+    onError: (e: Error) => setAiPracticeError(e.message),
+  });
+
   const invoiceQuery = useQuery({
     queryKey: ["invoice-for-case", labCase.id],
     queryFn: () =>
@@ -2209,6 +2239,47 @@ export function CaseDrawer({
                 <div className="text-xs text-amber-700/80 dark:text-amber-200/80 mt-0.5">
                   This case was auto-created from {data.aiImportSource ?? "an external source"}. Please verify patient, doctor, restorations, and the attached Rx before routing.
                 </div>
+                <div className="text-xs text-amber-700/90 dark:text-amber-200/90 mt-1.5 flex items-center gap-2 flex-wrap">
+                  <span>
+                    Practice:{" "}
+                    <span className="font-medium">
+                      {currentProviderOrg
+                        ? currentProviderOrg.displayName || currentProviderOrg.name
+                        : "No practice"}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAiPracticePickerOpen((v) => !v);
+                      setAiPracticeError(null);
+                    }}
+                    className="underline hover:text-amber-900 dark:hover:text-amber-100"
+                  >
+                    {aiPracticePickerOpen ? "Cancel" : "Change practice"}
+                  </button>
+                </div>
+                {aiPracticePickerOpen && (
+                  <div className="mt-2 max-w-xs">
+                    <ProviderPicker
+                      value={
+                        data.providerOrganizationId ??
+                        labCase.providerOrganizationId ??
+                        ""
+                      }
+                      providers={drawerProviderOrgs}
+                      onChange={(id) => {
+                        if (id) changeAiPracticeMutation.mutate(id);
+                      }}
+                      disabled={changeAiPracticeMutation.isPending}
+                    />
+                    {aiPracticeError && (
+                      <div className="text-xs text-red-600 dark:text-red-400 mt-1">
+                        {aiPracticeError}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <button
                 type="button"
