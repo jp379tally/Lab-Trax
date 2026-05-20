@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, net, dialog, ipcMain, Notification } = require("electron");
+const { app, BrowserWindow, protocol, net, dialog, ipcMain, Notification, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -293,6 +293,18 @@ ipcMain.handle("dialog:showOpenDialog", async (_event, opts) => {
   };
   const result = await dialog.showOpenDialog(win ?? undefined, options);
   return result.canceled ? null : result.filePaths;
+});
+
+ipcMain.handle("shell:open-external", async (_event, url) => {
+  if (typeof url !== "string") return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+    await shell.openExternal(url);
+    return true;
+  } catch {
+    return false;
+  }
 });
 
 ipcMain.handle("install-update", () => {

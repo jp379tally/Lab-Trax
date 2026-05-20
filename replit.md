@@ -108,7 +108,7 @@ allocated atomically per `(year, entityType)` via
 - `EXPO_PUBLIC_DOMAIN` — set in the labtrax dev script automatically from `$REPLIT_DEV_DOMAIN`
 - `AI_INTEGRATIONS_OPENAI_API_KEY` — optional; enables AI features (tooth chart detection, etc.)
 - `LABTRAX_ENABLE_DEMO_SEEDS` — set to `"true"` to seed demo users on startup
-- `ONEDRIVE_*` — optional OneDrive backup integration credentials
+- `ONEDRIVE_*` — optional OneDrive backup integration credentials. Settings → Backup surfaces OneDrive connection status via `GET /api/admin/backup/onedrive-status` (admin-only, 30 s cache) and exposes a Reconnect button that calls `POST /api/admin/backup/onedrive-reconnect` (clears the in-memory token cache in `lib/onedrive.ts` and returns the workspace Integrations URL for the admin to re-authorize).
 - `CLEANUP_HOUR_UTC` — UTC hour (0–23) for the nightly orphaned media cleanup (default: `8`)
 - `CLEANUP_ALERT_MIN_REMOVED` — minimum files-removed count before a cleanup alert email is sent (default: `1`); raise to reduce noise in active labs
 - `CLEANUP_ALERT_MIN_FREED_MB` — minimum megabytes freed before a cleanup alert email is sent (default: `0`, disabled); works alongside `CLEANUP_ALERT_MIN_REMOVED` — either threshold can trigger the alert

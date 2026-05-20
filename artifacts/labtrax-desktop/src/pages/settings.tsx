@@ -1161,12 +1161,88 @@ function BackupPanel() {
     }
   }
 
+  // ── OneDrive connection status ─────────────────────────────────────────────
+  const oneDriveStatusQuery = useQuery<{
+    ok: boolean;
+    connected: boolean;
+    accountName?: string;
+    accountEmail?: string;
+    lastCheckedAt: string;
+    error?: string;
+  }>({
+    queryKey: ["admin", "backup-onedrive-status"],
+    queryFn: () => apiFetch("/admin/backup/onedrive-status"),
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  });
+
+  const [reconnectPending, setReconnectPending] = useState(false);
+  const [reconnectError, setReconnectError] = useState<string | null>(null);
+  const reconnectMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean; reconnectUrl: string; instructions: string }>(
+        "/admin/backup/onedrive-reconnect",
+        { method: "POST" },
+      ),
+    onSuccess: async (data) => {
+      setReconnectError(null);
+      if (electron?.openExternal) {
+        await electron.openExternal(data.reconnectUrl).catch(() => {});
+      } else if (typeof window !== "undefined") {
+        window.open(data.reconnectUrl, "_blank", "noopener,noreferrer");
+      }
+      setReconnectPending(true);
+      const start = Date.now();
+      const TIMEOUT_MS = 5 * 60_000;
+      const POLL_MS = 5_000;
+      const tick = async () => {
+        try {
+          const status = await apiFetch<{ connected: boolean; error?: string }>(
+            "/admin/backup/onedrive-status?refresh=1",
+          );
+          queryClient.setQueryData(["admin", "backup-onedrive-status"], { ok: true, ...status });
+          if (status.connected) {
+            setReconnectPending(false);
+            queryClient.invalidateQueries({ queryKey: ["admin", "backup-schedule-v2"] });
+            queryClient.invalidateQueries({ queryKey: ["admin", "backup-history"] });
+            return;
+          }
+        } catch {
+          // keep polling
+        }
+        if (Date.now() - start < TIMEOUT_MS) {
+          setTimeout(tick, POLL_MS);
+        } else {
+          setReconnectPending(false);
+        }
+      };
+      setTimeout(tick, POLL_MS);
+    },
+    onError: (err: Error) => {
+      setReconnectError(err.message || "Failed to start OneDrive reconnect.");
+    },
+  });
+
+  const oneDriveConnected = oneDriveStatusQuery.data?.connected === true;
+  const oneDriveDisconnected = oneDriveStatusQuery.data && !oneDriveStatusQuery.data.connected;
+
   const gate = usePlatformAdminGate([
     scheduleQuery.error,
     backupNowMutation.error,
     saveScheduleMutation.error,
     disableScheduleMutation.error,
   ]);
+
+  // If a backup run fails with what looks like a OneDrive auth error, flip
+  // the status banner on immediately instead of waiting for the next poll.
+  useEffect(() => {
+    if (!backupError) return;
+    if (nowDest !== "onedrive") return;
+    if (/onedrive|token|unauthor|401|403/i.test(backupError)) {
+      queryClient.invalidateQueries({ queryKey: ["admin", "backup-onedrive-status"] });
+    }
+  }, [backupError, nowDest, queryClient]);
 
   const needsPath = (d: BackupDestinationType) => d === "local" || d === "network";
 
@@ -1200,6 +1276,55 @@ function BackupPanel() {
               ? <><Loader2 size={11} className="animate-spin" />Backing up…</>
               : <><Download size={11} />Run backup now</>}
           </button>
+        </div>
+      )}
+
+      {/* ── OneDrive connection status ─────────────────────────────────── */}
+      {!gate.blocked && oneDriveDisconnected && (
+        <div className="flex items-start gap-2.5 rounded-md border border-red-400/50 bg-red-50 dark:bg-red-950/30 px-3.5 py-3 text-red-800 dark:text-red-300">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <div className="flex-1 text-xs leading-snug space-y-1">
+            <p className="font-semibold">OneDrive disconnected — backups are paused</p>
+            <p className="text-red-700 dark:text-red-400">
+              {oneDriveStatusQuery.data?.error
+                ? `Last check: ${oneDriveStatusQuery.data.error}`
+                : "Reconnect to resume OneDrive backups."}
+            </p>
+            {reconnectError && <p className="text-red-700 dark:text-red-400">{reconnectError}</p>}
+            {reconnectPending && (
+              <p className="text-red-700 dark:text-red-400 inline-flex items-center gap-1.5">
+                <Loader2 size={11} className="animate-spin" />
+                Waiting for sign-in to complete…
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => reconnectMutation.mutate()}
+            disabled={reconnectMutation.isPending}
+            className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded text-xs font-semibold bg-red-200 hover:bg-red-300 text-red-900 dark:bg-red-800 dark:hover:bg-red-700 dark:text-red-100 disabled:opacity-60 transition-colors"
+          >
+            {reconnectMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : null}
+            Reconnect OneDrive
+          </button>
+        </div>
+      )}
+      {!gate.blocked && oneDriveConnected && (
+        <div className="flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+          <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-success"><path d="M20 6 9 17l-5-5"/></svg>
+          <span>
+            OneDrive connected
+            {oneDriveStatusQuery.data?.accountName || oneDriveStatusQuery.data?.accountEmail
+              ? ` as ${oneDriveStatusQuery.data?.accountName ?? ""}${
+                  oneDriveStatusQuery.data?.accountEmail
+                    ? ` (${oneDriveStatusQuery.data.accountEmail})`
+                    : ""
+                }`
+              : ""}
+            {oneDriveStatusQuery.data?.lastCheckedAt
+              ? ` · checked ${new Date(oneDriveStatusQuery.data.lastCheckedAt).toLocaleTimeString()}`
+              : ""}
+          </span>
         </div>
       )}
 
@@ -1240,6 +1365,19 @@ function BackupPanel() {
                 </label>
               ))}
             </div>
+            {nowDest === "onedrive" && oneDriveDisconnected && (
+              <div className="mt-2 flex items-center gap-2 text-[11px] text-red-700 dark:text-red-400">
+                <span>OneDrive is disconnected.</span>
+                <button
+                  type="button"
+                  onClick={() => reconnectMutation.mutate()}
+                  disabled={reconnectMutation.isPending}
+                  className="underline font-medium hover:no-underline disabled:opacity-60"
+                >
+                  Reconnect
+                </button>
+              </div>
+            )}
           </div>
 
           {needsPath(nowDest) && (
@@ -1334,6 +1472,19 @@ function BackupPanel() {
                   <option value="local">Local folder / USB</option>
                   <option value="network">Network server</option>
                 </select>
+                {schedDest === "onedrive" && oneDriveDisconnected && (
+                  <div className="mt-1 flex items-center gap-2 text-[11px] text-red-700 dark:text-red-400">
+                    <span>OneDrive is disconnected.</span>
+                    <button
+                      type="button"
+                      onClick={() => reconnectMutation.mutate()}
+                      disabled={reconnectMutation.isPending}
+                      className="underline font-medium hover:no-underline disabled:opacity-60"
+                    >
+                      Reconnect
+                    </button>
+                  </div>
+                )}
               </Field>
             </div>
 
@@ -4382,7 +4533,7 @@ type PlatformAdminAPI = {
   testSecret: (payload: string | { apiBaseUrl: string }) => Promise<PlatformAdminTestResult>;
   onChanged: (cb: (s: PlatformAdminStatus) => void) => () => void;
 };
-type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; relaunch?: () => void; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
+type ElectronWindow = Window & { electronAPI?: { showFolderDialog?: () => Promise<string | null>; showOpenDialog?: (opts: { title?: string; filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => Promise<string[] | null>; relaunch?: () => void; openExternal?: (url: string) => Promise<boolean>; itero?: IteroAPI; platformAdmin?: PlatformAdminAPI } };
 
 function PlatformAdminPanel() {
   const electron = typeof window !== "undefined" ? (window as ElectronWindow).electronAPI : null;

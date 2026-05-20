@@ -6,7 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import archiver from "archiver";
-import { uploadToOneDrive } from "../lib/onedrive";
+import { uploadToOneDrive, getOneDriveStatus, clearOneDriveTokenCache } from "../lib/onedrive";
 import {
   getDesktopInstallerMetadata,
   uploadDesktopInstaller,
@@ -4732,6 +4732,57 @@ Important rules:
       return res
         .status(500)
         .json({ error: e?.message || "OneDrive backup failed." });
+    }
+  });
+
+  // ── Admin Backup: OneDrive connection status ─────────────────────────────
+  router.get("/admin/backup/onedrive-status", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
+    try {
+      const status = await getOneDriveStatus({ forceRefresh });
+      return res.json({ ok: true, ...status });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to fetch OneDrive status.";
+      return res.json({
+        ok: true,
+        connected: false,
+        lastCheckedAt: new Date().toISOString(),
+        error: msg,
+      });
+    }
+  });
+
+  // ── Admin Backup: reconnect OneDrive ──────────────────────────────────────
+  // Replit-managed connectors are (re)authorized from the workspace
+  // Integrations panel. There is no public OAuth URL we can hand the admin —
+  // they must open the workspace's Integrations panel and click "Reconnect"
+  // on the OneDrive tile. We return that URL plus instructions, and clear the
+  // in-memory token cache so the next OneDrive call refetches credentials
+  // (picking up the freshly-rotated access token from the connector proxy).
+  router.post("/admin/backup/onedrive-reconnect", platformAdminUserOrSecret, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+    try {
+      clearOneDriveTokenCache();
+      const owner = process.env.REPL_OWNER;
+      const slug = process.env.REPL_SLUG;
+      const reconnectUrl =
+        owner && slug
+          ? `https://replit.com/@${owner}/${slug}?tab=integrations`
+          : "https://replit.com/integrations";
+      return res.json({
+        ok: true,
+        reconnectUrl,
+        instructions:
+          "Open your Replit workspace's Integrations panel and click 'Reconnect' on the OneDrive integration, then sign in with the lab's Microsoft account. After you finish, this page will refresh automatically.",
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to start OneDrive reconnect.";
+      return res.status(500).json({ error: msg });
     }
   });
 

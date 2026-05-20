@@ -145,6 +145,101 @@ export async function checkOneDriveToken(): Promise<void> {
   }
 }
 
+/**
+ * Drop the in-memory connector-settings cache so the next OneDrive call
+ * refetches credentials from the Replit connector proxy. Used after the
+ * admin reconnects the OneDrive integration.
+ */
+export function clearOneDriveTokenCache(): void {
+  cachedSettings = null;
+  cacheExpiresAt = 0;
+  cachedStatus = null;
+  cachedStatusAt = 0;
+}
+
+export interface OneDriveStatus {
+  connected: boolean;
+  accountName?: string;
+  accountEmail?: string;
+  lastCheckedAt: string;
+  error?: string;
+}
+
+let cachedStatus: OneDriveStatus | null = null;
+let cachedStatusAt = 0;
+const STATUS_CACHE_MS = 30_000;
+
+/**
+ * Returns the current OneDrive connection status. Caches results for ~30 s
+ * to avoid hammering Microsoft Graph on every Backup-panel poll.
+ *
+ * Combines `checkOneDriveToken()` (validates the token via /me/drive) with a
+ * lightweight `/me` Graph call to surface the signed-in account name/email.
+ */
+export async function getOneDriveStatus(
+  options: { forceRefresh?: boolean } = {},
+): Promise<OneDriveStatus> {
+  const now = Date.now();
+  if (!options.forceRefresh && cachedStatus && now - cachedStatusAt < STATUS_CACHE_MS) {
+    return cachedStatus;
+  }
+  const lastCheckedAt = new Date().toISOString();
+  try {
+    if (!process.env.REPLIT_CONNECTORS_HOSTNAME) {
+      const result: OneDriveStatus = {
+        connected: false,
+        lastCheckedAt,
+        error: "OneDrive connector not available in this environment.",
+      };
+      cachedStatus = result;
+      cachedStatusAt = now;
+      return result;
+    }
+    const token = await getOneDriveAccessToken();
+    const [driveResp, meResp] = await Promise.all([
+      graphRequest("/me/drive", { method: "GET" }, token),
+      graphRequest("/me", { method: "GET" }, token),
+    ]);
+    if (!driveResp.ok) {
+      const body = await driveResp.text().catch(() => "");
+      const result: OneDriveStatus = {
+        connected: false,
+        lastCheckedAt,
+        error: `OneDrive token validation failed (HTTP ${driveResp.status}): ${body.slice(0, 200)}`,
+      };
+      cachedStatus = result;
+      cachedStatusAt = now;
+      return result;
+    }
+    let accountName: string | undefined;
+    let accountEmail: string | undefined;
+    if (meResp.ok) {
+      const me = (await meResp.json().catch(() => ({}))) as any;
+      accountName = me.displayName || undefined;
+      accountEmail = me.mail || me.userPrincipalName || undefined;
+    }
+    const result: OneDriveStatus = {
+      connected: true,
+      accountName,
+      accountEmail,
+      lastCheckedAt,
+    };
+    cachedStatus = result;
+    cachedStatusAt = now;
+    return result;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const result: OneDriveStatus = {
+      connected: false,
+      lastCheckedAt,
+      error: msg,
+    };
+    cachedStatus = result;
+    cachedStatusAt = now;
+    return result;
+  }
+}
+
 export async function uploadToOneDrive(
   fileBuffer: Buffer,
   fileName: string,

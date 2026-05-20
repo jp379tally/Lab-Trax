@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   previewFile: (buffer, mimeType, fileKey, filename) =>
     ipcRenderer.invoke("preview:open-file", buffer, mimeType, fileKey, filename),
   relaunch: () => ipcRenderer.send("app:relaunch"),
+  openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   showFolderDialog: () => ipcRenderer.invoke("dialog:show-folder"),
   showOpenDialog: (opts) => ipcRenderer.invoke("dialog:showOpenDialog", opts),
   itero: {
