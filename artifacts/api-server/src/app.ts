@@ -18,6 +18,7 @@ import {
   getDesktopInstallerHandle,
   openDesktopInstallerStream,
   type DesktopInstallerKind,
+  DesktopInstallerNotConfiguredError,
 } from "./lib/desktop-installer-storage";
 import { parseRangeHeader } from "./lib/range-parser";
 
@@ -173,12 +174,33 @@ function serveInstaller(
       });
       obj.stream.pipe(res);
     } catch (err) {
-      logger.error({ err, kind }, "Desktop installer download failed");
+      const isNotConfigured = err instanceof DesktopInstallerNotConfiguredError;
+      logger.error(
+        {
+          err,
+          kind,
+          errorName: (err as Error)?.name,
+          errorMessage: (err as Error)?.message,
+          isNotConfigured,
+        },
+        "Desktop installer download failed",
+      );
       if (!res.headersSent) {
         res.setHeader("Cache-Control", "no-store");
-        res
-          .status(500)
-          .json({ ok: false, message: (err as Error)?.message || "Download failed." });
+        if (isNotConfigured) {
+          res.status(404).json({
+            ok: false,
+            message:
+              "App Storage is not configured. An admin must provision Object Storage and upload the installer.",
+          });
+        } else {
+          res.setHeader("Retry-After", "60");
+          res.status(503).json({
+            ok: false,
+            message:
+              "Storage is temporarily unavailable. Please try again in a moment.",
+          });
+        }
       } else if (!res.writableEnded) {
         res.destroy(err as Error);
       }
