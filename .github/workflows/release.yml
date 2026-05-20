@@ -6,8 +6,95 @@ on:
       - "v*"
 
 jobs:
+  # ── Build-number allocation ───────────────────────────────────────────────────
+  # Runs first, before any platform build job. Reads the current build counter
+  # from the tag, claims two consecutive numbers (one per platform), commits the
+  # new high-water mark (N+2) to main, and exposes both numbers as job outputs.
+  #
+  # This serialisation replaces the old per-platform commit-back race: previously
+  # Windows and macOS both started from the same tag (buildNumber = N), each
+  # computed N+1 independently, and the second arrival silently treated the file
+  # as already-bumped — so both shipped with the same build number. Now a single
+  # atomic commit determines the allocation before either build begins.
+  bump-build-number:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    outputs:
+      windows: ${{ steps.bump.outputs.windows }}
+      macos: ${{ steps.bump.outputs.macos }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # BUILD_BOT_TOKEN must have "bypass branch protection" rights so the
+          # commit-back push succeeds on repos with PR-required or status-check
+          # branch protection rules. Falls back to github.token on open repos.
+          token: ${{ secrets.BUILD_BOT_TOKEN || github.token }}
+
+      - name: Allocate build numbers and commit to main
+        id: bump
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Read the current counter from the tag working tree.
+          CURRENT=$(node -p "require('./artifacts/labtrax-desktop/build-number.json').buildNumber")
+          WINDOWS_NUM=$(( CURRENT + 1 ))
+          MACOS_NUM=$(( CURRENT + 2 ))
+
+          echo "windows=${WINDOWS_NUM}" >> "$GITHUB_OUTPUT"
+          echo "macos=${MACOS_NUM}"    >> "$GITHUB_OUTPUT"
+          echo "Allocated: Windows=${WINDOWS_NUM}, macOS=${MACOS_NUM} (was ${CURRENT})"
+
+          # The workflow is triggered by a tag push, so HEAD is detached.
+          # Switch to main to commit the updated counter.
+          git fetch origin main
+          git checkout -B main origin/main
+
+          # Write the high-water mark (macOS number, the larger of the two).
+          node -e "
+            const fs = require('fs'), p = 'artifacts/labtrax-desktop/build-number.json';
+            const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+            d.buildNumber = ${MACOS_NUM};
+            fs.writeFileSync(p, JSON.stringify(d, null, 2) + '\n', 'utf8');
+          "
+          git add artifacts/labtrax-desktop/build-number.json
+          if git diff --cached --quiet; then
+            echo "build-number.json already at ${MACOS_NUM} on main — nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: bump desktop build number to ${MACOS_NUM} (Windows=${WINDOWS_NUM}) [skip ci]"
+
+          # Push with fetch+rebase retry in case another concurrent workflow
+          # (e.g. a re-run) races this step.
+          pushed=false
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              pushed=true
+              break
+            fi
+            echo "::warning::Push attempt ${attempt} failed — retrying in ${attempt}s…"
+            git fetch origin main
+            git rebase origin/main
+            if git diff origin/main --quiet -- artifacts/labtrax-desktop/build-number.json; then
+              echo "build-number.json already at ${MACOS_NUM} on origin/main — no push needed."
+              pushed=true
+              break
+            fi
+            sleep "$attempt"
+          done
+          if [[ "$pushed" != "true" ]]; then
+            echo "::error::All push attempts failed — build number was NOT persisted."
+            exit 1
+          fi
+
   # ── Windows build ────────────────────────────────────────────────────────────
   build-windows:
+    needs: [bump-build-number]
     runs-on: windows-latest
 
     permissions:
@@ -15,13 +102,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # BUILD_BOT_TOKEN should be a fine-grained PAT (or GitHub App token)
-          # with "bypass branch protection" rights so the build-number commit-back
-          # push succeeds even when main requires a PR or status checks.
-          # Falls back to the default GITHUB_TOKEN on repos with no branch
-          # protection — callers that have not set the secret get the old behaviour.
-          token: ${{ secrets.BUILD_BOT_TOKEN || github.token }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -46,6 +126,21 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
 
+      - name: Inject assigned build number
+        # Write the number allocated by bump-build-number before electron-builder
+        # reads build-number.json. This guarantees Windows and macOS always get
+        # distinct values even when the jobs run in parallel.
+        shell: bash
+        run: |
+          ASSIGNED=${{ needs.bump-build-number.outputs.windows }}
+          node -e "
+            const fs = require('fs'), p = 'artifacts/labtrax-desktop/build-number.json';
+            const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+            d.buildNumber = ${ASSIGNED};
+            fs.writeFileSync(p, JSON.stringify(d, null, 2) + '\n', 'utf8');
+          "
+          echo "::notice::Windows build number set to ${ASSIGNED}"
+
       - name: Build and package Windows installer
         # GH_TOKEN is intentionally omitted — electron-builder would otherwise
         # try to publish directly to a GitHub Release, creating a partial release
@@ -60,108 +155,6 @@ jobs:
           VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-
-      # Persist the incremented build-number.json back to main so the counter
-      # stays monotonically increasing across releases.
-      #
-      # This workflow is triggered by a tag push, so the runner operates on a
-      # detached HEAD — git pull --rebase has no current branch to rebase onto.
-      # Instead we:
-      #   1. Read the bumped number from the working tree (tag checkout).
-      #   2. Fetch main and switch to it as a real local branch.
-      #   3. Write the exact bumped value onto main's copy of the file.
-      #   4. Commit (no-op if a parallel job already pushed the same value).
-      #   5. Push with fetch+rebase retry; fail hard if all attempts exhaust.
-      # [skip ci] prevents the maintenance commit from re-triggering CI.
-      - name: Commit bumped build number
-        id: commit-build-number
-        if: success()
-        shell: bash
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Read the number from the tag working tree before switching branches.
-          BUILD_NUM=$(node -p "require('./artifacts/labtrax-desktop/build-number.json').buildNumber")
-          # Tags are immutable — commit to main instead.
-          git fetch origin main
-          git checkout -B main origin/main
-          # Write the bumped value onto main's copy of the file.
-          node -e "
-            const fs = require('fs'), p = 'artifacts/labtrax-desktop/build-number.json';
-            const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-            d.buildNumber = $BUILD_NUM;
-            fs.writeFileSync(p, JSON.stringify(d, null, 2) + '\n', 'utf8');
-          "
-          git add artifacts/labtrax-desktop/build-number.json
-          if git diff --cached --quiet; then
-            echo "build-number.json already at ${BUILD_NUM} on main — nothing to commit."
-            exit 0
-          fi
-          git commit -m "chore: bump desktop build number to ${BUILD_NUM} [skip ci]"
-          # Retry with fetch+rebase on conflict (parallel macOS/Windows race).
-          # After rebase, re-check if the file is already at the target value —
-          # if so, the other job already persisted it and no push is needed.
-          pushed=false
-          for attempt in 1 2 3; do
-            if git push origin HEAD:main; then
-              pushed=true
-              break
-            fi
-            echo "::warning::Push attempt ${attempt} failed — retrying in ${attempt}s…"
-            git fetch origin main
-            git rebase origin/main
-            if git diff origin/main --quiet -- artifacts/labtrax-desktop/build-number.json; then
-              echo "build-number.json already at ${BUILD_NUM} on origin/main — no push needed."
-              pushed=true
-              break
-            fi
-            sleep "$attempt"
-          done
-          if [[ "$pushed" != "true" ]]; then
-            echo "::error::All push attempts failed — build number was NOT persisted. The counter may reset on the next checkout."
-            exit 1
-          fi
-
-      # Alert admins when the build-number commit fails to push so the silent
-      # counter-reset bug is caught immediately rather than discovered later.
-      # Uses the same opt-in gating as the publish-failure alert: both secrets
-      # must be set, otherwise the step skips without error.
-      - name: Notify admins on build-number push failure
-        if: always() && steps.commit-build-number.outcome == 'failure'
-        shell: bash
-        env:
-          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
-          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
-        run: |
-          if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
-            echo "::notice::Skipping build-number push failure alert — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL not set."
-            exit 0
-          fi
-          BASE_URL="${PUBLISH_API_BASE_URL%/}"
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          PAYLOAD=$(jq -n \
-            --arg workflowName "${GITHUB_WORKFLOW}" \
-            --arg runUrl "$RUN_URL" \
-            --arg runId "${GITHUB_RUN_ID}" \
-            --arg commitSha "${GITHUB_SHA}" \
-            --arg ref "${GITHUB_REF_NAME}" \
-            --arg stage "build-number-commit" \
-            --arg errorMessage "All 3 push attempts to persist build-number.json to main failed (triggered by tag ${GITHUB_REF_NAME}). The build number counter may reset on the next checkout — check branch protection rules or network connectivity." \
-            '{workflowName:$workflowName, runUrl:$runUrl, runId:$runId, commitSha:$commitSha, ref:$ref, stage:$stage, errorMessage:$errorMessage}')
-          echo "Reporting build-number push failure to $BASE_URL/api/admin/desktop-installer/publish-failure"
-          NOTIFY_BODY=$(mktemp)
-          NOTIFY_STATUS=$(curl --silent --show-error --output "$NOTIFY_BODY" --write-out '%{http_code}' \
-            -X POST \
-            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
-            -H "Content-Type: application/json" \
-            --data "$PAYLOAD" \
-            "$BASE_URL/api/admin/desktop-installer/publish-failure") || true
-          NOTIFY_STATUS="${NOTIFY_STATUS:-000}"
-          cat "$NOTIFY_BODY"; echo
-          if [[ ! "$NOTIFY_STATUS" =~ ^2[0-9][0-9]$ ]]; then
-            BODY_TRUNC=$(head -c 500 "$NOTIFY_BODY")
-            echo "::warning::Failed to deliver build-number push failure alert (HTTP $NOTIFY_STATUS): $BODY_TRUNC — admins will not receive an email for this run."
-          fi
 
       - name: Verify installer signature
         if: env.CSC_LINK != ''
@@ -358,6 +351,7 @@ process.stdout.write(out.join('\n').trim());
 
   # ── macOS build ──────────────────────────────────────────────────────────────
   build-macos:
+    needs: [bump-build-number]
     runs-on: macos-latest
 
     permissions:
@@ -365,13 +359,6 @@ process.stdout.write(out.join('\n').trim());
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # BUILD_BOT_TOKEN should be a fine-grained PAT (or GitHub App token)
-          # with "bypass branch protection" rights so the build-number commit-back
-          # push succeeds even when main requires a PR or status checks.
-          # Falls back to the default GITHUB_TOKEN on repos with no branch
-          # protection — callers that have not set the secret get the old behaviour.
-          token: ${{ secrets.BUILD_BOT_TOKEN || github.token }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -417,6 +404,21 @@ process.stdout.write(out.join('\n').trim());
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      - name: Inject assigned build number
+        # Write the number allocated by bump-build-number before electron-builder
+        # reads build-number.json. This guarantees Windows and macOS always get
+        # distinct values even when the jobs run in parallel.
+        shell: bash
+        run: |
+          ASSIGNED=${{ needs.bump-build-number.outputs.macos }}
+          node -e "
+            const fs = require('fs'), p = 'artifacts/labtrax-desktop/build-number.json';
+            const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+            d.buildNumber = ${ASSIGNED};
+            fs.writeFileSync(p, JSON.stringify(d, null, 2) + '\n', 'utf8');
+          "
+          echo "::notice::macOS build number set to ${ASSIGNED}"
+
       - name: Build and notarize macOS DMG
         # GH_TOKEN is intentionally omitted — see the Windows build job for the
         # rationale. The zip targets are built alongside the DMG because
@@ -430,101 +432,6 @@ process.stdout.write(out.join('\n').trim());
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-      # Mirror the Windows commit-back step exactly. Both platform jobs start
-      # from the same tag commit (detached HEAD), increment build-number to the
-      # same N+1, and race to push to main. The same fetch+checkout-main +
-      # retry-rebase logic is used here so the second arrival is a no-op:
-      # after rebasing it sees the file already at N+1 and exits cleanly.
-      - name: Commit bumped build number
-        id: commit-build-number
-        if: success()
-        shell: bash
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Read the number from the tag working tree before switching branches.
-          BUILD_NUM=$(node -p "require('./artifacts/labtrax-desktop/build-number.json').buildNumber")
-          # Tags are immutable — commit to main instead.
-          git fetch origin main
-          git checkout -B main origin/main
-          # Write the bumped value onto main's copy of the file.
-          node -e "
-            const fs = require('fs'), p = 'artifacts/labtrax-desktop/build-number.json';
-            const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-            d.buildNumber = $BUILD_NUM;
-            fs.writeFileSync(p, JSON.stringify(d, null, 2) + '\n', 'utf8');
-          "
-          git add artifacts/labtrax-desktop/build-number.json
-          if git diff --cached --quiet; then
-            echo "build-number.json already at ${BUILD_NUM} on main — nothing to commit."
-            exit 0
-          fi
-          git commit -m "chore: bump desktop build number to ${BUILD_NUM} [skip ci]"
-          # Retry with fetch+rebase on conflict (parallel macOS/Windows race).
-          # After rebase, re-check if the file is already at the target value —
-          # if so, the other job already persisted it and no push is needed.
-          pushed=false
-          for attempt in 1 2 3; do
-            if git push origin HEAD:main; then
-              pushed=true
-              break
-            fi
-            echo "::warning::Push attempt ${attempt} failed — retrying in ${attempt}s…"
-            git fetch origin main
-            git rebase origin/main
-            if git diff origin/main --quiet -- artifacts/labtrax-desktop/build-number.json; then
-              echo "build-number.json already at ${BUILD_NUM} on origin/main — no push needed."
-              pushed=true
-              break
-            fi
-            sleep "$attempt"
-          done
-          if [[ "$pushed" != "true" ]]; then
-            echo "::error::All push attempts failed — build number was NOT persisted. The counter may reset on the next checkout."
-            exit 1
-          fi
-
-      # Alert admins when the build-number commit fails to push so the silent
-      # counter-reset bug is caught immediately rather than discovered later.
-      # Uses the same opt-in gating as the publish-failure alert: both secrets
-      # must be set, otherwise the step skips without error.
-      - name: Notify admins on build-number push failure
-        if: always() && steps.commit-build-number.outcome == 'failure'
-        shell: bash
-        env:
-          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
-          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
-        run: |
-          if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
-            echo "::notice::Skipping build-number push failure alert — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL not set."
-            exit 0
-          fi
-          BASE_URL="${PUBLISH_API_BASE_URL%/}"
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          PAYLOAD=$(jq -n \
-            --arg workflowName "${GITHUB_WORKFLOW}" \
-            --arg runUrl "$RUN_URL" \
-            --arg runId "${GITHUB_RUN_ID}" \
-            --arg commitSha "${GITHUB_SHA}" \
-            --arg ref "${GITHUB_REF_NAME}" \
-            --arg stage "build-number-commit" \
-            --arg errorMessage "All 3 push attempts to persist build-number.json to main failed (triggered by tag ${GITHUB_REF_NAME}). The build number counter may reset on the next checkout — check branch protection rules or network connectivity." \
-            '{workflowName:$workflowName, runUrl:$runUrl, runId:$runId, commitSha:$commitSha, ref:$ref, stage:$stage, errorMessage:$errorMessage}')
-          echo "Reporting build-number push failure to $BASE_URL/api/admin/desktop-installer/publish-failure"
-          NOTIFY_BODY=$(mktemp)
-          NOTIFY_STATUS=$(curl --silent --show-error --output "$NOTIFY_BODY" --write-out '%{http_code}' \
-            -X POST \
-            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
-            -H "Content-Type: application/json" \
-            --data "$PAYLOAD" \
-            "$BASE_URL/api/admin/desktop-installer/publish-failure") || true
-          NOTIFY_STATUS="${NOTIFY_STATUS:-000}"
-          cat "$NOTIFY_BODY"; echo
-          if [[ ! "$NOTIFY_STATUS" =~ ^2[0-9][0-9]$ ]]; then
-            BODY_TRUNC=$(head -c 500 "$NOTIFY_BODY")
-            echo "::warning::Failed to deliver build-number push failure alert (HTTP $NOTIFY_STATUS): $BODY_TRUNC — admins will not receive an email for this run."
-          fi
 
       # Auto-publish the freshly built DMG to the live download page so
       # admins don't have to download → upload → update URL by hand. Mirrors
