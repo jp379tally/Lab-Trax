@@ -3164,15 +3164,26 @@ const ITERO_RX_SYSTEM_PROMPT = `You are a dental laboratory prescription reader.
   "practiceName": "dental practice or office name"
 }
 
+iTero-specific field mappings (IMPORTANT — iTero uses different field names than a paper Rx):
+- The "Procedure" field on iTero Rxs maps to caseType. Mappings:
+    "Fixed Restorative" → "Crown & Bridge"
+    "Removable Prosthetics" or "Removable" → "Removable"
+    "Orthodontics" or "Appliance" → "Appliance"
+- The "Treatment Information" table is the authoritative source for teeth, treatment type, and material. Read every row. The "Tooth No." column gives the Universal tooth number. The "Treatment" column (Crown, Bridge, Veneer, Inlay, Onlay, etc.) determines caseType. The "Material" column gives the material — strip the "Ceramic:" prefix if present (e.g. "Ceramic: Zirconia" → "Zirconia", "Ceramic: E.max" → "E.max", "Ceramic: Lithium Disilicate" → "Lithium Disilicate").
+- Shade columns may be split into Incisal/Body/Gingival (e.g. "-/A2/-"). Extract the first non-dash segment as the shade (e.g. "-/A2/-" → "A2", "BL2/BL2/-" → "BL2").
+
 caseType bucketing rules — pick exactly one:
-- "Crown & Bridge" — single crowns, bridges (any span), veneers, implant crowns, inlays, onlays. Examples: "#3 PFM" → Crown & Bridge + PFM on tooth 3. "#29-31 Zirc" → Crown & Bridge + Zirconia on teeth 29,30,31.
-- "Removable" — full dentures, partial dentures, immediates, overdentures, flippers. Examples: "Upper acrylic denture" or "U/D" → Removable + Acrylic + teeth "Upper". "Upper partial / U/P" → Removable + (Acrylic | Resin | Valplast | Flexible — pick from the Rx wording, default Acrylic if unspecified) + teeth "Upper".
+- "Crown & Bridge" — single crowns, bridges (any span), veneers, implant crowns, inlays, onlays, anything in the "Fixed Restorative" iTero procedure category.
+  Examples: "#3 PFM" → Crown & Bridge + PFM on tooth 3. "#29-31 Zirc" → Crown & Bridge + Zirconia on teeth 29,30,31. Treatment table rows of "Crown" on teeth 30,31 → Crown & Bridge + teeth "30,31".
+- "Removable" — full dentures, partial dentures, immediates, overdentures, flippers.
+  Examples: "Upper acrylic denture" or "U/D" → Removable + Acrylic + teeth "Upper". "Upper partial / U/P" → Removable + (Acrylic | Resin | Valplast | Flexible) + teeth "Upper".
 - "Appliance" — night guards, retainers, sports guards, snore guards, bleach trays, splints.
 - "Other" — anything that doesn't cleanly fit the buckets above.
 
 teeth field rules:
+- PRIMARY source: if a "Treatment Information" or "Tooth Diagram" table is visible, read every tooth number listed there. Emit all of them as a comma-separated list.
 - For Crown & Bridge / Appliance with specific teeth: comma-separated Universal numbers (1–32). Expand spans like "#29-31" into "29,30,31".
-- For full-arch Removable cases: emit ONE of the literal arch tokens "Upper", "Lower", "U/D", "U/P", "L/D", "L/P" (NOT a numeric range). The desktop UI highlights the whole arch from these tokens.
+- For full-arch Removable cases: emit ONE of the literal arch tokens "Upper", "Lower", "U/D", "U/P", "L/D", "L/P" (NOT a numeric range).
 - For partial dentures listing specific teeth being replaced, emit the arch token (e.g. "U/P").
 - Convert FDI to Universal if needed.
 
@@ -3197,17 +3208,36 @@ function normalizeIteroCaseType(
     v === "crown & bridge" ||
     v === "crown and bridge" ||
     v === "c&b" ||
-    /\b(crown|bridge|veneer|inlay|onlay|implant)\b/.test(v)
+    v === "fixed restorative" ||
+    v === "fixed" ||
+    /\b(crown|bridge|veneer|inlay|onlay|implant|fixed)\b/.test(v)
   ) {
     return "Crown & Bridge";
   }
-  if (/\b(denture|partial|removable|flipper|overdenture|immediate)\b/.test(v)) {
+  if (/\b(denture|partial|removable|flipper|overdenture|immediate|prosthetic)\b/.test(v)) {
     return "Removable";
   }
-  if (/\b(guard|retainer|splint|appliance|tray|nightguard)\b/.test(v)) {
+  if (/\b(guard|retainer|splint|appliance|tray|nightguard|orthodontic)\b/.test(v)) {
     return "Appliance";
   }
   return "Other";
+}
+
+/**
+ * Normalize iTero shade strings. iTero encodes shade as three slash-separated
+ * segments for Incisal / Body / Gingival (e.g. "-/A2/-" or "BL2/BL2/-").
+ * Extract the first non-dash, non-empty segment as the representative shade.
+ */
+function normalizeIteroShade(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === "-") return null;
+  // Handle slash-separated format: "-/A2/-", "BL2/BL2/-", "A2/A2/A3"
+  if (trimmed.includes("/")) {
+    const segments = trimmed.split("/").map((s) => s.trim()).filter((s) => s && s !== "-");
+    return segments[0] ?? null;
+  }
+  return trimmed;
 }
 
 function buildIteroAttachmentUrl(
@@ -3549,7 +3579,7 @@ router.post(
             toothNumber,
             restorationType: normalizedCaseType,
             material: extracted.material ?? null,
-            shade: extracted.shade ?? null,
+            shade: normalizeIteroShade(extracted.shade),
             unitPrice: (fallback?.amount ?? 0).toFixed(2),
             priceSource: fallback?.source ?? null,
             priceSourceId: fallback?.sourceId ?? null,
@@ -4368,7 +4398,7 @@ router.post(
             toothNumber,
             restorationType: normalizedCaseType,
             material: extracted.material ?? null,
-            shade: extracted.shade ?? null,
+            shade: normalizeIteroShade(extracted.shade),
             unitPrice: (fallback?.amount ?? 0).toFixed(2),
             priceSource: fallback?.source ?? null,
             priceSourceId: fallback?.sourceId ?? null,
@@ -4985,7 +5015,7 @@ async function processOneIteroZipFile(
         extracted.material ?? null, normalizedCaseType,
       );
       return {
-        toothNumber, restorationType: normalizedCaseType, material: extracted.material ?? null, shade: extracted.shade ?? null,
+        toothNumber, restorationType: normalizedCaseType, material: extracted.material ?? null, shade: normalizeIteroShade(extracted.shade),
         unitPrice: (fallback?.amount ?? 0).toFixed(2), priceSource: fallback?.source ?? null,
         priceSourceId: fallback?.sourceId ?? null, priceSourceName: fallback?.sourceName ?? null, priceKey: fallback?.key ?? null,
       };
