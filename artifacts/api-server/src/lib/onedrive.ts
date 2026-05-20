@@ -126,6 +126,25 @@ export async function deleteFromOneDrive(
  *                 only one labtrax-rolling-backup.zip.enc ever exists on OneDrive.
  *   - "fail"    – return an error if a file with the same name already exists.
  */
+/**
+ * Cheap pre-flight check: validates the OneDrive access token is usable by
+ * making a single lightweight GET /me/drive call (returns ~200 B of JSON).
+ * Call this BEFORE building a large zip buffer so we don't waste memory and
+ * CPU on a zip that will never be uploaded due to broken auth.
+ * Throws with a descriptive message if the token is missing, malformed, or
+ * rejected by Microsoft Graph.
+ */
+export async function checkOneDriveToken(): Promise<void> {
+  const token = await getOneDriveAccessToken();
+  const resp = await graphRequest("/me/drive", { method: "GET" }, token);
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(
+      `OneDrive token validation failed (HTTP ${resp.status}): ${body.slice(0, 300)}`,
+    );
+  }
+}
+
 export async function uploadToOneDrive(
   fileBuffer: Buffer,
   fileName: string,

@@ -8,7 +8,7 @@ import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
 import { systemSettings, users, backupRuns } from "@workspace/db";
 import { eq, lt, sql } from "drizzle-orm";
-import { uploadToOneDrive } from "./onedrive";
+import { uploadToOneDrive, checkOneDriveToken } from "./onedrive";
 import { logger } from "./logger";
 import { sendBackupNotificationEmail, sendBackupStaleAlertEmail } from "./mail";
 
@@ -456,6 +456,13 @@ export async function runOneDriveBackup(
     fileName?: string;
   },
 ): Promise<BackupResult> {
+  // Pre-flight: validate the OneDrive token with a cheap GET /me/drive call
+  // BEFORE building the (potentially large) zip buffer. This prevents the
+  // server from allocating hundreds of MB of zip data only to have the upload
+  // fail immediately due to an expired or malformed token — which, repeated
+  // every 15 minutes, exhausts heap and causes OOM crashes.
+  await checkOneDriveToken();
+
   const { buffer, fileName: generatedFileName } = await buildBackupZipBuffer(triggeredBy);
   const targetFileName = options?.fileName ?? generatedFileName;
   const conflictBehavior = options?.conflictBehavior ?? "rename";
@@ -1218,6 +1225,7 @@ export async function restartScheduledBackupJob(): Promise<void> {
 // rolling_backup_last_run_at and rolling_backup_last_error.
 
 let _rollingBackupScheduled = false;
+let _rollingBackupRunning = false;
 
 const ROLLING_BACKUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -1228,53 +1236,45 @@ export function start15MinRollingBackup(): void {
   logger.info("[backup] 15-minute rolling OneDrive backup scheduler armed");
 
   const tick = async () => {
-    try {
-      const rows = await db
-        .select()
-        .from(systemSettings)
-        .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
-      const enabledRaw = rows[0]?.value ?? null;
-      const enabled = enabledRaw === null ? true : enabledRaw !== "false";
-      if (!enabled) {
-        return;
-      }
-    } catch (dbErr: unknown) {
-      logger.warn(
-        { err: dbErr instanceof Error ? dbErr.message : String(dbErr) },
-        "[backup] Rolling backup: failed to read enabled setting; skipping tick",
-      );
+    // Concurrency guard: skip if a previous tick is still running (e.g. large
+    // zip build overlapping the 15-min interval). Without this, ticks stack up
+    // and allocate multiple in-flight zip buffers simultaneously.
+    if (_rollingBackupRunning) {
+      logger.info("[backup] Rolling backup tick skipped — previous run still in progress");
       return;
     }
-
-    const runAt = new Date().toISOString();
+    _rollingBackupRunning = true;
     try {
-      logger.info({ startedAt: runAt }, "[backup] Rolling OneDrive backup starting");
-      const result = await runOneDriveBackup("scheduler:rolling", {
-        conflictBehavior: "replace",
-        fileName: "labtrax-rolling-backup.zip.enc",
-      });
-      logger.info(
-        { fileName: result.fileName, size: result.size },
-        "[backup] Rolling OneDrive backup OK",
-      );
-      await db
-        .insert(systemSettings)
-        .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: runAt })
-        .onConflictDoUpdate({
-          target: systemSettings.key,
-          set: { value: runAt, updatedAt: new Date() },
-        });
-      await db
-        .insert(systemSettings)
-        .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: "" })
-        .onConflictDoUpdate({
-          target: systemSettings.key,
-          set: { value: "", updatedAt: new Date() },
-        });
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logger.error({ err: errMsg }, "[backup] Rolling OneDrive backup FAILED");
+      // Check whether the rolling backup is enabled before doing any work.
       try {
+        const rows = await db
+          .select()
+          .from(systemSettings)
+          .where(eq(systemSettings.key, SETTING_ROLLING_BACKUP_ENABLED));
+        const enabledRaw = rows[0]?.value ?? null;
+        const enabled = enabledRaw === null ? true : enabledRaw !== "false";
+        if (!enabled) {
+          return;
+        }
+      } catch (dbErr: unknown) {
+        logger.warn(
+          { err: dbErr instanceof Error ? dbErr.message : String(dbErr) },
+          "[backup] Rolling backup: failed to read enabled setting; skipping tick",
+        );
+        return;
+      }
+
+      const runAt = new Date().toISOString();
+      try {
+        logger.info({ startedAt: runAt }, "[backup] Rolling OneDrive backup starting");
+        const result = await runOneDriveBackup("scheduler:rolling", {
+          conflictBehavior: "replace",
+          fileName: "labtrax-rolling-backup.zip.enc",
+        });
+        logger.info(
+          { fileName: result.fileName, size: result.size },
+          "[backup] Rolling OneDrive backup OK",
+        );
         await db
           .insert(systemSettings)
           .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: runAt })
@@ -1284,17 +1284,38 @@ export function start15MinRollingBackup(): void {
           });
         await db
           .insert(systemSettings)
-          .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: errMsg })
+          .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: "" })
           .onConflictDoUpdate({
             target: systemSettings.key,
-            set: { value: errMsg, updatedAt: new Date() },
+            set: { value: "", updatedAt: new Date() },
           });
-      } catch (writeErr: unknown) {
-        logger.warn(
-          { err: writeErr instanceof Error ? writeErr.message : String(writeErr) },
-          "[backup] Rolling backup: failed to write error to settings",
-        );
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error({ err: errMsg }, "[backup] Rolling OneDrive backup FAILED");
+        try {
+          await db
+            .insert(systemSettings)
+            .values({ key: SETTING_ROLLING_BACKUP_LAST_RUN_AT, value: runAt })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: runAt, updatedAt: new Date() },
+            });
+          await db
+            .insert(systemSettings)
+            .values({ key: SETTING_ROLLING_BACKUP_LAST_ERROR, value: errMsg })
+            .onConflictDoUpdate({
+              target: systemSettings.key,
+              set: { value: errMsg, updatedAt: new Date() },
+            });
+        } catch (writeErr: unknown) {
+          logger.warn(
+            { err: writeErr instanceof Error ? writeErr.message : String(writeErr) },
+            "[backup] Rolling backup: failed to write error to settings",
+          );
+        }
       }
+    } finally {
+      _rollingBackupRunning = false;
     }
   };
 
