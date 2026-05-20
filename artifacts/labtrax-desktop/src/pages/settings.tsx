@@ -1609,6 +1609,7 @@ function RestoreSection({
   const [relaunchCountdown, setRelaunchCountdown] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const hasOneDrive = !!scheduleData?.destination;
 
@@ -1621,6 +1622,14 @@ function RestoreSection({
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
+  const cancelRelaunch = useCallback(() => {
+    if (countdownTimerRef.current !== null) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    setRelaunchCountdown(null);
+  }, []);
+
   useEffect(() => {
     if (!restoreSuccess || typeof electron?.relaunch !== "function") return;
     setRelaunchCountdown(3);
@@ -1629,13 +1638,18 @@ function RestoreSection({
         if (c === null) return null;
         if (c <= 1) {
           clearInterval(tick);
+          countdownTimerRef.current = null;
           electron!.relaunch!();
           return 0;
         }
         return c - 1;
       });
     }, 1000);
-    return () => clearInterval(tick);
+    countdownTimerRef.current = tick;
+    return () => {
+      clearInterval(tick);
+      countdownTimerRef.current = null;
+    };
   }, [restoreSuccess, electron]);
 
   const startPolling = useCallback(() => {
@@ -1743,13 +1757,35 @@ function RestoreSection({
             </p>
 
             {restoreSuccess && (
-              <div className="rounded-md bg-success/10 border border-success/30 px-3 py-2 text-xs text-success font-medium">
-                Restore complete — restart the app to finish loading the restored data.
-                {relaunchCountdown !== null && relaunchCountdown > 0 && (
-                  <span className="ml-1">(Relaunching in {relaunchCountdown}…)</span>
-                )}
-                {(relaunchCountdown === null || relaunchCountdown === 0) && typeof electron?.relaunch !== "function" && (
-                  <span className="ml-1">Please restart the app manually.</span>
+              <div className="rounded-md bg-success/10 border border-success/30 px-3 py-2 text-xs text-success font-medium space-y-2">
+                <div>
+                  Restore complete — restart the app to finish loading the restored data.
+                  {relaunchCountdown !== null && relaunchCountdown > 0 && (
+                    <span className="ml-1">(Relaunching in {relaunchCountdown}…)</span>
+                  )}
+                  {relaunchCountdown === null && typeof electron?.relaunch !== "function" && (
+                    <span className="ml-1">Please restart the app manually.</span>
+                  )}
+                </div>
+                {typeof electron?.relaunch === "function" && (
+                  <div className="flex items-center gap-2">
+                    {relaunchCountdown !== null && relaunchCountdown > 0 && (
+                      <button
+                        type="button"
+                        onClick={cancelRelaunch}
+                        className="rounded px-2 py-0.5 text-xs font-semibold border border-success/40 bg-success/10 hover:bg-success/20 text-success transition-colors"
+                      >
+                        Cancel relaunch
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => electron!.relaunch!()}
+                      className="rounded px-2 py-0.5 text-xs font-semibold border border-success/40 bg-success/20 hover:bg-success/30 text-success transition-colors"
+                    >
+                      Relaunch now
+                    </button>
+                  </div>
                 )}
               </div>
             )}
