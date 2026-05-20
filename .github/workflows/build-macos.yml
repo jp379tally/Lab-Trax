@@ -120,16 +120,23 @@ jobs:
             sleep "$attempt"
           done
           if [[ "$pushed" != "true" ]]; then
-            echo "::error::All push attempts failed — build number was NOT persisted. The counter may reset on the next checkout."
-            exit 1
+            echo "push_failed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::All push attempts failed — build number was NOT persisted. The build artifact is still usable; download the build-counter-fallback workflow artifact and apply it manually (see docs/build-counter-recovery.md)."
           fi
+
+      - name: Upload build counter fallback artifact
+        if: always() && steps.commit-build-number.outputs.push_failed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-counter-fallback
+          path: artifacts/labtrax-desktop/build-number.json
 
       # Alert admins when the build-number commit fails to push so the silent
       # counter-reset bug is caught immediately rather than discovered later.
       # Uses the same opt-in gating as the publish-failure alert: both secrets
       # must be set, otherwise the step skips without error.
       - name: Notify admins on build-number push failure
-        if: always() && steps.commit-build-number.outcome == 'failure'
+        if: always() && steps.commit-build-number.outputs.push_failed == 'true'
         shell: bash
         env:
           PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}

@@ -52,6 +52,8 @@ Run `pnpm --filter @workspace/db run push` to apply schema changes.
 
 ## Key Commands
 
+> **Build counter recovery:** If a GitHub Actions build workflow exits with a warning about push failure, download the `build-counter-fallback` (or `build-counter-fallback-windows` / `build-counter-fallback-macos` for the release workflow) artifact from the run summary and follow the steps in [`docs/build-counter-recovery.md`](docs/build-counter-recovery.md) to manually apply the counter before the next build.
+
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from OpenAPI spec

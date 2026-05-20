@@ -76,6 +76,7 @@ jobs:
         run: pnpm --filter @workspace/scripts run bump-build-number
 
       - name: Commit bumped app.json
+        id: commit-build-number
         shell: bash
         run: |
           git config user.name  "github-actions[bot]"
@@ -89,8 +90,6 @@ jobs:
             "JSON.parse(require('fs').readFileSync('artifacts/labtrax/app.json','utf8')).expo.ios.buildNumber")
           git commit -m "chore: bump mobile build number to ${BUILD_NUM} [skip ci]"
           # Retry with rebase in case another job pushed to main concurrently.
-          # Fail hard if all attempts are exhausted so the pipeline does not
-          # silently proceed with an unpersisted counter.
           pushed=false
           for attempt in 1 2 3; do
             if git pull --rebase origin main \
@@ -102,9 +101,16 @@ jobs:
             sleep "$attempt"
           done
           if [[ "$pushed" != "true" ]]; then
-            echo "::error::All push attempts failed — mobile build number was NOT persisted."
-            exit 1
+            echo "push_failed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::All push attempts failed — mobile build number was NOT persisted. The EAS build will still proceed; download the build-counter-fallback workflow artifact and apply it manually (see docs/build-counter-recovery.md)."
           fi
+
+      - name: Upload build counter fallback artifact
+        if: always() && steps.commit-build-number.outputs.push_failed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-counter-fallback
+          path: artifacts/labtrax/app.json
 
       - name: Build on EAS
         uses: expo/expo-github-action@v8
