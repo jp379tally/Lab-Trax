@@ -161,6 +161,7 @@ jobs:
           token: ${{ secrets.EXPO_TOKEN }}
 
       - name: Trigger EAS build
+        id: trigger-eas-build
         working-directory: artifacts/labtrax
         run: |
           eas build \
@@ -168,3 +169,45 @@ jobs:
             --profile  "${{ github.event.inputs.profile }}" \
             --non-interactive \
             --no-wait
+
+      # Alert admins when the EAS build trigger itself fails (bad Expo token,
+      # quota exceeded, compile error, etc.) so the failure surfaces in-app
+      # rather than relying solely on GitHub's default email notification.
+      # Uses the same opt-in gating as the other notify steps: both secrets
+      # must be set, otherwise the step skips without error.
+      - name: Notify admins on EAS build failure
+        if: always() && steps.trigger-eas-build.outcome == 'failure'
+        shell: bash
+        env:
+          PLATFORM_ADMIN_SECRET: ${{ secrets.PLATFORM_ADMIN_SECRET }}
+          PUBLISH_API_BASE_URL: ${{ secrets.PUBLISH_API_BASE_URL }}
+        run: |
+          if [[ -z "$PLATFORM_ADMIN_SECRET" || -z "$PUBLISH_API_BASE_URL" ]]; then
+            echo "::notice::Skipping EAS build failure alert — PLATFORM_ADMIN_SECRET or PUBLISH_API_BASE_URL not set."
+            exit 0
+          fi
+          BASE_URL="${PUBLISH_API_BASE_URL%/}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          PAYLOAD=$(jq -n \
+            --arg workflowName "${GITHUB_WORKFLOW}" \
+            --arg runUrl "$RUN_URL" \
+            --arg runId "${GITHUB_RUN_ID}" \
+            --arg commitSha "${GITHUB_SHA}" \
+            --arg ref "${GITHUB_REF_NAME}" \
+            --arg stage "eas-build-trigger" \
+            --arg errorMessage "The EAS build job failed (platform: ${{ github.event.inputs.platform }}, profile: ${{ github.event.inputs.profile }}). Possible causes: invalid EXPO_TOKEN, build quota exceeded, or a compile error. Check the run log for details." \
+            '{workflowName:$workflowName, runUrl:$runUrl, runId:$runId, commitSha:$commitSha, ref:$ref, stage:$stage, errorMessage:$errorMessage}')
+          echo "Reporting EAS build failure to $BASE_URL/api/admin/desktop-installer/publish-failure"
+          NOTIFY_BODY=$(mktemp)
+          NOTIFY_STATUS=$(curl --silent --show-error --output "$NOTIFY_BODY" --write-out '%{http_code}' \
+            -X POST \
+            -H "X-Platform-Admin-Secret: $PLATFORM_ADMIN_SECRET" \
+            -H "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            "$BASE_URL/api/admin/desktop-installer/publish-failure") || true
+          NOTIFY_STATUS="${NOTIFY_STATUS:-000}"
+          cat "$NOTIFY_BODY"; echo
+          if [[ ! "$NOTIFY_STATUS" =~ ^2[0-9][0-9]$ ]]; then
+            BODY_TRUNC=$(head -c 500 "$NOTIFY_BODY")
+            echo "::warning::Failed to deliver EAS build failure alert (HTTP $NOTIFY_STATUS): $BODY_TRUNC — admins will not receive an email for this run."
+          fi
