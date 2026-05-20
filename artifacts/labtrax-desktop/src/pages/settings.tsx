@@ -1606,6 +1606,7 @@ function RestoreSection({
   const [restoreMessage, setRestoreMessage] = useState<string | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreSuccess, setRestoreSuccess] = useState(false);
+  const [relaunchCountdown, setRelaunchCountdown] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -1619,6 +1620,23 @@ function RestoreSection({
   }, []);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  useEffect(() => {
+    if (!restoreSuccess || typeof electron?.relaunch !== "function") return;
+    setRelaunchCountdown(3);
+    const tick = setInterval(() => {
+      setRelaunchCountdown((c) => {
+        if (c === null) return null;
+        if (c <= 1) {
+          clearInterval(tick);
+          electron!.relaunch!();
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+    return () => clearInterval(tick);
+  }, [restoreSuccess, electron]);
 
   const startPolling = useCallback(() => {
     stopPolling();
@@ -1727,8 +1745,11 @@ function RestoreSection({
             {restoreSuccess && (
               <div className="rounded-md bg-success/10 border border-success/30 px-3 py-2 text-xs text-success font-medium">
                 Restore complete — restart the app to finish loading the restored data.
-                {typeof electron?.relaunch === "function" && (
-                  <span className="ml-1">(Relaunching in 3 seconds…)</span>
+                {relaunchCountdown !== null && relaunchCountdown > 0 && (
+                  <span className="ml-1">(Relaunching in {relaunchCountdown}…)</span>
+                )}
+                {(relaunchCountdown === null || relaunchCountdown === 0) && typeof electron?.relaunch !== "function" && (
+                  <span className="ml-1">Please restart the app manually.</span>
                 )}
               </div>
             )}

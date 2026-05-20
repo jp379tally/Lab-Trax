@@ -261,6 +261,11 @@ ipcMain.handle("install-update", () => {
   autoUpdater.quitAndInstall();
 });
 
+ipcMain.on("app:relaunch", () => {
+  app.relaunch();
+  app.exit(0);
+});
+
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
