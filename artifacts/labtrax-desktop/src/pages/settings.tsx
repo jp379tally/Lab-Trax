@@ -3333,6 +3333,14 @@ function MobileBuildPanel() {
     },
   });
 
+  const clearHistoryMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean }>("/admin/mobile-build/version-history", { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "mobile-build", "info"] });
+    },
+  });
+
   const triggerMutation = useMutation({
     mutationFn: () =>
       apiFetch<{ ok: boolean; trigger: MobileBuildInfo["lastTrigger"] }>("/admin/mobile-build/trigger", {
@@ -3464,7 +3472,19 @@ function MobileBuildPanel() {
           {/* Version change history */}
           {!info.appJsonError && info.versionHistory && info.versionHistory.length > 0 && (
             <div className="rounded-lg border border-border px-5 py-4 space-y-2">
-              <div className="text-sm font-semibold">Version change history</div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold">Version change history</div>
+                <button
+                  onClick={() => clearHistoryMutation.mutate()}
+                  disabled={clearHistoryMutation.isPending}
+                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-md border border-border text-xs text-muted-foreground hover:text-destructive hover:border-destructive disabled:opacity-50 transition-colors"
+                >
+                  {clearHistoryMutation.isPending ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : null}
+                  Clear history
+                </button>
+              </div>
               <div className="divide-y divide-border">
                 {info.versionHistory.map((entry, i) => (
                   <div key={i} className="flex items-center justify-between py-2 text-sm">

@@ -5358,6 +5358,18 @@ Important rules:
     return res.json({ ok: true, expoVersion: newVersion });
   });
 
+  router.delete("/admin/mobile-build/version-history", requireAuth, async (req, res) => {
+    if (!isPlatformAdmin(req)) {
+      return res.status(403).json({ error: "Admin access required." });
+    }
+
+    await db
+      .delete(systemSettings)
+      .where(eq(systemSettings.key, SETTING_MOBILE_VERSION_HISTORY));
+
+    return res.json({ ok: true });
+  });
+
   // Triggers a GitHub Actions workflow_dispatch for eas-build.yml.
   router.post("/admin/mobile-build/trigger", requireAuth, async (req, res) => {
     if (!isPlatformAdmin(req)) {
