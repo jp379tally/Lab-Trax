@@ -50,6 +50,12 @@ jobs:
         with:
           # Fetch full history so git push doesn't fail on shallow clones.
           fetch-depth: 0
+          # BUILD_BOT_TOKEN should be a fine-grained PAT (or GitHub App token)
+          # with "bypass branch protection" rights so the build-number commit-back
+          # push succeeds even when main requires a PR or status checks.
+          # Falls back to the default GITHUB_TOKEN on repos with no branch
+          # protection — callers that have not set the secret get the old behaviour.
+          token: ${{ secrets.BUILD_BOT_TOKEN || github.token }}
 
       - uses: pnpm/action-setup@v4
         with:
