@@ -3064,6 +3064,11 @@ interface MobileBuildInfo {
     html_url: string;
     created_at: string;
   } | null;
+  versionHistory: {
+    version: string;
+    changedByUsername: string;
+    changedAt: string;
+  }[];
 }
 
 type BuildRunStatus = "pending" | "queued" | "running" | "success" | "failed" | "cancelled" | "unknown";
@@ -3403,6 +3408,27 @@ function MobileBuildPanel() {
               </div>
               {versionError && <Alert tone="danger">{versionError}</Alert>}
               {versionSuccess && <Alert tone="success">Version updated and committed to app.json.</Alert>}
+            </div>
+          )}
+
+          {/* Version change history */}
+          {!info.appJsonError && info.versionHistory && info.versionHistory.length > 0 && (
+            <div className="rounded-lg border border-border px-5 py-4 space-y-2">
+              <div className="text-sm font-semibold">Version change history</div>
+              <div className="divide-y divide-border">
+                {info.versionHistory.map((entry, i) => (
+                  <div key={i} className="flex items-center justify-between py-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-semibold text-primary">{entry.version}</span>
+                      <span className="text-muted-foreground text-xs">by {entry.changedByUsername}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      <Clock size={10} className="inline mr-1 -mt-px" />
+                      {formatTriggerTime(entry.changedAt)}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

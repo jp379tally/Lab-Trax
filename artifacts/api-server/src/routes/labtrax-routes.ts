@@ -3798,6 +3798,8 @@ Important rules:
   const SETTING_DESKTOP_INSTALLER_VERSION = "desktop_installer_version";
   const SETTING_DESKTOP_INSTALLER_RELEASE_NOTES = "desktop_installer_release_notes";
   const SETTING_MOBILE_BUILD_LAST_TRIGGER = "mobile_build_last_trigger";
+  const SETTING_MOBILE_VERSION_HISTORY = "mobile_app_version_history";
+  const MOBILE_VERSION_HISTORY_MAX_ROWS = 20;
 
   function validateInstallerUrl(url: string): string | null {
     if (url.startsWith("https://") || url.startsWith("/downloads/")) return null;
@@ -5176,19 +5178,34 @@ Important rules:
     const repoOwner = repoMatch?.[1] ?? null;
     const repoName = repoMatch?.[2] ?? null;
 
-    const [lastTriggerRow] = await db
+    const settingRows = await db
       .select()
       .from(systemSettings)
-      .where(eq(systemSettings.key, SETTING_MOBILE_BUILD_LAST_TRIGGER));
+      .where(inArray(systemSettings.key, [SETTING_MOBILE_BUILD_LAST_TRIGGER, SETTING_MOBILE_VERSION_HISTORY]));
+    const settingMap = Object.fromEntries(settingRows.map((r) => [r.key, r.value]));
+
     let lastTrigger: {
       platform: string;
       profile: string;
       triggeredAt: string;
       triggeredByUsername: string;
     } | null = null;
-    if (lastTriggerRow?.value) {
+    const lastTriggerRaw = settingMap[SETTING_MOBILE_BUILD_LAST_TRIGGER];
+    if (lastTriggerRaw) {
       try {
-        lastTrigger = JSON.parse(lastTriggerRow.value) as typeof lastTrigger;
+        lastTrigger = JSON.parse(lastTriggerRaw) as typeof lastTrigger;
+      } catch {
+        /* ignore malformed row */
+      }
+    }
+
+    type VersionHistoryEntry = { version: string; changedByUsername: string; changedAt: string };
+    let versionHistory: VersionHistoryEntry[] = [];
+    const historyRaw = settingMap[SETTING_MOBILE_VERSION_HISTORY];
+    if (historyRaw) {
+      try {
+        const parsed = JSON.parse(historyRaw) as unknown;
+        if (Array.isArray(parsed)) versionHistory = parsed as VersionHistoryEntry[];
       } catch {
         /* ignore malformed row */
       }
@@ -5264,6 +5281,7 @@ Important rules:
       tokenConfigured,
       lastTrigger,
       latestRun,
+      versionHistory: versionHistory.slice(0, 5),
     });
   });
 
@@ -5300,13 +5318,34 @@ Important rules:
       return res.status(500).json({ error: `Could not write app.json: ${(err as Error).message}` });
     }
 
+    const reqUser = (req as any).user as { username?: string } | undefined;
+    const author = reqUser?.username ?? "labtrax-admin";
+
+    // Record version history in system_settings (capped at MOBILE_VERSION_HISTORY_MAX_ROWS).
+    // This is part of the success contract — a failure here returns 500 so no audit record is silently lost.
+    const [historyRow] = await db
+      .select()
+      .from(systemSettings)
+      .where(eq(systemSettings.key, SETTING_MOBILE_VERSION_HISTORY));
+    let history: { version: string; changedByUsername: string; changedAt: string }[] = [];
+    if (historyRow?.value) {
+      try {
+        const parsed = JSON.parse(historyRow.value) as unknown;
+        if (Array.isArray(parsed)) history = parsed as typeof history;
+      } catch { /* malformed JSON — start fresh */ }
+    }
+    history.unshift({ version: newVersion, changedByUsername: author, changedAt: new Date().toISOString() });
+    if (history.length > MOBILE_VERSION_HISTORY_MAX_ROWS) history = history.slice(0, MOBILE_VERSION_HISTORY_MAX_ROWS);
+    await db
+      .insert(systemSettings)
+      .values({ key: SETTING_MOBILE_VERSION_HISTORY, value: JSON.stringify(history) })
+      .onConflictDoUpdate({ target: systemSettings.key, set: { value: JSON.stringify(history), updatedAt: new Date() } });
+
     // Attempt a git commit; failures are non-fatal — the file has already been updated.
     await new Promise<void>((resolve) => {
       const git = spawn("git", ["add", appJsonPath], { stdio: "ignore" });
       git.on("close", (addCode) => {
         if (addCode !== 0) { resolve(); return; }
-        const reqUser = (req as any).user as { username?: string } | undefined;
-        const author = reqUser?.username ?? "labtrax-admin";
         const commit = spawn(
           "git",
           ["commit", "-m", `chore: bump mobile app version to ${newVersion} (via settings panel by ${author})`],
