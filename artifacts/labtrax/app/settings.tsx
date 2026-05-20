@@ -219,6 +219,7 @@ export default function SettingsScreen() {
   };
   const [buildCounterWarning, setBuildCounterWarning] = useState<BuildCounterWarning | null>(null);
   const [buildCounterRepoUrl, setBuildCounterRepoUrl] = useState<string | null>(null);
+  const [isDismissingBuildCounterWarning, setIsDismissingBuildCounterWarning] = useState(false);
 
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
@@ -271,6 +272,23 @@ export default function SettingsScreen() {
     void fetchBuildCounterWarning();
     return () => { cancelled = true; };
   }, [userType]);
+
+  async function dismissBuildCounterWarning() {
+    setIsDismissingBuildCounterWarning(true);
+    try {
+      const res = await resilientFetch(
+        "/api/admin/settings/desktop-installer/build-counter-warning",
+        { method: "DELETE" },
+      );
+      if (res.ok) {
+        setBuildCounterWarning(null);
+      }
+    } catch {
+      // silently ignore — warning remains visible
+    } finally {
+      setIsDismissingBuildCounterWarning(false);
+    }
+  }
 
   async function updateEmailPref(key: keyof EmailPrefs, value: boolean) {
     setEmailPrefs((prev) => ({ ...prev, [key]: value }));
@@ -1814,6 +1832,25 @@ export default function SettingsScreen() {
                       </View>
                     )}
                   </View>
+                  <Pressable
+                    style={({ pressed }) => ({
+                      alignSelf: "flex-start",
+                      marginTop: 6,
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      borderRadius: 8,
+                      backgroundColor: pressed ? "#FDE68A" : "#FEF3C7",
+                      borderWidth: 1,
+                      borderColor: "#F59E0B",
+                      opacity: isDismissingBuildCounterWarning ? 0.6 : 1,
+                    })}
+                    onPress={() => { void dismissBuildCounterWarning(); }}
+                    disabled={isDismissingBuildCounterWarning}
+                  >
+                    <Text style={{ fontSize: 12, fontFamily: "Inter_600SemiBold", color: "#92400E" }}>
+                      {isDismissingBuildCounterWarning ? "Dismissing…" : "Mark as resolved"}
+                    </Text>
+                  </Pressable>
                 </View>
               </View>
             </Pressable>
