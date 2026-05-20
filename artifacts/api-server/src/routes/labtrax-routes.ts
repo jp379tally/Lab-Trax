@@ -5194,6 +5194,65 @@ Important rules:
       }
     }
 
+    // Fetch eas-build.yml runs from GitHub Actions API and correlate to the
+    // last trigger record. We fetch the most recent 10 runs so we can find
+    // the first one whose created_at is at or after triggeredAt (with a
+    // 2-minute tolerance for clock skew between GitHub and our server).
+    // When a trigger is very recent, GitHub may not have created the run yet —
+    // in that case we return null so the frontend can display "Pending".
+    let latestRun: {
+      id: number;
+      status: string;
+      conclusion: string | null;
+      html_url: string;
+      created_at: string;
+    } | null = null;
+    const ghToken = process.env.GITHUB_ACTIONS_TOKEN;
+    if (ghToken && repoOwner && repoName) {
+      try {
+        const runsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/actions/workflows/eas-build.yml/runs?per_page=10&branch=main`;
+        const runsRes = await fetch(runsUrl, {
+          headers: {
+            Authorization: `Bearer ${ghToken}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        });
+        if (runsRes.ok) {
+          const runsBody = await runsRes.json() as {
+            workflow_runs?: Array<{
+              id: number;
+              status: string;
+              conclusion: string | null;
+              html_url: string;
+              created_at: string;
+            }>;
+          };
+          const runs = runsBody.workflow_runs ?? [];
+          if (lastTrigger?.triggeredAt) {
+            // Allow 2-minute tolerance: the run may have been created slightly
+            // before our server recorded triggeredAt due to clock skew.
+            const windowMs = 2 * 60 * 1000;
+            const triggeredAtMs = new Date(lastTrigger.triggeredAt).getTime();
+            const thresholdMs = triggeredAtMs - windowMs;
+            // runs are sorted newest-first by GitHub; find the oldest run
+            // within our window (i.e., the first one actually dispatched by
+            // this trigger) by scanning from oldest to newest among candidates.
+            const candidates = runs.filter(
+              (r) => new Date(r.created_at).getTime() >= thresholdMs,
+            );
+            // candidates are newest-first; the last element is the oldest match,
+            // which corresponds to the specific trigger we dispatched.
+            latestRun = candidates.at(-1) ?? null;
+          } else {
+            latestRun = runs[0] ?? null;
+          }
+        }
+      } catch (err) {
+        req.log.warn({ err }, "Failed to fetch latest GitHub Actions run for mobile build");
+      }
+    }
+
     return res.json({
       iosBuildNumber,
       androidVersionCode,
@@ -5204,6 +5263,7 @@ Important rules:
       repoName,
       tokenConfigured,
       lastTrigger,
+      latestRun,
     });
   });
 
