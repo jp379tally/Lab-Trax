@@ -1,3 +1,5 @@
+import { getSessionSecret, clearSessionSecret } from "./platform-admin-session";
+
 const _API_ORIGIN =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
 
@@ -64,6 +66,13 @@ function emit(user: SessionUser | null) {
 export function notifySessionCleared() {
   // The encrypted blob on disk is preserved so the next sign-in still sees it.
   clearPlatformAdminSecretCacheSafe();
+  // Drop the in-memory web-view session secret so it doesn't carry over to a
+  // new sign-in by a different user.
+  try {
+    clearSessionSecret();
+  } catch {
+    /* ignore */
+  }
   emit(null);
 }
 
@@ -145,7 +154,11 @@ async function loadPlatformAdminSecret(): Promise<string | null> {
 }
 
 async function getPlatformAdminSecretForRequest(): Promise<string | null> {
-  if (!getPlatformAdminBridge()) return null;
+  if (!getPlatformAdminBridge()) {
+    // No Electron bridge (web view / Replit preview): fall back to the
+    // in-memory session secret that the admin entered via the unlock modal.
+    return getSessionSecret();
+  }
   if (platformAdminCacheLoaded) return platformAdminSecretCache;
   return loadPlatformAdminSecret();
 }

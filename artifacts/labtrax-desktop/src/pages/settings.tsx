@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { apiFetch, ApiError, notifySessionCleared } from "@/lib/api";
 import { usePlatformAdminGate, PlatformAdminSetupNotice } from "@/lib/platform-admin-gate";
+import { getSessionSecret, clearSessionSecret, useSessionSecretVersion } from "@/lib/platform-admin-session";
 import { formatPhone } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import type { MeResponse, Organization } from "@/lib/types";
@@ -58,10 +59,10 @@ export default function SettingsPage() {
     { key: "users", label: "Users", icon: ShieldCheck, show: isAdmin },
     { key: "backup", label: "Backup", icon: ShieldCheck, show: isAdmin },
     { key: "desktop", label: "Desktop app", icon: Download, show: isAdmin },
-    { key: "mobile", label: "Mobile app", icon: Smartphone, show: isAdmin && hasPlatformAdminBridge },
+    { key: "mobile", label: "Mobile app", icon: Smartphone, show: isAdmin },
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
-    { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin && hasPlatformAdminBridge },
-    { key: "subscriptions", label: "Subscriptions", icon: CreditCard, show: isAdmin && hasPlatformAdminBridge },
+    { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin },
+    { key: "subscriptions", label: "Subscriptions", icon: CreditCard, show: isAdmin },
     { key: "notifications", label: "Notifications", icon: Monitor, show: true },
   ];
   const [tab, setTab] = useState<TabKey>(readInitialTab);
@@ -106,10 +107,10 @@ export default function SettingsPage() {
           {tab === "users" && isAdmin && <UsersPanel />}
           {tab === "backup" && isAdmin && <BackupPanel />}
           {tab === "desktop" && isAdmin && <DesktopInstallerPanel />}
-          {tab === "mobile" && isAdmin && hasPlatformAdminBridge && <MobileBuildPanel />}
+          {tab === "mobile" && isAdmin && <MobileBuildPanel />}
           {tab === "itero" && isAdmin && <IteroPanel />}
-          {tab === "platform-admin" && isAdmin && hasPlatformAdminBridge && <PlatformAdminPanel />}
-          {tab === "subscriptions" && isAdmin && hasPlatformAdminBridge && <SubscriptionsPanel />}
+          {tab === "platform-admin" && isAdmin && <PlatformAdminPanel />}
+          {tab === "subscriptions" && isAdmin && <SubscriptionsPanel />}
           {tab === "notifications" && <NotificationsPanel />}
         </div>
       </div>
@@ -2178,6 +2179,13 @@ function DesktopInstallerPanel() {
     setUploadConfirmPending(file);
   }
 
+  const gate = usePlatformAdminGate([
+    query.error,
+    saveMutation.error,
+    uploadMutation.error,
+    resetMutation.error,
+  ]);
+
   const info = query.data;
   const isExe = info?.downloadUrl.toLowerCase().endsWith(".exe") ?? false;
   const isDmg = info?.downloadUrl.toLowerCase().endsWith(".dmg") ?? false;
@@ -2199,13 +2207,14 @@ function DesktopInstallerPanel() {
           : "Download and distribute LabTrax Desktop to staff Windows machines."
       }
     >
+      {gate.blocked && <PlatformAdminSetupNotice />}
       {query.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 size={13} className="animate-spin" />
           Loading…
         </div>
       )}
-      {query.error && (
+      {query.error && !gate.blocked && (
         <Alert tone="danger">{(query.error as Error).message}</Alert>
       )}
       {info && (
@@ -3590,6 +3599,12 @@ function MobileBuildPanel() {
     }
   }, [isPolling, statusQuery.data, triggerTimestamp]);
 
+  const mobileBuildGate = usePlatformAdminGate([
+    query.error,
+    versionMutation.error,
+    triggerMutation.error,
+  ]);
+
   const info = query.data;
   const repoBase = info?.repoUrl ? info.repoUrl.replace(/\/$/, "") : null;
   const actionsUrl = repoBase ? `${repoBase}/actions/workflows/eas-build.yml` : null;
@@ -3608,13 +3623,14 @@ function MobileBuildPanel() {
       title="Mobile app"
       subtitle="Trigger an EAS cloud build for iOS or Android straight from this settings panel."
     >
+      {mobileBuildGate.blocked && <PlatformAdminSetupNotice />}
       {query.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 size={13} className="animate-spin" />
           Loading…
         </div>
       )}
-      {query.error && (
+      {query.error && !mobileBuildGate.blocked && (
         <Alert tone="danger">{(query.error as Error).message}</Alert>
       )}
       {info && (
@@ -4354,11 +4370,53 @@ function PlatformAdminPanel() {
     };
   }, [platformAdmin]);
 
+  // Re-render when the web-view session secret changes so the panel updates
+  // immediately after unlock (or after the secret is cleared).
+  useSessionSecretVersion();
+  const sessionSecret = getSessionSecret();
+
   if (!platformAdmin) {
+    // Web view: the OS keychain is not available, but the admin can still
+    // unlock all admin tools for this session via the in-memory secret prompt.
+    // Show the unlock notice if not yet unlocked, or a confirmation + clear
+    // button if already unlocked.
     return (
-      <PanelShell title="Platform admin" subtitle="Available in the desktop app only.">
-        <div className="px-6 py-4 text-sm text-muted-foreground">
-          The platform admin secret is stored on this machine via the OS keychain. Open this panel from the LabTrax Desktop app to configure it.
+      <PanelShell
+        title="Platform admin"
+        subtitle="Unlock platform-wide admin tools for this browser session."
+      >
+        <div className="space-y-4">
+          {sessionSecret ? (
+            <div className="rounded-md border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/40 px-4 py-3 text-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="font-medium text-green-800 dark:text-green-300">
+                    Admin tools unlocked for this session
+                  </p>
+                  <p className="text-xs text-green-700 dark:text-green-400">
+                    The secret is held only in memory and will be forgotten when
+                    you refresh the page. To manage the OS-keychain copy,{" "}
+                    open this panel from the LabTrax Desktop app.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => clearSessionSecret()}
+                  className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded text-xs font-medium border border-green-300 dark:border-green-700 bg-green-100 dark:bg-green-900 hover:bg-green-200 dark:hover:bg-green-800 text-green-800 dark:text-green-200 transition-colors"
+                >
+                  Lock
+                </button>
+              </div>
+            </div>
+          ) : (
+            <PlatformAdminSetupNotice />
+          )}
+          <p className="text-xs text-muted-foreground">
+            In the LabTrax Desktop app, the{" "}
+            <code className="font-mono">PLATFORM_ADMIN_SECRET</code> is saved to
+            the OS keychain and injected automatically. In the web view it is
+            held in memory only for the current session.
+          </p>
         </div>
       </PanelShell>
     );

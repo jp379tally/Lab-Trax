@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
-import { Wrench } from "lucide-react";
-import { ApiError } from "@/lib/api";
+import { Lock, Loader2, Wrench } from "lucide-react";
+import { ApiError, getAccessToken, getApiOrigin } from "@/lib/api";
+import {
+  getSessionSecret,
+  setSessionSecret,
+  useSessionSecretVersion,
+} from "@/lib/platform-admin-session";
+import { useQueryClient } from "@tanstack/react-query";
 
 type PlatformAdminStatus = {
   available: boolean;
@@ -27,13 +33,13 @@ function getBridge(): PlatformAdminBridge | null {
  * admin secret is not configured for the current session. This swaps the
  * panel's destructive raw error for a calm "Set this up first" notice.
  *
- * Two contexts trigger the block:
+ * Three contexts trigger the block:
  *   - Desktop (Electron) build: the bridge exists, but the user hasn't saved
  *     the secret to the OS keychain yet → walk them to Settings.
- *   - Web build / Replit preview / any non-Electron browser: there is no
- *     bridge at all, so the secret can't be sent — the panel should show
- *     the same calm notice instead of leaking raw "Admin access required."
- *     errors into the dashboard. The notice copy adapts to that case.
+ *   - Web build / Replit preview / any non-Electron browser with no session
+ *     secret entered → show the "Unlock admin tools" prompt.
+ *   - Web build with a session secret already set → secret is injected into
+ *     all `/admin/` calls; `configured` is `true` so `blocked` stays `false`.
  */
 export function usePlatformAdminGate(errors: Array<unknown>): {
   blocked: boolean;
@@ -42,6 +48,10 @@ export function usePlatformAdminGate(errors: Array<unknown>): {
 } {
   const bridge = getBridge();
   const [status, setStatus] = useState<PlatformAdminStatus | null>(null);
+
+  // Re-render whenever the in-memory session secret changes so the gate
+  // unblocks immediately after a successful web-view unlock.
+  useSessionSecretVersion();
 
   useEffect(() => {
     if (!bridge) return;
@@ -58,22 +68,116 @@ export function usePlatformAdminGate(errors: Array<unknown>): {
 
   const has403 = errors.some((e) => e instanceof ApiError && e.status === 403);
   const hasBridge = !!bridge;
-  const configured = !!status?.configured;
-  // Block on any 403 from a platform-admin endpoint when the secret is not
-  // available for this session — regardless of whether we're running inside
-  // Electron (bridge present, secret not yet saved) or in a plain browser
-  // (no bridge at all). Previously this was gated on `hasBridge`, which let
-  // raw 403s leak through in the web preview.
+  // Configured when: Electron bridge says so, OR the admin has entered a
+  // session secret via the web-view unlock modal.
+  const configured = !!status?.configured || !!getSessionSecret();
   const blocked = !configured && has403;
   return { blocked, hasBridge, configured };
 }
 
+// ---------------------------------------------------------------------------
+// Unlock modal
+// ---------------------------------------------------------------------------
+
+/**
+ * Modal that prompts the admin for the PLATFORM_ADMIN_SECRET. On submit it
+ * calls `onUnlock(secret)`; the caller is responsible for verifying and
+ * storing the secret (or throwing with a user-facing error message on failure).
+ */
+export function PlatformAdminUnlockModal({
+  onClose,
+  onUnlock,
+}: {
+  onClose: () => void;
+  onUnlock: (secret: string) => Promise<void>;
+}) {
+  const [secret, setSecret] = useState("");
+  const [isPending, setIsPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = secret.trim();
+    if (!trimmed) return;
+    setIsPending(true);
+    setError(null);
+    try {
+      await onUnlock(trimmed);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Invalid secret — please check and try again.",
+      );
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="bg-card border border-border rounded-xl p-6 w-full max-w-sm shadow-lg space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2">
+          <Lock size={16} className="text-muted-foreground" />
+          <h2 className="text-sm font-semibold">Unlock admin tools</h2>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          Enter the deployment&rsquo;s{" "}
+          <code className="font-mono">PLATFORM_ADMIN_SECRET</code> to access
+          platform admin tools for this session. The secret is only held in
+          memory and is forgotten when you refresh the page.
+        </p>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input
+            type="password"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            placeholder="Platform admin secret"
+            className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            autoFocus
+            disabled={isPending}
+          />
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <div className="flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-8 px-3 text-sm rounded-md border border-border hover:bg-secondary transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isPending || !secret.trim()}
+              className="h-8 px-3 text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-60 inline-flex items-center gap-1.5 transition-colors"
+            >
+              {isPending && <Loader2 size={12} className="animate-spin" />}
+              Unlock
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Setup notice
+// ---------------------------------------------------------------------------
+
 /**
  * Calm setup-notice block shown in place of the normal admin-panel content
  * when the platform admin secret hasn't been configured for this session.
- * Copy adapts to whether we're running inside Electron (where the secret can
- * be saved to the OS keychain) or a plain browser/web preview (where it
- * cannot, so the user is redirected to use the desktop client).
+ * Copy adapts to context:
+ *   - Electron build: walk the user to Settings → Platform admin.
+ *   - Web view / Replit preview: show an "Unlock admin tools" button that
+ *     opens a modal prompting for the PLATFORM_ADMIN_SECRET. After a
+ *     successful unlock all admin queries are invalidated so the section
+ *     retries and renders normally.
  */
 export function PlatformAdminSetupNotice({
   variant = "block",
@@ -81,50 +185,101 @@ export function PlatformAdminSetupNotice({
   variant?: "block" | "inline";
 }) {
   const hasBridge = !!getBridge();
+  const [showModal, setShowModal] = useState(false);
+  const qc = useQueryClient();
+
+  async function handleUnlock(secret: string): Promise<void> {
+    const token = getAccessToken();
+    const apiOrigin = getApiOrigin();
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "X-Platform-Admin-Secret": secret,
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    let r: Response;
+    try {
+      r = await fetch(`${apiOrigin}/api/admin/settings/desktop-installer`, { headers });
+    } catch {
+      throw new Error("Could not reach the server. Check your connection and try again.");
+    }
+
+    if (r.status === 403) {
+      throw new Error("Invalid secret — please check and try again.");
+    }
+    if (!r.ok) {
+      // Non-403 errors (500, etc.) likely mean the secret is correct but
+      // something else is wrong. Accept it and let the page surface the
+      // downstream error rather than blocking the admin entirely.
+    }
+
+    setSessionSecret(secret);
+    setShowModal(false);
+    // Retry all admin queries so the blocked sections load immediately.
+    void qc.invalidateQueries({ queryKey: ["admin"] });
+    void qc.invalidateQueries({ queryKey: ["admin-subscriptions"] });
+  }
+
   return (
-    <div
-      className={`rounded-md border border-border bg-secondary/40 ${
-        variant === "block" ? "px-4 py-3" : "px-3 py-2"
-      } text-sm`}
-    >
-      <div className="flex items-start gap-2">
-        <Wrench size={14} className="mt-0.5 text-muted-foreground shrink-0" />
-        <div className="space-y-1.5 min-w-0">
-          <div className="font-medium text-foreground">
-            {hasBridge
-              ? "Platform admin secret not configured"
-              : "Platform admin tools unavailable in the web view"}
-          </div>
-          <p className="text-xs text-muted-foreground">
+    <>
+      <div
+        className={`rounded-md border border-border bg-secondary/40 ${
+          variant === "block" ? "px-4 py-3" : "px-3 py-2"
+        } text-sm`}
+      >
+        <div className="flex items-start gap-2">
+          <Wrench size={14} className="mt-0.5 text-muted-foreground shrink-0" />
+          <div className="space-y-1.5 min-w-0">
+            <div className="font-medium text-foreground">
+              {hasBridge
+                ? "Platform admin secret not configured"
+                : "Admin access required"}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {hasBridge ? (
+                <>
+                  Platform-wide maintenance endpoints (Media Cleanup, Backup
+                  schedule, Cleanup alerts) require the deployment&rsquo;s{" "}
+                  <code className="font-mono">PLATFORM_ADMIN_SECRET</code> to be
+                  saved on this machine. The secret is encrypted via the OS
+                  keychain and never leaves this device.
+                </>
+              ) : (
+                <>
+                  Platform admin tools require the deployment&rsquo;s{" "}
+                  <code className="font-mono">PLATFORM_ADMIN_SECRET</code> to be
+                  unlocked for this session. The secret is only held in memory
+                  and is forgotten when you refresh the page.
+                </>
+              )}
+            </p>
             {hasBridge ? (
-              <>
-                Platform-wide maintenance endpoints (Media Cleanup, Backup
-                schedule, Cleanup alerts) require the deployment&rsquo;s{" "}
-                <code className="font-mono">PLATFORM_ADMIN_SECRET</code> to be
-                saved on this machine. The secret is encrypted via the OS
-                keychain and never leaves this device.
-              </>
+              <Link
+                to="/settings?tab=platform-admin"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+              >
+                Open Settings → Platform admin
+              </Link>
             ) : (
-              <>
-                Platform-wide maintenance tools (Media Cleanup, Backup
-                schedule, Cleanup alerts) can only run from the LabTrax
-                Desktop app, which stores the deployment&rsquo;s{" "}
-                <code className="font-mono">PLATFORM_ADMIN_SECRET</code>{" "}
-                encrypted in the OS keychain. Open the desktop app and
-                configure it under Settings → Platform admin.
-              </>
+              <button
+                type="button"
+                onClick={() => setShowModal(true)}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+              >
+                <Lock size={11} />
+                Unlock admin tools
+              </button>
             )}
-          </p>
-          {hasBridge && (
-            <Link
-              to="/settings?tab=platform-admin"
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
-            >
-              Open Settings → Platform admin
-            </Link>
-          )}
+          </div>
         </div>
       </div>
-    </div>
+
+      {showModal && (
+        <PlatformAdminUnlockModal
+          onClose={() => setShowModal(false)}
+          onUnlock={handleUnlock}
+        />
+      )}
+    </>
   );
 }
