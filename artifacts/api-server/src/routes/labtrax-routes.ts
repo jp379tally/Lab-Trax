@@ -5242,8 +5242,12 @@ Important rules:
 
   // ── Admin: Mobile Build ────────────────────────────────────────────────────
   // Returns current build numbers from app.json and last-triggered build info.
+  // The platform-admin secret is not required for GET so that mobile clients
+  // (which cannot hold the server-side secret) can fetch version history when
+  // the authenticated user has the admin role.
   router.get("/admin/mobile-build/info", requireAuth, async (req, res) => {
-    if (!isPlatformAdmin(req)) {
+    const reqUser = (req as any).user as { role?: string } | undefined;
+    if (!reqUser || reqUser.role !== "admin") {
       return res.status(403).json({ error: "Admin access required." });
     }
 

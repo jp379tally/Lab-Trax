@@ -86,6 +86,10 @@ export default function SettingsScreen() {
   const [backupHistory, setBackupHistory] = useState<BackupRun[]>([]);
   const [backupHistoryLoading, setBackupHistoryLoading] = useState(false);
 
+  type VersionHistoryEntry = { version: string; changedByUsername: string; changedAt: string };
+  const [mobileBuildVersionHistory, setMobileBuildVersionHistory] = useState<VersionHistoryEntry[]>([]);
+  const [mobileBuildVersionLoading, setMobileBuildVersionLoading] = useState(false);
+
   type RestorePhase = "idle" | "uploading" | "validating" | "decrypting" | "restoring_db" | "restoring_media" | "done" | "error";
   const RESTORE_PHASE_LABELS: Record<RestorePhase, string> = {
     idle: "Idle",
@@ -301,6 +305,33 @@ export default function SettingsScreen() {
     return () => { cancelled = true; };
   }, [isLabAdminForEffect]);
 
+  const currentUserDataForVersionEffect = registeredUsers.find(
+    (u) => u.username.toLowerCase() === (currentUser || "").toLowerCase()
+  );
+  const isAnyAdminForEffect = currentUserDataForVersionEffect?.role === "admin";
+
+  useEffect(() => {
+    if (!isAnyAdminForEffect) return;
+    let cancelled = false;
+    async function fetchMobileBuildInfo() {
+      setMobileBuildVersionLoading(true);
+      try {
+        const res = await resilientFetch("/api/admin/mobile-build/info");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data.versionHistory)) {
+          setMobileBuildVersionHistory((data.versionHistory as { version: string; changedByUsername: string; changedAt: string }[]).slice(0, 5));
+        }
+      } catch {
+        // gracefully ignore
+      } finally {
+        if (!cancelled) setMobileBuildVersionLoading(false);
+      }
+    }
+    void fetchMobileBuildInfo();
+    return () => { cancelled = true; };
+  }, [isAnyAdminForEffect]);
+
   function handleStatusChange(status: UserStatus) {
     setUserStatus(status);
     AsyncStorage.setItem(`@labtrax_status_${currentUser}`, status);
@@ -360,6 +391,7 @@ export default function SettingsScreen() {
   const currentUserData = registeredUsers.find(u => u.username.toLowerCase() === (currentUser || "").toLowerCase());
   const isProviderAdmin = userType === "provider" && currentUserData?.role === "admin";
   const isLabAdmin = userType === "lab" && currentUserData?.role === "admin";
+  const isAnyAdmin = currentUserData?.role === "admin";
 
   async function loadLabDirectory(force = false): Promise<LabDirectoryEntry[]> {
     if (!force && labDirectoryCache.length > 0) {
@@ -1584,6 +1616,47 @@ export default function SettingsScreen() {
             </View>
           </View>
         </View>
+
+        {isAnyAdmin && (mobileBuildVersionLoading || mobileBuildVersionHistory.length > 0) && (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>VERSION HISTORY</Text>
+            <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {mobileBuildVersionLoading && mobileBuildVersionHistory.length === 0 ? (
+                <View style={{ padding: 24, alignItems: "center" }}>
+                  <ActivityIndicator size="small" color={colors.tint} />
+                </View>
+              ) : mobileBuildVersionHistory.length === 0 ? null : (
+                mobileBuildVersionHistory.map((entry, idx) => {
+                  const date = new Date(entry.changedAt);
+                  const dateStr = date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+                  return (
+                    <React.Fragment key={`${entry.version}-${idx}`}>
+                      {idx > 0 && (
+                        <View style={[styles.menuDivider, { backgroundColor: colors.borderLight, marginLeft: 0 }]} />
+                      )}
+                      <View style={[styles.menuItem, { paddingVertical: 14 }]}>
+                        <View style={[styles.menuIcon, { backgroundColor: "#EDE9FE" }]}>
+                          <Ionicons name="git-commit" size={18} color="#7C3AED" />
+                        </View>
+                        <View style={styles.menuInfo}>
+                          <Text style={[styles.menuTitle, { color: colors.text }]}>v{entry.version}</Text>
+                          <Text style={[styles.menuSub, { color: colors.textSecondary }]}>
+                            {entry.changedByUsername} · {dateStr}
+                          </Text>
+                        </View>
+                        {idx === 0 && (
+                          <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: "#EDE9FE" }}>
+                            <Text style={{ fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#7C3AED" }}>Latest</Text>
+                          </View>
+                        )}
+                      </View>
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </View>
+          </View>
+        )}
 
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>LEGAL</Text>
