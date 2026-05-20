@@ -2109,6 +2109,17 @@ function DesktopInstallerPanel() {
     },
   });
 
+  const dismissBuildCounterWarningMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ success: boolean }>(
+        "/admin/settings/desktop-installer/build-counter-warning",
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "desktop-installer"] });
+    },
+  });
+
   const uploadMutation = useMutation({
     mutationFn: async ({ file, force }: { file: File; force?: boolean }) => {
       const fd = new FormData();
@@ -2267,6 +2278,14 @@ function DesktopInstallerPanel() {
                         branch: {info.buildCounterWarning.ref}
                       </span>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => dismissBuildCounterWarningMutation.mutate()}
+                      disabled={dismissBuildCounterWarningMutation.isPending}
+                      className="ml-auto text-xs font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:no-underline disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {dismissBuildCounterWarningMutation.isPending ? "Dismissing…" : "Mark as resolved"}
+                    </button>
                   </div>
                 </div>
               </div>

@@ -4575,6 +4575,26 @@ Important rules:
     }
   });
 
+  router.delete(
+    "/admin/settings/desktop-installer/build-counter-warning",
+    requireAuth,
+    async (req, res) => {
+      if (!isPlatformAdmin(req)) {
+        return res.status(403).json({ error: "Admin access required." });
+      }
+      try {
+        await db
+          .delete(systemSettings)
+          .where(eq(systemSettings.key, SETTING_BUILD_COUNTER_WARNING));
+        return res.json({ success: true });
+      } catch (e: any) {
+        return res
+          .status(500)
+          .json({ error: e?.message || "Failed to dismiss build counter warning." });
+      }
+    },
+  );
+
   // ── Admin: Subscriptions list ─────────────────────────────────────────────
   // Returns a paginated list of all subscription rows with provider, status,
   // currentPeriodEnd, and masked IDs. Platform-admin-secret gated.
