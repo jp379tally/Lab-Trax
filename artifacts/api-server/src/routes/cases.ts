@@ -3179,7 +3179,6 @@ async function extractRxFieldsFromBuffer(
       },
     ],
     max_completion_tokens: 1200,
-    temperature: 0.1,
   });
   const text = resp.choices?.[0]?.message?.content || "";
   const m = text.match(/\{[\s\S]*\}/);

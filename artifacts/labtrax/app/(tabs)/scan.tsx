@@ -12,6 +12,7 @@ import {
   Animated as RNAnimated,
   ActivityIndicator,
   Dimensions,
+  Linking,
 } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -4141,6 +4142,7 @@ export default function ScanScreen() {
   }
 
   if (!permission.granted && phase === "camera") {
+    const canAskAgain = permission.canAskAgain !== false;
     return (
       <View style={[styles.container, styles.permissionContainer]}>
         <View style={styles.permissionContent}>
@@ -4149,20 +4151,22 @@ export default function ScanScreen() {
           </View>
           <Text style={styles.permissionTitle}>Camera Access Required</Text>
           <Text style={styles.permissionDesc}>
-            This feature uses your camera to capture dental case photos.
+            {canAskAgain
+              ? "This feature uses your camera to capture dental case photos."
+              : "Camera access was denied. Open Settings to allow camera access for LabTrax."}
           </Text>
           <Pressable
             onPress={() => {
-              Alert.alert(
-                "Camera Access",
-                "This feature uses your camera to capture dental case photos.",
-                [{ text: "Continue", onPress: () => requestPermission() }]
-              );
+              if (canAskAgain) {
+                requestPermission();
+              } else {
+                Linking.openSettings();
+              }
             }}
             style={({ pressed }) => [styles.permissionBtn, pressed && { opacity: 0.85 }]}
           >
-            <Ionicons name="camera" size={20} color="#FFF" />
-            <Text style={styles.permissionBtnText}>Enable Camera</Text>
+            <Ionicons name={canAskAgain ? "camera" : "settings-outline"} size={20} color="#FFF" />
+            <Text style={styles.permissionBtnText}>{canAskAgain ? "Enable Camera" : "Open Settings"}</Text>
           </Pressable>
           <Pressable
             onPress={handleManualEntry}

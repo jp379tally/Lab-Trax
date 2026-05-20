@@ -676,7 +676,7 @@ function TechDashboard({ onReopenMasterHub }: { onReopenMasterHub?: () => void }
               styles.headerQuickBtn,
               pressed && styles.quickBtnPressed,
             ]}
-            onPress={() => router.push({ pathname: "/(tabs)/scan", params: { n: String(Date.now()) } })}
+            onPress={() => router.push({ pathname: "/(tabs)/scan", params: { mode: "manual", n: String(Date.now()) } })}
           >
             <View style={[styles.quickIcon, { backgroundColor: Colors.light.tintLight }]}>
               <Ionicons name="add" size={24} color={Colors.light.tint} />

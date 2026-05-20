@@ -2899,25 +2899,27 @@ Important rules:
         ...imageContents,
       ];
 
-      const aiParams = {
-        messages: [
-          { role: "system" as const, content: systemPrompt },
-          { role: "user" as const, content: userContent },
-        ],
-        max_completion_tokens: 1000,
-        temperature: 0.1,
-      };
+      const baseMessages = [
+        { role: "system" as const, content: systemPrompt },
+        { role: "user" as const, content: userContent },
+      ];
 
       let response: any;
       try {
-        response = await openai.chat.completions.create({ model: "gpt-5.1", ...aiParams });
+        response = await openai.chat.completions.create({
+          model: "gpt-5.1",
+          messages: baseMessages,
+          max_completion_tokens: 1000,
+        });
         console.log("AI analyze-prescription: used gpt-5.1");
       } catch (modelErr: any) {
-        const isModelError = modelErr?.status === 404 || modelErr?.code === "model_not_found" ||
-          (typeof modelErr?.message === "string" && /model/i.test(modelErr.message));
-        if (!isModelError) throw modelErr;
-        console.log("AI analyze-prescription: gpt-5.1 unavailable, falling back to gpt-4o:", modelErr?.message);
-        response = await openai.chat.completions.create({ model: "gpt-4o", ...aiParams });
+        console.log("AI analyze-prescription: gpt-5.1 failed, falling back to gpt-4o:", modelErr?.message);
+        response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: baseMessages,
+          max_completion_tokens: 1000,
+          temperature: 0.1,
+        });
         console.log("AI analyze-prescription: used gpt-4o (fallback)");
       }
 

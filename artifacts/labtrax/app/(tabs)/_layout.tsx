@@ -154,11 +154,11 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="scan"
           options={{
-            title: "Locate",
+            title: "Scan",
             href: isProvider ? null : undefined,
             tabBarIcon: ({ color, focused }) => (
               <Ionicons
-                name={focused ? "location" : "location-outline"}
+                name={focused ? "scan" : "scan-outline"}
                 size={22}
                 color={color}
               />
