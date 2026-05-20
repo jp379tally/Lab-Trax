@@ -50,6 +50,10 @@ export const users = pgTable(
     wantsUpdates: boolean("wants_updates").default(false),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     workStatus: text("work_status").default("available"),
+    // Per-user email notification preferences (Task #611).
+    // Nullable — missing keys default to true (opt-in matches previous behaviour).
+    // Keys: caseNoteNotifications, orgInviteNotifications, statementEmails, billingReminders
+    emailPreferences: jsonb("email_preferences"),
     createdAt: timestamp("created_at").defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedByUserId: varchar("deleted_by_user_id"),

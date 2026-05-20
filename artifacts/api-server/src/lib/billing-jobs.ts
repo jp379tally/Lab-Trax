@@ -5,6 +5,7 @@ import { transitionSubscription, appendSubscriptionEvent } from "./entitlement";
 import { sendMail } from "./mail";
 import { logger } from "./logger";
 import { checkAndAlertBackupStaleness } from "./backup";
+import { checkEmailPref } from "./email-prefs";
 
 const GRACE_DAYS = () =>
   Math.max(1, parseInt(process.env.SUBSCRIPTION_GRACE_DAYS ?? "7", 10));
@@ -139,7 +140,10 @@ export async function runBillingTransitions(): Promise<void> {
       });
       const contact = await resolveSubjectContact(sub.subjectType, sub.subjectId);
       if (contact.email) {
-        await sendGraceWarningEmail(contact.email, contact.name, GRACE_DAYS());
+        const allowed = await checkEmailPref(contact.email, "billingReminders");
+        if (allowed) {
+          await sendGraceWarningEmail(contact.email, contact.name, GRACE_DAYS());
+        }
       }
     }
   }
@@ -164,7 +168,10 @@ export async function runBillingTransitions(): Promise<void> {
       });
       const contact = await resolveSubjectContact(sub.subjectType, sub.subjectId);
       if (contact.email) {
-        await sendLockedEmail(contact.email, contact.name);
+        const allowed = await checkEmailPref(contact.email, "billingReminders");
+        if (allowed) {
+          await sendLockedEmail(contact.email, contact.name);
+        }
       }
     }
   }
@@ -212,11 +219,14 @@ export async function sendTrialReminders(): Promise<void> {
           sub.subjectId
         );
         if (contact.email) {
-          await sendTrialReminderEmail(
-            contact.email,
-            contact.name,
-            daysLeft > 0 ? daysLeft : 1
-          );
+          const allowed = await checkEmailPref(contact.email, "billingReminders");
+          if (allowed) {
+            await sendTrialReminderEmail(
+              contact.email,
+              contact.name,
+              daysLeft > 0 ? daysLeft : 1
+            );
+          }
         }
 
         await db

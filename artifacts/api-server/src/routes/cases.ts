@@ -2191,6 +2191,11 @@ router.post(
           "The provider organization has no email address on file. Please add a billing email to the provider's profile.",
         );
       }
+      const { checkEmailPref } = await import("../lib/email-prefs.js");
+      const allowed = await checkEmailPref(providerOrg.billingEmail, "caseNoteNotifications");
+      if (!allowed) {
+        return ok(res, { sent: false, reason: "recipient_opted_out" });
+      }
       const { sendMail } = await import("../lib/mail.js");
       const snippet =
         note.noteText.length > 500

@@ -184,6 +184,20 @@ export default function SettingsScreen() {
   const [selectedMember, setSelectedMember] = useState<any | null>(null);
   const [memberActionLoading, setMemberActionLoading] = useState(false);
 
+  type EmailPrefs = {
+    caseNoteNotifications: boolean;
+    orgInviteNotifications: boolean;
+    statementEmails: boolean;
+    billingReminders: boolean;
+  };
+  const [emailPrefs, setEmailPrefs] = useState<EmailPrefs>({
+    caseNoteNotifications: true,
+    orgInviteNotifications: true,
+    statementEmails: true,
+    billingReminders: true,
+  });
+  const [emailPrefsSaving, setEmailPrefsSaving] = useState<Partial<Record<keyof EmailPrefs, boolean>>>({});
+
   useEffect(() => {
     AsyncStorage.getItem("@drivesync_company_logo").then((uri) => {
       if (uri) setCompanyLogoUri(uri);
@@ -192,6 +206,46 @@ export default function SettingsScreen() {
       if (s) setUserStatus(s as UserStatus);
     });
   }, [currentUser]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchEmailPrefs() {
+      try {
+        const res = await resilientFetch("/api/users/me/email-preferences");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) {
+          setEmailPrefs({
+            caseNoteNotifications: data.caseNoteNotifications ?? true,
+            orgInviteNotifications: data.orgInviteNotifications ?? true,
+            statementEmails: data.statementEmails ?? true,
+            billingReminders: data.billingReminders ?? true,
+          });
+        }
+      } catch {
+        // silently ignore — default to all enabled
+      }
+    }
+    void fetchEmailPrefs();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function updateEmailPref(key: keyof EmailPrefs, value: boolean) {
+    setEmailPrefs((prev) => ({ ...prev, [key]: value }));
+    setEmailPrefsSaving((prev) => ({ ...prev, [key]: true }));
+    try {
+      await resilientFetch("/api/users/me/email-preferences", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: value }),
+      });
+    } catch {
+      // revert on error
+      setEmailPrefs((prev) => ({ ...prev, [key]: !value }));
+    } finally {
+      setEmailPrefsSaving((prev) => ({ ...prev, [key]: false }));
+    }
+  }
 
   const currentUserDataForEffect = registeredUsers.find(
     (u) => u.username.toLowerCase() === (currentUser || "").toLowerCase()
@@ -1423,6 +1477,70 @@ export default function SettingsScreen() {
             </Pressable>
           </Pressable>
         </Modal>
+
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>EMAIL NOTIFICATIONS</Text>
+          <View style={[styles.menuGroup, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            {(
+              [
+                {
+                  key: "caseNoteNotifications" as const,
+                  label: "Case note alerts",
+                  sub: "Receive an email when a note is sent on a case",
+                  icon: "mail" as const,
+                  iconBg: colors.tintLight,
+                  iconColor: colors.tint,
+                },
+                {
+                  key: "orgInviteNotifications" as const,
+                  label: "Lab invitations",
+                  sub: "Receive invitation emails when added to a lab",
+                  icon: "person-add" as const,
+                  iconBg: "#DBEAFE",
+                  iconColor: "#2563EB",
+                },
+                {
+                  key: "statementEmails" as const,
+                  label: "Monthly statements",
+                  sub: "Receive monthly billing statement PDFs",
+                  icon: "document-text" as const,
+                  iconBg: colors.successLight,
+                  iconColor: colors.success,
+                },
+                {
+                  key: "billingReminders" as const,
+                  label: "Billing reminders",
+                  sub: "Trial expiry, payment due, and account status alerts",
+                  icon: "card" as const,
+                  iconBg: "#FEF3C7",
+                  iconColor: "#D97706",
+                },
+              ] as const
+            ).map(({ key, label, sub, icon, iconBg, iconColor }, idx) => (
+              <React.Fragment key={key}>
+                {idx > 0 && (
+                  <View style={[styles.menuDivider, { backgroundColor: colors.borderLight }]} />
+                )}
+                <View style={styles.menuItem}>
+                  <View style={[styles.menuIcon, { backgroundColor: iconBg }]}>
+                    <Ionicons name={icon} size={18} color={iconColor} />
+                  </View>
+                  <View style={styles.menuInfo}>
+                    <Text style={[styles.menuTitle, { color: colors.text }]}>{label}</Text>
+                    <Text style={[styles.menuSub, { color: colors.textSecondary }]}>{sub}</Text>
+                  </View>
+                  <Switch
+                    value={emailPrefs[key]}
+                    onValueChange={(val) => updateEmailPref(key, val)}
+                    disabled={!!emailPrefsSaving[key]}
+                    trackColor={{ false: colors.border, true: colors.tint }}
+                    thumbColor="#FFF"
+                  />
+                </View>
+              </React.Fragment>
+            ))}
+          </View>
+        </View>
 
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>DATA</Text>

@@ -12,6 +12,7 @@ import {
 import { logger } from "./logger";
 import { openLabLogoStream } from "./lab-logo-storage";
 import { getAppBaseUrl } from "./mail";
+import { checkEmailPref } from "./email-prefs";
 
 // Automatic retry configuration for failed statement sends.
 // MAX_ATTEMPTS includes the initial attempt, so a value of 3 means
@@ -539,6 +540,9 @@ export async function runMonthlyStatementsForLab(opts: {
       } else if (!s.practiceEmail) {
         status = "skipped_no_email";
         errorMessage = "Practice has no billing email on file";
+      } else if (!(await checkEmailPref(s.practiceEmail, "statementEmails"))) {
+        status = "skipped_opted_out";
+        errorMessage = "Recipient has opted out of statement emails via notification preferences";
       } else {
         const pdfBuffer = await generateStatementPdfBuffer(
           labName,

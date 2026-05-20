@@ -28,6 +28,8 @@ import type {
   DoctorMergeResult,
   DoctorMergeUndoResult,
   DoctorSearchResult,
+  EmailPreferencesInput,
+  EmailPreferencesResult,
   GetItemLabelsParams,
   GetRxPracticeAliasParams,
   HealthStatus,
@@ -67,6 +69,170 @@ type AwaitedInput<T> = PromiseLike<T> | T;
 type Awaited<O> = O extends AwaitedInput<infer T> ? T : never;
 
 type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];
+
+/**
+ * Returns the stored preferences merged with all-true defaults so missing keys are always ON.
+ * @summary Get the authenticated user's email notification preferences
+ */
+export const getGetEmailPreferencesUrl = () => {
+  return `/api/users/me/email-preferences`;
+};
+
+export const getEmailPreferences = async (
+  options?: RequestInit,
+): Promise<EmailPreferencesResult> => {
+  return customFetch<EmailPreferencesResult>(getGetEmailPreferencesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetEmailPreferencesQueryKey = () => {
+  return [`/api/users/me/email-preferences`] as const;
+};
+
+export const getGetEmailPreferencesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getEmailPreferences>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getEmailPreferences>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetEmailPreferencesQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getEmailPreferences>>
+  > = ({ signal }) => getEmailPreferences({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getEmailPreferences>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetEmailPreferencesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getEmailPreferences>>
+>;
+export type GetEmailPreferencesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get the authenticated user's email notification preferences
+ */
+
+export function useGetEmailPreferences<
+  TData = Awaited<ReturnType<typeof getEmailPreferences>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getEmailPreferences>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetEmailPreferencesQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Accepts a partial update — only provided keys are written. Omitted keys are left unchanged.
+ * @summary Update the authenticated user's email notification preferences
+ */
+export const getUpdateEmailPreferencesUrl = () => {
+  return `/api/users/me/email-preferences`;
+};
+
+export const updateEmailPreferences = async (
+  emailPreferencesInput: EmailPreferencesInput,
+  options?: RequestInit,
+): Promise<EmailPreferencesResult> => {
+  return customFetch<EmailPreferencesResult>(getUpdateEmailPreferencesUrl(), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(emailPreferencesInput),
+  });
+};
+
+export const getUpdateEmailPreferencesMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateEmailPreferences>>,
+    TError,
+    { data: BodyType<EmailPreferencesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateEmailPreferences>>,
+  TError,
+  { data: BodyType<EmailPreferencesInput> },
+  TContext
+> => {
+  const mutationKey = ["updateEmailPreferences"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateEmailPreferences>>,
+    { data: BodyType<EmailPreferencesInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return updateEmailPreferences(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateEmailPreferencesMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateEmailPreferences>>
+>;
+export type UpdateEmailPreferencesMutationBody =
+  BodyType<EmailPreferencesInput>;
+export type UpdateEmailPreferencesMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Update the authenticated user's email notification preferences
+ */
+export const useUpdateEmailPreferences = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateEmailPreferences>>,
+    TError,
+    { data: BodyType<EmailPreferencesInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateEmailPreferences>>,
+  TError,
+  { data: BodyType<EmailPreferencesInput> },
+  TContext
+> => {
+  return useMutation(getUpdateEmailPreferencesMutationOptions(options));
+};
 
 /**
  * Returns server health status

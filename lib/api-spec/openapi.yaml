@@ -22,7 +22,40 @@ tags:
     description: In-app notification operations (LabTrax)
   - name: backup
     description: Backup and schedule operations (LabTrax)
+  - name: users
+    description: User profile and preference operations (LabTrax)
 paths:
+  /users/me/email-preferences:
+    get:
+      operationId: getEmailPreferences
+      tags: [users]
+      summary: Get the authenticated user's email notification preferences
+      description: Returns the stored preferences merged with all-true defaults so missing keys are always ON.
+      responses:
+        "200":
+          description: Email preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailPreferencesResult"
+    patch:
+      operationId: updateEmailPreferences
+      tags: [users]
+      summary: Update the authenticated user's email notification preferences
+      description: Accepts a partial update — only provided keys are written. Omitted keys are left unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailPreferencesInput"
+      responses:
+        "200":
+          description: Updated email preferences
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailPreferencesResult"
   /healthz:
     get:
       operationId: healthCheck
@@ -1352,4 +1385,33 @@ components:
         message: { type: string, nullable: true }
         startedAt: { type: string, format: date-time, nullable: true }
         completedAt: { type: string, format: date-time, nullable: true }
+    EmailPreferences:
+      type: object
+      properties:
+        caseNoteNotifications:
+          type: boolean
+          description: Emails when someone adds a note to a case you are involved in
+        orgInviteNotifications:
+          type: boolean
+          description: Emails when you are invited to join a lab or practice
+        statementEmails:
+          type: boolean
+          description: Statement PDFs emailed by a lab (provider-side recipients)
+        billingReminders:
+          type: boolean
+          description: Trial expiry warnings and payment failure emails
+    EmailPreferencesResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data:
+          $ref: "#/components/schemas/EmailPreferences"
+    EmailPreferencesInput:
+      type: object
+      description: Partial update — only provided keys are written; omitted keys are unchanged.
+      properties:
+        caseNoteNotifications: { type: boolean }
+        orgInviteNotifications: { type: boolean }
+        statementEmails: { type: boolean }
+        billingReminders: { type: boolean }
 

@@ -63,6 +63,7 @@ import pricingRoutes from "./pricing";
 import statementRoutes from "./statements";
 import billingRoutes from "./billing";
 import notificationsRoutes from "./notifications";
+import usersRoutes from "./users";
 
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
 const passwordResetTokens = new Map<string, { userId: string; expiresAt: number }>();
@@ -837,6 +838,7 @@ export async function registerRoutes(): Promise<IRouter> {
   });
 
   router.use("/auth", authRoutes);
+  router.use("/users", usersRoutes);
   router.use("/organizations", organizationRoutes);
   router.use("/cases", caseRoutes);
   router.use("/doctors", doctorRoutes);

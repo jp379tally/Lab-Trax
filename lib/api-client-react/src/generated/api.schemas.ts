@@ -507,6 +507,32 @@ export interface RestoreStatusResult {
   completedAt?: string | null;
 }
 
+export interface EmailPreferences {
+  /** Emails when someone adds a note to a case you are involved in */
+  caseNoteNotifications?: boolean;
+  /** Emails when you are invited to join a lab or practice */
+  orgInviteNotifications?: boolean;
+  /** Statement PDFs emailed by a lab (provider-side recipients) */
+  statementEmails?: boolean;
+  /** Trial expiry warnings and payment failure emails */
+  billingReminders?: boolean;
+}
+
+export interface EmailPreferencesResult {
+  ok?: boolean;
+  data?: EmailPreferences;
+}
+
+/**
+ * Partial update — only provided keys are written; omitted keys are unchanged.
+ */
+export interface EmailPreferencesInput {
+  caseNoteNotifications?: boolean;
+  orgInviteNotifications?: boolean;
+  statementEmails?: boolean;
+  billingReminders?: boolean;
+}
+
 export type MarkAllNotificationsRead200Data = {
   ok?: boolean;
 };

@@ -25,6 +25,7 @@ import { hashPassword } from "../lib/crypto";
 import { HttpError, ok } from "../lib/http";
 import { notDeleted, restoreDeleted, softDeleteById } from "../lib/soft-delete";
 import { getAppBaseUrl, sendInviteEmail } from "../lib/mail";
+import { checkEmailPref } from "../lib/email-prefs";
 import {
   assertCustomAccountNumberAvailable,
   generateProviderAccountNumber,
@@ -1356,23 +1357,28 @@ router.post(
         invitePlacements.has("welcome_emails") && organization?.logoUrl
           ? `${getAppBaseUrl()}${organization.logoUrl}`
           : null;
-      const result = await sendInviteEmail({
-        to: invite.email!,
-        organizationName:
-          organization?.displayName?.trim() ||
-          organization?.name ||
-          "your organization",
-        roleToAssign: invite.roleToAssign!,
-        token: invite.token!,
-        inviterName,
-        expiresAt: invite.expiresAt ?? null,
-        labLogoUrl,
-      });
-      if (!result.sent) {
-        req.log.warn(
-          { inviteId: invite.id, reason: result.reason },
-          "invite email not sent"
-        );
+      const allowed = await checkEmailPref(invite.email, "orgInviteNotifications");
+      if (!allowed) {
+        req.log.info({ inviteId: invite.id }, "invite email skipped — recipient opted out");
+      } else {
+        const result = await sendInviteEmail({
+          to: invite.email!,
+          organizationName:
+            organization?.displayName?.trim() ||
+            organization?.name ||
+            "your organization",
+          roleToAssign: invite.roleToAssign!,
+          token: invite.token!,
+          inviterName,
+          expiresAt: invite.expiresAt ?? null,
+          labLogoUrl,
+        });
+        if (!result.sent) {
+          req.log.warn(
+            { inviteId: invite.id, reason: result.reason },
+            "invite email not sent"
+          );
+        }
       }
     } catch (err: any) {
       req.log.error(
@@ -1516,23 +1522,28 @@ router.post(
         resendPlacements.has("welcome_emails") && organization?.logoUrl
           ? `${getAppBaseUrl()}${organization.logoUrl}`
           : null;
-      const result = await sendInviteEmail({
-        to: updatedInvite.email!,
-        organizationName:
-          organization?.displayName?.trim() ||
-          organization?.name ||
-          "your organization",
-        roleToAssign: updatedInvite.roleToAssign!,
-        token: updatedInvite.token!,
-        inviterName,
-        expiresAt: updatedInvite.expiresAt ?? null,
-        labLogoUrl,
-      });
-      if (!result.sent) {
-        req.log.warn(
-          { inviteId: updatedInvite.id, reason: result.reason },
-          "invite resend email not sent"
-        );
+      const resendAllowed = await checkEmailPref(updatedInvite.email, "orgInviteNotifications");
+      if (!resendAllowed) {
+        req.log.info({ inviteId: updatedInvite.id }, "invite resend email skipped — recipient opted out");
+      } else {
+        const result = await sendInviteEmail({
+          to: updatedInvite.email!,
+          organizationName:
+            organization?.displayName?.trim() ||
+            organization?.name ||
+            "your organization",
+          roleToAssign: updatedInvite.roleToAssign!,
+          token: updatedInvite.token!,
+          inviterName,
+          expiresAt: updatedInvite.expiresAt ?? null,
+          labLogoUrl,
+        });
+        if (!result.sent) {
+          req.log.warn(
+            { inviteId: updatedInvite.id, reason: result.reason },
+            "invite resend email not sent"
+          );
+        }
       }
     } catch (err: any) {
       req.log.error(

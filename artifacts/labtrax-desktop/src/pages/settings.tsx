@@ -29,9 +29,9 @@ interface AdminUser {
   lastLoginAt?: string | null;
 }
 
-type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "itero" | "platform-admin" | "subscriptions";
+type TabKey = "profile" | "password" | "sessions" | "organizations" | "users" | "backup" | "desktop" | "itero" | "platform-admin" | "subscriptions" | "notifications";
 
-const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "itero", "platform-admin", "subscriptions"];
+const VALID_TAB_KEYS: TabKey[] = ["profile", "password", "sessions", "organizations", "users", "backup", "desktop", "itero", "platform-admin", "subscriptions", "notifications"];
 
 function readInitialTab(): TabKey {
   if (typeof window === "undefined") return "profile";
@@ -61,6 +61,7 @@ export default function SettingsPage() {
     { key: "itero", label: "iTero auto-import", icon: Sparkles, show: isAdmin && typeof window !== "undefined" && !!(window as { electronAPI?: { itero?: unknown } }).electronAPI?.itero },
     { key: "platform-admin", label: "Platform admin", icon: Wrench, show: isAdmin && hasPlatformAdminBridge },
     { key: "subscriptions", label: "Subscriptions", icon: CreditCard, show: isAdmin && hasPlatformAdminBridge },
+    { key: "notifications", label: "Notifications", icon: Monitor, show: true },
   ];
   const [tab, setTab] = useState<TabKey>(readInitialTab);
 
@@ -107,6 +108,7 @@ export default function SettingsPage() {
           {tab === "itero" && isAdmin && <IteroPanel />}
           {tab === "platform-admin" && isAdmin && hasPlatformAdminBridge && <PlatformAdminPanel />}
           {tab === "subscriptions" && isAdmin && hasPlatformAdminBridge && <SubscriptionsPanel />}
+          {tab === "notifications" && <NotificationsPanel />}
         </div>
       </div>
     </div>
@@ -3836,6 +3838,99 @@ function SubscriptionsPanel() {
           </button>
         </div>
       )}
+    </PanelShell>
+  );
+}
+
+type EmailPrefsData = {
+  caseNoteNotifications: boolean;
+  orgInviteNotifications: boolean;
+  statementEmails: boolean;
+  billingReminders: boolean;
+};
+
+function NotificationsPanel() {
+  const [prefs, setPrefs] = useState<EmailPrefsData>({
+    caseNoteNotifications: true,
+    orgInviteNotifications: true,
+    statementEmails: true,
+    billingReminders: true,
+  });
+  const [saving, setSaving] = useState<Partial<Record<keyof EmailPrefsData, boolean>>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    apiFetch("/users/me/email-preferences")
+      .then((data: EmailPrefsData) => setPrefs(data))
+      .catch((err: Error) => setLoadError(err.message || "Could not load preferences."));
+  }, []);
+
+  async function toggle(key: keyof EmailPrefsData, value: boolean) {
+    setPrefs((p) => ({ ...p, [key]: value }));
+    setSaving((s) => ({ ...s, [key]: true }));
+    try {
+      await apiFetch("/users/me/email-preferences", {
+        method: "PATCH",
+        body: JSON.stringify({ [key]: value }),
+      });
+    } catch {
+      setPrefs((p) => ({ ...p, [key]: !value }));
+    } finally {
+      setSaving((s) => ({ ...s, [key]: false }));
+    }
+  }
+
+  const rows: Array<{ key: keyof EmailPrefsData; label: string; desc: string }> = [
+    {
+      key: "caseNoteNotifications",
+      label: "Case note alerts",
+      desc: "Receive an email when a note is sent on a case",
+    },
+    {
+      key: "orgInviteNotifications",
+      label: "Lab invitations",
+      desc: "Receive invitation emails when you are added to a lab",
+    },
+    {
+      key: "statementEmails",
+      label: "Monthly statements",
+      desc: "Receive monthly billing statement PDFs by email",
+    },
+    {
+      key: "billingReminders",
+      label: "Billing reminders",
+      desc: "Trial expiry, payment due, and account status alerts",
+    },
+  ];
+
+  return (
+    <PanelShell
+      title="Email Notifications"
+      subtitle="Choose which emails LabTrax sends to you. Transactional emails (password resets, verification codes) are always sent."
+    >
+      {loadError && <Alert tone="danger">{loadError}</Alert>}
+      <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
+        {rows.map(({ key, label, desc }) => (
+          <div key={key} className="flex items-center justify-between px-4 py-3 bg-card">
+            <div className="min-w-0 mr-6">
+              <p className="text-sm font-medium text-foreground">{label}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={prefs[key]}
+              disabled={!!saving[key]}
+              onClick={() => toggle(key, !prefs[key])}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${prefs[key] ? "bg-primary" : "bg-input"}`}
+            >
+              <span
+                className={`pointer-events-none block h-5 w-5 rounded-full bg-background shadow-lg ring-0 transition-transform ${prefs[key] ? "translate-x-5" : "translate-x-0"}`}
+              />
+            </button>
+          </div>
+        ))}
+      </div>
     </PanelShell>
   );
 }

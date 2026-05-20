@@ -8,6 +8,77 @@
 import * as zod from "zod";
 
 /**
+ * Returns the stored preferences merged with all-true defaults so missing keys are always ON.
+ * @summary Get the authenticated user's email notification preferences
+ */
+export const GetEmailPreferencesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      caseNoteNotifications: zod
+        .boolean()
+        .optional()
+        .describe(
+          "Emails when someone adds a note to a case you are involved in",
+        ),
+      orgInviteNotifications: zod
+        .boolean()
+        .optional()
+        .describe("Emails when you are invited to join a lab or practice"),
+      statementEmails: zod
+        .boolean()
+        .optional()
+        .describe("Statement PDFs emailed by a lab (provider-side recipients)"),
+      billingReminders: zod
+        .boolean()
+        .optional()
+        .describe("Trial expiry warnings and payment failure emails"),
+    })
+    .optional(),
+});
+
+/**
+ * Accepts a partial update — only provided keys are written. Omitted keys are left unchanged.
+ * @summary Update the authenticated user's email notification preferences
+ */
+export const UpdateEmailPreferencesBody = zod
+  .object({
+    caseNoteNotifications: zod.boolean().optional(),
+    orgInviteNotifications: zod.boolean().optional(),
+    statementEmails: zod.boolean().optional(),
+    billingReminders: zod.boolean().optional(),
+  })
+  .describe(
+    "Partial update — only provided keys are written; omitted keys are unchanged.",
+  );
+
+export const UpdateEmailPreferencesResponse = zod.object({
+  ok: zod.boolean().optional(),
+  data: zod
+    .object({
+      caseNoteNotifications: zod
+        .boolean()
+        .optional()
+        .describe(
+          "Emails when someone adds a note to a case you are involved in",
+        ),
+      orgInviteNotifications: zod
+        .boolean()
+        .optional()
+        .describe("Emails when you are invited to join a lab or practice"),
+      statementEmails: zod
+        .boolean()
+        .optional()
+        .describe("Statement PDFs emailed by a lab (provider-side recipients)"),
+      billingReminders: zod
+        .boolean()
+        .optional()
+        .describe("Trial expiry warnings and payment failure emails"),
+    })
+    .optional(),
+});
+
+/**
  * Returns server health status
  * @summary Health check
  */
