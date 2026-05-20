@@ -2035,7 +2035,8 @@ const updateCaseSchema = z.object({
   doctorName: z.string().optional(),
   patientFirstName: z.string().optional(),
   patientLastName: z.string().optional(),
-  providerOrganizationId: z.string().optional(),
+  /** Pass null or "" to unlink the current practice from the case. */
+  providerOrganizationId: z.union([z.string(), z.null()]).optional(),
   /** When true, clears suggestedDoctorName + suggestedProviderOrgId on the case. */
   clearSuggestion: z.boolean().optional(),
   bridgeConnectors: z.string().optional(),
@@ -2134,26 +2135,31 @@ router.patch(
     if (input.patientLastName !== undefined)
       updates.patientLastName = input.patientLastName;
     if (input.providerOrganizationId !== undefined) {
-      // Validate that the requested provider org exists, is not deleted, and
-      // belongs to the same lab as the case. This prevents a lab member from
-      // re-pointing a case to an unrelated provider org via a crafted payload.
-      const targetOrg = await db.query.organizations.findFirst({
-        where: and(
-          eq(organizations.id, input.providerOrganizationId),
-          isNull(organizations.deletedAt)
-        ),
-      });
-      if (
-        !targetOrg ||
-        targetOrg.type !== "provider" ||
-        targetOrg.parentLabOrganizationId !== found.labOrganizationId
-      ) {
-        throw new HttpError(
-          400,
-          "providerOrganizationId must be an active provider organization belonging to this lab."
-        );
+      // null or empty string means "unlink the practice from this case"
+      if (input.providerOrganizationId === null || input.providerOrganizationId === "") {
+        updates.providerOrganizationId = null;
+      } else {
+        // Validate that the requested provider org exists, is not deleted, and
+        // belongs to the same lab as the case. This prevents a lab member from
+        // re-pointing a case to an unrelated provider org via a crafted payload.
+        const targetOrg = await db.query.organizations.findFirst({
+          where: and(
+            eq(organizations.id, input.providerOrganizationId),
+            isNull(organizations.deletedAt)
+          ),
+        });
+        if (
+          !targetOrg ||
+          targetOrg.type !== "provider" ||
+          targetOrg.parentLabOrganizationId !== found.labOrganizationId
+        ) {
+          throw new HttpError(
+            400,
+            "providerOrganizationId must be an active provider organization belonging to this lab."
+          );
+        }
+        updates.providerOrganizationId = input.providerOrganizationId;
       }
-      updates.providerOrganizationId = input.providerOrganizationId;
     }
     if (input.clearSuggestion) {
       updates.suggestedDoctorName = null;
@@ -4993,6 +4999,14 @@ interface OneZipResult {
   iteroOrderId: string;
   extraFilesAttached: number;
   extraFilesFailed: number;
+  /** AI-extracted doctor name from the Rx (may be undefined for deduped cases) */
+  aiDoctorName?: string | null;
+  /** Best-matched existing provider org id for the extracted doctor name */
+  suggestedProviderOrgId?: string | null;
+  /** Best-matched existing doctor name for the suggestion */
+  suggestedDoctorName?: string | null;
+  /** The providerOrganizationId actually saved on the created case */
+  linkedProviderOrgId?: string | null;
 }
 
 async function processOneIteroZipFile(
@@ -5079,7 +5093,7 @@ async function processOneIteroZipFile(
   });
   if (preExisting && preExisting.createdCaseId) {
     await db.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, preExisting.id));
-    return { caseId: preExisting.createdCaseId, caseNumber: preExisting.iteroOrderId, deduped: true, iteroOrderId: preExisting.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0 };
+    return { caseId: preExisting.createdCaseId, caseNumber: preExisting.iteroOrderId, deduped: true, iteroOrderId: preExisting.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0, aiDoctorName: null, suggestedProviderOrgId: null, suggestedDoctorName: null, linkedProviderOrgId: null };
   }
 
   // Save Rx file to disk
@@ -5270,7 +5284,7 @@ async function processOneIteroZipFile(
     try { fs.unlinkSync(rxDiskPath); } catch { /* ignore */ }
     const existing = txResult.existing;
     if (existing && existing.createdCaseId) {
-      return { caseId: existing.createdCaseId, caseNumber: existing.iteroOrderId, deduped: true, iteroOrderId: existing.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0 };
+      return { caseId: existing.createdCaseId, caseNumber: existing.iteroOrderId, deduped: true, iteroOrderId: existing.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0, aiDoctorName: null, suggestedProviderOrgId: null, suggestedDoctorName: null, linkedProviderOrgId: null };
     }
     throw new HttpError(409, "iTero order is already being imported; retry shortly.");
   }
@@ -5309,7 +5323,18 @@ async function processOneIteroZipFile(
     afterJson: { case: createdCase, iteroOrderId, attachmentId: attachment?.id, extraFilesAttached, source: "zip_batch" },
   });
 
-  return { caseId: createdCase.id, caseNumber: createdCase.caseNumber, deduped: false, iteroOrderId, extraFilesAttached, extraFilesFailed };
+  return {
+    caseId: createdCase.id,
+    caseNumber: createdCase.caseNumber,
+    deduped: false,
+    iteroOrderId,
+    extraFilesAttached,
+    extraFilesFailed,
+    aiDoctorName: doctorName !== "Unknown Doctor" ? doctorName : null,
+    suggestedProviderOrgId,
+    suggestedDoctorName,
+    linkedProviderOrgId: body.providerOrganizationId || null,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5371,6 +5396,10 @@ router.post(
       iteroOrderId?: string;
       extraFilesAttached?: number;
       error?: string;
+      aiDoctorName?: string | null;
+      suggestedProviderOrgId?: string | null;
+      suggestedDoctorName?: string | null;
+      linkedProviderOrgId?: string | null;
     }> = [];
 
     for (const file of files) {
@@ -5383,6 +5412,10 @@ router.post(
           caseNumber: result.caseNumber,
           iteroOrderId: result.iteroOrderId,
           extraFilesAttached: result.extraFilesAttached,
+          aiDoctorName: result.aiDoctorName,
+          suggestedProviderOrgId: result.suggestedProviderOrgId,
+          suggestedDoctorName: result.suggestedDoctorName,
+          linkedProviderOrgId: result.linkedProviderOrgId,
         });
       } catch (err) {
         // Best-effort cleanup if the helper threw before deleting the temp file.

@@ -79,6 +79,25 @@ interface ZipBatchEntry {
   extraFilesAttached?: number;
   attachedCount?: number;
   error?: string;
+  /** AI-extracted doctor name from the Rx */
+  aiDoctorName?: string | null;
+  /** Server-suggested provider org for this ZIP's doctor */
+  suggestedProviderOrgId?: string | null;
+  suggestedDoctorName?: string | null;
+  /** Provider org currently linked on the created case */
+  linkedProviderOrgId?: string | null;
+  /** True while a PATCH is in flight for this entry */
+  patchingProvider?: boolean;
+  /** Error message from the last PATCH attempt (if any) */
+  patchError?: string | null;
+}
+
+interface PendingZip {
+  /** Stable local id for React keys */
+  id: string;
+  file: File;
+  /** Per-ZIP practice assignment (may be "" to mean "no practice") */
+  providerId: string;
 }
 
 interface DesktopFileDropZoneProps {
@@ -111,7 +130,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
   // Batch ZIP import state
   const [providerOrgs, setProviderOrgs] = useState<OrgLite[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
-  const [pendingZips, setPendingZips] = useState<File[]>([]);
+  const [pendingZips, setPendingZips] = useState<PendingZip[]>([]);
   const [zipBatchEntries, setZipBatchEntries] = useState<ZipBatchEntry[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
 
@@ -170,7 +189,14 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
       const nonZipItems = items.filter((i) => !isZipFile(i.file));
 
       if (zipItems.length > 0) {
-        setPendingZips((prev) => [...prev, ...zipItems.map((i) => i.file)]);
+        setPendingZips((prev) => [
+          ...prev,
+          ...zipItems.map((i) => ({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            file: i.file,
+            providerId: selectedProviderId,
+          })),
+        ]);
       }
 
       if (nonZipItems.length > 0) {
@@ -178,7 +204,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
         setRejections(result.rejections);
       }
     },
-    [addFiles, organizationId, uploaderName],
+    [addFiles, organizationId, uploaderName, selectedProviderId],
   );
 
   const processFiles = useCallback(
@@ -295,8 +321,14 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
     });
   }
 
-  function removePendingZip(index: number) {
-    setPendingZips((prev) => prev.filter((_, i) => i !== index));
+  function removePendingZip(id: string) {
+    setPendingZips((prev) => prev.filter((z) => z.id !== id));
+  }
+
+  function updatePendingZipProvider(id: string, providerId: string) {
+    setPendingZips((prev) =>
+      prev.map((z) => (z.id === id ? { ...z, providerId } : z))
+    );
   }
 
   function clearBatch() {
@@ -308,14 +340,45 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
     setSelectedGenericCase(null);
   }
 
+  async function patchCasePractice(entryId: string, caseId: string, newProviderId: string) {
+    setZipBatchEntries((prev) =>
+      prev.map((e) => (e.id === entryId ? { ...e, patchingProvider: true, patchError: null } : e))
+    );
+    try {
+      await apiFetch(`/cases/${caseId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          providerOrganizationId: newProviderId || null,
+          clearSuggestion: true,
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+      setZipBatchEntries((prev) =>
+        prev.map((e) =>
+          e.id === entryId
+            ? { ...e, patchingProvider: false, linkedProviderOrgId: newProviderId || null, patchError: null }
+            : e
+        )
+      );
+    } catch (err: any) {
+      setZipBatchEntries((prev) =>
+        prev.map((e) =>
+          e.id === entryId
+            ? { ...e, patchingProvider: false, patchError: err?.message || "Could not update practice." }
+            : e
+        )
+      );
+    }
+  }
+
   async function runBatchImport() {
     if (!organizationId || pendingZips.length === 0 || batchRunning) return;
 
-    const capturedZips = [...pendingZips];
-
-    const initialEntries: ZipBatchEntry[] = capturedZips.map((f) => ({
+    // Snapshot pending zips before clearing state so the loop closure still sees them.
+    const pendingZipsSnapshot = pendingZips;
+    const initialEntries: ZipBatchEntry[] = pendingZipsSnapshot.map((pz) => ({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      filename: f.name,
+      filename: pz.file.name,
       status: "pending",
     }));
     setZipBatchEntries(initialEntries);
@@ -324,7 +387,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
 
     for (let i = 0; i < initialEntries.length; i++) {
       const entry = initialEntries[i]!;
-      const file = capturedZips[i]!;
+      const pz = pendingZipsSnapshot[i]!;
 
       setZipBatchEntries((prev) =>
         prev.map((e) => (e.id === entry.id ? { ...e, status: "processing" } : e))
@@ -332,9 +395,9 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
 
       try {
         const fd = new FormData();
-        fd.append("files[]", file);
+        fd.append("files[]", pz.file);
         fd.append("labOrganizationId", organizationId);
-        if (selectedProviderId) fd.append("providerOrganizationId", selectedProviderId);
+        if (pz.providerId) fd.append("providerOrganizationId", pz.providerId);
 
         const result = await apiFetch<{
           results: Array<{
@@ -344,6 +407,10 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
             caseNumber?: string;
             extraFilesAttached?: number;
             error?: string;
+            aiDoctorName?: string | null;
+            suggestedProviderOrgId?: string | null;
+            suggestedDoctorName?: string | null;
+            linkedProviderOrgId?: string | null;
           }>;
         }>("/cases/import-from-itero-zip-batch", {
           method: "POST",
@@ -359,7 +426,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
           fileResult.error?.includes("No iTero Rx file found");
 
         if (isNoRxError) {
-          genericZipFilesRef.current.set(entry.id, file);
+          genericZipFilesRef.current.set(entry.id, pz.file);
           setZipBatchEntries((prev) =>
             prev.map((e) =>
               e.id === entry.id
@@ -378,6 +445,10 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                     caseNumber: fileResult.caseNumber ?? undefined,
                     extraFilesAttached: fileResult.extraFilesAttached,
                     error: fileResult.error,
+                    aiDoctorName: fileResult.aiDoctorName,
+                    suggestedProviderOrgId: fileResult.suggestedProviderOrgId,
+                    suggestedDoctorName: fileResult.suggestedDoctorName,
+                    linkedProviderOrgId: fileResult.linkedProviderOrgId,
                   }
                 : e
             )
@@ -581,35 +652,53 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
               iTero ZIPs will create new cases automatically. Non-iTero ZIPs (3Shape, Dental Wings, etc.) will ask you to pick an existing case to attach their files to.
             </p>
 
-            <ul className="space-y-1">
-              {pendingZips.map((f, i) => (
-                <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <FileText size={12} className="shrink-0" />
-                  <span className="truncate flex-1">{f.name}</span>
-                  <span className="shrink-0">{formatBytes(f.size)}</span>
-                  <button
-                    type="button"
-                    onClick={() => removePendingZip(i)}
-                    className="shrink-0 text-muted-foreground hover:text-destructive transition-colors"
-                    aria-label={`Remove ${f.name}`}
-                  >
-                    <X size={12} />
-                  </button>
+            <ul className="space-y-2">
+              {pendingZips.map((pz) => (
+                <li key={pz.id} className="rounded-md border border-border bg-background/60 px-3 py-2 space-y-1.5">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <FileText size={12} className="shrink-0" />
+                    <span className="truncate flex-1">{pz.file.name}</span>
+                    <span className="shrink-0">{formatBytes(pz.file.size)}</span>
+                    <button
+                      type="button"
+                      onClick={() => removePendingZip(pz.id)}
+                      className="shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+                      aria-label={`Remove ${pz.file.name}`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                  {providerOrgs.length > 0 && (
+                    <select
+                      value={pz.providerId}
+                      onChange={(e) => updatePendingZipProvider(pz.id, e.target.value)}
+                      className="w-full text-xs rounded border border-border bg-background px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      <option value="">— No practice —</option>
+                      {providerOrgs.map((o) => (
+                        <option key={o.id} value={o.id}>{o.name ?? o.id}</option>
+                      ))}
+                    </select>
+                  )}
                 </li>
               ))}
             </ul>
 
-            {providerOrgs.length > 0 && (
+            {providerOrgs.length > 0 && pendingZips.length > 1 && (
               <div className="space-y-1">
                 <label className="text-xs font-medium text-foreground">
-                  Link to practice (for iTero ZIPs)
+                  Set practice for all
                 </label>
                 <select
-                  value={selectedProviderId}
-                  onChange={(e) => setSelectedProviderId(e.target.value)}
+                  value=""
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedProviderId(val);
+                    setPendingZips((prev) => prev.map((z) => ({ ...z, providerId: val })));
+                  }}
                   className="w-full text-xs rounded-md border border-border bg-background px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
                 >
-                  <option value="">— No practice (link later) —</option>
+                  <option value="">— Apply a practice to all ZIPs —</option>
                   {providerOrgs.map((o) => (
                     <option key={o.id} value={o.id}>{o.name ?? o.id}</option>
                   ))}
@@ -667,107 +756,151 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: 
                 <li
                   key={entry.id}
                   className={[
-                    "flex items-start gap-2.5 rounded-md px-3 py-2 text-xs",
+                    "rounded-md px-3 py-2 text-xs border",
                     entry.status === "error"
-                      ? "bg-destructive/10 border border-destructive/20"
+                      ? "bg-destructive/10 border-destructive/20"
                       : entry.status === "created" || entry.status === "attached"
-                        ? "bg-success/10 border border-success/20"
+                        ? "bg-success/10 border-success/20"
                         : entry.status === "deduped"
-                          ? "bg-muted/50 border border-border"
+                          ? "bg-muted/50 border-border"
                           : entry.status === "needs_case_selection"
-                            ? "bg-amber-500/10 border border-amber-500/30"
-                            : "bg-background border border-border",
+                            ? "bg-amber-500/10 border-amber-500/30"
+                            : "bg-background border-border",
                   ].join(" ")}
                 >
-                  <div className="mt-0.5 shrink-0">
-                    {(entry.status === "pending" || entry.status === "processing") && (
-                      <Loader2 size={13} className="animate-spin text-muted-foreground" />
-                    )}
-                    {(entry.status === "created" || entry.status === "attached") && (
-                      <CheckCircle2 size={13} className="text-success" />
-                    )}
-                    {entry.status === "deduped" && (
-                      <CheckCircle size={13} className="text-muted-foreground" />
-                    )}
-                    {entry.status === "error" && (
-                      <XCircle size={13} className="text-destructive" />
-                    )}
-                    {entry.status === "needs_case_selection" && (
-                      <AlertTriangle size={13} className="text-amber-500" />
-                    )}
+                  <div className="flex items-start gap-2.5">
+                    <div className="mt-0.5 shrink-0">
+                      {(entry.status === "pending" || entry.status === "processing") && (
+                        <Loader2 size={13} className="animate-spin text-muted-foreground" />
+                      )}
+                      {(entry.status === "created" || entry.status === "attached") && (
+                        <CheckCircle2 size={13} className="text-success" />
+                      )}
+                      {entry.status === "deduped" && (
+                        <CheckCircle size={13} className="text-muted-foreground" />
+                      )}
+                      {entry.status === "error" && (
+                        <XCircle size={13} className="text-destructive" />
+                      )}
+                      {entry.status === "needs_case_selection" && (
+                        <AlertTriangle size={13} className="text-amber-500" />
+                      )}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium truncate text-foreground">{entry.filename}</p>
+                      {entry.status === "pending" && (
+                        <p className="text-muted-foreground">Waiting…</p>
+                      )}
+                      {entry.status === "processing" && (
+                        <p className="text-muted-foreground">Processing…</p>
+                      )}
+                      {entry.status === "created" && (
+                        <p className="text-success">
+                          Case #{entry.caseNumber} created
+                          {typeof entry.extraFilesAttached === "number" && entry.extraFilesAttached > 0
+                            ? ` · ${entry.extraFilesAttached} scan${entry.extraFilesAttached === 1 ? "" : "s"} attached`
+                            : ""}
+                          {entry.caseId && onOpenCase && (
+                            <>
+                              {" · "}
+                              <button
+                                type="button"
+                                onClick={() => onOpenCase(entry.caseId!)}
+                                className="underline underline-offset-2 hover:no-underline"
+                              >
+                                Open
+                              </button>
+                            </>
+                          )}
+                        </p>
+                      )}
+                      {entry.status === "attached" && (
+                        <p className="text-success">
+                          {entry.attachedCount ?? 0} file{(entry.attachedCount ?? 0) === 1 ? "" : "s"} attached to Case #{entry.caseNumber}
+                          {entry.caseId && onOpenCase && (
+                            <>
+                              {" · "}
+                              <button
+                                type="button"
+                                onClick={() => onOpenCase(entry.caseId!)}
+                                className="underline underline-offset-2 hover:no-underline"
+                              >
+                                Open
+                              </button>
+                            </>
+                          )}
+                        </p>
+                      )}
+                      {entry.status === "deduped" && (
+                        <p className="text-muted-foreground">
+                          Already imported — Case #{entry.caseNumber ?? entry.caseId}
+                          {entry.caseId && onOpenCase && (
+                            <>
+                              {" · "}
+                              <button
+                                type="button"
+                                onClick={() => onOpenCase(entry.caseId!)}
+                                className="underline underline-offset-2 hover:no-underline"
+                              >
+                                Open
+                              </button>
+                            </>
+                          )}
+                        </p>
+                      )}
+                      {entry.status === "needs_case_selection" && (
+                        <p className="text-amber-600 dark:text-amber-400">
+                          No iTero Rx found — select a case below to attach its files
+                        </p>
+                      )}
+                      {entry.status === "error" && (
+                        <p className="text-destructive">{entry.error || "Import failed."}</p>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="min-w-0 flex-1">
-                    <p className="font-medium truncate text-foreground">{entry.filename}</p>
-                    {entry.status === "pending" && (
-                      <p className="text-muted-foreground">Waiting…</p>
-                    )}
-                    {entry.status === "processing" && (
-                      <p className="text-muted-foreground">Processing…</p>
-                    )}
-                    {entry.status === "created" && (
-                      <p className="text-success">
-                        Case #{entry.caseNumber} created
-                        {typeof entry.extraFilesAttached === "number" && entry.extraFilesAttached > 0
-                          ? ` · ${entry.extraFilesAttached} scan${entry.extraFilesAttached === 1 ? "" : "s"} attached`
-                          : ""}
-                        {entry.caseId && onOpenCase && (
-                          <>
-                            {" · "}
-                            <button
-                              type="button"
-                              onClick={() => onOpenCase(entry.caseId!)}
-                              className="underline underline-offset-2 hover:no-underline"
-                            >
-                              Open
-                            </button>
-                          </>
+                  {/* Per-ZIP practice assignment — shown for created cases only */}
+                  {entry.status === "created" && entry.caseId && providerOrgs.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex-1 min-w-0">
+                          {entry.aiDoctorName && (
+                            <p className="text-muted-foreground mb-1 truncate">
+                              AI extracted: <span className="font-medium text-foreground">{entry.aiDoctorName}</span>
+                              {entry.suggestedDoctorName && entry.suggestedDoctorName !== entry.aiDoctorName && (
+                                <span className="ml-1">(similar to <em>{entry.suggestedDoctorName}</em>)</span>
+                              )}
+                            </p>
+                          )}
+                          <select
+                            disabled={!!entry.patchingProvider}
+                            value={entry.linkedProviderOrgId ?? ""}
+                            onChange={(e) => {
+                              if (entry.caseId) {
+                                void patchCasePractice(entry.id, entry.caseId, e.target.value);
+                              }
+                            }}
+                            className="w-full rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+                          >
+                            <option value="">— No practice —</option>
+                            {providerOrgs.map((o) => (
+                              <option key={o.id} value={o.id}>{o.name ?? o.id}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {entry.patchingProvider && (
+                          <Loader2 size={12} className="animate-spin text-muted-foreground shrink-0" />
                         )}
-                      </p>
-                    )}
-                    {entry.status === "attached" && (
-                      <p className="text-success">
-                        {entry.attachedCount ?? 0} file{(entry.attachedCount ?? 0) === 1 ? "" : "s"} attached to Case #{entry.caseNumber}
-                        {entry.caseId && onOpenCase && (
-                          <>
-                            {" · "}
-                            <button
-                              type="button"
-                              onClick={() => onOpenCase(entry.caseId!)}
-                              className="underline underline-offset-2 hover:no-underline"
-                            >
-                              Open
-                            </button>
-                          </>
-                        )}
-                      </p>
-                    )}
-                    {entry.status === "deduped" && (
-                      <p className="text-muted-foreground">
-                        Already imported — Case #{entry.caseNumber ?? entry.caseId}
-                        {entry.caseId && onOpenCase && (
-                          <>
-                            {" · "}
-                            <button
-                              type="button"
-                              onClick={() => onOpenCase(entry.caseId!)}
-                              className="underline underline-offset-2 hover:no-underline"
-                            >
-                              Open
-                            </button>
-                          </>
-                        )}
-                      </p>
-                    )}
-                    {entry.status === "needs_case_selection" && (
-                      <p className="text-amber-600 dark:text-amber-400">
-                        No iTero Rx found — select a case below to attach its files
-                      </p>
-                    )}
-                    {entry.status === "error" && (
-                      <p className="text-destructive">{entry.error || "Import failed."}</p>
-                    )}
-                  </div>
+                      </div>
+                      {entry.patchError && (
+                        <p className="text-destructive flex items-center gap-1">
+                          <XCircle size={11} className="shrink-0" />
+                          {entry.patchError}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
