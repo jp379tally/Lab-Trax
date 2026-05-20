@@ -220,6 +220,36 @@ export const ImportCaseFromIteroZipResponse = zod.object({
 });
 
 /**
+ * Accepts up to 20 iTero export ZIP files in a single multipart request
+(`files[]` field). Each ZIP is processed independently: the server
+extracts the `iTero_Rx_*.pdf`, uses AI to create a case, and attaches
+every `.ply` scan found in the same ZIP to that case. Returns a
+per-file result array so the client can show granular status. Errors on
+individual ZIPs are captured per-entry and do not abort the batch.
+
+ * @summary Batch-import cases from multiple iTero export ZIPs
+ */
+export const ImportCasesFromIteroZipBatchBody = zod.object({
+  "files[]": zod
+    .array(
+      zod
+        .string()
+        .describe("iTero export ZIP (binary upload, max 300 MB each)"),
+    )
+    .describe("Up to 20 iTero export ZIPs"),
+  labOrganizationId: zod.string(),
+  providerOrganizationId: zod
+    .string()
+    .optional()
+    .describe(
+      "Optional — if omitted the case is created without a linked practice.",
+    ),
+  doctorNameHint: zod.string().optional(),
+  patientFirstNameHint: zod.string().optional(),
+  patientLastNameHint: zod.string().optional(),
+});
+
+/**
  * Lists distinct (doctorName, providerOrganizationId) groups in the
 given lab, ranked by similarity to the optional `q` / `like`
 parameters using normalized name comparison (trim, lowercase,

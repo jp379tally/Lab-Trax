@@ -4074,6 +4074,7 @@ router.post(
     // ── Extract ZIP in memory ────────────────────────────────────────────────
     let rxBuffer: Buffer;
     let rxOriginalName: string;
+    let rxMimeType: string;
     let iteroOrderId: string;
     let otherEntries: Array<{ name: string; data: Buffer; mimeType: string }> =
       [];
@@ -4106,26 +4107,29 @@ router.post(
         );
       }
 
+      const ITERO_RX_EXTENSIONS = /^itero_rx_.*\.(pdf|png|jpg|jpeg|webp|tif|tiff|bmp)$/i;
       const rxEntry = entries.find((e) =>
-        /^itero_rx_.*\.pdf$/i.test(path.basename(e.entryName))
+        ITERO_RX_EXTENSIONS.test(path.basename(e.entryName))
       );
 
       if (!rxEntry) {
         throw new HttpError(
           400,
-          "No iTero Rx PDF found in this ZIP. Expected a file matching iTero_Rx_*.pdf inside the archive."
+          "No iTero Rx file found in this ZIP. Expected a file matching iTero_Rx_*.(pdf|png|jpg|jpeg|webp|tif|tiff) inside the archive."
         );
       }
 
       if ((rxEntry.header.size ?? 0) > ZIP_MAX_ENTRY_BYTES) {
         throw new HttpError(
           400,
-          `Rx PDF is too large (${Math.round((rxEntry.header.size ?? 0) / 1024 / 1024)} MB). Maximum per-file size is ${ZIP_MAX_ENTRY_BYTES / 1024 / 1024} MB.`
+          `Rx file is too large (${Math.round((rxEntry.header.size ?? 0) / 1024 / 1024)} MB). Maximum per-file size is ${ZIP_MAX_ENTRY_BYTES / 1024 / 1024} MB.`
         );
       }
 
       rxOriginalName = path.basename(rxEntry.entryName);
-      const orderIdMatch = rxOriginalName.match(/iTero_Rx_(\d+)\.pdf/i);
+      const rxExtSingle = path.extname(rxOriginalName).toLowerCase();
+      rxMimeType = EXT_TO_MIME[rxExtSingle] ?? "application/octet-stream";
+      const orderIdMatch = rxOriginalName.match(/iTero_Rx_(\d+)\./i);
       if (orderIdMatch) {
         iteroOrderId = orderIdMatch[1];
       } else {
@@ -4190,7 +4194,7 @@ router.post(
     try {
       fs.mkdirSync(caseMediaDir, { recursive: true });
     } catch { /* ignore */ }
-    const rxExt = ".pdf";
+    const rxExt = path.extname(rxOriginalName).toLowerCase() || ".pdf";
     const rxSafe = path
       .basename(rxOriginalName, rxExt)
       .replace(/[^a-zA-Z0-9\-_]+/g, "-")
@@ -4200,9 +4204,9 @@ router.post(
     await fs.promises.writeFile(rxDiskPath, rxBuffer);
     // Mirror to persistent object storage so the file survives server restarts
     // and re-deployments (best-effort — a failure here does not abort the import).
-    writeCaseMediaToObjectStorage(rxDiskName, rxBuffer, "application/pdf").catch(
+    writeCaseMediaToObjectStorage(rxDiskName, rxBuffer, rxMimeType).catch(
       (err: unknown) => {
-        req.log?.warn({ err }, "iTero ZIP: failed to mirror Rx PDF to object storage");
+        req.log?.warn({ err }, "iTero ZIP: failed to mirror Rx file to object storage");
       },
     );
     const rxStorageKey = buildIteroAttachmentUrl(req, rxDiskName);
@@ -4215,7 +4219,7 @@ router.post(
         extracted = await extractRxFieldsFromBuffer(
           openai,
           rxBuffer,
-          "application/pdf",
+          rxMimeType,
           rxOriginalName
         );
       } catch (err) {
@@ -4421,7 +4425,7 @@ router.post(
           uploadedByOrganizationId: body.labOrganizationId,
           fileName: rxOriginalName,
           storageKey: rxStorageKey,
-          fileType: "application/pdf",
+          fileType: rxMimeType,
           visibility: "shared_with_provider",
         })
         .returning();
@@ -4764,6 +4768,423 @@ router.post(
       201
     );
   })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared helper: process one iTero ZIP file into a case.
+// Used by both the single-ZIP endpoint and the batch endpoint.
+// The caller is responsible for providing a temp file on disk; this function
+// deletes it (in a finally block) before returning or throwing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface OneZipResult {
+  caseId: string;
+  caseNumber: string;
+  deduped: boolean;
+  iteroOrderId: string;
+  extraFilesAttached: number;
+  extraFilesFailed: number;
+}
+
+async function processOneIteroZipFile(
+  req: Request,
+  file: Express.Multer.File,
+  body: { labOrganizationId: string; providerOrganizationId: string; doctorNameHint?: string; patientFirstNameHint?: string; patientLastNameHint?: string },
+  userId: string,
+  user: any,
+): Promise<OneZipResult> {
+  const ZIP_MAX_ENTRIES = 100;
+  const ZIP_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+  const ZIP_MAX_ENTRY_BYTES = 50 * 1024 * 1024;
+
+  let rxBuffer: Buffer;
+  let rxOriginalName: string;
+  let rxMimeType: string;
+  let iteroOrderId: string;
+  let otherEntries: Array<{ name: string; data: Buffer; mimeType: string }> = [];
+
+  const ITERO_RX_EXTENSIONS = /^itero_rx_.*\.(pdf|png|jpg|jpeg|webp|tif|tiff|bmp)$/i;
+
+  try {
+    const zip = new AdmZip(file.path);
+    const entries = zip.getEntries().filter((e) => !e.isDirectory && e.header.size > 0);
+
+    if (entries.length > ZIP_MAX_ENTRIES) {
+      throw new HttpError(400, `ZIP contains too many files (${entries.length}). Maximum is ${ZIP_MAX_ENTRIES}.`);
+    }
+    const totalUncompressed = entries.reduce((sum, e) => sum + (e.header.size ?? 0), 0);
+    if (totalUncompressed > ZIP_MAX_TOTAL_BYTES) {
+      throw new HttpError(400, `ZIP uncompressed size (${Math.round(totalUncompressed / 1024 / 1024)} MB) exceeds the ${ZIP_MAX_TOTAL_BYTES / 1024 / 1024} MB limit.`);
+    }
+
+    const rxEntry = entries.find((e) => ITERO_RX_EXTENSIONS.test(path.basename(e.entryName)));
+    if (!rxEntry) {
+      throw new HttpError(400, "No iTero Rx file found in this ZIP. Expected a file matching iTero_Rx_*.(pdf|png|jpg|jpeg|webp|tif|tiff) inside the archive.");
+    }
+    if ((rxEntry.header.size ?? 0) > ZIP_MAX_ENTRY_BYTES) {
+      throw new HttpError(400, `Rx file is too large (${Math.round((rxEntry.header.size ?? 0) / 1024 / 1024)} MB). Maximum per-file size is ${ZIP_MAX_ENTRY_BYTES / 1024 / 1024} MB.`);
+    }
+
+    rxOriginalName = path.basename(rxEntry.entryName);
+    const rxExtHelper = path.extname(rxOriginalName).toLowerCase();
+    rxMimeType = EXT_TO_MIME[rxExtHelper] ?? "application/octet-stream";
+    const orderIdMatch = rxOriginalName.match(/iTero_Rx_(\d+)\./i);
+    if (orderIdMatch) {
+      iteroOrderId = orderIdMatch[1];
+    } else {
+      const zipBasename = path.basename(file.originalname || "");
+      const zipDigits = zipBasename.match(/\d+/g);
+      iteroOrderId = zipDigits ? zipDigits[zipDigits.length - 1]! : randomBytes(4).toString("hex");
+    }
+
+    rxBuffer = rxEntry.getData();
+
+    for (const entry of entries) {
+      if (entry === rxEntry) continue;
+      const entryName = path.basename(entry.entryName);
+      if (!entryName) continue;
+      const ext = path.extname(entryName).toLowerCase();
+      if (ext !== ".ply") continue;
+      const entrySize = entry.header.size ?? 0;
+      if (entrySize > ZIP_MAX_ENTRY_BYTES) {
+        req.log?.warn({ name: entryName, size: entrySize }, "iTero ZIP batch: skipping oversized .ply entry");
+        continue;
+      }
+      const mimeType = EXT_TO_MIME[ext] ?? "application/octet-stream";
+      otherEntries.push({ name: entryName, data: entry.getData(), mimeType });
+    }
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(400, `Could not read ZIP file: ${(err as Error).message}`);
+  } finally {
+    try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+  }
+
+  // Optimistic dedup check
+  const preExisting = await db.query.iteroImportedOrders.findFirst({
+    where: and(
+      eq(iteroImportedOrders.labOrganizationId, body.labOrganizationId),
+      eq(iteroImportedOrders.iteroOrderId, iteroOrderId),
+    ),
+  });
+  if (preExisting && preExisting.createdCaseId) {
+    await db.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, preExisting.id));
+    return { caseId: preExisting.createdCaseId, caseNumber: preExisting.iteroOrderId, deduped: true, iteroOrderId: preExisting.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0 };
+  }
+
+  // Save Rx file to disk
+  try { fs.mkdirSync(caseMediaDir, { recursive: true }); } catch { /* ignore */ }
+  const rxExt = path.extname(rxOriginalName).toLowerCase() || ".pdf";
+  const rxSafe = path.basename(rxOriginalName, rxExt).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "rx";
+  const rxDiskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${rxSafe}${rxExt}`;
+  const rxDiskPath = path.join(caseMediaDir, rxDiskName);
+  await fs.promises.writeFile(rxDiskPath, rxBuffer);
+  writeCaseMediaToObjectStorage(rxDiskName, rxBuffer, rxMimeType).catch((err: unknown) => {
+    req.log?.warn({ err }, "iTero ZIP batch: failed to mirror Rx file to object storage");
+  });
+  const rxStorageKey = buildIteroAttachmentUrl(req, rxDiskName);
+
+  // AI extraction
+  let extracted: ExtractedRxFields = {};
+  const openai = getIteroOpenAIClient();
+  if (openai) {
+    try {
+      extracted = await extractRxFieldsFromBuffer(openai, rxBuffer, rxMimeType, rxOriginalName);
+    } catch (err) {
+      req.log?.warn?.({ err: (err as Error)?.message }, "iTero ZIP batch: Rx AI extraction failed; creating stub case");
+    }
+  }
+
+  const patientFirstName = extracted.patientFirstName?.trim() || body.patientFirstNameHint?.trim() || "Unknown";
+  const patientLastName  = extracted.patientLastName?.trim()  || body.patientLastNameHint?.trim()  || "Patient";
+  const doctorName       = extracted.doctorName?.trim()       || body.doctorNameHint?.trim()       || "Unknown Doctor";
+
+  // Doctor similarity suggestion
+  let suggestedDoctorName: string | null = null;
+  let suggestedProviderOrgId: string | null = null;
+  if (doctorName !== "Unknown Doctor") {
+    const existingGroups = await db.selectDistinct({ doctorName: cases.doctorName, providerOrganizationId: cases.providerOrganizationId })
+      .from(cases)
+      .where(and(eq(cases.labOrganizationId, body.labOrganizationId), notDeleted(cases)));
+    let bestSim = 0;
+    let bestMatch: { doctorName: string; providerOrganizationId: string } | null = null;
+    const normExtracted = _normalizeDoctorForSim(doctorName);
+    for (const g of existingGroups) {
+      if (_normalizeDoctorForSim(g.doctorName) === normExtracted) continue;
+      const sim = _bigramSimilarity(doctorName, g.doctorName);
+      if (sim >= 0.4 && sim > bestSim) { bestSim = sim; bestMatch = g; }
+    }
+    if (bestMatch) { suggestedDoctorName = bestMatch.doctorName; suggestedProviderOrgId = bestMatch.providerOrganizationId; }
+  }
+
+  let dueDate: Date | null = null;
+  if (extracted.dueDate) {
+    const parsed = new Date(extracted.dueDate);
+    if (!Number.isNaN(parsed.getTime())) dueDate = parsed;
+  }
+
+  const caseNumber = await generateIteroCaseNumber(body.labOrganizationId);
+  const normalizedCaseType = extracted.caseType ? normalizeIteroCaseType(extracted.caseType) : null;
+  if (normalizedCaseType) extracted.caseType = normalizedCaseType;
+
+  const teethList = (extracted.teeth || "").split(/[,\s]+/).map((t) => t.trim()).filter(Boolean);
+  let prebuiltRestorations: Array<{
+    toothNumber: string; restorationType: string; material: string | null; shade: string | null;
+    unitPrice: string; priceSource: string | null; priceSourceId: string | null; priceSourceName: string | null; priceKey: string | null;
+  }> = [];
+  if (teethList.length > 0 && normalizedCaseType) {
+    prebuiltRestorations = await Promise.all(teethList.map(async (toothNumber) => {
+      const fallback = await resolveServerPriceWithSource(
+        { labOrganizationId: body.labOrganizationId, doctorName, providerOrganizationId: body.providerOrganizationId },
+        extracted.material ?? null, normalizedCaseType,
+      );
+      return {
+        toothNumber, restorationType: normalizedCaseType, material: extracted.material ?? null, shade: extracted.shade ?? null,
+        unitPrice: (fallback?.amount ?? 0).toFixed(2), priceSource: fallback?.source ?? null,
+        priceSourceId: fallback?.sourceId ?? null, priceSourceName: fallback?.sourceName ?? null, priceKey: fallback?.key ?? null,
+      };
+    }));
+  }
+
+  // Atomic transaction
+  const txResult = await db.transaction(async (tx) => {
+    const [claim] = await tx.insert(iteroImportedOrders).values({
+      labOrganizationId: body.labOrganizationId, iteroOrderId, createdCaseId: null,
+    }).onConflictDoNothing({ target: [iteroImportedOrders.labOrganizationId, iteroImportedOrders.iteroOrderId] }).returning();
+
+    if (!claim) {
+      const existing = await tx.query.iteroImportedOrders.findFirst({
+        where: and(eq(iteroImportedOrders.labOrganizationId, body.labOrganizationId), eq(iteroImportedOrders.iteroOrderId, iteroOrderId)),
+      });
+      if (existing) await tx.update(iteroImportedOrders).set({ lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, existing.id));
+      return { kind: "deduped" as const, existing };
+    }
+
+    const [createdCase] = await tx.insert(cases).values({
+      caseNumber,
+      labOrganizationId: body.labOrganizationId,
+      providerOrganizationId: body.providerOrganizationId || null,
+      patientFirstName, patientLastName, doctorName,
+      status: "received",
+      priority: extracted.isRush ? "rush" : "normal",
+      dueDate, createdByUserId: userId, needsAiReview: true, aiImportSource: "itero",
+      externalPatientId: iteroOrderId,
+      ...({ suggestedDoctorName, suggestedProviderOrgId } as any),
+    }).returning();
+
+    if (prebuiltRestorations.length > 0) {
+      await tx.insert(caseRestorations).values(prebuiltRestorations.map((r) => ({
+        caseId: createdCase.id, toothNumber: r.toothNumber, restorationType: r.restorationType,
+        material: r.material, shade: r.shade, notes: null, quantity: 1,
+        unitPrice: r.unitPrice, priceSource: r.priceSource, priceSourceId: r.priceSourceId,
+        priceSourceName: r.priceSourceName, priceKey: r.priceKey,
+      })));
+    }
+
+    if (extracted.notes && extracted.notes.trim()) {
+      await tx.insert(caseNotes).values({
+        caseId: createdCase.id, authorUserId: userId, authorOrganizationId: body.labOrganizationId,
+        noteText: `[iTero AI import] ${extracted.notes.trim()}`, visibility: "internal_lab_only",
+      });
+    }
+
+    const [attachment] = await tx.insert(caseAttachments).values({
+      caseId: createdCase.id, uploadedByUserId: userId, uploadedByOrganizationId: body.labOrganizationId,
+      fileName: rxOriginalName, storageKey: rxStorageKey, fileType: rxMimeType, visibility: "shared_with_provider",
+    }).returning();
+
+    await tx.update(iteroImportedOrders).set({ createdCaseId: createdCase.id, lastSeenAt: new Date() }).where(eq(iteroImportedOrders.id, claim.id));
+
+    await tx.insert(caseEvents).values({
+      caseId: createdCase.id, eventType: "case_created_from_itero",
+      actorUserId: userId, actorOrganizationId: body.labOrganizationId,
+      actorInitials: user?.initials || "SYS",
+      metadataJson: { iteroOrderId, source: "zip_batch", aiExtracted: Object.keys(extracted ?? {}), attachmentId: attachment?.id, extraFileCount: otherEntries.length },
+    });
+
+    // Auto-create draft invoice
+    let autoInvoiceId: string | null = null;
+    try {
+      const restorationRowsForInvoice = await tx.query.caseRestorations.findMany({
+        where: eq(caseRestorations.caseId, createdCase.id), orderBy: [caseRestorations.createdAt],
+      });
+      const patientName = `${createdCase.patientFirstName ?? ""} ${createdCase.patientLastName ?? ""}`.replace(/\s+/g, " ").trim();
+      const teethListForInv = restorationRowsForInvoice.map((r: any) => (r.toothNumber ?? "").trim()).filter(Boolean);
+      const shadeListForInv = Array.from(new Set(restorationRowsForInvoice.map((r: any) => (r.shade ?? "").trim()).filter(Boolean)));
+      const noteText = extracted.notes && extracted.notes.trim() ? `[iTero AI import] ${extracted.notes.trim()}` : null;
+      const displayMetadataJson = { patientName, billTo: (createdCase.doctorName ?? "").trim(), teeth: teethListForInv.join(", "), shade: shadeListForInv.join(", "), caseNotes: noteText ?? "" };
+      const hasRestorations = prebuiltRestorations.length > 0;
+      const fallbackPriced = hasRestorations && prebuiltRestorations.some((r) => r.priceSource === "fallback" || r.priceSource === null);
+      const aiPricingWarning = !hasRestorations
+        ? "AI could not extract restorations from this Rx — please add line items and pricing before sending."
+        : fallbackPriced ? "Some line items use default/fallback pricing — please verify before sending." : null;
+
+      const [autoInvoice] = await tx.insert(invoices).values({
+        invoiceNumber: `INV-${createdCase.caseNumber}`, caseId: createdCase.id,
+        labOrganizationId: createdCase.labOrganizationId, providerOrganizationId: createdCase.providerOrganizationId,
+        status: "draft", displayMetadataJson, aiGenerated: true, aiPricingWarning,
+        createdByUserId: userId, updatedByUserId: userId,
+      }).onConflictDoNothing().returning();
+
+      if (autoInvoice) {
+        const labelCache: Record<string, string> = {};
+        if (hasRestorations) {
+          for (const restoration of restorationRowsForInvoice) {
+            const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
+            if (!(pk in labelCache)) labelCache[pk] = await resolveItemLabel(createdCase.labOrganizationId, pk);
+          }
+        }
+        const itemsToInsert = hasRestorations
+          ? restorationRowsForInvoice.map((restoration: any, index: number) => {
+              const qty = Number(restoration.quantity ?? 1);
+              const unit = Number(restoration.unitPrice ?? 0);
+              const pk = materialToPriceKey(restoration.material, restoration.restorationType) ?? restoration.restorationType;
+              const label = labelCache[pk] ?? restoration.restorationType;
+              return { invoiceId: autoInvoice.id, caseRestorationId: restoration.id, description: buildLineItemDescription(restoration.toothNumber, label), quantity: restoration.quantity, unitPrice: restoration.unitPrice, lineTotal: (qty * unit).toFixed(2), sortOrder: index };
+            })
+          : [{ invoiceId: autoInvoice.id, caseRestorationId: null, description: "[AI placeholder] Restorations could not be extracted — replace with actual line items.", quantity: "1", unitPrice: "0.00", lineTotal: "0.00", sortOrder: 0 }];
+        await tx.insert(invoiceLineItems).values(itemsToInsert);
+        const subtotal = itemsToInsert.reduce((acc, it) => acc + Number(it.lineTotal), 0).toFixed(2);
+        await tx.update(invoices).set({ subtotal, total: subtotal, balanceDue: subtotal }).where(eq(invoices.id, autoInvoice.id));
+        autoInvoiceId = autoInvoice.id;
+      }
+    } catch (invoiceErr) {
+      req.log?.warn({ err: invoiceErr, caseId: createdCase.id }, "iTero ZIP batch: auto-invoice creation failed");
+    }
+
+    return { kind: "created" as const, createdCase, attachment, autoInvoiceId };
+  });
+
+  if (txResult.kind === "deduped") {
+    try { fs.unlinkSync(rxDiskPath); } catch { /* ignore */ }
+    const existing = txResult.existing;
+    if (existing && existing.createdCaseId) {
+      return { caseId: existing.createdCaseId, caseNumber: existing.iteroOrderId, deduped: true, iteroOrderId: existing.iteroOrderId, extraFilesAttached: 0, extraFilesFailed: 0 };
+    }
+    throw new HttpError(409, "iTero order is already being imported; retry shortly.");
+  }
+
+  const { createdCase, attachment } = txResult;
+
+  // Attach .ply files outside transaction (best-effort)
+  let extraFilesAttached = 0;
+  let extraFilesFailed = 0;
+  for (const entry of otherEntries) {
+    try {
+      const ext = path.extname(entry.name) || "";
+      const safe = path.basename(entry.name, ext).replace(/[^a-zA-Z0-9\-_]+/g, "-").slice(0, 60) || "file";
+      const diskName = `${Date.now()}-${randomBytes(4).toString("hex")}-${safe}${ext}`;
+      const diskPath = path.join(caseMediaDir, diskName);
+      await fs.promises.writeFile(diskPath, entry.data);
+      writeCaseMediaToObjectStorage(diskName, entry.data, entry.mimeType).catch((err: unknown) => {
+        req.log?.warn({ err, name: entry.name }, "iTero ZIP batch: failed to mirror .ply to object storage");
+      });
+      const storageKey = buildIteroAttachmentUrl(req, diskName);
+      await db.insert(caseAttachments).values({
+        caseId: createdCase.id, uploadedByUserId: userId, uploadedByOrganizationId: body.labOrganizationId,
+        fileName: entry.name, storageKey, fileType: entry.mimeType, visibility: "shared_with_provider",
+      });
+      extraFilesAttached++;
+    } catch (attachErr) {
+      extraFilesFailed++;
+      req.log?.warn({ err: attachErr, name: entry.name, caseId: createdCase.id }, "iTero ZIP batch: failed to save .ply attachment");
+    }
+  }
+
+  // Audit log
+  await writeAuditLog({
+    req, organizationId: body.labOrganizationId, action: "case_created_from_itero",
+    entityType: "case", entityId: createdCase.id,
+    afterJson: { case: createdCase, iteroOrderId, attachmentId: attachment?.id, extraFilesAttached, source: "zip_batch" },
+  });
+
+  return { caseId: createdCase.id, caseNumber: createdCase.caseNumber, deduped: false, iteroOrderId, extraFilesAttached, extraFilesFailed };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /cases/import-from-itero-zip-batch
+//
+// Accepts up to 20 iTero export ZIPs in a single multipart request (field name
+// `files[]`). Each ZIP is processed independently — one case per ZIP, with its
+// own AI extraction and PLY attachment. Returns a per-file result array so the
+// client can show granular per-ZIP status.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const iteroZipBatchUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      const tmpDir = path.join(os.tmpdir(), "labtrax-itero-zip");
+      try { fs.mkdirSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+      cb(null, tmpDir);
+    },
+    filename: (_req, _file, cb) => {
+      cb(null, `${Date.now()}-${randomBytes(4).toString("hex")}.zip`);
+    },
+  }),
+  limits: { fileSize: 300 * 1024 * 1024, files: 20 },
+});
+
+const iteroZipBatchBodySchema = z.object({
+  labOrganizationId: z.string().min(1, "labOrganizationId is required"),
+  providerOrganizationId: z.string().default(""),
+  doctorNameHint: z.string().optional(),
+  patientFirstNameHint: z.string().optional(),
+  patientLastNameHint: z.string().optional(),
+});
+
+router.post(
+  "/import-from-itero-zip-batch",
+  iteroZipBatchUpload.array("files[]", 20),
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).auth.userId as string;
+    const body = iteroZipBatchBodySchema.parse(req.body ?? {});
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+
+    if (files.length === 0) {
+      throw new HttpError(400, "At least one ZIP file is required (field name 'files[]').");
+    }
+    if (files.length > 20) {
+      throw new HttpError(400, "Maximum 20 ZIP files per batch request.");
+    }
+
+    await requireMembership(userId, body.labOrganizationId);
+
+    const user = (req as any).user;
+
+    const results: Array<{
+      filename: string;
+      status: "created" | "deduped" | "error";
+      caseId?: string;
+      caseNumber?: string;
+      iteroOrderId?: string;
+      extraFilesAttached?: number;
+      error?: string;
+    }> = [];
+
+    for (const file of files) {
+      try {
+        const result = await processOneIteroZipFile(req, file, body, userId, user);
+        results.push({
+          filename: file.originalname,
+          status: result.deduped ? "deduped" : "created",
+          caseId: result.caseId,
+          caseNumber: result.caseNumber,
+          iteroOrderId: result.iteroOrderId,
+          extraFilesAttached: result.extraFilesAttached,
+        });
+      } catch (err) {
+        // Best-effort cleanup if the helper threw before deleting the temp file.
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+        results.push({
+          filename: file.originalname,
+          status: "error",
+          error: err instanceof HttpError ? err.message : (err as Error)?.message ?? "Unknown error",
+        });
+      }
+    }
+
+    return ok(res, { results }, 207);
+  }),
 );
 
 // Clear the "needs AI review" flag once a human has verified the imported case.

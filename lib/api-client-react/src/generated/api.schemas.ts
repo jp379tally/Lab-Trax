@@ -321,6 +321,34 @@ export interface IteroImportResult {
   data?: IteroImportResultData;
 }
 
+export type IteroZipBatchImportResultDataResultsItemStatus =
+  (typeof IteroZipBatchImportResultDataResultsItemStatus)[keyof typeof IteroZipBatchImportResultDataResultsItemStatus];
+
+export const IteroZipBatchImportResultDataResultsItemStatus = {
+  created: "created",
+  deduped: "deduped",
+  error: "error",
+} as const;
+
+export type IteroZipBatchImportResultDataResultsItem = {
+  filename: string;
+  status: IteroZipBatchImportResultDataResultsItemStatus;
+  caseId?: string | null;
+  caseNumber?: string | null;
+  iteroOrderId?: string | null;
+  extraFilesAttached?: number | null;
+  error?: string | null;
+};
+
+export type IteroZipBatchImportResultData = {
+  results: IteroZipBatchImportResultDataResultsItem[];
+};
+
+export interface IteroZipBatchImportResult {
+  ok?: boolean;
+  data?: IteroZipBatchImportResultData;
+}
+
 export type IteroZipImportResultData = {
   deduped?: boolean;
   caseId?: string | null;
@@ -558,6 +586,17 @@ export type ImportCaseFromIteroZipBody = {
   file: string;
   labOrganizationId: string;
   providerOrganizationId: string;
+  doctorNameHint?: string;
+  patientFirstNameHint?: string;
+  patientLastNameHint?: string;
+};
+
+export type ImportCasesFromIteroZipBatchBody = {
+  /** Up to 20 iTero export ZIPs */
+  "files[]": string[];
+  labOrganizationId: string;
+  /** Optional — if omitted the case is created without a linked practice. */
+  providerOrganizationId?: string;
   doctorNameHint?: string;
   patientFirstNameHint?: string;
   patientLastNameHint?: string;

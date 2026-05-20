@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Box, CheckCircle, FileText, Film, Image, RotateCw, Upload, X, XCircle } from "lucide-react";
+import { Box, CheckCircle, CheckCircle2, FileText, Film, Image, Loader2, PackageOpen, RotateCw, Upload, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useUploads, type FileWithHandle, type UploadRejection } from "@/lib/uploads-context";
@@ -37,6 +37,11 @@ function is3dScan(mimeType: string, fileName?: string): boolean {
   return false;
 }
 
+function isZipFile(file: File): boolean {
+  const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+  return ext === ".zip" || file.type === "application/zip" || file.type === "application/x-zip-compressed";
+}
+
 function FileTypeIcon({ mimeType, fileName, className }: { mimeType: string; fileName?: string; className?: string }) {
   if (is3dScan(mimeType, fileName)) return <Box size={16} className={className} />;
   if (mimeType === "application/pdf") return <FileText size={16} className={className} />;
@@ -50,12 +55,29 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+interface OrgLite {
+  id: string;
+  name?: string;
+  type?: string;
+}
+
+interface ZipBatchEntry {
+  id: string;
+  filename: string;
+  status: "pending" | "processing" | "created" | "deduped" | "error";
+  caseId?: string;
+  caseNumber?: string;
+  extraFilesAttached?: number;
+  error?: string;
+}
+
 interface DesktopFileDropZoneProps {
   organizationId: string | null;
   uploaderName: string;
+  onOpenCase?: (caseId: string) => void;
 }
 
-function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileDropZoneProps) {
+function DesktopFileDropZoneInner({ organizationId, uploaderName, onOpenCase }: DesktopFileDropZoneProps) {
   const {
     entries,
     addFiles,
@@ -76,11 +98,43 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resumeInputsRef = useRef<Map<string, HTMLInputElement>>(new Map());
 
+  // Batch ZIP import state
+  const [providerOrgs, setProviderOrgs] = useState<OrgLite[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState<string>("");
+  const [pendingZips, setPendingZips] = useState<File[]>([]);
+  const [zipBatchEntries, setZipBatchEntries] = useState<ZipBatchEntry[]>([]);
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  useEffect(() => {
+    if (!organizationId) return;
+    apiFetch<OrgLite[]>("/organizations")
+      .then((orgs) => {
+        if (Array.isArray(orgs)) {
+          const providers = orgs.filter((o) => o.type && o.type !== "lab");
+          setProviderOrgs(providers);
+          if (providers.length > 0 && !selectedProviderId) {
+            setSelectedProviderId(providers[0]!.id);
+          }
+        }
+      })
+      .catch(() => {});
+  }, [organizationId]);
+
   const processItems = useCallback(
     (items: FileWithHandle[]) => {
       if (!organizationId || items.length === 0) return;
-      const result = addFiles(items, { organizationId, uploaderName });
-      setRejections(result.rejections);
+
+      const zipItems = items.filter((i) => isZipFile(i.file));
+      const nonZipItems = items.filter((i) => !isZipFile(i.file));
+
+      if (zipItems.length > 0) {
+        setPendingZips((prev) => [...prev, ...zipItems.map((i) => i.file)]);
+      }
+
+      if (nonZipItems.length > 0) {
+        const result = addFiles(nonZipItems, { organizationId, uploaderName });
+        setRejections(result.rejections);
+      }
     },
     [addFiles, organizationId, uploaderName],
   );
@@ -113,8 +167,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
         processItems(items);
         return;
       } catch (err: any) {
-        if (err?.name === "AbortError") return; // user dismissed picker
-        // Fall through to the legacy <input type="file"> picker.
+        if (err?.name === "AbortError") return;
       }
     }
     fileInputRef.current?.click();
@@ -144,8 +197,6 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
     e.stopPropagation();
     dragCounterRef.current = 0;
     setDragOver(false);
-    // When the browser supports it, use DataTransferItem.getAsFileSystemHandle
-    // so we can persist the handle and silently resume after a refresh.
     if (supportsDropHandles() && e.dataTransfer.items && e.dataTransfer.items.length > 0) {
       const items = Array.from(e.dataTransfer.items);
       void (async () => {
@@ -202,14 +253,97 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
     });
   }
 
+  function removePendingZip(index: number) {
+    setPendingZips((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function clearBatch() {
+    setPendingZips([]);
+    setZipBatchEntries([]);
+  }
+
+  async function runBatchImport() {
+    if (!organizationId || pendingZips.length === 0 || batchRunning) return;
+
+    const initialEntries: ZipBatchEntry[] = pendingZips.map((f) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      filename: f.name,
+      status: "pending",
+    }));
+    setZipBatchEntries(initialEntries);
+    setPendingZips([]);
+    setBatchRunning(true);
+
+    for (let i = 0; i < initialEntries.length; i++) {
+      const entry = initialEntries[i]!;
+      const file = pendingZips[i]!;
+
+      setZipBatchEntries((prev) =>
+        prev.map((e) => (e.id === entry.id ? { ...e, status: "processing" } : e))
+      );
+
+      try {
+        const fd = new FormData();
+        fd.append("files[]", file);
+        fd.append("labOrganizationId", organizationId);
+        if (selectedProviderId) fd.append("providerOrganizationId", selectedProviderId);
+
+        const result = await apiFetch<{
+          results: Array<{
+            filename: string;
+            status: "created" | "deduped" | "error";
+            caseId?: string;
+            caseNumber?: string;
+            extraFilesAttached?: number;
+            error?: string;
+          }>;
+        }>("/cases/import-from-itero-zip-batch", {
+          method: "POST",
+          body: fd,
+          headers: {},
+        });
+
+        const fileResult = result?.results?.[0];
+        if (!fileResult) throw new Error("No result returned from server.");
+
+        setZipBatchEntries((prev) =>
+          prev.map((e) =>
+            e.id === entry.id
+              ? {
+                  ...e,
+                  status: fileResult.status,
+                  caseId: fileResult.caseId ?? undefined,
+                  caseNumber: fileResult.caseNumber ?? undefined,
+                  extraFilesAttached: fileResult.extraFilesAttached,
+                  error: fileResult.error,
+                }
+              : e
+          )
+        );
+      } catch (err: any) {
+        setZipBatchEntries((prev) =>
+          prev.map((e) =>
+            e.id === entry.id
+              ? { ...e, status: "error", error: err?.message || "Import failed." }
+              : e
+          )
+        );
+      }
+    }
+
+    setBatchRunning(false);
+  }
+
   const disabled = !organizationId;
+  const hasBatchResults = zipBatchEntries.length > 0;
+  const batchDone = hasBatchResults && !batchRunning && zipBatchEntries.every((e) => e.status !== "processing" && e.status !== "pending");
 
   return (
     <div className="bg-card border border-border rounded-xl overflow-hidden">
       <div className="px-5 py-3.5 border-b border-border">
         <h2 className="text-sm font-semibold">Pending file inbox</h2>
         <p className="text-xs text-muted-foreground">
-          Drop files here to share them with your lab team.
+          Drop files here to share them with your lab team. Drop iTero ZIPs to batch-import cases.
         </p>
       </div>
 
@@ -246,7 +380,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                 {dragOver ? "Release to upload" : "Drop files or click to browse"}
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Images, videos, PDFs, and 3D scans &mdash; up to 10 MB each
+                Images, videos, PDFs, 3D scans &mdash; or iTero ZIPs to create cases
               </p>
             </div>
           </div>
@@ -275,6 +409,178 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                 </span>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* ── Pending ZIP panel ─────────────────────────────────────────── */}
+        {pendingZips.length > 0 && !hasBatchResults && (
+          <div className="rounded-lg border border-border bg-secondary/20 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <PackageOpen size={15} className="text-primary shrink-0" />
+              <p className="text-sm font-medium">
+                {pendingZips.length} iTero ZIP{pendingZips.length === 1 ? "" : "s"} ready to import
+              </p>
+            </div>
+
+            <ul className="space-y-1">
+              {pendingZips.map((f, i) => (
+                <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <FileText size={12} className="shrink-0" />
+                  <span className="truncate flex-1">{f.name}</span>
+                  <span className="shrink-0">{formatBytes(f.size)}</span>
+                  <button
+                    type="button"
+                    onClick={() => removePendingZip(i)}
+                    className="shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+                    aria-label={`Remove ${f.name}`}
+                  >
+                    <X size={12} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            {providerOrgs.length > 0 && (
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-foreground">
+                  Link to practice
+                </label>
+                <select
+                  value={selectedProviderId}
+                  onChange={(e) => setSelectedProviderId(e.target.value)}
+                  className="w-full text-xs rounded-md border border-border bg-background px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">— No practice (link later) —</option>
+                  {providerOrgs.map((o) => (
+                    <option key={o.id} value={o.id}>{o.name ?? o.id}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void runBatchImport()}
+                disabled={batchRunning}
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                Import {pendingZips.length} case{pendingZips.length === 1 ? "" : "s"}
+              </button>
+              <button
+                type="button"
+                onClick={clearBatch}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Batch progress results ────────────────────────────────────── */}
+        {hasBatchResults && (
+          <div className="rounded-lg border border-border bg-secondary/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <PackageOpen size={15} className="text-primary shrink-0" />
+                <p className="text-sm font-medium">
+                  Batch iTero import {batchRunning ? "in progress…" : "complete"}
+                </p>
+              </div>
+              {batchDone && (
+                <button
+                  type="button"
+                  onClick={clearBatch}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Dismiss
+                </button>
+              )}
+            </div>
+
+            <ul className="space-y-1.5">
+              {zipBatchEntries.map((entry) => (
+                <li
+                  key={entry.id}
+                  className={[
+                    "flex items-start gap-2.5 rounded-md px-3 py-2 text-xs",
+                    entry.status === "error"
+                      ? "bg-destructive/10 border border-destructive/20"
+                      : entry.status === "created"
+                        ? "bg-success/10 border border-success/20"
+                        : entry.status === "deduped"
+                          ? "bg-muted/50 border border-border"
+                          : "bg-background border border-border",
+                  ].join(" ")}
+                >
+                  <div className="mt-0.5 shrink-0">
+                    {(entry.status === "pending" || entry.status === "processing") && (
+                      <Loader2 size={13} className="animate-spin text-muted-foreground" />
+                    )}
+                    {entry.status === "created" && (
+                      <CheckCircle2 size={13} className="text-success" />
+                    )}
+                    {entry.status === "deduped" && (
+                      <CheckCircle size={13} className="text-muted-foreground" />
+                    )}
+                    {entry.status === "error" && (
+                      <XCircle size={13} className="text-destructive" />
+                    )}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium truncate text-foreground">{entry.filename}</p>
+                    {entry.status === "pending" && (
+                      <p className="text-muted-foreground">Waiting…</p>
+                    )}
+                    {entry.status === "processing" && (
+                      <p className="text-muted-foreground">Processing…</p>
+                    )}
+                    {entry.status === "created" && (
+                      <p className="text-success">
+                        Case #{entry.caseNumber} created
+                        {typeof entry.extraFilesAttached === "number" && entry.extraFilesAttached > 0
+                          ? ` · ${entry.extraFilesAttached} .ply file${entry.extraFilesAttached === 1 ? "" : "s"} attached`
+                          : ""}
+                        {entry.caseId && onOpenCase && (
+                          <>
+                            {" · "}
+                            <button
+                              type="button"
+                              onClick={() => onOpenCase(entry.caseId!)}
+                              className="underline underline-offset-2 hover:no-underline"
+                            >
+                              Open
+                            </button>
+                          </>
+                        )}
+                      </p>
+                    )}
+                    {entry.status === "deduped" && (
+                      <p className="text-muted-foreground">
+                        Already imported — Case #{entry.caseNumber ?? entry.caseId}
+                        {entry.caseId && onOpenCase && (
+                          <>
+                            {" · "}
+                            <button
+                              type="button"
+                              onClick={() => onOpenCase(entry.caseId!)}
+                              className="underline underline-offset-2 hover:no-underline"
+                            >
+                              Open
+                            </button>
+                          </>
+                        )}
+                      </p>
+                    )}
+                    {entry.status === "error" && (
+                      <p className="text-destructive">{entry.error || "Import failed."}</p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
@@ -382,7 +688,6 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
                                 if (result.ok) {
                                   delete next[entry.id];
                                 } else if (result.reason === "no-handle") {
-                                  // Handle was lost (e.g. cleared storage); fall back to re-pick.
                                   delete next[entry.id];
                                   resumeInputsRef.current.get(entry.id)?.click();
                                 } else if (result.reason === "permission-denied") {
@@ -464,7 +769,7 @@ function DesktopFileDropZoneInner({ organizationId, uploaderName }: DesktopFileD
   );
 }
 
-export function DesktopFileDropZone() {
+export function DesktopFileDropZone({ onOpenCase }: { onOpenCase?: (caseId: string) => void }) {
   const { user } = useAuth();
 
   const [orgId, setOrgId] = useState<string | null | undefined>(undefined);
@@ -494,5 +799,5 @@ export function DesktopFileDropZone() {
     );
   }
 
-  return <DesktopFileDropZoneInner organizationId={orgId} uploaderName={uploaderName} />;
+  return <DesktopFileDropZoneInner organizationId={orgId} uploaderName={uploaderName} onOpenCase={onOpenCase} />;
 }

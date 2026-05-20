@@ -35,9 +35,11 @@ import type {
   HealthStatus,
   ImportCaseFromIteroRxBody,
   ImportCaseFromIteroZipBody,
+  ImportCasesFromIteroZipBatchBody,
   ItemLabelsInput,
   ItemLabelsResult,
   IteroImportResult,
+  IteroZipBatchImportResult,
   IteroZipImportResult,
   ListOpenInvoicesParams,
   MarkAllNotificationsRead200,
@@ -712,6 +714,135 @@ export const useImportCaseFromIteroZip = <
   TContext
 > => {
   return useMutation(getImportCaseFromIteroZipMutationOptions(options));
+};
+
+/**
+ * Accepts up to 20 iTero export ZIP files in a single multipart request
+(`files[]` field). Each ZIP is processed independently: the server
+extracts the `iTero_Rx_*.pdf`, uses AI to create a case, and attaches
+every `.ply` scan found in the same ZIP to that case. Returns a
+per-file result array so the client can show granular status. Errors on
+individual ZIPs are captured per-entry and do not abort the batch.
+
+ * @summary Batch-import cases from multiple iTero export ZIPs
+ */
+export const getImportCasesFromIteroZipBatchUrl = () => {
+  return `/api/cases/import-from-itero-zip-batch`;
+};
+
+export const importCasesFromIteroZipBatch = async (
+  importCasesFromIteroZipBatchBody: ImportCasesFromIteroZipBatchBody,
+  options?: RequestInit,
+): Promise<IteroZipBatchImportResult> => {
+  const formData = new FormData();
+  importCasesFromIteroZipBatchBody["files[]"].forEach((value) =>
+    formData.append(`files[]`, value),
+  );
+  formData.append(
+    `labOrganizationId`,
+    importCasesFromIteroZipBatchBody.labOrganizationId,
+  );
+  if (importCasesFromIteroZipBatchBody.providerOrganizationId !== undefined) {
+    formData.append(
+      `providerOrganizationId`,
+      importCasesFromIteroZipBatchBody.providerOrganizationId,
+    );
+  }
+  if (importCasesFromIteroZipBatchBody.doctorNameHint !== undefined) {
+    formData.append(
+      `doctorNameHint`,
+      importCasesFromIteroZipBatchBody.doctorNameHint,
+    );
+  }
+  if (importCasesFromIteroZipBatchBody.patientFirstNameHint !== undefined) {
+    formData.append(
+      `patientFirstNameHint`,
+      importCasesFromIteroZipBatchBody.patientFirstNameHint,
+    );
+  }
+  if (importCasesFromIteroZipBatchBody.patientLastNameHint !== undefined) {
+    formData.append(
+      `patientLastNameHint`,
+      importCasesFromIteroZipBatchBody.patientLastNameHint,
+    );
+  }
+
+  return customFetch<IteroZipBatchImportResult>(
+    getImportCasesFromIteroZipBatchUrl(),
+    {
+      ...options,
+      method: "POST",
+      body: formData,
+    },
+  );
+};
+
+export const getImportCasesFromIteroZipBatchMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importCasesFromIteroZipBatch>>,
+    TError,
+    { data: BodyType<ImportCasesFromIteroZipBatchBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof importCasesFromIteroZipBatch>>,
+  TError,
+  { data: BodyType<ImportCasesFromIteroZipBatchBody> },
+  TContext
+> => {
+  const mutationKey = ["importCasesFromIteroZipBatch"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof importCasesFromIteroZipBatch>>,
+    { data: BodyType<ImportCasesFromIteroZipBatchBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return importCasesFromIteroZipBatch(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ImportCasesFromIteroZipBatchMutationResult = NonNullable<
+  Awaited<ReturnType<typeof importCasesFromIteroZipBatch>>
+>;
+export type ImportCasesFromIteroZipBatchMutationBody =
+  BodyType<ImportCasesFromIteroZipBatchBody>;
+export type ImportCasesFromIteroZipBatchMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Batch-import cases from multiple iTero export ZIPs
+ */
+export const useImportCasesFromIteroZipBatch = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof importCasesFromIteroZipBatch>>,
+    TError,
+    { data: BodyType<ImportCasesFromIteroZipBatchBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof importCasesFromIteroZipBatch>>,
+  TError,
+  { data: BodyType<ImportCasesFromIteroZipBatchBody> },
+  TContext
+> => {
+  return useMutation(getImportCasesFromIteroZipBatchMutationOptions(options));
 };
 
 /**
