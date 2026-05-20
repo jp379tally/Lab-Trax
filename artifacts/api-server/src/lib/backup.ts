@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import archiver from "archiver";
 import { db } from "@workspace/db";
@@ -64,26 +64,47 @@ export const ALL_SCHEDULE_SETTINGS = [
 ] as const;
 
 /**
- * Run pg_dump --format=custom against DATABASE_URL.
- * Returns the raw binary dump buffer (typically compressed by pg_dump).
+ * Run pg_dump --format=custom against DATABASE_URL asynchronously.
+ * Uses spawn (non-blocking) instead of spawnSync so the Node.js event loop
+ * remains responsive to health-checks and API requests while pg_dump runs.
  * Throws if pg_dump exits non-zero or DATABASE_URL is not set.
  */
-function buildPgDumpBuffer(): Buffer {
+async function buildPgDumpBuffer(): Promise<Buffer> {
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) throw new Error("DATABASE_URL is not set — cannot run pg_dump.");
-  const result = spawnSync("pg_dump", ["--format=custom", `--dbname=${dbUrl}`], {
-    maxBuffer: 2 * 1024 * 1024 * 1024, // 2 GB safety cap
-    timeout: 10 * 60 * 1000,           // 10 min timeout
-    encoding: "buffer",
+  return new Promise<Buffer>((resolve, reject) => {
+    const proc = spawn("pg_dump", ["--format=custom", `--dbname=${dbUrl}`]);
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+
+    proc.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    proc.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGTERM");
+      reject(new Error("pg_dump timed out after 10 minutes."));
+    }, 10 * 60 * 1000);
+
+    proc.on("close", (code: number | null) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        const stderr = Buffer.concat(stderrChunks).toString("utf8") || "unknown error";
+        reject(new Error(`pg_dump failed (exit ${code}): ${stderr}`));
+        return;
+      }
+      const result = Buffer.concat(stdoutChunks);
+      if (result.length === 0) {
+        reject(new Error("pg_dump produced empty output."));
+        return;
+      }
+      resolve(result);
+    });
+
+    proc.on("error", (err: Error) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
-  if (result.status !== 0) {
-    const stderr = result.stderr?.toString("utf8") || "unknown error";
-    throw new Error(`pg_dump failed (exit ${result.status}): ${stderr}`);
-  }
-  if (!result.stdout || result.stdout.length === 0) {
-    throw new Error("pg_dump produced empty output.");
-  }
-  return result.stdout as Buffer;
 }
 
 /**
@@ -126,7 +147,7 @@ export async function buildBackupZipBuffer(triggeredBy: string): Promise<{
   buffer: Buffer;
   fileName: string;
 }> {
-  const pgDump = buildPgDumpBuffer();
+  const pgDump = await buildPgDumpBuffer();
 
   const dateStr = new Date().toISOString().split("T")[0];
   const fileName = `labtrax-backup-${dateStr}.zip.enc`;

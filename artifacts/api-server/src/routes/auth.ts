@@ -642,7 +642,13 @@ router.post(
       if (!fromBody) clearAuthCookies(req, res);
       throw new HttpError(401, "Refresh token is invalid or expired.");
     }
-    const payload = verifyRefreshToken(refreshToken);
+    let payload: ReturnType<typeof verifyRefreshToken>;
+    try {
+      payload = verifyRefreshToken(refreshToken);
+    } catch {
+      if (!fromBody) clearAuthCookies(req, res);
+      throw new HttpError(401, "Refresh token is invalid or expired.");
+    }
 
     // Look up the session by id + user only, so we can distinguish "no such
     // session" from "wrong token hash" (i.e. a reused / leaked refresh token).
